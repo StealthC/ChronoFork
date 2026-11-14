@@ -13,6 +13,7 @@ pub mod backend;
 pub mod bus;
 pub mod cpu;
 pub mod interrupts;
+pub mod trace;
 pub mod vdp;
 
 pub use backend::{
@@ -25,7 +26,8 @@ pub use bus::{
 };
 pub use cpu::{CpuError, M68000};
 pub use interrupts::{
-    HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler, PendingInterrupt, SchedulerConfig,
-    SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
+    DEFAULT_INSTRUCTIONS_PER_LINE, HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler,
+    PendingInterrupt, SchedulerConfig, SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
 };
+pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};

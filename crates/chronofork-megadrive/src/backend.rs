@@ -17,6 +17,22 @@
 //! delivery yet: no instruction in the current subset can change the mask, and
 //! the CPU entry API leaves masking to the caller. The VDP VBlank status flag is
 //! driven from the scheduler's scanline position.
+//!
+//! # Instruction trace
+//!
+//! [`MegadriveBackend::enable_trace`] turns on a bounded, debug-only instruction
+//! trace (see [`crate::trace`]). It records executed address/opcode pairs for
+//! differential evidence and does not change emulated behavior: snapshots, state
+//! hashes and configuration hashes are byte-identical with tracing on or off, the
+//! payload version is unchanged, and restore does not rewind trace contents. The
+//! generic [`Backend`] interface exposes no trace method, so the backend
+//! capability `tracing` stays `false`; use the concrete type.
+//!
+//! Because the current core does not gate interrupts with the `SR` mask (E2-15),
+//! differential runs that the oracle keeps interrupt-free must construct their
+//! machine with an explicit large scheduler quantum such as `1_000_000`
+//! instructions per line. The default remains 64 instructions per line and is
+//! never changed implicitly.
 
 use std::sync::Arc;
 
@@ -31,6 +47,7 @@ use crate::cpu::{CpuError, M68000};
 use crate::interrupts::{
     InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
 };
+use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
 
 /// Stable backend identifier.
@@ -204,6 +221,42 @@ impl MegadriveBackend {
     #[must_use]
     pub const fn scheduler_config(&self) -> SchedulerConfig {
         self.scheduler.config()
+    }
+
+    /// Enables the bounded debug instruction trace on the 68000.
+    ///
+    /// See [`crate::trace`] for the recording rules and bounded-ring behavior.
+    /// The trace is disabled by default and is not canonical state: it is absent
+    /// from snapshots, state hashes and configuration hashes, and restore does not
+    /// restore its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraceError::ZeroCapacity`] when `capacity` is zero, leaving any
+    /// existing trace unchanged.
+    pub fn enable_trace(&mut self, capacity: usize) -> Result<(), TraceError> {
+        self.cpu.enable_trace(capacity)
+    }
+
+    /// Disables the instruction trace and discards its records.
+    pub fn disable_trace(&mut self) {
+        self.cpu.disable_trace();
+    }
+
+    /// Clears an enabled trace and restarts its indexes at zero.
+    pub fn reset_trace(&mut self) {
+        self.cpu.reset_trace();
+    }
+
+    /// Returns the active instruction trace, or `None` when disabled.
+    #[must_use]
+    pub const fn trace(&self) -> Option<&InstructionTrace> {
+        self.cpu.trace()
+    }
+
+    /// Removes and returns the instruction trace, disabling further recording.
+    pub fn take_trace(&mut self) -> Option<InstructionTrace> {
+        self.cpu.take_trace()
     }
 
     fn state_hash(&self) -> StateHash {
@@ -618,7 +671,7 @@ pub fn demo_rom() -> Vec<u8> {
         0x33, 0xC0, // MOVE.W D0,(0x00FF0000).L
         0x00, 0xFF, 0x00, 0x00, // absolute-long address
         0x74, 0x00, // MOVEQ #0,D2
-        0x34, 0x38, // MOVE.W (0x00FF0000).L,D2
+        0x34, 0x39, // MOVE.W (0x00FF0000).L,D2
         0x00, 0xFF, 0x00, 0x00, // absolute-long address
     ]);
     rom[0x214..0x26A].copy_from_slice(&[
@@ -634,9 +687,9 @@ pub fn demo_rom() -> Vec<u8> {
         0x33, 0xC0, 0x00, 0xC0, 0x00, 0x04, // MOVE.W D0,(0x00C00004).L
         0x30, 0x3C, 0x00, 0x00, // MOVE.W #0,D0 (address bits 15:14 = 0)
         0x33, 0xC0, 0x00, 0xC0, 0x00, 0x04, // MOVE.W D0,(0x00C00004).L
-        0x34, 0x38, 0x00, 0xC0, 0x00, 0x00, // MOVE.W (0x00C00000).L,D2
+        0x34, 0x39, 0x00, 0xC0, 0x00, 0x00, // MOVE.W (0x00C00000).L,D2
         0x33, 0xC2, 0x00, 0xFF, 0x00, 0x04, // MOVE.W D2,(0x00FF0004).L
-        0x36, 0x38, 0x00, 0xC0, 0x00, 0x04, // MOVE.W (0x00C00004).L,D3
+        0x36, 0x39, 0x00, 0xC0, 0x00, 0x04, // MOVE.W (0x00C00004).L,D3
         0x33, 0xC3, 0x00, 0xFF, 0x00, 0x06, // MOVE.W D3,(0x00FF0006).L
         0x60, 0xFE, // BRA.S -2
     ]);
@@ -1049,5 +1102,123 @@ mod tests {
             vec![0x12, 0x34]
         );
         assert!(machine.read_memory(0x00C0_0000, 1).is_err());
+    }
+
+    #[test]
+    fn trace_is_off_by_default_and_captures_backend_steps() {
+        let mut machine = factory().create_machine().expect("machine");
+        assert!(machine.trace().is_none(), "tracing is disabled by default");
+        machine.enable_trace(16).expect("trace capacity 16");
+        for _ in 0..3 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let trace = machine.trace().expect("trace enabled");
+        let records: Vec<(u64, u32, u16)> = trace
+            .entries()
+            .map(|entry| (entry.index(), entry.pc(), entry.opcode()))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (0, 0x200, 0x7001), // MOVEQ #1,D0
+                (1, 0x202, 0x7202), // MOVEQ #2,D1
+                (2, 0x204, 0xD041), // ADD.W D1,D0
+            ]
+        );
+        let taken = machine.take_trace().expect("trace was enabled");
+        assert_eq!(taken.len(), 3);
+        assert!(machine.trace().is_none());
+    }
+
+    #[test]
+    fn trace_does_not_perturb_snapshot_state_or_config_hash() {
+        let factory = factory();
+        let mut traced = factory.create_machine().expect("traced machine");
+        let mut untraced = factory.create_machine().expect("untraced machine");
+        traced.enable_trace(64).expect("trace capacity 64");
+        for _ in 0..16 {
+            traced.step(InputFrame::NEUTRAL).expect("traced step");
+            untraced.step(InputFrame::NEUTRAL).expect("untraced step");
+        }
+        assert_eq!(traced.trace().expect("trace").len(), 16);
+        assert!(untraced.trace().is_none());
+
+        let traced_snapshot = traced.snapshot().expect("traced snapshot");
+        let untraced_snapshot = untraced.snapshot().expect("untraced snapshot");
+        assert_eq!(traced_snapshot.payload(), untraced_snapshot.payload());
+        assert_eq!(traced_snapshot.state_hash(), untraced_snapshot.state_hash());
+        assert_eq!(
+            traced_snapshot.config_hash(),
+            untraced_snapshot.config_hash()
+        );
+        assert_eq!(traced_snapshot.config_hash(), factory.config_hash());
+        assert_eq!(
+            traced_snapshot.format_version(),
+            chronofork_backend_api::BACKEND_SNAPSHOT_FORMAT_VERSION
+        );
+        assert_eq!(
+            traced_snapshot.payload()[8..10],
+            PAYLOAD_VERSION.to_le_bytes()
+        );
+        assert_eq!(
+            traced.inspect().expect("traced inspect").state_hash,
+            untraced.inspect().expect("untraced inspect").state_hash
+        );
+
+        // A snapshot can be restored into a machine with tracing enabled, and the
+        // restore does not touch the active trace.
+        machine_restore_and_trace_survives(&factory);
+    }
+
+    /// Restoring a snapshot must leave trace contents alone (debug state is not
+    /// canonical state).
+    fn machine_restore_and_trace_survives(factory: &MegadriveFactory) {
+        let mut machine = factory.create_machine().expect("machine");
+        machine.enable_trace(64).expect("trace capacity 64");
+        for _ in 0..4 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let snapshot = machine.snapshot().expect("snapshot");
+        for _ in 0..4 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let recorded_before_restore = machine.trace().expect("trace").len();
+        machine.restore(&snapshot).expect("restore");
+        let trace = machine.trace().expect("trace survives restore");
+        assert_eq!(recorded_before_restore, 8);
+        assert_eq!(trace.len(), 8, "restore must not rewind trace contents");
+        assert_eq!(trace.next_index(), 8);
+        assert_eq!(trace.get(7).map(|entry| entry.pc()), Some(0x218));
+    }
+
+    #[test]
+    fn backend_trace_rejects_zero_capacity_with_a_typed_error() {
+        let mut machine = factory().create_machine().expect("machine");
+        assert_eq!(
+            machine.enable_trace(0),
+            Err(crate::trace::TraceError::ZeroCapacity)
+        );
+        assert!(machine.trace().is_none());
+    }
+
+    #[test]
+    fn demo_rom_uses_real_absolute_long_load_encodings() {
+        // Source mode/register 111/001 (absolute-long) is low byte 0x39. The demo
+        // must use the real 68000 load encoding, not the absolute-word 0x..38.
+        let rom = demo_rom();
+        assert_eq!(&rom[0x20E..0x210], &[0x34, 0x39], "MOVE.W (0xFF0000).L,D2");
+        assert_eq!(&rom[0x250..0x252], &[0x34, 0x39], "MOVE.W (0xC00000).L,D2");
+        assert_eq!(&rom[0x25C..0x25E], &[0x36, 0x39], "MOVE.W (0xC00004).L,D3");
+
+        // The logical program still executes: D2 gets the computed 3, then the
+        // VDP read-back value 0x1234, and RAM keeps the expected words.
+        let mut machine = factory().create_machine().expect("machine");
+        for _ in 0..23 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let state = machine.inspect().expect("inspect");
+        assert_eq!(state.registers["d2"], 0x1234);
+        assert_eq!(state.memory[0..2], [0x00, 0x03]);
+        assert_eq!(state.memory[4..6], [0x12, 0x34]);
     }
 }

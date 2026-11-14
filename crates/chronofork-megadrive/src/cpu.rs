@@ -12,7 +12,10 @@
 //! - `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL`, `DBRA`,
 //!   `JMP`, `JSR`, `RTS`;
 //! - interrupt exception entry (`M68000::interrupt`) through a vector-table
-//!   entry, with a supervisor stack frame and the `SR` supervisor bit.
+//!   entry, with a supervisor stack frame and the `SR` supervisor bit;
+//! - an optional bounded instruction trace (see [`crate::trace`]) recording each
+//!   fetched address/opcode pair. It is disabled by default and is debug data:
+//!   it is not part of snapshots, state hashes or registers.
 //!
 //! Not implemented: effective-address modes beyond the listed forms, interrupt
 //! levels/priority masks and automatic vector selection, other exception groups,
@@ -25,6 +28,7 @@ use std::error::Error;
 use std::fmt;
 
 use crate::bus::{BusError, MegadriveBus};
+use crate::trace::{InstructionTrace, TraceError};
 
 const FLAG_C: u16 = 0x0001;
 const FLAG_V: u16 = 0x0002;
@@ -128,6 +132,8 @@ pub struct M68000 {
     pc: u32,
     sr: u16,
     halted: bool,
+    /// Debug-only instruction trace; never part of snapshots or state hashes.
+    trace: Option<InstructionTrace>,
 }
 
 impl M68000 {
@@ -140,11 +146,15 @@ impl M68000 {
             pc: 0,
             sr: RESET_SR,
             halted: false,
+            trace: None,
         }
     }
 
     /// Loads the initial supervisor stack pointer and program counter from the
     /// reset vectors at addresses 0 and 4.
+    ///
+    /// The instruction trace, if enabled, is left untouched; call
+    /// [`M68000::reset_trace`] explicitly to discard pre-reset records.
     pub fn reset(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
         self.d = [0; 8];
         self.a = [0; 8];
@@ -240,6 +250,57 @@ impl M68000 {
         registers
     }
 
+    /// Enables the bounded instruction trace, replacing any existing trace.
+    ///
+    /// The trace is disabled by default. Every subsequent [`M68000::step`] that
+    /// successfully fetches an opcode appends one record. Recording stops when
+    /// the trace is disabled or taken.
+    ///
+    /// The trace is debug data: it does not affect registers, snapshots, the
+    /// backend state hash or the snapshot payload version, and restoring a
+    /// snapshot leaves it untouched. Enable it only on a machine whose state you
+    /// are willing to inspect, not as part of canonical state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraceError::ZeroCapacity`] when `capacity` is zero. On error an
+    /// already-enabled trace is left unchanged.
+    pub fn enable_trace(&mut self, capacity: usize) -> Result<(), TraceError> {
+        let trace = InstructionTrace::new(capacity)?;
+        self.trace = Some(trace);
+        Ok(())
+    }
+
+    /// Disables the instruction trace and discards its records.
+    pub fn disable_trace(&mut self) {
+        self.trace = None;
+    }
+
+    /// Clears the retained records and restarts indexes at zero.
+    ///
+    /// This keeps tracing enabled and preserves the configured capacity. It is a
+    /// no-op when tracing is disabled.
+    pub fn reset_trace(&mut self) {
+        if let Some(trace) = &mut self.trace {
+            trace.clear();
+        }
+    }
+
+    /// Returns the active instruction trace, or `None` when tracing is disabled.
+    #[must_use]
+    pub const fn trace(&self) -> Option<&InstructionTrace> {
+        self.trace.as_ref()
+    }
+
+    /// Removes and returns the instruction trace, disabling further recording.
+    ///
+    /// The returned trace keeps its records, capacity, dropped count and next
+    /// index. Afterwards [`M68000::trace`] returns `None` until tracing is
+    /// enabled again.
+    pub fn take_trace(&mut self) -> Option<InstructionTrace> {
+        self.trace.take()
+    }
+
     pub(crate) const fn snapshot_state(&self) -> ([u32; 8], [u32; 8], u32, u16, bool) {
         (self.d, self.a, self.pc, self.sr, self.halted)
     }
@@ -260,12 +321,19 @@ impl M68000 {
     }
 
     /// Executes one instruction.
+    ///
+    /// When the instruction trace is enabled, the fetched instruction is recorded
+    /// before decoding, so an instruction that fails as illegal or unsupported is
+    /// still present in the trace.
     pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
         if self.halted {
             return Err(CpuError::Halted);
         }
         let instruction_pc = self.pc;
         let opcode = self.fetch_u16(bus)?;
+        if let Some(trace) = &mut self.trace {
+            trace.record(instruction_pc, opcode);
+        }
 
         // 0111 rrr 0 dddddddd
         if (opcode & 0xF100) == 0x7000 {
@@ -430,8 +498,12 @@ impl M68000 {
             return Ok(());
         }
 
-        // MOVE.B/W/L (abs).L,Dn
-        if (opcode & 0xF1FF) == 0x1038 {
+        // MOVE.B/W/L (abs).L,Dn. The 68000 encodes source mode/register
+        // 111/001 (absolute-long) as low byte 0x39. The absolute-word form
+        // (111/000, low byte 0x38) and the PC-relative forms are not in this
+        // subset and fall through to the illegal-opcode error rather than being
+        // executed with a 32-bit fetch.
+        if (opcode & 0xF1FF) == 0x1039 {
             let destination = usize::from((opcode >> 9) & 0x7);
             let address = self.fetch_u32(bus)?;
             let value = u32::from(bus.read8(address)?);
@@ -439,7 +511,7 @@ impl M68000 {
             self.set_logic_flags(value, Size::Byte);
             return Ok(());
         }
-        if (opcode & 0xF1FF) == 0x2038 {
+        if (opcode & 0xF1FF) == 0x2039 {
             let destination = usize::from((opcode >> 9) & 0x7);
             let address = self.fetch_u32(bus)?;
             let value = bus.read32(address)?;
@@ -447,7 +519,7 @@ impl M68000 {
             self.set_logic_flags(value, Size::Long);
             return Ok(());
         }
-        if (opcode & 0xF1FF) == 0x3038 {
+        if (opcode & 0xF1FF) == 0x3039 {
             let destination = usize::from((opcode >> 9) & 0x7);
             let address = self.fetch_u32(bus)?;
             let value = u32::from(bus.read16(address)?);
@@ -769,6 +841,7 @@ mod tests {
 
     use super::{CpuError, M68000};
     use crate::bus::{BusError, MegadriveBus};
+    use crate::trace::TraceError;
 
     /// Stack top used by the new-instruction helpers. Work RAM on this bus ends
     /// at 0x01000000; starting near the top keeps downward pushes inside RAM.
@@ -1114,5 +1187,228 @@ mod tests {
             0x2000,
             "supervisor mode is entered before the jump"
         );
+    }
+
+    #[test]
+    fn trace_records_the_exact_executed_sequence() {
+        // MOVEQ #1,D0; MOVEQ #2,D1; ADD.W D1,D0; NOP
+        let (mut cpu, mut bus) = cpu_at_program(&[0x70, 0x01, 0x72, 0x02, 0xD0, 0x41, 0x4E, 0x71]);
+        assert!(cpu.trace().is_none(), "tracing is disabled by default");
+        cpu.enable_trace(8).expect("trace capacity 8");
+        for _ in 0..4 {
+            cpu.step(&mut bus).expect("step");
+        }
+        let trace = cpu.trace().expect("trace enabled");
+        assert_eq!(trace.capacity(), 8);
+        assert_eq!(trace.len(), 4);
+        assert_eq!(trace.dropped(), 0);
+        assert_eq!(trace.first_index(), Some(0));
+        assert_eq!(trace.next_index(), 4);
+        let records: Vec<(u64, u32, u16)> = trace
+            .entries()
+            .map(|entry| (entry.index(), entry.pc(), entry.opcode()))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (0, 0x200, 0x7001),
+                (1, 0x202, 0x7202),
+                (2, 0x204, 0xD041),
+                (3, 0x206, 0x4E71),
+            ]
+        );
+    }
+
+    #[test]
+    fn disabled_trace_records_nothing_and_take_disables_it() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71]);
+        cpu.step(&mut bus).expect("step without trace");
+        assert!(cpu.trace().is_none());
+
+        cpu.enable_trace(4).expect("trace capacity 4");
+        cpu.step(&mut bus).expect("step with trace");
+        let taken = cpu.take_trace().expect("trace was enabled");
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken.get(0).map(|entry| entry.pc()), Some(0x202));
+        assert!(cpu.trace().is_none(), "take disables further recording");
+
+        cpu.step(&mut bus).expect("step after take");
+        assert!(cpu.trace().is_none());
+    }
+
+    #[test]
+    fn trace_ring_is_bounded_and_evicts_oldest_records() {
+        // Four NOPs: one opcode per word.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71]);
+        cpu.enable_trace(2).expect("trace capacity 2");
+        for _ in 0..4 {
+            cpu.step(&mut bus).expect("step");
+        }
+        let trace = cpu.trace().expect("trace enabled");
+        assert_eq!(trace.capacity(), 2);
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace.dropped(), 2);
+        assert_eq!(trace.first_index(), Some(2));
+        assert_eq!(trace.next_index(), 4);
+        let records: Vec<(u64, u32)> = trace
+            .entries()
+            .map(|entry| (entry.index(), entry.pc()))
+            .collect();
+        assert_eq!(records, vec![(2, 0x204), (3, 0x206)]);
+    }
+
+    #[test]
+    fn trace_still_records_an_instruction_that_fails_after_the_fetch() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0xFF, 0xFF]);
+        cpu.enable_trace(4).expect("trace capacity 4");
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::IllegalOpcode {
+                pc: 0x200,
+                opcode: 0xFFFF
+            })
+        );
+        let trace = cpu.trace().expect("trace enabled");
+        assert_eq!(trace.len(), 1);
+        let entry = trace.get(0).expect("recorded instruction");
+        assert_eq!(
+            (entry.index(), entry.pc(), entry.opcode()),
+            (0, 0x200, 0xFFFF)
+        );
+    }
+
+    #[test]
+    fn reset_trace_keeps_tracing_enabled_and_restarts_indexes() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x71, 0x4E, 0x71]);
+        cpu.enable_trace(4).expect("trace capacity 4");
+        cpu.step(&mut bus).expect("step");
+        cpu.reset_trace();
+        let trace = cpu.trace().expect("trace remains enabled");
+        assert!(trace.is_empty());
+        assert_eq!(trace.next_index(), 0);
+        assert_eq!(trace.capacity(), 4);
+        cpu.step(&mut bus).expect("step after reset");
+        let entry = cpu.trace().expect("trace enabled").get(0).expect("record");
+        assert_eq!((entry.index(), entry.pc()), (0, 0x202));
+    }
+
+    #[test]
+    fn zero_capacity_is_rejected_without_replacing_an_enabled_trace() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x71]);
+        assert_eq!(
+            cpu.enable_trace(0),
+            Err(TraceError::ZeroCapacity),
+            "capacity 0 must be a typed error"
+        );
+        assert!(cpu.trace().is_none());
+
+        cpu.enable_trace(4).expect("trace capacity 4");
+        cpu.step(&mut bus).expect("step");
+        assert_eq!(cpu.enable_trace(0), Err(TraceError::ZeroCapacity));
+        assert_eq!(
+            cpu.trace().expect("trace still enabled").len(),
+            1,
+            "a rejected reconfiguration must not disturb the active trace"
+        );
+    }
+
+    #[test]
+    fn restore_state_does_not_restore_trace_contents() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71]);
+        cpu.enable_trace(8).expect("trace capacity 8");
+        cpu.step(&mut bus).expect("step");
+        cpu.step(&mut bus).expect("step");
+        let checkpoint = cpu.snapshot_state();
+        cpu.step(&mut bus).expect("step");
+        cpu.step(&mut bus).expect("step");
+        assert_eq!(cpu.trace().expect("trace").len(), 4);
+
+        cpu.restore_state(
+            checkpoint.0,
+            checkpoint.1,
+            checkpoint.2,
+            checkpoint.3,
+            checkpoint.4,
+        );
+        let trace = cpu.trace().expect("trace survives restore");
+        assert_eq!(trace.len(), 4, "restore must not rewind trace contents");
+        assert_eq!(trace.next_index(), 4);
+        assert_eq!(trace.get(3).map(|entry| entry.pc()), Some(0x206));
+    }
+
+    #[test]
+    fn move_abs_long_load_forms_read_byte_word_and_long_from_ram() {
+        // MOVE.L (0x00FF0000).L,D0; MOVE.W (0x00FF0004).L,D1;
+        // MOVE.B (0x00FF0008).L,D2. Source mode/register 111/001 -> low byte 0x39.
+        let (mut cpu, mut bus) = cpu_at_program(&[
+            0x20, 0x39, 0x00, 0xFF, 0x00, 0x00, //
+            0x32, 0x39, 0x00, 0xFF, 0x00, 0x04, //
+            0x14, 0x39, 0x00, 0xFF, 0x00, 0x08,
+        ]);
+        bus.write32(0x00FF_0000, 0x1122_3344).expect("ram long");
+        bus.write16(0x00FF_0004, 0xABCD).expect("ram word");
+        bus.write8(0x00FF_0008, 0x7F).expect("ram byte");
+        cpu.d[1] = 0xAAAA_0000;
+        cpu.d[2] = 0xBBBB_BB00;
+
+        cpu.step(&mut bus).expect("move.l (abs).l,d0");
+        assert_eq!(cpu.data_register(0), Some(0x1122_3344));
+        assert_eq!(cpu.sr(), 0x2700, "positive long load: N/Z/C/V clear");
+        cpu.step(&mut bus).expect("move.w (abs).l,d1");
+        assert_eq!(
+            cpu.data_register(1),
+            Some(0xAAAA_ABCD),
+            "word load must preserve the upper word"
+        );
+        assert_eq!(cpu.sr(), 0x2708, "negative word load sets N");
+        cpu.step(&mut bus).expect("move.b (abs).l,d2");
+        assert_eq!(
+            cpu.data_register(2),
+            Some(0xBBBB_BB7F),
+            "byte load must preserve the upper bytes"
+        );
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.pc(), 0x212);
+    }
+
+    #[test]
+    fn move_abs_word_load_encodings_are_illegal() {
+        // 0x..38 is source mode/register 111/000 (absolute-word), which is not in
+        // the subset; it must not be executed with a 32-bit address fetch.
+        for opcode in [0x1038_u16, 0x1238, 0x2038, 0x2438, 0x3038, 0x3638] {
+            let (mut cpu, mut bus) = cpu_at_program(&opcode.to_be_bytes());
+            assert_eq!(
+                cpu.step(&mut bus),
+                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
+                "opcode 0x{opcode:04X} must be an illegal absolute-word form"
+            );
+            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
+            assert_eq!(cpu.sr(), 0x2700);
+            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        }
+    }
+
+    #[test]
+    fn move_abs_long_store_encodings_still_write_byte_word_and_long() {
+        // MOVE.B D0,(0x00FF0000).L; MOVE.W D1,(0x00FF0002).L;
+        // MOVE.L D2,(0x00FF0004).L. Destination mode/register 111/001.
+        let (mut cpu, mut bus) = cpu_at_program(&[
+            0x13, 0xC0, 0x00, 0xFF, 0x00, 0x00, //
+            0x33, 0xC1, 0x00, 0xFF, 0x00, 0x02, //
+            0x23, 0xC2, 0x00, 0xFF, 0x00, 0x04,
+        ]);
+        cpu.d[0] = 0x1234_56A1;
+        cpu.d[1] = 0xCCCC_BEEF;
+        cpu.d[2] = 0xDEAD_BEEF;
+
+        cpu.step(&mut bus).expect("move.b dn,(abs).l");
+        cpu.step(&mut bus).expect("move.w dn,(abs).l");
+        cpu.step(&mut bus).expect("move.l dn,(abs).l");
+
+        assert_eq!(bus.read8(0x00FF_0000), Ok(0xA1));
+        assert_eq!(bus.read16(0x00FF_0002), Ok(0xBEEF));
+        assert_eq!(bus.read32(0x00FF_0004), Ok(0xDEAD_BEEF));
+        assert_eq!(cpu.pc(), 0x212);
+        assert_eq!(cpu.sr(), 0x2708, "the final long store sets N");
     }
 }
