@@ -122,10 +122,14 @@ interrupt scheduler:
 - MIT-licensed original code; no upstream source incorporated.
 
 It does **not** yet satisfy a production Mega Drive backend: rendering, DMA, audio,
-Z80, controllers, mapper/SRAM, `RTE`, SR-mask gating, cycle accuracy and differential
-oracle evidence are absent. The VDP port window and interrupt scheduler are partial
-slices, not a complete VDP or hardware-timed interrupt controller. Capabilities
-report rendering/audio/tracing as `false`/absent. See
+Z80, controllers, mapper/SRAM, `RTE`, SR-mask gating and cycle accuracy remain
+absent. Differential oracle evidence now exists for two synthetic ROMs (projected
+address streams, selected final state and negative controls); see
+[Oracle differential evidence](../research/oracle-differential-evidence.md). The VDP
+port window and interrupt scheduler are partial slices, not a complete VDP or
+hardware-timed interrupt controller. Capabilities report rendering/audio and the
+generic `tracing` capability as `false`/absent; the bounded instruction trace is a
+concrete-type debug facility, not a generic capability. See
 [Mega Drive 68000 slice](megadrive-slice.md).
 
 ## Open questions

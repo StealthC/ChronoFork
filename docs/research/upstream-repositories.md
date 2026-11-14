@@ -74,9 +74,12 @@ They are research inputs only, not dependencies, submodules or tracked content.
   byte-identical over 18,941 68000 instructions, with SHA-256
   `a89a94669a3d5cd42662c516870626c9ead67a7b92335ac50ee208b7afd3821d`, and that
   corrupting one record is detected.
-  **This bootstrap did not reproduce the claim.** Ninja and clang are not installed,
-  and a real ROM is not present. Treat it as an upstream claim with source evidence,
-  not as ChronoFork test evidence.
+  **This bootstrap did not reproduce the claim.** The pinned headless port was later
+  built for E2-12 and exercised with independently authored synthetic ROMs (see
+  [Oracle differential evidence](oracle-differential-evidence.md)), but the upstream
+  18,941-record equivalence gate itself was not rerun and no real ROM is present.
+  Treat the claim as an upstream claim with source evidence, not as ChronoFork test
+  evidence.
 - Initial assessment: valuable real-hardware oracle and debugging surface; not
   directly suitable as ChronoFork's canonical backend because of single-system MCP
   scope and missing state transfer.

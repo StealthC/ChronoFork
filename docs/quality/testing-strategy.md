@@ -273,7 +273,7 @@ documents its field classes. The comparison tool must:
 | D3 | Continuous run vs restore from checkpoint and continue | Incomplete snapshot, state that is not captured | Required |
 | D4 | Fork from checkpoint vs original continuing with the same input | Fork isolation, shared mutable state, copy-on-write mistakes | Required |
 | D5 | Test backend vs real backend on a shared contract subset | Contract drift; not emulation accuracy | Deferred until a real backend exists |
-| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Optional extended; requires Q4/Q9 decisions and a locally built oracle |
+| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Post-repair PASS for two synthetic ROMs (address projection, opcode/ROM-byte audit, final state, negative control). No timing or interrupt comparison |
 | D7 | Linux vs Windows vs macOS; x86_64 vs aarch64 | Endianness, float formatting, host assumptions | Deferred; gate before a cross-platform release |
 | D8 | Mutated trace/checkpoint bytes | Comparison and validation robustness | Required self-test |
 | D9 | Session replay from an input log | Replay completeness, event ordering | Required once session replay exists |
@@ -555,7 +555,7 @@ Status at 2026-11-13 (the implementation may advance after this audit):
 |---|---|---|---|
 | 1 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass from a clean checkout | **Pass** | Verified in §2.3 (bootstrap, 40 tests) and in the 2026-11-14 stage-1b gate (98 tests) |
 | 2 | A reusable `Backend` contract suite exists and passes against `chronofork-test-backend` | **Partial** | Backend unit tests cover determinism, divergence, snapshot, bounds, errors; not yet extracted as a shared conformance suite |
-| 3 | INV-01…INV-13 covered by executable tests, including negative control, debug/release determinism, snapshot round-trip, restore-continue and fork isolation | **Partial** | In-process invariants covered; debug/release and cross-process determinism absent; negative control exists for snapshot corruption but not for trace comparison |
+| 3 | INV-01…INV-13 covered by executable tests, including negative control, debug/release determinism, snapshot round-trip, restore-continue and fork isolation | **Partial** | In-process invariants covered; debug/release and cross-process determinism absent; negative control exists for snapshot corruption and for the E2-12 oracle projection comparator |
 | 4 | Snapshot format versioning has an `IncompatibleSnapshot` test and a canonical golden state | **Partial** | Version/corruption/truncation rejection present; no golden bytes/canonical fixture |
 | 5 | CLI acceptance covers create → step → snapshot → fork → restore → inspect → shutdown, plus main error paths | **Partial** | Demo covers the happy path end to end; error paths and exit codes not tested |
 | 6 | Fixture policy implemented: manifest, F1–F8 checks, no prohibited files | **Missing** | No fixtures and no manifest/check yet |

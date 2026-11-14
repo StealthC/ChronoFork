@@ -1,7 +1,8 @@
 # Mega Drive 68000 Slice
 
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
-  window + interrupt scheduler); not a complete emulator.
+  window + interrupt scheduler + bounded debug instruction trace, with passing
+  two-ROM oracle differential evidence); not a complete emulator.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -61,6 +62,14 @@ Implemented:
 | `JMP`, `JSR` | absolute-long operand |
 | `RTS` | — |
 | Interrupt exception entry | `M68000::interrupt(vector_address)` |
+
+Absolute-long `MOVE` loads use the real 68000 source mode/register `111/001`
+(`0x1039`/`0x2039`/`0x3039`) and fetch a 4-byte address. The absolute-*word* source
+forms (`0x1038`/`0x2038`/`0x3038`) are not in this subset and return the typed
+`IllegalOpcode` error instead of being executed with a 32-bit fetch. An earlier
+decoder accepted the `0x..38` load forms; EPIC-0002 E2-13 repaired it and regression
+tests cover byte/word/long `(abs).L,Dn` loads, rejection of the `0x..38` forms and
+the `Dn,(abs).L` store encodings.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
@@ -139,7 +148,74 @@ FIFO/access timing and H/V counters.
   schema has no dedicated device-inspection section yet; this keeps the generic
   backend API unchanged.
 - Capabilities truthfully report no breakpoints, watchpoints, tracing, rendering or
-  audio.
+  audio. The bounded trace is a concrete-type debug facility, not the generic
+  `Backend` `tracing` capability.
+
+### Bounded instruction trace (debug only)
+
+- `trace` module: `TraceEntry` carries the zero-based instruction `index`, fetched
+  `pc` and `opcode` word; `InstructionTrace` is a fixed-capacity ring.
+- Disabled by default. `M68000` and `MegadriveBackend` expose enable/disable/reset/
+  trace/take; the generic `Backend` trait has no trace method.
+- One record is appended after a successful opcode fetch and before decode, so an
+  instruction that then fails as illegal or unsupported is still visible. A fetch
+  that fails before the opcode word records nothing; interrupt exception entry is
+  not an instruction and is not recorded.
+- Capacity must be at least 1 (`TraceError::ZeroCapacity`). Indexes keep counting
+  when the ring evicts its oldest records, and `dropped`/`first_index` expose loss;
+  storage is allocated lazily and bounded by the capacity.
+- Debug data only: enabling the trace leaves snapshot payload bytes, versions, state
+  hashes and configuration hashes identical, and restore does not rewind the trace.
+- CLI `megadrive trace` runs an instruction budget or stops before `--stop-pc`,
+  writes TSV `index<TAB>pc_hex<TAB>opcode_hex` and a deterministic key=value final
+  state (executed, tick, quantum, video, halted, D0–D7, A0–A7, PC, raw SR,
+  RAM base/length/hex), and honours `--instructions-per-line`, `--video`,
+  `--trace-capacity`, `--trace-out` (default stdout) and required `--state-out`.
+  The default quantum of 64 is unchanged.
+
+### Oracle differential method and limits
+
+The reproducible harness `scripts/oracle-diff.py` compares the minimal core against
+a pinned Exodus headless oracle for two independently authored synthetic ROMs; the
+full numbers, commands and limitations are in
+[Oracle differential instruction-trace evidence](../research/oracle-differential-evidence.md).
+
+- Both sides produce an instruction trace; the harness projects each to the ordered
+  sequence of executed instruction **addresses** before a marker self-loop. The
+  oracle's `cycle` and `time` columns are ignored. Because the oracle renders
+  opcodes as mnemonic+args while ChronoFork stores raw words, every ChronoFork
+  projected opcode is checked against the ROM word at that address instead of being
+  compared directly to the oracle column.
+- It asserts equal projection length and addresses, reports record counts and
+  projection SHA-256, reports the first divergence with preceding context, and exits
+  1 on divergence. A per-ROM negative control corrupts one projected record and
+  requires the comparator to fail at that index.
+- Final state is compared through the oracle's MCP `cpu.registers` and
+  `cpu.read_memory` calls: D0–D7, A0–A7, PC, effective SR fields (IPM/S/CCR) and 64
+  work-RAM bytes at `0xFF0000`. Raw SR words differ and are not compared.
+- Controlled conditions: an explicit `--instructions-per-line 1000000` keeps the
+  measured window interrupt-free because ChronoFork has no SR mask gating yet
+  (E2-15); both ROMs initialise every compared data/address register they use and
+  the reset vector sets the same stack pointer, because the oracle's reset D/A
+  values are undefined; VDP control/data-port writes are executed but VDP
+  data-port reads are excluded because oracle prefetch differs from this VDP model.
+- Final result: both ROMs pass. `rom_alu` has 2375 oracle total / 99 projected
+  records and 99/99 ChronoFork projected records with projection SHA-256
+  `2b6f191c…` on both sides; `rom_mem_vdp` has 2363 / 51 and 51/51 with
+  `ba4f3948…` on both sides. Final D0–D7, A0–A7, PC, effective SR and 64 work-RAM
+  bytes match on both ROMs, and negative controls catch indices 49 and 25 with
+  exit 1. Every projected ChronoFork opcode word also equals the ROM word at that
+  address.
+- Pre-repair history: `rom_alu` already passed, but `rom_mem_vdp` diverged at
+  projected index 28 (`0x00027A`, opcode `0x2239`, `MOVE.L $00FF0020,D1`) because
+  the core decoded the absolute-word (`0x..38`) form for absolute-long loads. The
+  real encoding is `0x..39`; E2-13 repaired the decoder and the post-repair run is
+  the final evidence. The pre-repair artifacts are preserved under ignored
+  `.research/evidence/before-repair/`.
+
+**This is not cycle equivalence.** It does not compare timing, prefetch, bus
+cycles, interrupt delivery, rendering, audio, Z80 or DMA, and it does not establish
+general 68000 or game compatibility.
 
 ### Known limitations of the integration
 
@@ -155,10 +231,15 @@ FIFO/access timing and H/V counters.
   stalls and other 68000 exception groups are absent.
 - The VDP VINT-pending status bit and controller-port interrupt acknowledge are not
   wired.
+- Reset CCR/X differs before ROM arithmetic: the oracle powers on with SR `0x7FFF`
+  (CCR `0x1F`, `X=1`), ChronoFork resets to `0x2700` (CCR `0`), and `MOVE` preserves
+  `X`. A MOVE-only differential window can therefore differ in `X` while
+  `N`/`Z`/`V`/`C` match; the harness ROMs clear `X` with arithmetic, so their
+  recorded final effective-SR equality remains valid.
 
 ### Tests
 
-`chronofork-megadrive` currently contributes **71 tests**:
+`chronofork-megadrive` contributes unit and integration tests covering:
 
 - reset vectors and register initialization;
 - every implemented 68000 instruction form, flags, `DBRA` termination and
@@ -175,9 +256,14 @@ FIFO/access timing and H/V counters.
 - snapshot/restore including VDP and pending-interrupt state, old/malformed payload
   rejection and configuration mismatch;
 - session fork/restore with VDP and pending-interrupt state and source isolation;
-- device-level determinism across two independent machines.
+- device-level determinism across two independent machines;
+- bounded trace semantics: zero-capacity rejection, eviction/dropped/index
+  reporting, clear/take, illegal-opcode recording, and byte-identical snapshots,
+  state hashes and payload versions with tracing on and off.
 
-The workspace total is **98 tests** after this slice.
+CLI integration tests cover deterministic trace and state files across two runs,
+`--stop-pc`, stdout trace mode, a zero instruction budget, option validation and
+help text. `cargo test --workspace` is the source of truth for the current count.
 
 ## Not implemented
 
@@ -194,6 +280,12 @@ The workspace total is **98 tests** after this slice.
 - ROM header validation, checksum, region detection or ROM database.
 - Loading a user ROM through the CLI. The demo uses an independently authored
   synthetic ROM.
+- General structured/timestamped tracing or bus/device traces, historical trace
+  queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
+  and the external oracle harness exist.
+- Differential evidence beyond two synthetic ROMs, and any differential claim about
+  interrupts, VDP data reads, VRAM contents, audio, Z80, DMA, timing or game
+  compatibility.
 
 Unsupported opcodes and port accesses return errors; they are never silently
 skipped.
@@ -211,6 +303,30 @@ start of vertical blanking with a shorter demonstration quantum, restores a
 pending-VBlank checkpoint, then forks, mutates and restores the session. It prints
 `chronofork megadrive demo: PASS`.
 
+## CLI instruction trace
+
+```sh
+cargo run -p chronofork-cli -- megadrive trace \
+  --rom <rom-path> --state-out <state-path> \
+  --instructions 10000 --stop-pc 0x352 \
+  --instructions-per-line 1000000 --ram-bytes 64 \
+  --trace-out <trace-path>
+```
+
+`megadrive trace` is the evidence-producing CLI surface. It runs a decimal
+instruction budget (or stops before `--stop-pc`), records a bounded ring of
+executed `index`/`pc`/`opcode` records and writes the TSV trace plus a deterministic
+key=value final state. `--trace-capacity` bounds the ring (default: the instruction
+budget, capped); `--video` selects NTSC/PAL scheduler constants; `--trace-out`
+defaults to stdout; `--state-out` is required. The trace is debug data: it does not
+change snapshots, state hashes or the payload version.
+
+Because the core does not yet gate interrupts with the SR mask (E2-15), a
+differential window that must be interrupt-free has to pass a large explicit
+`--instructions-per-line` (for example `1000000`). The default remains 64 and is
+never changed implicitly; the CLI prints a note on stderr when the requested
+instruction window exceeds the configured quantum.
+
 ## Next increments
 
 1. Wire the VDP VINT-pending status bit and controller-port interrupt acknowledge.
@@ -218,7 +334,8 @@ pending-VBlank checkpoint, then forks, mutates and restores the session. It prin
    delivery.
 3. ROM header/region/config identity and a cartridge loader.
 4. More 68000 addressing modes and instructions, driven by differential tests.
-5. Exodus external-oracle traces for generated programs once Ninja/clang/libpng are
-   available.
+5. Broaden the differential corpus and 68000 instruction/addressing coverage beyond
+   the two current synthetic ROMs, keeping address-stream comparison distinct from
+   cycle/timing equivalence.
 6. Controller input schema (multi-port) before claiming input support.
 7. Rendering/DMA only after the non-rendering state model is stable.

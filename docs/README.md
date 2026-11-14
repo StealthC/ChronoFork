@@ -10,9 +10,12 @@ Bootstrap foundation complete, with a partial real-hardware slice implemented. T
 repository builds and tests a deterministic synthetic backend, the generic session
 layer, and a minimal 68000 + ROM/RAM Mega Drive backend with a VDP
 status/control/VRAM port window and a deterministic instruction-quantum interrupt
-scheduler. Rendering, DMA, audio, Z80 and controllers are not implemented. ADR-0002
-is accepted. Claims below distinguish implemented facts from proposals and upstream
-research claims.
+scheduler. A bounded debug-only instruction trace and final oracle differential
+evidence now exist: both synthetic ROMs match the pinned Exodus oracle's projected
+address streams and selected final state, and both negative controls pass (the
+pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain recorded). Rendering,
+DMA, audio, Z80 and controllers are not implemented. ADR-0002 is accepted. Claims
+below distinguish implemented facts from proposals and upstream research claims.
 
 ## Start here
 
@@ -26,7 +29,7 @@ research claims.
 | [Session model](architecture/session-model.md) | Identity, lifecycle, fork and isolation |
 | [Execution model](architecture/execution-model.md) | Virtual time, determinism and replay |
 | [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
-| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice |
+| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice and debug trace |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term stages |
@@ -47,6 +50,7 @@ research claims.
 - [Emulator architecture](research/emulator-architecture.md)
 - [TAS and debugging](research/tas-and-debugging.md)
 - [Licensing assessment](research/licensing-assessment.md)
+- [Oracle differential evidence](research/oracle-differential-evidence.md)
 
 ## Conventions
 

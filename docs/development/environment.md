@@ -73,8 +73,11 @@ approved the user-local rustup installation.
 
 1. **Native Windows was not tested.** Passing under WSL does not prove native
    Windows compatibility.
-2. **The headless Exodus port was not built.** Ninja, clang and a real ROM are
-   missing; its equivalence claim was not reproduced.
+2. **The headless Exodus port was built later for E2-12.** Ninja, clang and the
+   expat/zlib/libpng/libjpeg development packages are now present; the pinned build
+   and its final two-ROM differential evidence are recorded in
+   [Oracle differential evidence](../research/oracle-differential-evidence.md). Its
+   upstream equivalence claim was not reproduced.
 3. **No CI provider is configured.** The local gate is authoritative for this
    bootstrap; provider-specific integration needs approval.
 4. **No GPU/audio device was exercised.** The bootstrap is headless and synthetic.
@@ -84,9 +87,9 @@ approved the user-local rustup installation.
 
 The following are known future needs but were **not** performed:
 
-- Installing Ninja and clang (system packages) to build exodus-headless.
-- Installing `libexpat`, `zlib`, `libpng`, `libjpeg` development packages.
 - Installing Node.js for future web/transport tooling.
 - Enabling a CI provider or creating a remote repository.
 
-Request approval with rationale before making any of these changes.
+The Ninja/clang and expat/zlib/libpng/libjpeg packages were installed later for the
+pinned Exodus oracle build under E2-12; they are not needed for the default Rust
+build or tests. Do not install further system packages without approval.

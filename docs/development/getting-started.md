@@ -124,5 +124,8 @@ reason and review.
 decode tests; never silently reinterpret old bytes.
 
 **A reference build fails** — the headless Exodus port requires Ninja, clang and
-`expat`/`zlib`/`libpng`/`libjpeg` development packages. Those are not installed in
-the bootstrap environment; request approval before adding them.
+`expat`/`zlib`/`libpng`/`libjpeg` development packages; the exact versions used for
+the recorded differential evidence are in
+[Oracle differential evidence](../research/oracle-differential-evidence.md). This is
+an optional external oracle, not part of the default Rust build. Do not install new
+system packages without approval.

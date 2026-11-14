@@ -30,14 +30,19 @@ credible hardware slice.
 - [x] Snapshot/restore/fork on the real core.
 - [x] Minimal VDP status/control and VRAM window.
 - [x] Deterministic interrupt/tick scheduler.
-- [ ] Differential trace harness against the Exodus oracle (blocked on Ninja/clang/
-  libpng and oracle build approval).
+- [x] Bounded debug-only instruction trace and `megadrive trace` CLI.
+- [x] Differential trace evidence against the Exodus oracle — post-repair PASS 2/2:
+  `rom_alu` 99/99 and `rom_mem_vdp` 51/51 projected addresses with equal
+  projection SHA-256, equal final states and 2/2 negative controls. Pre-repair
+  divergence at `0x00027A` and the E2-13 absolute-long `MOVE` repair are recorded in
+  [oracle differential evidence](../research/oracle-differential-evidence.md).
 - [ ] Complete production hardware state, including VDP/audio/Z80.
 
 **Exit:** a known synthetic ROM executes deterministically; snapshot/restore/fork
-works on the real core; differential evidence exists. The hardware slice,
-VDP port window and interrupt scheduler are done; differential evidence and
-remaining hardware (rendering, Z80, audio, DMA) are pending.
+works on the real core; differential evidence exists. The hardware slice, VDP port
+window, interrupt scheduler, bounded debug trace and differential evidence for two
+synthetic ROMs are done; remaining hardware (rendering, Z80, audio, DMA) and the
+E2-15 interrupt-mask/`RTE` gap are still pending.
 
 ## Stage 2 — Sessions, forks and save states at product quality
 

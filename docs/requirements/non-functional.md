@@ -11,7 +11,7 @@ marketing claims; each has a verification path.
 | NFR-DET-002 | Emulated time must be explicit and monotonic. | `Tick` type and overflow tests |
 | NFR-DET-003 | Identical state + input sequence must produce identical state digests. | Determinism tests on the synthetic backend |
 | NFR-DET-004 | Replay from a checkpoint must reproduce the branch digest. | Restore/replay acceptance test |
-| NFR-DET-005 | Cross-platform determinism for a real backend must be measured, not assumed. | Differential trace tests; not yet available |
+| NFR-DET-005 | Cross-platform determinism for a real backend must be measured, not assumed. | Differential trace tests pass for two synthetic ROMs against the pinned oracle; cross-platform determinism is still unmeasured. |
 | NFR-DET-006 | Nondeterminism must be documented and must not be advertised as deterministic replay. | Capability report + review |
 
 ## Isolation and correctness

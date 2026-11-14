@@ -26,7 +26,8 @@ branches can diverge without mutating each other.
 - Snapshot restore, replay verification and three-way forking.
 - Session lineage, state digests, comparison and memory isolation tests.
 - A CLI demonstration that runs the acceptance scenario end to end.
-- 98 automated tests, plus `rustfmt`, `cargo check`, Clippy and rustdoc gates.
+- The full workspace test suite passes, including the bounded trace tests, plus
+  `rustfmt`, `cargo check`, Clippy and rustdoc gates.
 
 ## Quick start
 

@@ -4,8 +4,11 @@
 
 **Accepted 2026-11-13.** The project owner approved Option E (staged hybrid) and
 [ADR-0002](../adr/0002-backend-boundaries.md). Stage 1 has produced its first slice: a minimal 68000 + ROM/RAM backend under
-`crates/chronofork-megadrive`. The Exodus oracle path is still pending because
-Ninja, clang and `libpng` are not installed.
+`crates/chronofork-megadrive`. The Exodus oracle path is now instantiated as an
+external harness: the pinned headless oracle was built under ignored `.research/`
+and the final differential evidence passes both synthetic ROMs (projected address
+streams, selected final state and negative controls). See
+[Oracle differential evidence](../research/oracle-differential-evidence.md).
 
 ## Requirements that discriminate between options
 
@@ -112,9 +115,9 @@ reference harness proves multi-instance and state-export guarantees.
 determinism control; avoids making a hard-to-reverse wrapper the product core;
 keeps licensing simple.
 
-**Disadvantages:** two codebases to understand; reference harness build is not yet
-reproduced in this environment (missing Ninja and clang); Rust-native core is still
-a large effort.
+**Disadvantages:** two codebases to understand; the reference harness build is
+pinned and recorded but not yet bit-reproduced; multi-instance/state-export
+guarantees are unproven; Rust-native core is still a large effort.
 
 ## Comparison
 
@@ -153,8 +156,9 @@ headless server is explicitly single-system and lacks a state-transfer surface.
 
 ## Blockers and evidence gaps
 
-- Ninja and clang are not installed in the current WSL environment, so the headless
-  port's build and equivalence gate cannot be reproduced yet.
+- The pinned headless port was built for E2-12 under ignored `.research/`, but its
+  upstream equivalence gate was not rerun. Build reproducibility depends on the
+  recorded toolchain and package versions.
 - The 18,941-record equivalence claim in
   `.research/upstream/exodus-headless/tests/equivalence/README.md` is an upstream
   claim; this bootstrap did not rerun it.

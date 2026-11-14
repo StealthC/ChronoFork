@@ -68,7 +68,7 @@ bootstrap).
 | ID | Requirement | Status | Evidence |
 |---|---|---|---|
 | FR-MD-001 | Load reset vectors from ROM and initialize `SP`/`PC`/`SR`. | Implemented | `M68000::reset`; CPU/backend tests |
-| FR-MD-002 | Execute a documented 68000 subset deterministically. | Implemented | `crates/chronofork-megadrive`; 71 crate tests (see [quality gates](../quality/quality-gates.md)) |
+| FR-MD-002 | Execute a documented 68000 subset deterministically. | Implemented | `crates/chronofork-megadrive`; unit/integration tests (see [quality gates](../quality/quality-gates.md)) |
 | FR-MD-003 | Map ROM and 64 KiB work RAM big-endian. | Implemented | Bus tests |
 | FR-MD-004 | Reject unmapped, odd-address and ROM-write accesses. | Implemented | Bus/backend error tests |
 | FR-MD-005 | Snapshot/restore complete slice state with config/state hashes. | Implemented | Payload v2 covers CPU, RAM, VDP and scheduler; round-trip/mismatch tests |
@@ -78,7 +78,7 @@ bootstrap).
 | FR-MD-009 | Z80, interrupts and exception processing. | Partial | Deterministic HBlank/VBlank scheduler and 68000 interrupt entry implemented; no Z80, timer interrupts, `RTE` or SR mask gating |
 | FR-MD-010 | Controller input and multi-port schema. | Planned | Input is not consumed yet |
 | FR-MD-011 | ROM header/region/TMSS and cartridge mapper. | Planned | Not implemented |
-| FR-MD-012 | Differential traces against the Exodus oracle. | Blocked | Ninja/clang/libpng and a ROM/oracle build absent |
+| FR-MD-012 | Differential traces against the Exodus oracle. | Implemented | Pinned oracle built; post-repair harness passes 2/2 ROMs (`rom_alu` 99/99, `rom_mem_vdp` 51/51), both final states equal, negative controls 2/2; pre-repair divergence and E2-13 repair recorded |
 
 Tick semantics: one executed 68000 instruction equals one ChronoFork tick in this
 slice. The interrupt scheduler maps a configurable number of instruction ticks to
@@ -93,8 +93,8 @@ This is deterministic but **not** cycle-accurate hardware timing.
 | FR-DEBUG-002 | Conditional breakpoints | Planned |
 | FR-DEBUG-003 | Memory watchpoints | Planned |
 | FR-DEBUG-004 | Event breakpoints, logpoints, interrupt monitoring | Partial (pending interrupt/vector inspection; no breakpoints/logpoints) |
-| FR-TRACE-001 | Structured instruction/bus/device traces with emulated timestamps | Planned |
-| FR-TRACE-002 | Trace comparison and historical queries | Planned |
+| FR-TRACE-001 | Structured instruction/bus/device traces with emulated timestamps | Partial (narrow debug-only `index`/`pc`/`opcode` ring and TSV export; no timestamps, bus/device events or general structured format) |
+| FR-TRACE-002 | Trace comparison and historical queries | Partial (executed-address projection, first-divergence report, opcode/ROM-byte audit and negative control against the pinned oracle; no historical queries or general trace tooling) |
 | FR-TAS-001 | Movie record/playback, frame advance, rerecord, seek | Planned |
 | FR-TAS-002 | Versioned canonical movie format with branch metadata | Planned |
 | FR-API-001 | Minimal CLI for implemented features only | Implemented |

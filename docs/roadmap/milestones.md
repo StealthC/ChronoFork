@@ -26,7 +26,14 @@ its exit criteria are demonstrated by tests or documented evidence.
 - [x] Minimal VDP status/control and VRAM window.
 - [x] Deterministic interrupt/tick scheduler.
 - [x] VDP + interrupt scheduler integrated into backend snapshots, state hashes and CLI.
-- [ ] Differential trace evidence against the approved reference.
+- [x] Differential trace evidence against the approved reference — post-repair PASS
+  2/2: `rom_alu` 99/99 projected addresses (projection SHA-256 `2b6f191c…`),
+  `rom_mem_vdp` 51/51 (`ba4f3948…`), both final states equal, negative controls
+  caught indices 49 and 25 with exit 1. Controlled with an explicit
+  1,000,000-instructions-per-scanline quantum (SR mask gating is pending E2-15),
+  marker-bounded address projection, effective-SR-only comparison and excluded VDP
+  data reads. Pre-repair FAIL and the E2-13 repair are recorded in
+  [Oracle differential evidence](../research/oracle-differential-evidence.md).
 - [x] Capabilities report matches reality for the implemented slice.
 
 ## M2 — Durable sessions
@@ -82,6 +89,12 @@ its exit criteria are demonstrated by tests or documented evidence.
 
 ## Current milestone
 
-**M1**, with differential trace evidence against the approved reference still
-pending. See [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md) and
+**M1 is complete.** The differential item is ticked on the post-repair PASS 2/2
+evidence: both synthetic ROMs match the pinned oracle's projected address streams,
+selected final state and negative controls under the documented controlled
+conditions. EPIC-0002 remains open for E2-15 (interrupt-mask/`RTE`) and E2-11, and
+Stage 1's broader production-hardware work (rendering, Z80, audio, DMA) is still
+pending; M2 is the next milestone but has not started. See
+[EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
+[oracle differential evidence](../research/oracle-differential-evidence.md) and
 [ADR-0002](../adr/0002-backend-boundaries.md).

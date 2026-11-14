@@ -105,7 +105,10 @@ best-effort parse.
 - No cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The Mega
   Drive slice has an instruction-quantum VBlank/HBlank scheduler and 68000 interrupt
   entry, but no `RTE`, SR-mask gating or VINT-pending wiring.
-- No trace format, conditional breakpoints or watchpoints.
+- No general structured/timestamped trace format, conditional breakpoints or
+  watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
+  external oracle address-stream comparison exist, but no bus/device trace,
+  historical query or breakpoint surface.
 - No frame pacing, rewind or seek.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
