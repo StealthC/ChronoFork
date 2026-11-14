@@ -55,6 +55,8 @@
 use std::error::Error;
 use std::fmt;
 
+use chronofork_core::codec::{CodecError, Reader, Writer};
+
 use crate::cpu::interrupt_level_deliverable;
 
 /// 68000 interrupt level requested by the VDP at vertical blank.
@@ -127,7 +129,12 @@ impl VideoStandard {
         }
     }
 
-    const fn code(self) -> u8 {
+    /// Returns the one-byte tag serialized into snapshots and config hashes.
+    ///
+    /// This is the single encoding of the video standard; the snapshot payload
+    /// and the backend configuration hash both use it.
+    #[must_use]
+    pub const fn code(self) -> u8 {
         match self {
             Self::Ntsc => 0,
             Self::Pal => 1,
@@ -621,14 +628,6 @@ impl InterruptScheduler {
         self.pending[level.index()].take().is_some()
     }
 
-    /// Acknowledges and returns the highest-priority pending request.
-    pub fn acknowledge_next(&mut self) -> Option<InterruptLevel> {
-        let event = self.pending_events().next()?;
-        let level = event.level();
-        self.pending[level.index()] = None;
-        Some(level)
-    }
-
     /// Returns how many requests of `level` were raised since creation or restore.
     ///
     /// This diagnostic counter saturates at `u64::MAX`.
@@ -651,17 +650,17 @@ impl InterruptScheduler {
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let pending_len = self.pending_len();
-        let mut bytes = Vec::with_capacity(SNAPSHOT_HEADER_LEN + 8 * pending_len);
-        bytes.extend_from_slice(&SNAPSHOT_MAGIC);
-        bytes.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
-        bytes.push(self.config.standard.code());
-        bytes.extend_from_slice(&self.config.instructions_per_line.to_le_bytes());
-        bytes.extend_from_slice(&self.ticks.to_le_bytes());
+        let mut bytes = Writer::with_capacity(SNAPSHOT_HEADER_LEN + 8 * pending_len);
+        bytes.write_bytes(&SNAPSHOT_MAGIC);
+        bytes.write_u16_le(SNAPSHOT_VERSION);
+        bytes.write_u8(self.config.standard.code());
+        bytes.write_u32_le(self.config.instructions_per_line);
+        bytes.write_u64_le(self.ticks);
         for level in InterruptLevel::ALL {
-            bytes.extend_from_slice(&self.issued[level.index()].to_le_bytes());
+            bytes.write_u64_le(self.issued[level.index()]);
         }
         for level in InterruptLevel::ALL {
-            bytes.extend_from_slice(&self.coalesced[level.index()].to_le_bytes());
+            bytes.write_u64_le(self.coalesced[level.index()]);
         }
         let mut mask = 0_u8;
         for level in InterruptLevel::ALL {
@@ -669,13 +668,13 @@ impl InterruptScheduler {
                 mask |= 1_u8 << level.index();
             }
         }
-        bytes.push(mask);
+        bytes.write_u8(mask);
         for level in InterruptLevel::ALL {
             if let Some(event) = self.pending[level.index()] {
-                bytes.extend_from_slice(&event.issued_tick.to_le_bytes());
+                bytes.write_u64_le(event.issued_tick);
             }
         }
-        bytes
+        bytes.into_bytes()
     }
 
     /// Restores scheduler state from [`Self::snapshot_bytes`] output.
@@ -721,16 +720,19 @@ struct SnapshotState {
 }
 
 fn parse_snapshot(config: SchedulerConfig, bytes: &[u8]) -> Result<SnapshotState, SchedulerError> {
-    let mut reader = SnapshotReader::new(bytes);
-    if reader.read_array::<8>("magic")? != SNAPSHOT_MAGIC {
+    let mut reader = Reader::new(bytes);
+    if reader.read_array::<8>().map_err(truncated_at("magic"))? != SNAPSHOT_MAGIC {
         return Err(SchedulerError::SnapshotMagicMismatch);
     }
-    let version = reader.read_u16("version")?;
+    let version = reader.read_u16_le().map_err(truncated_at("version"))?;
     if version != SNAPSHOT_VERSION {
         return Err(SchedulerError::UnsupportedSnapshotVersion { found: version });
     }
-    let standard = VideoStandard::from_code(reader.read_u8("video_standard")?)?;
-    let instructions_per_line = reader.read_u32("instructions_per_line")?;
+    let standard =
+        VideoStandard::from_code(reader.read_u8().map_err(truncated_at("video_standard"))?)?;
+    let instructions_per_line = reader
+        .read_u32_le()
+        .map_err(truncated_at("instructions_per_line"))?;
     if instructions_per_line == 0 {
         return Err(SchedulerError::InvalidInstructionsPerLine {
             value: instructions_per_line,
@@ -749,17 +751,21 @@ fn parse_snapshot(config: SchedulerConfig, bytes: &[u8]) -> Result<SnapshotState
         });
     }
 
-    let ticks = reader.read_u64("ticks")?;
+    let ticks = reader.read_u64_le().map_err(truncated_at("ticks"))?;
     let mut issued = [0_u64; 2];
     for counter in &mut issued {
-        *counter = reader.read_u64("requests_issued")?;
+        *counter = reader
+            .read_u64_le()
+            .map_err(truncated_at("requests_issued"))?;
     }
     let mut coalesced = [0_u64; 2];
     for counter in &mut coalesced {
-        *counter = reader.read_u64("requests_coalesced")?;
+        *counter = reader
+            .read_u64_le()
+            .map_err(truncated_at("requests_coalesced"))?;
     }
 
-    let pending_mask = reader.read_u8("pending_mask")?;
+    let pending_mask = reader.read_u8().map_err(truncated_at("pending_mask"))?;
     if pending_mask & !PENDING_MASK_ALL != 0 {
         return Err(SchedulerError::InvalidPendingMask {
             value: pending_mask,
@@ -771,7 +777,9 @@ fn parse_snapshot(config: SchedulerConfig, bytes: &[u8]) -> Result<SnapshotState
         if pending_mask & (1_u8 << index) == 0 {
             continue;
         }
-        let issued_tick = reader.read_u64(level.snapshot_field())?;
+        let issued_tick = reader
+            .read_u64_le()
+            .map_err(truncated_at(level.snapshot_field()))?;
         if issued_tick > ticks {
             return Err(SchedulerError::SnapshotPendingInFuture {
                 level,
@@ -797,62 +805,9 @@ fn parse_snapshot(config: SchedulerConfig, bytes: &[u8]) -> Result<SnapshotState
     })
 }
 
-struct SnapshotReader<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> SnapshotReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.position)
-    }
-
-    fn read_exact(
-        &mut self,
-        field: &'static str,
-        length: usize,
-    ) -> Result<&'a [u8], SchedulerError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(SchedulerError::SnapshotTruncated { field })?;
-        if end > self.bytes.len() {
-            return Err(SchedulerError::SnapshotTruncated { field });
-        }
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_array<const N: usize>(
-        &mut self,
-        field: &'static str,
-    ) -> Result<[u8; N], SchedulerError> {
-        let slice = self.read_exact(field, N)?;
-        let mut output = [0_u8; N];
-        output.copy_from_slice(slice);
-        Ok(output)
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, SchedulerError> {
-        Ok(self.read_array::<1>(field)?[0])
-    }
-
-    fn read_u16(&mut self, field: &'static str) -> Result<u16, SchedulerError> {
-        Ok(u16::from_le_bytes(self.read_array::<2>(field)?))
-    }
-
-    fn read_u32(&mut self, field: &'static str) -> Result<u32, SchedulerError> {
-        Ok(u32::from_le_bytes(self.read_array::<4>(field)?))
-    }
-
-    fn read_u64(&mut self, field: &'static str) -> Result<u64, SchedulerError> {
-        Ok(u64::from_le_bytes(self.read_array::<8>(field)?))
-    }
+/// Maps a shared codec failure to the scheduler's field-named truncation error.
+fn truncated_at(field: &'static str) -> impl FnOnce(CodecError) -> SchedulerError {
+    move |_error| SchedulerError::SnapshotTruncated { field }
 }
 
 #[cfg(test)]
@@ -1023,10 +978,14 @@ mod tests {
             .expect("advance to vertical blank");
         assert!(scheduler.is_pending(hblank()));
         assert!(scheduler.is_pending(vblank()));
-        assert_eq!(scheduler.acknowledge_next(), Some(vblank()));
+        // Delivery order is VBlank first; acknowledging that exact level must
+        // leave the HBlank request pending and vice versa.
+        assert_eq!(scheduler.next_pending(), Some(vblank()));
+        assert!(scheduler.acknowledge(vblank()));
         assert!(!scheduler.is_pending(vblank()));
-        assert_eq!(scheduler.acknowledge_next(), Some(hblank()));
-        assert_eq!(scheduler.acknowledge_next(), None);
+        assert_eq!(scheduler.next_pending(), Some(hblank()));
+        assert!(scheduler.acknowledge(hblank()));
+        assert_eq!(scheduler.next_pending(), None);
         assert!(!scheduler.has_pending());
     }
 
@@ -1313,5 +1272,24 @@ mod tests {
         assert_eq!(scheduler.advance(1), Err(SchedulerError::TickOverflow));
         assert_eq!(scheduler.ticks(), u64::MAX);
         assert_eq!(scheduler.snapshot_bytes(), bytes);
+    }
+
+    #[test]
+    fn arbitrary_snapshots_are_rejected_without_panicking() {
+        let config = scheduler(4).config();
+        let mut state = 0x5eed_1234_abcd_9876_u64;
+        for length in 0..200 {
+            let mut bytes = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push((state >> 24).to_le_bytes()[0]);
+            }
+            assert!(
+                super::parse_snapshot(config, &bytes).is_err(),
+                "arbitrary {length}-byte scheduler snapshot must be rejected"
+            );
+        }
     }
 }

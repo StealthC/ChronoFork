@@ -79,15 +79,14 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
-    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome,
+    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome, validate_envelope,
 };
+use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
-use crate::bus::{MegadriveBus, RAM_BASE, RAM_SIZE, ROM_END};
+use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
 use crate::cpu::{CpuError, M68000};
-use crate::interrupts::{
-    InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
-};
+use crate::interrupts::{InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError};
 use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
 
@@ -111,7 +110,6 @@ pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K2";
 const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE2";
 const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF2";
-const PAYLOAD_HEADER_LEN: usize = 8 + 2 + 32 + 32 + 4 + 2 + 1 + 8;
 
 /// Factory for independent minimal Mega Drive machines.
 #[derive(Clone, Debug)]
@@ -305,6 +303,35 @@ impl MegadriveBackend {
         self.cpu.take_trace()
     }
 
+    /// Serializes the canonical mutable-state body for the current machine
+    /// state.
+    ///
+    /// [`Self::snapshot`] calls this once and derives both the payload and the
+    /// state hash from the returned bytes.
+    fn state_body_bytes(&self) -> Vec<u8> {
+        let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
+        let vdp = self.bus.vdp().snapshot_bytes();
+        let scheduler = self.scheduler.snapshot_bytes();
+        state_body(&StateView {
+            d: &d,
+            a: &a,
+            pc,
+            sr,
+            halted,
+            tick: self.tick,
+            ram: self.bus.ram(),
+            vdp: &vdp,
+            scheduler: &scheduler,
+        })
+    }
+
+    /// Hashes the canonical state for a step outcome and restore validation.
+    ///
+    /// This is the per-step hot path. The view construction and hashing stay in
+    /// one chain: routing them through [`Self::state_body_bytes`] was measured
+    /// ~18% slower in `bench_step` because the extra boundary changed codegen.
+    /// The serialized field layout still has exactly one writer,
+    /// [`state_body`].
     fn state_hash(&self) -> StateHash {
         let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
         let vdp = self.bus.vdp().snapshot_bytes();
@@ -320,30 +347,6 @@ impl MegadriveBackend {
             vdp: &vdp,
             scheduler: &scheduler,
         })
-    }
-
-    fn payload(&self) -> Vec<u8> {
-        let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
-        let vdp = self.bus.vdp().snapshot_bytes();
-        let scheduler = self.scheduler.snapshot_bytes();
-        let mut payload =
-            Vec::with_capacity(PAYLOAD_HEADER_LEN + RAM_SIZE + vdp.len() + scheduler.len());
-        payload.extend_from_slice(&PAYLOAD_MAGIC);
-        payload.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
-        for value in d {
-            payload.extend_from_slice(&value.to_be_bytes());
-        }
-        for value in a {
-            payload.extend_from_slice(&value.to_be_bytes());
-        }
-        payload.extend_from_slice(&pc.to_be_bytes());
-        payload.extend_from_slice(&sr.to_be_bytes());
-        payload.push(u8::from(halted));
-        payload.extend_from_slice(&self.tick.raw().to_be_bytes());
-        payload.extend_from_slice(self.bus.ram());
-        payload.extend_from_slice(&vdp);
-        payload.extend_from_slice(&scheduler);
-        payload
     }
 
     fn sync_vdp_vblank(&mut self) {
@@ -384,9 +387,8 @@ impl MegadriveBackend {
         self.cpu
             .interrupt(level.level(), vector_address(level), &mut self.bus)
             .map_err(map_cpu)?;
-        // Acknowledge exactly the delivered level. `acknowledge_next` would be
-        // wrong here: it selects the highest-priority pending request, which can
-        // be a different (masked) level.
+        // Acknowledge exactly the delivered level: selecting the highest-priority
+        // pending request instead could acknowledge a different (masked) level.
         let acknowledged = self.scheduler.acknowledge(level);
         debug_assert!(acknowledged, "a deliverable level must have been pending");
         self.sync_vdp_vint_pending();
@@ -416,46 +418,29 @@ impl Backend for MegadriveBackend {
     }
 
     fn snapshot(&self) -> Result<BackendSnapshot, BackendError> {
+        // Serialize the canonical state body once, then derive both the payload
+        // and the state hash from it. Taking the snapshot therefore costs one
+        // full-state serialization, not two.
+        let body = self.state_body_bytes();
         Ok(BackendSnapshot::new(
             self.descriptor.id().clone(),
             self.descriptor.version(),
             BACKEND_SNAPSHOT_FORMAT_VERSION,
             self.tick,
             self.config_hash,
-            self.state_hash(),
-            self.payload(),
+            hash_state_body(&body),
+            payload_from_body(&body),
         ))
     }
 
     fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        if snapshot.backend_id() != self.descriptor.id() {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_id",
-                expected: self.descriptor.id().to_string(),
-                found: snapshot.backend_id().to_string(),
-            });
-        }
-        if snapshot.backend_version() != self.descriptor.version() {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_version",
-                expected: self.descriptor.version().to_owned(),
-                found: snapshot.backend_version().to_owned(),
-            });
-        }
-        if snapshot.format_version() != BACKEND_SNAPSHOT_FORMAT_VERSION {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_format_version",
-                expected: BACKEND_SNAPSHOT_FORMAT_VERSION.to_string(),
-                found: snapshot.format_version().to_string(),
-            });
-        }
-        if snapshot.config_hash() != self.config_hash {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "config_hash",
-                expected: self.config_hash.to_string(),
-                found: snapshot.config_hash().to_string(),
-            });
-        }
+        validate_envelope(
+            snapshot,
+            self.descriptor.id(),
+            self.descriptor.version(),
+            BACKEND_SNAPSHOT_FORMAT_VERSION,
+            self.config_hash,
+        )?;
         let parsed = parse_payload(snapshot.payload())?;
         let actual = state_hash_for(&StateView {
             d: &parsed.d,
@@ -544,15 +529,92 @@ impl Backend for MegadriveBackend {
     }
 
     fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BackendError> {
-        self.bus
-            .read_memory(address, length)
-            .map_err(|error| BackendError::Execution(error.to_string()))
+        self.bus.read_memory(address, length).map_err(|error| {
+            map_memory_error(
+                error,
+                address,
+                length,
+                debugger_window_end(self.bus.rom().len(), address, false),
+            )
+        })
     }
 
     fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), BackendError> {
-        self.bus
-            .write_memory(address, data)
-            .map_err(|error| BackendError::Execution(error.to_string()))
+        self.bus.write_memory(address, data).map_err(|error| {
+            map_memory_error(
+                error,
+                address,
+                data.len(),
+                debugger_window_end(self.bus.rom().len(), address, true),
+            )
+        })
+    }
+}
+
+/// Exclusive end of the mapped window that contains `address`, if any.
+///
+/// Debugger reads may target the cartridge image or work RAM; debugger writes
+/// may target work RAM only. The returned value is the end of the window that
+/// actually contains the requested start address, so a range overrun can report
+/// a [`BackendError::OutOfBounds::limit`] that is greater than the start address
+/// and names the region the request exceeded.
+///
+/// `None` means no mapped window contains the start address (an unmapped hole,
+/// the VDP port window, or an address above the 32-bit bus). That is not a range
+/// overrun and must not be reported as out-of-bounds.
+fn debugger_window_end(rom_len: usize, address: u64, writable: bool) -> Option<u64> {
+    let start = u32::try_from(address).ok()?;
+    if writable {
+        return (RAM_BASE..RAM_END)
+            .contains(&start)
+            .then_some(u64::from(RAM_END));
+    }
+    let rom_len = rom_len.min(ROM_END as usize);
+    if (start as usize) < rom_len {
+        return Some(u64::from(ROM_BASE) + rom_len as u64);
+    }
+    (RAM_BASE..RAM_END)
+        .contains(&start)
+        .then_some(u64::from(RAM_END))
+}
+
+/// Maps a side-effect-free debugger bus failure to the backend contract.
+///
+/// [`BackendError::OutOfBounds`] is reserved for a request that starts inside a
+/// mapped window and whose validated range overruns it. In that case
+/// `window_end` is the containing window's exclusive end, so `limit` is always
+/// greater than the requested start address and explains which region the
+/// request exceeded.
+///
+/// Requests that start outside every mapped window, writes to the read-only
+/// cartridge, alignment failures and device failures are execution errors: no
+/// containing window end could honestly describe them, and mapping them to
+/// `OutOfBounds` would produce a limit above an address that was rejected
+/// inside it.
+fn map_memory_error(
+    error: BusError,
+    address: u64,
+    length: usize,
+    window_end: Option<u64>,
+) -> BackendError {
+    match error {
+        BusError::UnmappedRead { .. }
+        | BusError::UnmappedWrite { .. }
+        | BusError::AddressOverflow { .. } => match window_end {
+            Some(limit) => BackendError::OutOfBounds {
+                address,
+                length,
+                limit,
+            },
+            None => BackendError::Execution(format!(
+                "debugger memory access at {address} for {length} byte(s) is outside any mapped \
+                 window: {error}"
+            )),
+        },
+        BusError::WriteProtected { .. }
+        | BusError::OddAddress { .. }
+        | BusError::Vdp(_)
+        | BusError::SideEffectingRead { .. } => BackendError::Execution(error.to_string()),
     }
 }
 
@@ -563,6 +625,14 @@ fn vector_address(level: InterruptLevel) -> u32 {
     }
 }
 
+/// Maps a CPU execution failure to the backend contract.
+///
+/// `Halted` and tick overflow have dedicated variants. Every other CPU fault —
+/// an illegal opcode, an unsupported encoding, an address error, a stack
+/// overflow or a bus fault raised while emulated code ran — is an execution
+/// failure: [`BackendError::OutOfBounds`] describes debugger-supplied memory
+/// ranges, not faults inside the emulated program, so classifying those as
+/// bounds errors would misreport the cause.
 fn map_cpu(error: CpuError) -> BackendError {
     match error {
         CpuError::Halted => BackendError::Halted,
@@ -578,15 +648,12 @@ fn map_scheduler(error: SchedulerError) -> BackendError {
 }
 
 fn config_hash_for(rom: &[u8], scheduler_config: SchedulerConfig) -> StateHash {
-    let mut bytes = Vec::with_capacity(CONFIG_MAGIC.len() + rom.len() + 5);
-    bytes.extend_from_slice(CONFIG_MAGIC);
-    bytes.extend_from_slice(rom);
-    bytes.push(match scheduler_config.standard() {
-        VideoStandard::Ntsc => 0,
-        VideoStandard::Pal => 1,
-    });
-    bytes.extend_from_slice(&scheduler_config.instructions_per_line().to_be_bytes());
-    hash_bytes(&bytes)
+    let mut bytes = Writer::with_capacity(CONFIG_MAGIC.len() + rom.len() + 5);
+    bytes.write_bytes(CONFIG_MAGIC);
+    bytes.write_bytes(rom);
+    bytes.write_u8(scheduler_config.standard().code());
+    bytes.write_u32_be(scheduler_config.instructions_per_line());
+    hash_bytes(&bytes.into_bytes())
 }
 
 /// The complete mutable state that a state hash covers.
@@ -602,34 +669,52 @@ struct StateView<'a> {
     scheduler: &'a [u8],
 }
 
-fn state_hash_for(state: &StateView<'_>) -> StateHash {
-    let mut bytes = Vec::with_capacity(
-        STATE_MAGIC.len()
-            + 32
-            + 32
-            + 4
-            + 2
-            + 1
-            + 8
-            + state.ram.len()
-            + state.vdp.len()
-            + state.scheduler.len(),
+/// Serializes the canonical mutable state body shared by the snapshot payload
+/// and the state hash.
+///
+/// Layout, in order: the eight data registers and eight address registers as
+/// big-endian `u32`s, `PC` as a big-endian `u32`, `SR` as a big-endian `u16`,
+/// one halted byte, the tick as a big-endian `u64`, 64 KiB of work RAM, the VDP
+/// snapshot and the interrupt-scheduler snapshot. The payload prefixes
+/// [`PAYLOAD_MAGIC`] and [`PAYLOAD_VERSION`]; the state hash prefixes
+/// [`STATE_MAGIC`]. Both must consume these exact bytes.
+fn state_body(state: &StateView<'_>) -> Vec<u8> {
+    let mut body = Writer::with_capacity(
+        32 + 32 + 4 + 2 + 1 + 8 + state.ram.len() + state.vdp.len() + state.scheduler.len(),
     );
-    bytes.extend_from_slice(STATE_MAGIC);
     for value in state.d {
-        bytes.extend_from_slice(&value.to_be_bytes());
+        body.write_u32_be(*value);
     }
     for value in state.a {
-        bytes.extend_from_slice(&value.to_be_bytes());
+        body.write_u32_be(*value);
     }
-    bytes.extend_from_slice(&state.pc.to_be_bytes());
-    bytes.extend_from_slice(&state.sr.to_be_bytes());
-    bytes.push(u8::from(state.halted));
-    bytes.extend_from_slice(&state.tick.raw().to_be_bytes());
-    bytes.extend_from_slice(state.ram);
-    bytes.extend_from_slice(state.vdp);
-    bytes.extend_from_slice(state.scheduler);
-    hash_bytes(&bytes)
+    body.write_u32_be(state.pc);
+    body.write_u16_be(state.sr);
+    body.write_u8(u8::from(state.halted));
+    body.write_u64_be(state.tick.raw());
+    body.write_bytes(state.ram);
+    body.write_bytes(state.vdp);
+    body.write_bytes(state.scheduler);
+    body.into_bytes()
+}
+
+fn payload_from_body(body: &[u8]) -> Vec<u8> {
+    let mut payload = Writer::with_capacity(PAYLOAD_MAGIC.len() + 2 + body.len());
+    payload.write_bytes(&PAYLOAD_MAGIC);
+    payload.write_u16_le(PAYLOAD_VERSION);
+    payload.write_bytes(body);
+    payload.into_bytes()
+}
+
+fn hash_state_body(body: &[u8]) -> StateHash {
+    let mut bytes = Writer::with_capacity(STATE_MAGIC.len() + body.len());
+    bytes.write_bytes(STATE_MAGIC);
+    bytes.write_bytes(body);
+    hash_bytes(&bytes.into_bytes())
+}
+
+fn state_hash_for(state: &StateView<'_>) -> StateHash {
+    hash_state_body(&state_body(state))
 }
 
 #[derive(Debug)]
@@ -647,12 +732,12 @@ struct ParsedState<'a> {
 
 fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
     let mut reader = Reader::new(payload);
-    if reader.read_array::<8>()? != PAYLOAD_MAGIC {
+    if reader.read_array::<8>().map_err(payload_error)? != PAYLOAD_MAGIC {
         return Err(BackendError::InvalidSnapshot(
             "Mega Drive payload magic mismatch".to_owned(),
         ));
     }
-    let version = reader.read_u16()?;
+    let version = reader.read_u16_le().map_err(payload_error)?;
     if version != PAYLOAD_VERSION {
         return Err(BackendError::InvalidSnapshot(format!(
             "Mega Drive payload version {version}, expected {PAYLOAD_VERSION}"
@@ -660,20 +745,20 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
     }
     let mut d = [0_u32; 8];
     for value in &mut d {
-        *value = u32::from_be_bytes(reader.read_array::<4>()?);
+        *value = reader.read_u32_be().map_err(payload_error)?;
     }
     let mut a = [0_u32; 8];
     for value in &mut a {
-        *value = u32::from_be_bytes(reader.read_array::<4>()?);
+        *value = reader.read_u32_be().map_err(payload_error)?;
     }
-    let pc = u32::from_be_bytes(reader.read_array::<4>()?);
-    let sr = u16::from_be_bytes(reader.read_array::<2>()?);
-    let halted = reader.read_u8()? != 0;
-    let tick = Tick::from_raw(u64::from_be_bytes(reader.read_array::<8>()?));
-    let ram = reader.read_exact(RAM_SIZE)?;
-    let vdp = reader.read_exact(VDP_SNAPSHOT_LEN)?;
+    let pc = reader.read_u32_be().map_err(payload_error)?;
+    let sr = reader.read_u16_be().map_err(payload_error)?;
+    let halted = reader.read_u8().map_err(payload_error)? != 0;
+    let tick = Tick::from_raw(reader.read_u64_be().map_err(payload_error)?);
+    let ram = reader.read_exact(RAM_SIZE).map_err(payload_error)?;
+    let vdp = reader.read_exact(VDP_SNAPSHOT_LEN).map_err(payload_error)?;
     let remaining = reader.remaining();
-    let scheduler = reader.read_exact(remaining)?;
+    let scheduler = reader.read_exact(remaining).map_err(payload_error)?;
     Ok(ParsedState {
         d,
         a,
@@ -687,47 +772,16 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
     })
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.position)
-    }
-
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], BackendError> {
-        let end = self.position.checked_add(length).ok_or_else(|| {
-            BackendError::InvalidSnapshot("payload length arithmetic overflow".to_owned())
-        })?;
-        if end > self.bytes.len() {
-            return Err(BackendError::InvalidSnapshot(
-                "Mega Drive payload is truncated".to_owned(),
-            ));
+/// Translates a shared codec failure into the backend snapshot error contract.
+fn payload_error(error: CodecError) -> BackendError {
+    match error {
+        CodecError::Truncated { .. } => {
+            BackendError::InvalidSnapshot("Mega Drive payload is truncated".to_owned())
         }
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], BackendError> {
-        let slice = self.read_exact(N)?;
-        let mut output = [0_u8; N];
-        output.copy_from_slice(slice);
-        Ok(output)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, BackendError> {
-        Ok(self.read_array::<1>()?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16, BackendError> {
-        Ok(u16::from_le_bytes(self.read_array::<2>()?))
+        CodecError::LengthOverflow => {
+            BackendError::InvalidSnapshot("payload length arithmetic overflow".to_owned())
+        }
+        other => BackendError::InvalidSnapshot(format!("invalid Mega Drive payload: {other}")),
     }
 }
 
@@ -884,7 +938,7 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
 mod tests {
     use std::sync::Arc;
 
-    use chronofork_backend_api::{Backend, BackendFactory, BackendSnapshot};
+    use chronofork_backend_api::{Backend, BackendError, BackendFactory, BackendSnapshot};
     use chronofork_core::InputFrame;
     use chronofork_sessions::SessionManager;
 
@@ -892,9 +946,11 @@ mod tests {
         HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
         VBLANK_VECTOR_ADDRESS, demo_rom, interrupt_rom,
     };
-    use crate::bus::RAM_BASE;
+    use crate::bus::{BusError, RAM_BASE, RAM_END, RAM_SIZE, ROM_END};
     use crate::interrupts::{InterruptLevel, InterruptScheduler, SchedulerConfig, VideoStandard};
-    use crate::vdp::{SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING};
+    use crate::vdp::{
+        SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING, VdpError,
+    };
 
     fn factory() -> MegadriveFactory {
         MegadriveFactory::new(demo_rom()).expect("valid demo ROM")
@@ -1903,7 +1959,13 @@ mod tests {
     fn debugger_writes_are_limited_to_ram() {
         let factory = factory();
         let mut machine = factory.create_machine().expect("machine");
-        assert!(machine.write_memory(0x200, &[0]).is_err());
+        let protected = machine
+            .write_memory(0x200, &[0])
+            .expect_err("cartridge ROM is read-only");
+        assert!(
+            matches!(&protected, BackendError::Execution(message) if message.contains("cartridge ROM")),
+            "ROM protection must stay an execution error, never bounds: {protected}"
+        );
         machine
             .write_memory(u64::from(RAM_BASE), &[0x12, 0x34])
             .expect("ram write");
@@ -1913,7 +1975,179 @@ mod tests {
                 .expect("ram read"),
             vec![0x12, 0x34]
         );
-        assert!(machine.read_memory(0x00C0_0000, 1).is_err());
+        let last_ram = u64::from(RAM_BASE) + RAM_SIZE as u64 - 1;
+        assert_eq!(
+            machine
+                .write_memory(last_ram, &[1, 2])
+                .expect_err("one byte past work RAM"),
+            BackendError::OutOfBounds {
+                address: last_ram,
+                length: 2,
+                limit: u64::from(RAM_END),
+            }
+        );
+    }
+
+    #[test]
+    fn protected_and_unmapped_writes_are_not_reported_as_out_of_bounds() {
+        let mut machine = factory().create_machine().expect("machine");
+        for address in [0x200, u64::from(ROM_END - 1), u64::from(RAM_BASE - 1)] {
+            let error = machine
+                .write_memory(address, &[0])
+                .expect_err("write outside work RAM must fail");
+            assert!(
+                !matches!(error, BackendError::OutOfBounds { .. }),
+                "an address that is not a range overrun must not be out of bounds: {error}"
+            );
+        }
+        // A real overrun reports the containing window end, which is strictly
+        // above the requested start address, so the limit explains the failure.
+        let last_ram = u64::from(RAM_BASE) + RAM_SIZE as u64 - 1;
+        let error = machine
+            .write_memory(last_ram, &[1, 2])
+            .expect_err("one byte past work RAM");
+        assert_eq!(
+            error,
+            BackendError::OutOfBounds {
+                address: last_ram,
+                length: 2,
+                limit: u64::from(RAM_END),
+            }
+        );
+        assert!(
+            matches!(error, BackendError::OutOfBounds { address, limit, .. } if address < limit),
+            "a reported bounds error must have a limit above the requested start: {error}"
+        );
+    }
+
+    #[test]
+    fn debugger_reads_validate_the_range_before_allocating() {
+        let machine = factory().create_machine().expect("machine");
+        assert_eq!(
+            machine.read_memory(0, 2).expect("rom read"),
+            vec![0x01, 0x00]
+        );
+        // The last RAM byte is readable; one byte more is reported as bounds.
+        let last_ram = u64::from(RAM_BASE) + RAM_SIZE as u64 - 1;
+        assert_eq!(
+            machine.read_memory(last_ram, 2),
+            Err(BackendError::OutOfBounds {
+                address: last_ram,
+                length: 2,
+                limit: u64::from(RAM_END),
+            })
+        );
+        // An enormous length is rejected by range arithmetic before the backend
+        // can ask the allocator for it; an allocation of this size would abort.
+        assert_eq!(
+            machine.read_memory(u64::from(RAM_BASE), usize::MAX),
+            Err(BackendError::OutOfBounds {
+                address: u64::from(RAM_BASE),
+                length: usize::MAX,
+                limit: u64::from(RAM_END),
+            })
+        );
+        // An address outside the 32-bit bus and an unmapped hole inside it are
+        // execution failures: no mapped window contains the start address, so
+        // there is no honest containing-window limit to report.
+        for (address, length) in [(u64::from(u32::MAX) + 1, 1), (0x00C0_0010, 1)] {
+            let error = machine
+                .read_memory(address, length)
+                .expect_err("unmapped debugger read must fail");
+            assert!(
+                matches!(error, BackendError::Execution(_)),
+                "an unmapped start address is not a range overrun: {error}"
+            );
+        }
+        // The VDP port window is a device failure, never a bounds failure.
+        assert!(matches!(
+            machine.read_memory(0x00C0_0000, 1),
+            Err(BackendError::Execution(_))
+        ));
+        // Zero-length reads still validate the start address: a representable
+        // address (even a side-effecting one) is accepted, an out-of-bus
+        // address is rejected.
+        assert_eq!(
+            machine
+                .read_memory(0x00C0_0010, 0)
+                .expect("empty unmapped read"),
+            Vec::<u8>::new()
+        );
+        assert!(matches!(
+            machine.read_memory(u64::from(u32::MAX) + 1, 0),
+            Err(BackendError::Execution(_))
+        ));
+    }
+
+    #[test]
+    fn debugger_bus_failures_keep_their_classification() {
+        let window = Some(u64::from(RAM_END));
+        for error in [
+            BusError::UnmappedRead { address: 0x200 },
+            BusError::UnmappedWrite { address: 0x200 },
+            BusError::AddressOverflow {
+                address: 0x200,
+                length: 2,
+            },
+        ] {
+            assert_eq!(
+                super::map_memory_error(error, 0x200, 1, window),
+                BackendError::OutOfBounds {
+                    address: 0x200,
+                    length: 1,
+                    limit: u64::from(RAM_END),
+                }
+            );
+        }
+        // Protection and alignment are execution failures, not bounds failures.
+        for error in [
+            BusError::WriteProtected { address: 0x200 },
+            BusError::OddAddress { address: 0x201 },
+        ] {
+            assert!(
+                matches!(
+                    super::map_memory_error(error, 0x200, 1, window),
+                    BackendError::Execution(_)
+                ),
+                "protection/alignment must not become OutOfBounds"
+            );
+        }
+        // Without a containing mapped window even unmapped/overflow failures
+        // stay execution errors instead of inventing a limit.
+        for error in [
+            BusError::UnmappedRead { address: 0x200 },
+            BusError::UnmappedWrite { address: 0x200 },
+            BusError::AddressOverflow {
+                address: 0x200,
+                length: 2,
+            },
+        ] {
+            assert!(matches!(
+                super::map_memory_error(error, 0x200, 1, None),
+                BackendError::Execution(_)
+            ));
+        }
+        let side_effecting = super::map_memory_error(
+            BusError::SideEffectingRead {
+                address: 0x00C0_0000,
+            },
+            0x00C0_0000,
+            1,
+            None,
+        );
+        assert!(
+            matches!(&side_effecting, BackendError::Execution(message) if message.contains("side-effect")),
+            "a device failure must stay an execution error: {side_effecting}"
+        );
+        assert!(matches!(
+            super::map_memory_error(
+                BusError::Vdp(VdpError::UnsupportedOffset { offset: 0x10 }),
+                0x00C0_0010,
+                1,
+                None,
+            ),
+            BackendError::Execution(_)
+        ));
     }
 
     #[test]
@@ -2032,5 +2266,75 @@ mod tests {
         assert_eq!(state.registers["d2"], 0x1234);
         assert_eq!(state.memory[0..2], [0x00, 0x03]);
         assert_eq!(state.memory[4..6], [0x12, 0x34]);
+    }
+
+    #[test]
+    fn arbitrary_payloads_are_rejected_without_panicking() {
+        let mut state = 0xdead_beef_cafe_f00d_u64;
+        for length in 0..600 {
+            let mut payload = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                payload.push((state >> 24).to_le_bytes()[0]);
+            }
+            assert!(
+                super::parse_payload(&payload).is_err(),
+                "arbitrary {length}-byte payload must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn state_hash_hashes_the_payload_state_body() {
+        let mut machine = factory().create_machine().expect("machine");
+        for _ in 0..6 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let snapshot = machine.snapshot().expect("snapshot");
+        let payload = snapshot.payload();
+        assert_eq!(
+            &payload[..super::PAYLOAD_MAGIC.len()],
+            &super::PAYLOAD_MAGIC
+        );
+        let version_offset = super::PAYLOAD_MAGIC.len();
+        assert_eq!(
+            u16::from_le_bytes([payload[version_offset], payload[version_offset + 1]]),
+            PAYLOAD_VERSION
+        );
+        let body = &payload[version_offset + 2..];
+        let mut hash_input = Vec::with_capacity(super::STATE_MAGIC.len() + body.len());
+        hash_input.extend_from_slice(super::STATE_MAGIC);
+        hash_input.extend_from_slice(body);
+        assert_eq!(
+            chronofork_core::hash_bytes(&hash_input),
+            snapshot.state_hash(),
+            "state hash must be hash(STATE_MAGIC + payload state body)"
+        );
+    }
+
+    #[test]
+    fn snapshot_payload_and_hashes_are_golden() {
+        // Golden values captured from clean baseline commit c3e92d8 (six steps
+        // of the demo ROM with the default 64-instruction scheduler quantum).
+        let mut machine = factory().create_machine().expect("machine");
+        for _ in 0..6 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let snapshot = machine.snapshot().expect("snapshot");
+        assert_eq!(snapshot.payload().len(), 131_255);
+        assert_eq!(
+            chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
+            "17e31db07ab62ae0ab59fce879199b6fc87dd005ba088a92d2937fee32df745f"
+        );
+        assert_eq!(
+            snapshot.state_hash().to_hex(),
+            "8872e443b384b78d7a742aea5f45cbd112be60627d8014b91e91e6759db72b16"
+        );
+        assert_eq!(
+            snapshot.config_hash().to_hex(),
+            "a8b7ffb061c23f9d8563f9a0220497bc4fab36f324a9b96b956cd1170907e2d8"
+        );
     }
 }

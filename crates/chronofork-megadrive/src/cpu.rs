@@ -779,12 +779,20 @@ impl M68000 {
         Ok(())
     }
 
+    /// Computes a branch target from the current program counter and a signed
+    /// displacement.
+    ///
+    /// A negative result and a result above `u32::MAX` are
+    /// [`CpuError::AddressOverflow`]. The wide bounds check below is the single
+    /// proof of the `u32` range, so the narrowing conversion that follows is
+    /// lossless and has no error path of its own.
     fn relative_target(&self, displacement: i32) -> Result<u32, CpuError> {
         let target = i64::from(self.pc) + i64::from(displacement);
         if target < 0 || target > i64::from(u32::MAX) {
             return Err(CpuError::AddressOverflow);
         }
-        let target = u32::try_from(target).map_err(|_| CpuError::AddressOverflow)?;
+        // Proven by the check above: `0 <= target <= u32::MAX`.
+        let target = target as u32;
         self.ensure_even(target)?;
         Ok(target)
     }
@@ -805,18 +813,25 @@ impl M68000 {
         self.set_sub_flags(destination_value, source_value, result, size);
     }
 
+    /// Reads data register `register`, narrowed to `size`.
+    ///
+    /// The 68000 has exactly eight data registers and every caller extracts the
+    /// index with `& 0x7`, so the masked lookup is total: there is no
+    /// out-of-range case to fall back from.
     fn read_dn(&self, register: usize, size: Size) -> u32 {
-        self.d.get(register).copied().unwrap_or(0) & size.mask()
+        self.d[register & 0x7] & size.mask()
     }
 
+    /// Writes the low `size` bytes of `value` into data register `register`.
+    ///
+    /// The index is masked for the same reason as in [`Self::read_dn`].
     fn write_dn(&mut self, register: usize, value: u32, size: Size) {
-        if let Some(register) = self.d.get_mut(register) {
-            *register = match size {
-                Size::Byte => (*register & 0xFFFF_FF00) | (value & 0xFF),
-                Size::Word => (*register & 0xFFFF_0000) | (value & 0xFFFF),
-                Size::Long => value,
-            };
-        }
+        let register = &mut self.d[register & 0x7];
+        *register = match size {
+            Size::Byte => (*register & 0xFFFF_FF00) | (value & 0xFF),
+            Size::Word => (*register & 0xFFFF_0000) | (value & 0xFFFF),
+            Size::Long => value,
+        };
     }
 
     fn set_logic_flags(&mut self, value: u32, size: Size) {
@@ -957,7 +972,7 @@ impl Default for M68000 {
 mod tests {
     use std::sync::Arc;
 
-    use super::{CpuError, M68000, interrupt_level_deliverable, interrupt_priority_mask};
+    use super::{CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask};
     use crate::bus::{BusError, MegadriveBus};
     use crate::trace::TraceError;
 
@@ -1201,6 +1216,42 @@ mod tests {
             cpu.step(&mut bus),
             Err(CpuError::AddressError { address: 0x201 })
         );
+    }
+
+    #[test]
+    fn relative_target_reports_overflow_and_keeps_the_u32_boundary() {
+        let (mut cpu, _bus) = cpu_at_program(&[]);
+        cpu.pc = 0;
+        assert_eq!(cpu.relative_target(-1), Err(CpuError::AddressOverflow));
+        cpu.pc = u32::MAX;
+        assert_eq!(cpu.relative_target(1), Err(CpuError::AddressOverflow));
+        // The widest representable even target survives the conversion intact.
+        cpu.pc = 0xFFFF_FFFE;
+        assert_eq!(cpu.relative_target(0), Ok(0xFFFF_FFFE));
+        // One past that is odd, so the target is preserved and then rejected.
+        assert_eq!(
+            cpu.relative_target(1),
+            Err(CpuError::AddressError {
+                address: 0xFFFF_FFFF
+            })
+        );
+    }
+
+    #[test]
+    fn every_data_register_round_trips_with_size_preservation() {
+        let (mut cpu, _bus) = cpu_at_program(&[]);
+        for register in 0..8 {
+            cpu.write_dn(register, 0x1122_3344, Size::Long);
+        }
+        for register in 0..8 {
+            assert_eq!(cpu.read_dn(register, Size::Long), 0x1122_3344);
+        }
+        cpu.write_dn(3, 0xAA, Size::Byte);
+        cpu.write_dn(4, 0xBBCC, Size::Word);
+        assert_eq!(cpu.read_dn(3, Size::Long), 0x1122_33AA);
+        assert_eq!(cpu.read_dn(4, Size::Long), 0x1122_BBCC);
+        assert_eq!(cpu.read_dn(3, Size::Byte), 0xAA);
+        assert_eq!(cpu.read_dn(4, Size::Word), 0xBBCC);
     }
 
     #[test]

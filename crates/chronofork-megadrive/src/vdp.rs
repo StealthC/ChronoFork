@@ -62,6 +62,8 @@
 use std::error::Error;
 use std::fmt;
 
+use chronofork_core::codec::Writer;
+
 /// Size of VDP VRAM in bytes.
 pub const VRAM_SIZE: usize = 0x0001_0000;
 /// Number of VDP registers implemented by this slice (`0x00..=0x17`).
@@ -443,9 +445,9 @@ impl Vdp {
     /// does not change when the VDP exposes the bit.
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(SNAPSHOT_LEN);
-        bytes.extend_from_slice(&SNAPSHOT_MAGIC);
-        bytes.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+        let mut bytes = Writer::with_capacity(SNAPSHOT_LEN);
+        bytes.write_bytes(&SNAPSHOT_MAGIC);
+        bytes.write_u16_le(SNAPSHOT_VERSION);
         let mut flags = 0;
         if self.vblank {
             flags |= SNAPSHOT_FLAG_VBLANK;
@@ -453,12 +455,12 @@ impl Vdp {
         if self.command_pending {
             flags |= SNAPSHOT_FLAG_COMMAND_PENDING;
         }
-        bytes.push(flags);
-        bytes.push(self.code);
-        bytes.extend_from_slice(&self.address.to_le_bytes());
-        bytes.extend_from_slice(&self.registers);
-        bytes.extend_from_slice(&self.vram);
-        bytes
+        bytes.write_u8(flags);
+        bytes.write_u8(self.code);
+        bytes.write_u16_le(self.address);
+        bytes.write_bytes(&self.registers);
+        bytes.write_bytes(&self.vram);
+        bytes.into_bytes()
     }
 
     /// Restores state from a [`Vdp::snapshot_bytes`] payload.
@@ -466,6 +468,14 @@ impl Vdp {
     /// Length, magic, version, reserved flag bits and the command-code width
     /// are validated before any field is mutated, so a rejected snapshot
     /// leaves the VDP exactly as it was.
+    ///
+    /// The write path uses the shared [`chronofork_core::codec::Writer`]. The
+    /// read path stays index-based because this format has a compile-time fixed
+    /// length and its error contract requires the exact-length mismatch
+    /// ([`VdpError::SnapshotLengthMismatch`]) to win over every field error; a
+    /// general cursor would have to reinterpret a bounds failure as that
+    /// mismatch. The layout constants make each field access infallible once the
+    /// length and magic checks pass.
     ///
     /// The derived VINT-pending latch is not serialized and is left untouched;
     /// the owning machine must recompute it from its canonical interrupt state
@@ -1056,6 +1066,36 @@ mod tests {
             Err(VdpError::SnapshotCodeInvalid { code: 0x40 })
         );
 
+        assert_eq!(vdp.snapshot_bytes(), before);
+    }
+
+    #[test]
+    fn arbitrary_snapshots_are_rejected_without_panicking() {
+        let mut vdp = Vdp::new();
+        let before = vdp.snapshot_bytes();
+        let mut state = 0x1357_9bdf_2468_ace0_u64;
+        let mut reject = |length: usize| {
+            let mut bytes = vec![0_u8; length];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = (state >> 24).to_le_bytes()[0];
+            }
+            assert!(
+                vdp.restore_bytes(&bytes).is_err(),
+                "arbitrary {length}-byte VDP snapshot must be rejected"
+            );
+        };
+        for length in [0, 1, 7, 8, 9, 10, 11, 12, 13, 14] {
+            reject(length);
+        }
+        for length in [SNAPSHOT_LEN - 1, SNAPSHOT_LEN, SNAPSHOT_LEN + 1] {
+            reject(length);
+        }
+        for _ in 0..64 {
+            reject(SNAPSHOT_LEN);
+        }
         assert_eq!(vdp.snapshot_bytes(), before);
     }
 }

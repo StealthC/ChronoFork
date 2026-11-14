@@ -21,6 +21,7 @@ chronofork-backend-api = { path = "crates/chronofork-backend-api" }
 chronofork-sessions = { path = "crates/chronofork-sessions" }
 chronofork-test-backend = { path = "crates/chronofork-test-backend" }
 chronofork-megadrive = { path = "crates/chronofork-megadrive" }
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 sha2 = "0.10"
 
 [workspace.lints.rust]

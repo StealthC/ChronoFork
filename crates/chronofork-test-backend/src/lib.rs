@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
-    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome,
+    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome, validate_envelope,
 };
+use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
 /// Identifier of this synthetic backend.
@@ -152,29 +153,24 @@ pub struct SyntheticBackend {
 }
 
 impl SyntheticBackend {
-    fn state_hash(&self) -> StateHash {
-        let mut state = Vec::with_capacity(285);
-        state.extend_from_slice(b"CFTBSTATE1");
-        state.extend_from_slice(&self.pc.to_le_bytes());
-        state.extend_from_slice(&self.acc.to_le_bytes());
-        state.extend_from_slice(&self.tick.raw().to_le_bytes());
-        state.extend_from_slice(&self.steps.to_le_bytes());
-        state.push(u8::from(self.halted));
-        state.extend_from_slice(&self.ram);
-        hash_bytes(&state)
+    /// Serializes the canonical mutable state exactly once.
+    ///
+    /// Both [`Self::state_hash`] and the snapshot payload derive from these
+    /// bytes, so adding a state field requires one edit and cannot silently
+    /// escape the state hash.
+    fn state_body(&self) -> Vec<u8> {
+        let mut body = Writer::with_capacity(2 + 4 + 8 + 8 + 1 + self.ram.len());
+        body.write_u16_le(self.pc);
+        body.write_u32_le(self.acc);
+        body.write_u64_le(self.tick.raw());
+        body.write_u64_le(self.steps);
+        body.write_u8(u8::from(self.halted));
+        body.write_bytes(&self.ram);
+        body.into_bytes()
     }
 
-    fn snapshot_payload(&self) -> Vec<u8> {
-        let mut payload = Vec::with_capacity(285);
-        payload.extend_from_slice(b"CFTB");
-        payload.extend_from_slice(&PAYLOAD_FORMAT_VERSION.to_le_bytes());
-        payload.extend_from_slice(&self.pc.to_le_bytes());
-        payload.extend_from_slice(&self.acc.to_le_bytes());
-        payload.extend_from_slice(&self.tick.raw().to_le_bytes());
-        payload.extend_from_slice(&self.steps.to_le_bytes());
-        payload.push(u8::from(self.halted));
-        payload.extend_from_slice(&self.ram);
-        payload
+    fn state_hash(&self) -> StateHash {
+        hash_state_body(&self.state_body())
     }
 
     fn fetch_u8(&mut self) -> Result<u8, BackendError> {
@@ -193,31 +189,26 @@ impl SyntheticBackend {
         payload: &[u8],
         expected_hash: StateHash,
     ) -> Result<(), BackendError> {
-        let mut reader = PayloadReader::new(payload);
-        let magic = reader.read_array::<4>()?;
+        let mut reader = Reader::new(payload);
+        let magic = reader.read_array::<4>().map_err(payload_error)?;
         if magic != *b"CFTB" {
             return Err(BackendError::InvalidSnapshot(
                 "synthetic backend payload magic mismatch".to_owned(),
             ));
         }
-        let version = reader.read_u16()?;
+        let version = reader.read_u16_le().map_err(payload_error)?;
         if version != PAYLOAD_FORMAT_VERSION {
             return Err(BackendError::InvalidSnapshot(format!(
                 "synthetic backend payload version {version}, expected {PAYLOAD_FORMAT_VERSION}"
             )));
         }
-        let pc = reader.read_u16()?;
-        let acc = reader.read_u32()?;
-        let tick = Tick::from_raw(reader.read_u64()?);
-        let steps = reader.read_u64()?;
-        let halted = reader.read_u8()? != 0;
-        let ram = reader.read_array::<256>()?;
-        if reader.remaining() != 0 {
-            return Err(BackendError::InvalidSnapshot(format!(
-                "synthetic backend payload has {} trailing bytes",
-                reader.remaining()
-            )));
-        }
+        let pc = reader.read_u16_le().map_err(payload_error)?;
+        let acc = reader.read_u32_le().map_err(payload_error)?;
+        let tick = Tick::from_raw(reader.read_u64_le().map_err(payload_error)?);
+        let steps = reader.read_u64_le().map_err(payload_error)?;
+        let halted = reader.read_u8().map_err(payload_error)? != 0;
+        let ram = reader.read_array::<256>().map_err(payload_error)?;
+        reader.finish().map_err(payload_error)?;
         let restored = Self {
             descriptor: self.descriptor.clone(),
             program: Arc::clone(&self.program),
@@ -242,6 +233,28 @@ impl SyntheticBackend {
         self.halted = restored.halted;
         Ok(())
     }
+}
+
+/// Magic prefix of the synthetic state-hash input.
+const STATE_MAGIC: [u8; 10] = *b"CFTBSTATE1";
+/// Magic prefix of the synthetic snapshot payload.
+const PAYLOAD_MAGIC: [u8; 4] = *b"CFTB";
+
+/// Prefixes a canonical state body with the payload magic and format version.
+fn payload_from_body(body: &[u8]) -> Vec<u8> {
+    let mut payload = Writer::with_capacity(PAYLOAD_MAGIC.len() + 2 + body.len());
+    payload.write_bytes(&PAYLOAD_MAGIC);
+    payload.write_u16_le(PAYLOAD_FORMAT_VERSION);
+    payload.write_bytes(body);
+    payload.into_bytes()
+}
+
+/// Prefixes a canonical state body with the state-hash magic.
+fn hash_state_body(body: &[u8]) -> StateHash {
+    let mut state = Writer::with_capacity(STATE_MAGIC.len() + body.len());
+    state.write_bytes(&STATE_MAGIC);
+    state.write_bytes(body);
+    hash_bytes(&state.into_bytes())
 }
 
 impl Backend for SyntheticBackend {
@@ -282,9 +295,9 @@ impl Backend for SyntheticBackend {
                 self.pc = u16::from_le_bytes([low, high]);
             }
             0x09 => {
-                let input_byte = u8::try_from(input.buttons() & 0xff).map_err(|_| {
-                    BackendError::Internal("input byte conversion failed".to_owned())
-                })?;
+                // `buttons()` is a `u32` mask; `APPLY_INPUT` consumes its low
+                // byte, so the extraction is total and cannot fail.
+                let input_byte = (input.buttons() & 0xff).to_le_bytes()[0];
                 self.acc = self.acc.wrapping_add(u32::from(input_byte));
                 self.ram[0x10] = (self.acc & 0xff).to_le_bytes()[0];
             }
@@ -311,46 +324,28 @@ impl Backend for SyntheticBackend {
     }
 
     fn snapshot(&self) -> Result<BackendSnapshot, BackendError> {
+        // One canonical body feeds both the payload and the state hash, so a
+        // snapshot costs one full-state serialization.
+        let body = self.state_body();
         Ok(BackendSnapshot::new(
             self.descriptor.id().clone(),
             self.descriptor.version(),
             BACKEND_SNAPSHOT_FORMAT_VERSION,
             self.tick,
             self.program.hash(),
-            self.state_hash(),
-            self.snapshot_payload(),
+            hash_state_body(&body),
+            payload_from_body(&body),
         ))
     }
 
     fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        if snapshot.backend_id() != self.descriptor.id() {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_id",
-                expected: self.descriptor.id().to_string(),
-                found: snapshot.backend_id().to_string(),
-            });
-        }
-        if snapshot.backend_version() != self.descriptor.version() {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_version",
-                expected: self.descriptor.version().to_owned(),
-                found: snapshot.backend_version().to_owned(),
-            });
-        }
-        if snapshot.format_version() != BACKEND_SNAPSHOT_FORMAT_VERSION {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "backend_format_version",
-                expected: BACKEND_SNAPSHOT_FORMAT_VERSION.to_string(),
-                found: snapshot.format_version().to_string(),
-            });
-        }
-        if snapshot.config_hash() != self.program.hash() {
-            return Err(BackendError::IncompatibleSnapshot {
-                field: "config_hash",
-                expected: self.program.hash().to_string(),
-                found: snapshot.config_hash().to_string(),
-            });
-        }
+        validate_envelope(
+            snapshot,
+            self.descriptor.id(),
+            self.descriptor.version(),
+            BACKEND_SNAPSHOT_FORMAT_VERSION,
+            self.program.hash(),
+        )?;
         self.apply_snapshot_payload(snapshot.payload(), snapshot.state_hash())
     }
 
@@ -417,64 +412,32 @@ impl Backend for SyntheticBackend {
     }
 }
 
-struct PayloadReader<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> PayloadReader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.position)
-    }
-
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], BackendError> {
-        let end = self.position.checked_add(length).ok_or_else(|| {
-            BackendError::InvalidSnapshot("payload length arithmetic overflow".to_owned())
-        })?;
-        if end > self.bytes.len() {
-            return Err(BackendError::InvalidSnapshot(
-                "synthetic backend payload is truncated".to_owned(),
-            ));
+/// Translates a shared codec failure into the backend snapshot error contract.
+fn payload_error(error: CodecError) -> BackendError {
+    match error {
+        CodecError::Truncated { .. } => {
+            BackendError::InvalidSnapshot("synthetic backend payload is truncated".to_owned())
         }
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], BackendError> {
-        let slice = self.read_exact(N)?;
-        let mut output = [0_u8; N];
-        output.copy_from_slice(slice);
-        Ok(output)
-    }
-
-    fn read_u8(&mut self) -> Result<u8, BackendError> {
-        Ok(self.read_array::<1>()?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16, BackendError> {
-        Ok(u16::from_le_bytes(self.read_array::<2>()?))
-    }
-
-    fn read_u32(&mut self) -> Result<u32, BackendError> {
-        Ok(u32::from_le_bytes(self.read_array::<4>()?))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, BackendError> {
-        Ok(u64::from_le_bytes(self.read_array::<8>()?))
+        CodecError::LengthOverflow => {
+            BackendError::InvalidSnapshot("payload length arithmetic overflow".to_owned())
+        }
+        CodecError::TrailingBytes { count } => BackendError::InvalidSnapshot(format!(
+            "synthetic backend payload has {count} trailing bytes"
+        )),
+        other => {
+            BackendError::InvalidSnapshot(format!("invalid synthetic backend payload: {other}"))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chronofork_backend_api::BackendFactory;
-    use chronofork_core::InputFrame;
+    use chronofork_backend_api::{BackendFactory, BackendSnapshot};
+    use chronofork_core::{InputFrame, Tick};
 
-    use super::{DEFAULT_PROGRAM, SyntheticBackendFactory, SyntheticProgram};
+    use super::{
+        DEFAULT_PROGRAM, PAYLOAD_FORMAT_VERSION, SyntheticBackendFactory, SyntheticProgram,
+    };
 
     #[test]
     fn identical_machines_converge_on_identical_inputs() {
@@ -512,6 +475,23 @@ mod tests {
     }
 
     #[test]
+    fn apply_input_ignores_buttons_above_the_low_byte() {
+        // `APPLY_INPUT` adds the low eight bits of the button mask only, so the
+        // extraction is total and identical for every high-bit pattern.
+        let program = SyntheticProgram::new(vec![0x09, 0xff]).expect("program");
+        let factory = SyntheticBackendFactory::new(program);
+        let mut low = factory.create().expect("low machine");
+        let mut high = factory.create().expect("high machine");
+        let low_outcome = low.step(InputFrame::new(0x02)).expect("low input");
+        let high_outcome = high.step(InputFrame::new(0x1_0002)).expect("high input");
+        assert_eq!(low_outcome, high_outcome);
+        assert_eq!(
+            low.inspect().expect("inspect").state_hash,
+            high.inspect().expect("inspect").state_hash
+        );
+    }
+
+    #[test]
     fn snapshot_restore_round_trips_exact_state() {
         let factory = SyntheticBackendFactory::default();
         let mut machine = factory.create().expect("machine");
@@ -527,6 +507,35 @@ mod tests {
         }
         machine.restore(&snapshot).expect("restore");
         assert_eq!(machine.inspect().expect("inspect").state_hash, expected);
+    }
+
+    #[test]
+    fn state_hash_is_derived_from_the_payload_state_body() {
+        let factory = SyntheticBackendFactory::default();
+        let mut machine = factory.create().expect("machine");
+        for _ in 0..11 {
+            machine.step(InputFrame::new(3)).expect("step");
+        }
+        let snapshot = machine.snapshot().expect("snapshot");
+        let payload = snapshot.payload();
+        assert_eq!(
+            &payload[..super::PAYLOAD_MAGIC.len()],
+            &super::PAYLOAD_MAGIC
+        );
+        let version_offset = super::PAYLOAD_MAGIC.len();
+        assert_eq!(
+            u16::from_le_bytes([payload[version_offset], payload[version_offset + 1]]),
+            PAYLOAD_FORMAT_VERSION
+        );
+        let body = &payload[version_offset + 2..];
+        let mut hash_input = Vec::with_capacity(super::STATE_MAGIC.len() + body.len());
+        hash_input.extend_from_slice(&super::STATE_MAGIC);
+        hash_input.extend_from_slice(body);
+        assert_eq!(
+            chronofork_core::hash_bytes(&hash_input),
+            snapshot.state_hash(),
+            "state hash must be hash(STATE_MAGIC + payload state body)"
+        );
     }
 
     #[test]
@@ -569,5 +578,36 @@ mod tests {
             SyntheticBackendFactory::new(SyntheticProgram::new(vec![0x42]).expect("program"));
         let mut machine = factory.create().expect("machine");
         assert!(machine.step(InputFrame::NEUTRAL).is_err());
+    }
+
+    #[test]
+    fn arbitrary_payloads_are_rejected_without_panicking() {
+        let factory = SyntheticBackendFactory::default();
+        let mut machine = factory.create().expect("machine");
+        let base = machine.snapshot().expect("snapshot");
+        let mut state = 0x0123_4567_89ab_cdef_u64;
+        for length in 0..400 {
+            let mut payload = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                payload.push((state >> 24).to_le_bytes()[0]);
+            }
+            let snapshot = BackendSnapshot::new(
+                base.backend_id().clone(),
+                base.backend_version(),
+                base.format_version(),
+                base.tick(),
+                base.config_hash(),
+                base.state_hash(),
+                payload,
+            );
+            assert!(
+                machine.restore(&snapshot).is_err(),
+                "arbitrary {length}-byte payload must be rejected"
+            );
+        }
+        assert_eq!(machine.inspect().expect("inspect").tick, Tick::ZERO);
     }
 }

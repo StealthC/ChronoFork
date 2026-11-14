@@ -16,3 +16,4 @@ workspace = true
 
 [dev-dependencies]
 chronofork-test-backend.workspace = true
+proptest.workspace = true

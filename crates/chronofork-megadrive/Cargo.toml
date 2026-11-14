@@ -12,6 +12,7 @@ chronofork-backend-api.workspace = true
 
 [dev-dependencies]
 chronofork-sessions.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

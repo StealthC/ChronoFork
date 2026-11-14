@@ -130,6 +130,41 @@ More detail: [architecture overview](docs/architecture/overview.md),
 - Do not edit generated files by hand.
 - Keep line width at 100 (`rustfmt.toml`).
 
+## Anti-slop workflow (mandatory)
+
+Every change follows the [anti-slop policy](docs/quality/anti-slop-policy.md) as an
+execution playbook. Any behavior-preservation, quality or test-count claim must cite
+the verifier-owned [anti-slop refactor evidence](docs/quality/anti-slop-refactor-evidence.md);
+§8 there is the final PASS and §7 is superseded history.
+
+1. **Pre-flight:** read this file, the policy, the task's ADR/epic and acceptance
+   criteria; run `git status --short --branch`; locate the current baseline evidence
+   (`.research/anti-slop/`, evidence §2-§4 and §8). Stop if the contract, ownership or
+   baseline is missing.
+2. **Contract and ownership:** record in-scope and out-of-scope paths; edit no file
+   owned by another agent. Shared manifests, architecture docs, `AGENTS.md`, the
+   policy and the evidence document belong to the lead/integrator/verifier.
+3. **Baseline first:** before a behavior-bearing edit, capture gate exit codes,
+   per-target test counts, three demo stdout runs (bytes + SHA-256) and serialized
+   state/probe output; keep raw artifacts under an ignored `.research/` path.
+4. **Prove equality after:** `./scripts/check.sh`, both demos `cmp`-identical, no test
+   target below baseline, and serialized bytes/hashes identical (a differential probe
+   when bytes are claimed). Any unexplained difference stops the task and is reported,
+   never explained away.
+5. **No weakening:** never add `#[allow]`, `#[ignore]`, delete a test or relax a lint
+   to pass; no speculative `pub` API, duplicate parser/serializer/compatibility
+   predicate, dead branch, or allocate-before-validate.
+6. **Evidence:** in this sandbox run Cargo with `CARGO_HOME=/tmp/t7-cargo` and record
+   it. Do not edit the verifier-owned evidence document; report results to the
+   verifier. If a later edit invalidates its recorded path hashes, stop and have it
+   re-verified before claiming completion.
+7. **Docs:** update the one canonical capability/limitation home
+   ([Mega Drive slice](docs/architecture/megadrive-slice.md)) and link the evidence;
+   never copy volatile test counts into durable docs.
+
+The policy's review checklist is the merge gate; §9 catalogues the failure modes
+already found in this repository.
+
 ## Testing expectations
 
 Run and report:

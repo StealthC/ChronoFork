@@ -1,36 +1,54 @@
 #![allow(clippy::expect_used)]
 
-use std::process::Command;
+//! Integration tests for the `chronofork` command wiring.
+//!
+//! The demo commands are user-facing smoke tests: they must run, exit
+//! successfully, stay quiet on stderr and print their key evidence. Semantic
+//! fork/isolation/replay invariants are asserted by the sessions acceptance
+//! suite; Mega Drive instruction, VDP and interrupt invariants are asserted by
+//! the backend tests. Trace and final-state *formats* are contracts and are
+//! checked by `trace.rs`.
+
+mod common;
+
+use common::{path_str, run, temp_dir, write_rom};
 
 #[test]
-fn demo_runs_the_acceptance_scenario() {
-    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
-        .arg("demo")
-        .output()
-        .expect("chronofork demo runs");
+fn demo_command_runs_and_prints_key_evidence() {
+    let output = run(&["demo"]);
     let stdout = String::from_utf8(output.stdout).expect("demo stdout is UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("demo stderr is UTF-8");
     assert!(
         output.status.success(),
         "demo failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(stdout.contains("not a Mega Drive emulator"));
-    assert!(stdout.contains("checkpoint:"));
-    assert!(stdout.contains("serialized checkpoint:"));
-    assert!(stdout.contains("source isolation:"));
-    assert!(stdout.contains("memory isolation:"));
-    assert!(stdout.contains("replay verification:"));
-    assert!(stdout.contains("chronofork demo: PASS"));
+    assert!(stderr.is_empty(), "demo wrote to stderr:\n{stderr}");
+    for expected in [
+        "chronofork demo: deterministic session vertical slice",
+        "not a Mega Drive emulator",
+        "checkpoint:",
+        "serialized checkpoint:",
+        "forks:",
+        "source isolation:",
+        "memory isolation:",
+        "replay verification:",
+        "compare:",
+        "chronofork demo: PASS",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "demo output is missing `{expected}`:\n{stdout}"
+        );
+    }
 }
 
 #[test]
 fn backend_describe_reports_real_capabilities() {
-    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
-        .args(["backend", "describe"])
-        .output()
-        .expect("backend describe runs");
+    let output = run(&["backend", "describe"]);
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("describe stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("describe stderr is UTF-8");
+    assert!(stderr.is_empty(), "describe wrote to stderr:\n{stderr}");
     assert!(stdout.contains("backend: chronofork.test.synthetic"));
     assert!(stdout.contains("test_backend: true"));
     assert!(stdout.contains("capability.breakpoints: false"));
@@ -39,34 +57,30 @@ fn backend_describe_reports_real_capabilities() {
 
 #[test]
 fn megadrive_demo_runs_the_minimal_68000_slice() {
-    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
-        .args(["megadrive", "demo"])
-        .output()
-        .expect("megadrive demo runs");
+    let output = run(&["megadrive", "demo"]);
     let stdout = String::from_utf8(output.stdout).expect("megadrive stdout is UTF-8");
     let stderr = String::from_utf8(output.stderr).expect("megadrive stderr is UTF-8");
     assert!(
         output.status.success(),
         "megadrive demo failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    assert!(
+        stderr.is_empty(),
+        "megadrive demo wrote to stderr:\n{stderr}"
+    );
     for expected in [
+        "chronofork megadrive demo:",
         "68000 + VDP port + interrupt scheduler slice",
         "no rendering, audio, Z80",
         // VDP/VRAM evidence is retained.
         "vdp: register 15 (auto-increment)=2",
         "vdp: program wrote and read back VRAM word 0x1234",
-        // Masked pending: mask 7 keeps HBlank/VBlank pending, no handler runs.
+        // Masked pending: mask 7 keeps the request pending, no handler runs.
         "interrupt: masked HBlank pending at tick 64",
-        "interrupt: mask 7 blocked delivery at tick 65; request retained, no handler ran",
         "interrupt: masked VBlank pending level 6 vector 0x78",
-        "VDP VBlank/VINT bits set",
         // Delivery after the ROM lowers the mask, handler execution and RTE.
-        "interrupt: interrupt ROM retained HBlank at tick 7 under mask 7 (no handler)",
-        "MOVE.W #$2300,SR lowered the mask to 3 at tick 8",
-        "HBlank delivered at tick 9 with handler IPM 4; handler ran; RTE at tick 11",
-        "SR=0x2300 (mask 3, CCR restored)",
-        "VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler)",
-        "snapshot preserved the pending VBlank/VINT state",
+        "interrupt: HBlank delivered at tick 9 with handler IPM 4; handler ran; RTE at tick 11",
+        "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler)",
         // Fork/restore evidence is retained.
         "fork isolation:",
         "snapshot: VDP, scheduler and CPU state reproduced from the checkpoint",
@@ -87,19 +101,43 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
 
 #[test]
 fn megadrive_demo_output_is_deterministic() {
-    let run = || {
-        Command::new(env!("CARGO_BIN_EXE_chronofork"))
-            .args(["megadrive", "demo"])
-            .output()
-            .expect("megadrive demo runs")
-    };
-    let first = run();
-    let second = run();
+    let first = run(&["megadrive", "demo"]);
+    let second = run(&["megadrive", "demo"]);
     assert!(first.status.success(), "first run failed");
     assert!(second.status.success(), "second run failed");
+    assert!(first.stderr.is_empty(), "first run wrote to stderr");
+    assert!(second.stderr.is_empty(), "second run wrote to stderr");
     assert_eq!(
         first.stdout, second.stdout,
         "megadrive demo output must be byte-identical across runs"
     );
     assert_eq!(first.stderr, second.stderr);
+}
+
+#[test]
+fn megadrive_trace_is_wired_to_an_external_rom() {
+    let dir = temp_dir("trace-wiring");
+    let rom = write_rom(&dir);
+    let state_path = dir.join("state.txt");
+    let output = run(&[
+        "megadrive",
+        "trace",
+        "--rom",
+        path_str(&rom),
+        "--instructions",
+        "2",
+        "--state-out",
+        path_str(&state_path),
+    ]);
+    let stderr = String::from_utf8(output.stderr).expect("trace stderr is UTF-8");
+    assert!(output.status.success(), "trace run failed:\n{stderr}");
+    assert!(
+        stderr.contains("executed 2 instruction(s)"),
+        "trace summary is missing:\n{stderr}"
+    );
+    assert!(
+        state_path.is_file(),
+        "the trace command must write the final-state file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

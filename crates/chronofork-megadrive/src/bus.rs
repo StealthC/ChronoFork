@@ -181,8 +181,9 @@ impl MegadriveBus {
                 .ok_or(BusError::UnmappedRead { address });
         }
         if (RAM_BASE..RAM_END).contains(&address) {
-            let offset = usize::try_from(address & 0xFFFF)
-                .map_err(|_| BusError::UnmappedRead { address })?;
+            // Masking to 16 bits proves the offset fits `usize` on every
+            // supported target, so the conversion is infallible.
+            let offset = usize::from((address & 0xFFFF) as u16);
             return self
                 .ram
                 .get(offset)
@@ -264,8 +265,8 @@ impl MegadriveBus {
             return self.vdp.write8(offset, value).map_err(BusError::Vdp);
         }
         self.ensure_ram_write_range(address, 1)?;
-        let offset =
-            usize::try_from(address & 0xFFFF).map_err(|_| BusError::UnmappedWrite { address })?;
+        // As in `peek8`, the 16-bit mask makes the offset conversion total.
+        let offset = usize::from((address & 0xFFFF) as u16);
         if let Some(slot) = self.ram.get_mut(offset) {
             *slot = value;
             return Ok(());
@@ -323,22 +324,83 @@ impl MegadriveBus {
         Ok(())
     }
 
+    /// Returns the side-effect-free window that contains `start`, together with
+    /// the window's first bus address.
+    ///
+    /// Debugger reads may target the cartridge image or work RAM. The VDP port
+    /// window is excluded because reading it changes device state.
+    fn debugger_window(&self, start: u32) -> Option<(&[u8], u32)> {
+        // Only the first `ROM_END` bytes of the image are addressable on the
+        // 68000 bus; a larger image never reaches the bus through this window.
+        let rom_len = self.rom.len().min(ROM_END as usize);
+        if (start as usize) < rom_len {
+            return Some((&self.rom[..rom_len], ROM_BASE));
+        }
+        if (RAM_BASE..RAM_END).contains(&start) {
+            return Some((self.ram.as_slice(), RAM_BASE));
+        }
+        None
+    }
+
+    /// Returns the error for a debugger access that starts outside ROM and RAM.
+    fn unmapped_debugger_access(&self, address: u32) -> BusError {
+        if vdp_offset(address).is_some() {
+            BusError::SideEffectingRead { address }
+        } else {
+            BusError::UnmappedRead { address }
+        }
+    }
+
     /// Reads a byte range for debugger consumers without device side effects.
     ///
     /// The VDP port window is rejected rather than read, because a VDP read can
     /// change device state. This keeps inspection side-effect free.
+    ///
+    /// The complete range is validated against its mapped window before the
+    /// output buffer is allocated: the cartridge image or work RAM must contain
+    /// the whole request. A caller-controlled `length` that is enormous or that
+    /// overflows the address space therefore returns a typed error instead of
+    /// requesting an allocation that could abort the process.
     pub fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BusError> {
-        let mut current =
+        // The start address is validated before the zero-length shortcut: the
+        // baseline rejected addresses above the 32-bit bus even for an empty
+        // read, while any representable address with length zero is accepted
+        // without touching a window.
+        let start =
             u32::try_from(address).map_err(|_| BusError::UnmappedRead { address: u32::MAX })?;
-        let mut output = Vec::with_capacity(length);
-        for _ in 0..length {
-            output.push(self.peek8(current)?);
-            current = current.checked_add(1).ok_or(BusError::AddressOverflow {
-                address: current,
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let (window, base) = self
+            .debugger_window(start)
+            .ok_or_else(|| self.unmapped_debugger_access(start))?;
+        let offset = u64::from(start - base);
+        let end = offset
+            .checked_add(
+                u64::try_from(length).map_err(|_| BusError::AddressOverflow {
+                    address: start,
+                    length,
+                })?,
+            )
+            .ok_or(BusError::AddressOverflow {
+                address: start,
                 length,
             })?;
+        if end > window.len() as u64 {
+            // Report the first byte that the window cannot serve. A window end
+            // beyond the 32-bit bus is itself an address overflow.
+            let window_end = u64::from(base) + window.len() as u64;
+            return Err(match u32::try_from(window_end) {
+                Ok(address) => BusError::UnmappedRead { address },
+                Err(_) => BusError::AddressOverflow {
+                    address: u32::MAX,
+                    length,
+                },
+            });
         }
-        Ok(output)
+        // The range proof above leaves both bounds inside `window`, whose
+        // length fits `usize`.
+        Ok(window[offset as usize..end as usize].to_vec())
     }
 
     /// Writes a byte range to work RAM for debugger consumers.
@@ -528,6 +590,66 @@ mod tests {
             bus.read_memory(u64::from(RAM_BASE), 4)
                 .expect("read window"),
             vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn zero_length_debugger_reads_still_validate_the_start_address() {
+        let bus = bus();
+        assert_eq!(
+            bus.read_memory(0, 0).expect("empty ROM read"),
+            Vec::<u8>::new()
+        );
+        // A representable address is accepted without touching a window, so a
+        // side-effecting port is fine for an empty read (baseline behavior).
+        assert_eq!(
+            bus.read_memory(0x00C0_0000, 0).expect("empty VDP read"),
+            Vec::<u8>::new()
+        );
+        // An address outside the 32-bit bus is rejected even for length zero.
+        assert_eq!(
+            bus.read_memory(u64::from(u32::MAX) + 1, 0),
+            Err(BusError::UnmappedRead { address: u32::MAX })
+        );
+    }
+
+    #[test]
+    fn debugger_reads_validate_the_range_before_allocating() {
+        let bus = bus();
+        assert_eq!(bus.read_memory(0, 2).expect("rom read"), vec![0x12, 0x34]);
+        // The last RAM byte exists; one byte more is reported at the first
+        // address the window cannot serve.
+        let last_ram = u64::from(RAM_BASE) + u64::try_from(super::RAM_SIZE).expect("ram size") - 1;
+        assert_eq!(
+            bus.read_memory(last_ram, 2),
+            Err(BusError::UnmappedRead {
+                address: super::RAM_END
+            })
+        );
+        // A huge length is rejected by range arithmetic, never by asking the
+        // allocator for it.
+        assert_eq!(
+            bus.read_memory(u64::from(RAM_BASE), usize::MAX),
+            Err(BusError::UnmappedRead {
+                address: super::RAM_END
+            })
+        );
+        assert_eq!(
+            bus.read_memory(u64::from(RAM_BASE) + 1, usize::MAX),
+            Err(BusError::AddressOverflow {
+                address: RAM_BASE + 1,
+                length: usize::MAX
+            })
+        );
+        // Reading past the cartridge image inside the ROM window is unmapped,
+        // and addresses above the 32-bit bus cannot be expressed at all.
+        assert_eq!(
+            bus.read_memory(0x400, 1),
+            Err(BusError::UnmappedRead { address: 0x400 })
+        );
+        assert_eq!(
+            bus.read_memory(u64::from(u32::MAX) + 1, 1),
+            Err(BusError::UnmappedRead { address: u32::MAX })
         );
     }
 }

@@ -7,6 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod codec;
 pub mod error;
 pub mod hash;
 pub mod id;

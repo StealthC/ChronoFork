@@ -4,6 +4,17 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
+**Current status:** the authoritative recorded run for the anti-slop refactor's
+implementation bytes is
+[anti-slop refactor evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting):
+`./scripts/check.sh` exit 0 with all gates clean, both demos byte-identical to the
+captured baseline ([§8.3](anti-slop-refactor-evidence.md#83-demos-three-runs-each-compared-with-the-t1-baseline)),
+and the serialized-byte probe byte-identical
+([§8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the exact test
+count and per-target accounting are recorded there, not copied here. The dated
+result blocks below are historical snapshots; their test counts are not current
+claims. Run the gates yourself rather than copying a number.
+
 ## Required local gate
 
 ```sh
@@ -23,7 +34,7 @@ Or run the repository script:
 The script sets `PATH` for a user-local rustup install and stops on the first
 failure.
 
-## Bootstrap results (2026-11-13)
+## Historical bootstrap results (2026-11-13; superseded, not a current claim)
 
 | Gate | Command | Result |
 |---|---|---|
@@ -44,7 +55,7 @@ Test breakdown:
 - `chronofork-cli`: 3 integration tests.
 - Doc tests: 0.
 
-## Mega Drive VDP/interrupt integration results (2026-11-14, after F1/F5 repairs)
+## Historical Mega Drive VDP/interrupt integration results (2026-11-14, after F1/F5 repairs; superseded, not a current claim)
 
 | Gate | Command | Result |
 |---|---|---|
@@ -96,7 +107,10 @@ chronofork megadrive demo: PASS
 7. Any incorporated code needs provenance and license review before merge.
 
 These gates cover correctness and formatting. Code structure, duplication and resource
-budgets are governed by the [anti-slop policy](anti-slop-policy.md).
+budgets are governed by the [anti-slop policy](anti-slop-policy.md); the recorded
+baseline/after proof for the current refactor is
+[anti-slop refactor evidence](anti-slop-refactor-evidence.md). Do not claim a gate
+passed without a command and an exit code recorded there or in your own run.
 
 ## Test categories and current coverage
 
@@ -108,12 +122,12 @@ budgets are governed by the [anti-slop policy](anti-slop-policy.md).
 | Session isolation | Implemented |
 | Deterministic replay | Implemented (synthetic) |
 | Corruption/version rejection | Implemented |
-| Property-based tests | Planned |
+| Property-based tests | Implemented: codec/snapshot property tests ([evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting)) |
 | Fuzz testing | Planned |
-| Differential execution | Planned (needs real backend) |
-| Performance benchmarks | Deferred |
+| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); full emulator differential remains planned |
+| Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Planned (no concurrent execution yet) |
-| Serialization compatibility | Implemented for v1/v2 rejection (payload version tests) |
+| Serialization compatibility | Implemented for v1/v2 rejection (payload version tests) plus round-trip property tests |
 | Cross-platform CI | Planned |
 
 ## CI recommendation (provider not selected)

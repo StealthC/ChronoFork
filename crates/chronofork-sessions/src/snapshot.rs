@@ -8,6 +8,7 @@
 use std::fmt;
 
 use chronofork_backend_api::BackendSnapshot;
+use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{SessionId, SnapshotId, StateHash, hash_bytes};
 
 use crate::error::SessionError;
@@ -93,33 +94,31 @@ impl Snapshot {
         let payload_len = u64::try_from(payload.len()).map_err(|_| {
             SessionError::InvalidSnapshot("snapshot payload does not fit in u64".to_owned())
         })?;
-        let backend_id = self.backend.backend_id().as_str().as_bytes();
-        let backend_version = self.backend.backend_version().as_bytes();
-        let backend_id_len = u16::try_from(backend_id.len()).map_err(|_| {
-            SessionError::InvalidSnapshot("backend id is too long to serialize".to_owned())
-        })?;
-        let backend_version_len = u16::try_from(backend_version.len()).map_err(|_| {
-            SessionError::InvalidSnapshot("backend version is too long to serialize".to_owned())
-        })?;
 
-        let mut output = Vec::with_capacity(MIN_HEADER_LEN + payload.len());
-        output.extend_from_slice(&MAGIC);
-        output.extend_from_slice(&self.format_version.to_le_bytes());
-        output.extend_from_slice(&self.id.raw().to_le_bytes());
-        output.extend_from_slice(&self.origin_session.raw().to_le_bytes());
-        output.extend_from_slice(&backend_id_len.to_le_bytes());
-        output.extend_from_slice(backend_id);
-        output.extend_from_slice(&backend_version_len.to_le_bytes());
-        output.extend_from_slice(backend_version);
-        output.extend_from_slice(&self.backend.format_version().to_le_bytes());
-        output.extend_from_slice(&self.backend.tick().raw().to_le_bytes());
-        output.extend_from_slice(self.backend.config_hash().as_bytes());
-        output.extend_from_slice(self.backend.state_hash().as_bytes());
-        output.extend_from_slice(&payload_len.to_le_bytes());
-        output.extend_from_slice(payload);
-        let checksum = hash_bytes(&output);
-        output.extend_from_slice(checksum.as_bytes());
-        Ok(output)
+        let mut output = Writer::with_capacity(MIN_HEADER_LEN + payload.len());
+        output.write_bytes(&MAGIC);
+        output.write_u16_le(self.format_version);
+        output.write_u64_le(self.id.raw());
+        output.write_u64_le(self.origin_session.raw());
+        output
+            .write_string_u16(self.backend.backend_id().as_str())
+            .map_err(|_| {
+                SessionError::InvalidSnapshot("backend id is too long to serialize".to_owned())
+            })?;
+        output
+            .write_string_u16(self.backend.backend_version())
+            .map_err(|_| {
+                SessionError::InvalidSnapshot("backend version is too long to serialize".to_owned())
+            })?;
+        output.write_u16_le(self.backend.format_version());
+        output.write_u64_le(self.backend.tick().raw());
+        output.write_bytes(self.backend.config_hash().as_bytes());
+        output.write_bytes(self.backend.state_hash().as_bytes());
+        output.write_u64_le(payload_len);
+        output.write_bytes(payload);
+        let checksum = hash_bytes(output.as_slice());
+        output.write_bytes(checksum.as_bytes());
+        Ok(output.into_bytes())
     }
 
     /// Parses and validates a serialized snapshot.
@@ -139,37 +138,35 @@ impl Snapshot {
         }
 
         let mut reader = Reader::new(body);
-        let magic = reader.read_array::<8>()?;
+        let magic = reader.read_array::<8>().map_err(snapshot_error)?;
         if magic != MAGIC {
             return Err(SessionError::InvalidSnapshot(
                 "snapshot magic mismatch".to_owned(),
             ));
         }
-        let format_version = reader.read_u16()?;
+        let format_version = reader.read_u16_le().map_err(snapshot_error)?;
         if format_version != SNAPSHOT_FORMAT_VERSION {
             return Err(SessionError::IncompatibleSnapshot(format!(
                 "outer format version {format_version}, expected {SNAPSHOT_FORMAT_VERSION}"
             )));
         }
-        let snapshot_id = SnapshotId::from_raw(reader.read_u64()?);
-        let origin_session = SessionId::from_raw(reader.read_u64()?);
-        let backend_id = reader.read_string()?;
-        let backend_version = reader.read_string()?;
-        let backend_format_version = reader.read_u16()?;
-        let tick = chronofork_core::Tick::from_raw(reader.read_u64()?);
-        let config_hash = StateHash::from_bytes(reader.read_array::<32>()?);
-        let state_hash = StateHash::from_bytes(reader.read_array::<32>()?);
-        let payload_len_u64 = reader.read_u64()?;
+        let snapshot_id = SnapshotId::from_raw(reader.read_u64_le().map_err(snapshot_error)?);
+        let origin_session = SessionId::from_raw(reader.read_u64_le().map_err(snapshot_error)?);
+        let backend_id = reader.read_string_u16().map_err(snapshot_error)?;
+        let backend_version = reader.read_string_u16().map_err(snapshot_error)?;
+        let backend_format_version = reader.read_u16_le().map_err(snapshot_error)?;
+        let tick = chronofork_core::Tick::from_raw(reader.read_u64_le().map_err(snapshot_error)?);
+        let config_hash = StateHash::from_bytes(reader.read_array::<32>().map_err(snapshot_error)?);
+        let state_hash = StateHash::from_bytes(reader.read_array::<32>().map_err(snapshot_error)?);
+        let payload_len_u64 = reader.read_u64_le().map_err(snapshot_error)?;
         let payload_len = usize::try_from(payload_len_u64).map_err(|_| {
             SessionError::InvalidSnapshot("payload length does not fit in usize".to_owned())
         })?;
-        let payload = reader.read_exact(payload_len)?.to_vec();
-        if reader.remaining() != 0 {
-            return Err(SessionError::InvalidSnapshot(format!(
-                "snapshot has {} trailing bytes",
-                reader.remaining()
-            )));
-        }
+        let payload = reader
+            .read_exact(payload_len)
+            .map_err(snapshot_error)?
+            .to_vec();
+        reader.finish().map_err(snapshot_error)?;
 
         let backend = BackendSnapshot::new(
             chronofork_backend_api::BackendId::new(backend_id),
@@ -189,6 +186,31 @@ impl Snapshot {
     }
 }
 
+/// Translates a shared codec failure into the session snapshot error contract.
+fn snapshot_error(error: CodecError) -> SessionError {
+    match error {
+        CodecError::Truncated {
+            needed,
+            offset,
+            remaining,
+        } => SessionError::InvalidSnapshot(format!(
+            "snapshot truncated: needed {needed} bytes at offset {offset}, only {remaining} remain"
+        )),
+        CodecError::LengthOverflow => {
+            SessionError::InvalidSnapshot("snapshot length arithmetic overflow".to_owned())
+        }
+        CodecError::TrailingBytes { count } => {
+            SessionError::InvalidSnapshot(format!("snapshot has {count} trailing bytes"))
+        }
+        CodecError::InvalidUtf8(error) => {
+            SessionError::InvalidSnapshot(format!("snapshot string is not UTF-8: {error}"))
+        }
+        CodecError::EmptyString => {
+            SessionError::InvalidSnapshot("snapshot string must not be empty".to_owned())
+        }
+    }
+}
+
 impl fmt::Display for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -198,66 +220,6 @@ impl fmt::Display for Snapshot {
             self.tick(),
             self.state_hash()
         )
-    }
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Reader<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.position)
-    }
-
-    fn read_exact(&mut self, length: usize) -> Result<&'a [u8], SessionError> {
-        let end = self.position.checked_add(length).ok_or_else(|| {
-            SessionError::InvalidSnapshot("snapshot length arithmetic overflow".to_owned())
-        })?;
-        if end > self.bytes.len() {
-            return Err(SessionError::InvalidSnapshot(format!(
-                "snapshot truncated: needed {length} bytes at offset {}, only {} remain",
-                self.position,
-                self.remaining()
-            )));
-        }
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], SessionError> {
-        let slice = self.read_exact(N)?;
-        let mut output = [0_u8; N];
-        output.copy_from_slice(slice);
-        Ok(output)
-    }
-
-    fn read_u16(&mut self) -> Result<u16, SessionError> {
-        Ok(u16::from_le_bytes(self.read_array::<2>()?))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, SessionError> {
-        Ok(u64::from_le_bytes(self.read_array::<8>()?))
-    }
-
-    fn read_string(&mut self) -> Result<String, SessionError> {
-        let length = usize::from(self.read_u16()?);
-        let bytes = self.read_exact(length)?;
-        let text = std::str::from_utf8(bytes).map_err(|error| {
-            SessionError::InvalidSnapshot(format!("snapshot string is not UTF-8: {error}"))
-        })?;
-        if text.is_empty() {
-            return Err(SessionError::InvalidSnapshot(
-                "snapshot string must not be empty".to_owned(),
-            ));
-        }
-        Ok(text.to_owned())
     }
 }
 
@@ -314,5 +276,23 @@ mod tests {
     fn truncation_is_rejected() {
         let bytes = sample_snapshot().to_bytes().expect("sample serializes");
         assert!(Snapshot::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn arbitrary_bytes_are_rejected_without_panicking() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for length in 0..512 {
+            let mut bytes = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push((state >> 24).to_le_bytes()[0]);
+            }
+            assert!(
+                Snapshot::from_bytes(&bytes).is_err(),
+                "arbitrary {length}-byte envelope must be rejected"
+            );
+        }
     }
 }

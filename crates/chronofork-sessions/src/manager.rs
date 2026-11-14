@@ -9,7 +9,7 @@ use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
 
 use crate::error::SessionError;
 use crate::lineage::Lineage;
-use crate::session::{Session, SessionInspection, SessionState};
+use crate::session::{Session, SessionInspection, SessionState, map_backend_compatibility};
 use crate::snapshot::Snapshot;
 
 /// A compact view of one session.
@@ -94,9 +94,10 @@ impl SessionManager {
         bytes: &[u8],
     ) -> Result<SessionId, SessionError> {
         let snapshot = Snapshot::from_bytes(bytes)?;
-        self.ensure_snapshot_backend(&snapshot)?;
         let mut backend = self.factory.create()?;
-        backend.restore(snapshot.backend())?;
+        backend
+            .restore(snapshot.backend())
+            .map_err(map_backend_compatibility)?;
         let initial_state = backend.snapshot()?;
         let id = self.allocate_session_id()?;
         let mut session =
@@ -126,9 +127,10 @@ impl SessionManager {
                 .clone();
             (snapshot, source.lineage().depth())
         };
-        self.ensure_snapshot_backend(&snapshot)?;
         let mut backend = self.factory.create()?;
-        backend.restore(snapshot.backend())?;
+        backend
+            .restore(snapshot.backend())
+            .map_err(map_backend_compatibility)?;
         let initial_state = backend.snapshot()?;
         let id = self.allocate_session_id()?;
         let lineage = Lineage::child(source_session, snapshot_id, parent_depth);
@@ -283,17 +285,6 @@ impl SessionManager {
             .ok_or(SessionError::UnknownSession(id))
     }
 
-    fn ensure_snapshot_backend(&self, snapshot: &Snapshot) -> Result<(), SessionError> {
-        if snapshot.backend().backend_id() != self.factory.descriptor().id() {
-            return Err(SessionError::IncompatibleSnapshot(format!(
-                "snapshot backend {} does not match manager backend {}",
-                snapshot.backend().backend_id(),
-                self.factory.descriptor().id()
-            )));
-        }
-        Ok(())
-    }
-
     fn allocate_session_id(&mut self) -> Result<SessionId, SessionError> {
         let id = self.next_session_id;
         self.next_session_id = id.checked_add(1).ok_or(SessionError::IdSpaceExhausted)?;
@@ -307,5 +298,45 @@ impl fmt::Debug for SessionManager {
             .field("backend", &self.factory.descriptor().id())
             .field("sessions", &self.sessions.len())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chronofork_backend_api::{BackendId, BackendSnapshot};
+    use chronofork_test_backend::SyntheticBackendFactory;
+
+    use super::SessionManager;
+    use crate::error::SessionError;
+    use crate::snapshot::Snapshot;
+
+    #[test]
+    fn importing_a_foreign_snapshot_is_rejected_at_the_session_boundary() {
+        let factory = SyntheticBackendFactory::default();
+        let mut manager = SessionManager::new(Arc::new(factory));
+        let session = manager.create_session().expect("session");
+        let id = manager.snapshot(session).expect("snapshot");
+        let bytes = manager.snapshot_bytes(session, id).expect("bytes");
+        let original = Snapshot::from_bytes(&bytes).expect("decode snapshot");
+        let backend = BackendSnapshot::new(
+            BackendId::new("chronofork.foreign"),
+            original.backend().backend_version(),
+            original.backend().format_version(),
+            original.backend().tick(),
+            original.backend().config_hash(),
+            original.backend().state_hash(),
+            original.backend().payload().to_vec(),
+        );
+        let foreign = Snapshot::new(original.id(), original.origin_session(), backend);
+        let bytes = foreign.to_bytes().expect("serialize foreign snapshot");
+        let error = manager
+            .create_session_from_snapshot_bytes(&bytes)
+            .expect_err("foreign backend must be rejected");
+        assert!(
+            matches!(&error, SessionError::IncompatibleSnapshot(message) if message.contains("backend_id")),
+            "expected a session-level incompatibility error, got {error}"
+        );
     }
 }

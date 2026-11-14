@@ -16,5 +16,5 @@ pub mod traits;
 pub use descriptor::{BackendDescriptor, BackendId, Capabilities};
 pub use error::BackendError;
 pub use inspection::MachineInspection;
-pub use snapshot::{BACKEND_SNAPSHOT_FORMAT_VERSION, BackendSnapshot};
+pub use snapshot::{BACKEND_SNAPSHOT_FORMAT_VERSION, BackendSnapshot, validate_envelope};
 pub use traits::{Backend, BackendFactory, StepOutcome};

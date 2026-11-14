@@ -6,7 +6,7 @@ use std::fmt;
 use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendSnapshot, MachineInspection, StepOutcome,
 };
-use chronofork_core::{InputFrame, SessionId, SnapshotId, Tick};
+use chronofork_core::{InputFrame, SessionId, SnapshotId};
 
 use crate::error::SessionError;
 use crate::lineage::Lineage;
@@ -105,12 +105,6 @@ impl Session {
         self.backend.descriptor()
     }
 
-    /// Returns the tick of the initial state.
-    #[must_use]
-    pub const fn initial_tick(&self) -> Tick {
-        self.initial_state.tick()
-    }
-
     /// Returns the backend snapshot captured at creation.
     #[must_use]
     pub const fn initial_state(&self) -> &BackendSnapshot {
@@ -121,11 +115,6 @@ impl Session {
     #[must_use]
     pub fn snapshot_record(&self, id: SnapshotId) -> Option<&Snapshot> {
         self.snapshots.get(&id)
-    }
-
-    /// Returns all checkpoint identifiers in ascending order.
-    pub fn snapshot_ids(&self) -> impl Iterator<Item = SnapshotId> + '_ {
-        self.snapshots.keys().copied()
     }
 
     /// Produces an inspection view.
@@ -191,8 +180,9 @@ impl Session {
                 snapshot: id,
             })?
             .clone();
-        self.ensure_compatible(&snapshot)?;
-        self.backend.restore(snapshot.backend())?;
+        self.backend
+            .restore(snapshot.backend())
+            .map_err(map_backend_compatibility)?;
         Ok(())
     }
 
@@ -257,26 +247,29 @@ impl Session {
         }
     }
 
-    fn ensure_compatible(&self, snapshot: &Snapshot) -> Result<(), SessionError> {
-        if snapshot.backend().backend_id() != self.descriptor().id() {
-            return Err(SessionError::IncompatibleSnapshot(format!(
-                "snapshot backend {} does not match session backend {}",
-                snapshot.backend().backend_id(),
-                self.descriptor().id()
-            )));
-        }
-        if snapshot.backend().config_hash() != self.initial_state.config_hash() {
-            return Err(SessionError::IncompatibleSnapshot(
-                "snapshot machine configuration hash does not match this session".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-
     fn allocate_snapshot_id(&mut self) -> Result<SnapshotId, SessionError> {
         let id = self.next_snapshot_id;
         self.next_snapshot_id = id.checked_add(1).ok_or(SessionError::IdSpaceExhausted)?;
         Ok(SnapshotId::from_raw(id))
+    }
+}
+
+/// Translates a backend compatibility failure into the session error contract.
+///
+/// Backend snapshot compatibility is validated in exactly one place,
+/// [`chronofork_backend_api::validate_envelope`]. The session layer only maps its
+/// typed error to [`SessionError::IncompatibleSnapshot`] so callers keep the
+/// session-level contract without repeating the backend-id/config-hash rules.
+pub(crate) fn map_backend_compatibility(error: BackendError) -> SessionError {
+    match error {
+        BackendError::IncompatibleSnapshot {
+            field,
+            expected,
+            found,
+        } => SessionError::IncompatibleSnapshot(format!(
+            "snapshot {field} mismatch: expected {expected}, found {found}"
+        )),
+        other => SessionError::from(other),
     }
 }
 
@@ -289,5 +282,73 @@ impl fmt::Debug for Session {
             .field("backend", &self.descriptor().id())
             .field("snapshots", &self.snapshots.keys().collect::<Vec<_>>())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chronofork_backend_api::{BackendFactory, BackendId, BackendSnapshot};
+    use chronofork_core::{SessionId, SnapshotId, StateHash};
+    use chronofork_test_backend::SyntheticBackendFactory;
+
+    use super::Session;
+    use crate::error::SessionError;
+    use crate::lineage::Lineage;
+    use crate::snapshot::Snapshot;
+
+    fn session() -> Session {
+        let factory = SyntheticBackendFactory::default();
+        let backend = factory.create().expect("backend");
+        let initial = backend.snapshot().expect("initial snapshot");
+        Session::new(SessionId::from_raw(1), backend, Lineage::root(), initial)
+    }
+
+    fn snapshot_with(
+        initial: &BackendSnapshot,
+        backend_id: &str,
+        config_hash: StateHash,
+    ) -> Snapshot {
+        let backend = BackendSnapshot::new(
+            BackendId::new(backend_id),
+            initial.backend_version(),
+            initial.format_version(),
+            initial.tick(),
+            config_hash,
+            initial.state_hash(),
+            initial.payload().to_vec(),
+        );
+        Snapshot::new(SnapshotId::from_raw(1), SessionId::from_raw(1), backend)
+    }
+
+    #[test]
+    fn restore_rejects_a_snapshot_with_a_different_backend_id() {
+        let mut session = session();
+        let initial = session.initial_state().clone();
+        let snapshot = snapshot_with(&initial, "chronofork.other", initial.config_hash());
+        let id = snapshot.id();
+        session.adopt_snapshot(snapshot).expect("adopt snapshot");
+        let error = session
+            .restore(id)
+            .expect_err("mismatched backend must fail");
+        assert!(
+            matches!(&error, SessionError::IncompatibleSnapshot(message) if message.contains("backend_id")),
+            "expected a session-level incompatibility error, got {error}"
+        );
+    }
+
+    #[test]
+    fn restore_rejects_a_snapshot_with_a_different_config_hash() {
+        let mut session = session();
+        let initial = session.initial_state().clone();
+        let different = StateHash::from_bytes([0xAB; 32]);
+        assert_ne!(different, initial.config_hash());
+        let snapshot = snapshot_with(&initial, initial.backend_id().as_str(), different);
+        let id = snapshot.id();
+        session.adopt_snapshot(snapshot).expect("adopt snapshot");
+        let error = session.restore(id).expect_err("config mismatch must fail");
+        assert!(
+            matches!(&error, SessionError::IncompatibleSnapshot(message) if message.contains("config_hash")),
+            "expected a session-level incompatibility error, got {error}"
+        );
     }
 }

@@ -47,7 +47,9 @@ research claims.
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
-| [Anti-slop policy](quality/anti-slop-policy.md) | Rules against dead, duplicated and resource-wasting code, tests and docs |
+| [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
+| [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
+| [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
 | [Licensing policy](licensing/policy.md) | Reuse and attribution rules |
 | [Provenance](licensing/provenance.md) | Exact upstream revisions and incorporation status |
 | [Upstream inventory](research/upstream-repositories.md) | Repositories, branches, commits, evidence |
