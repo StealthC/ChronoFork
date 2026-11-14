@@ -9,18 +9,22 @@ branches can diverge without mutating each other.
 
 > **Project status: bootstrap + partial real-hardware slice.** This repository ships
 > a deterministic **synthetic test backend** and a minimal **68000 + ROM/RAM + VDP
-> port + interrupt-scheduler Mega Drive backend**. Neither is a complete Mega Drive /
-> Genesis emulator: rendering, DMA, audio, Z80, controllers and most 68000
-> instructions are not implemented yet, and the interrupt model is
-> instruction-quantum rather than cycle-accurate. No commercial ROMs or firmware are
-> included.
+> port + interrupt-scheduler Mega Drive backend**. The slice includes 68000 SR-mask
+> interrupt gating (level 7 always admitted, other levels only above the mask), `RTE`
+> handler return and VDP VINT pending/acknowledge, but neither backend is a complete
+> Mega Drive / Genesis emulator: rendering, DMA, audio, Z80, controllers, privilege
+> enforcement and most 68000 instructions are not implemented yet, and the interrupt
+> model is instruction-quantum rather than cycle-accurate. No commercial ROMs or
+> firmware are included.
 
 ## What works today
 
 - A Rust 2024 Cargo workspace with six focused crates.
 - A capability-based backend contract with explicitly reported guarantees.
 - A minimal 68000 + ROM/RAM + VDP-port Mega Drive backend with a deterministic
-  interrupt scheduler, versioned device-inclusive snapshots and session integration.
+  instruction-quantum interrupt scheduler, SR-mask gating, `RTE` handler return,
+  VDP VINT pending/acknowledge, versioned device-inclusive snapshots and session
+  integration.
 - Independent sessions with create / step / pause / resume / reset / close.
 - Versioned, checksummed snapshots with round-trip and corruption tests.
 - Snapshot restore, replay verification and three-way forking.
@@ -46,7 +50,8 @@ cargo run -p chronofork-cli -- backend describe
 The synthetic demo prints the checkpoint, three independent forks, divergent state
 hashes, source/memory isolation checks, replay verification, and
 `chronofork demo: PASS`. The Mega Drive demo additionally prints VDP
-register/VRAM/status evidence, pending and delivered interrupt vectors, and
+register/VRAM/status evidence, masked pending and delivered interrupt vectors with
+handler IPM and `RTE` restoration, VDP VINT-pending behavior, and
 snapshot/fork/restore results for CPU + VDP + scheduler state.
 
 ## Workspace

@@ -10,12 +10,21 @@ Bootstrap foundation complete, with a partial real-hardware slice implemented. T
 repository builds and tests a deterministic synthetic backend, the generic session
 layer, and a minimal 68000 + ROM/RAM Mega Drive backend with a VDP
 status/control/VRAM port window and a deterministic instruction-quantum interrupt
-scheduler. A bounded debug-only instruction trace and final oracle differential
-evidence now exist: both synthetic ROMs match the pinned Exodus oracle's projected
-address streams and selected final state, and both negative controls pass (the
-pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain recorded). Rendering,
-DMA, audio, Z80 and controllers are not implemented. ADR-0002 is accepted. Claims
-below distinguish implemented facts from proposals and upstream research claims.
+scheduler, including 68000 SR-mask interrupt gating (level 7 always admitted; other
+levels only when strictly above the mask), `RTE` handler return and VDP VINT
+pending/acknowledge. A bounded debug-only instruction trace and final oracle
+differential evidence now exist: three synthetic ROMs match the pinned Exodus
+oracle's projected address streams and selected final state, and all three negative
+controls pass. `rom_alu` and `rom_mem_vdp` use the explicit 1,000,000-instruction
+controlled window, while `rom_masked` uses the CLI default quantum 64 with the flag
+omitted (the pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain
+recorded, and the earlier two-ROM run is preserved as pre-E2-15 controlled-condition
+history). Remaining limits: privilege is not enforced; only HBlank level 4 / VBlank
+level 6 sources are modelled, with level 7 a predicate rule only; no interrupt-timing
+equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
+Rendering, DMA, audio, Z80 and controllers are not implemented. ADR-0002 is
+accepted. Claims below distinguish implemented facts from proposals and upstream
+research claims.
 
 ## Start here
 
@@ -38,6 +47,7 @@ below distinguish implemented facts from proposals and upstream research claims.
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
+| [Anti-slop policy](quality/anti-slop-policy.md) | Rules against dead, duplicated and resource-wasting code, tests and docs |
 | [Licensing policy](licensing/policy.md) | Reuse and attribution rules |
 | [Provenance](licensing/provenance.md) | Exact upstream revisions and incorporation status |
 | [Upstream inventory](research/upstream-repositories.md) | Repositories, branches, commits, evidence |

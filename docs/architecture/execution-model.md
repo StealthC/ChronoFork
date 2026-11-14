@@ -103,8 +103,12 @@ best-effort parse.
 ## Known limitations
 
 - No cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The Mega
-  Drive slice has an instruction-quantum VBlank/HBlank scheduler and 68000 interrupt
-  entry, but no `RTE`, SR-mask gating or VINT-pending wiring.
+  Drive slice has an instruction-quantum VBlank/HBlank scheduler, and 68000
+  interrupt entry with SR-mask gating, `RTE` handler return and VDP VINT-pending
+  wiring implemented for the modelled slice. Remaining limits: privilege is not
+  enforced; only HBlank (level 4) and VBlank (level 6) sources are modelled, with
+  level 7 a predicate rule rather than a wired source; no interrupt-timing
+  equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
 - No general structured/timestamped trace format, conditional breakpoints or
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,

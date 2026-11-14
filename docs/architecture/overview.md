@@ -132,7 +132,7 @@ mutable state with its source.
 | VDP status/control/VRAM port window | Implemented (no rendering/DMA) |
 | Deterministic VBlank/HBlank interrupt scheduler | Implemented (instruction-quantum, not cycle-accurate) |
 | VDP rendering/DMA, audio, Z80, controllers, mapper/SRAM | Not implemented |
-| `RTE`, SR mask gating, VINT-pending status wiring | Not implemented |
+| `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege not enforced; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
 | HTTP/MCP/GUI | Not implemented |
 | Breakpoints/watchpoints/tracing | Contract sketches only |
 | TAS movie format | Not implemented |

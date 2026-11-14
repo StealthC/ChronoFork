@@ -273,7 +273,7 @@ documents its field classes. The comparison tool must:
 | D3 | Continuous run vs restore from checkpoint and continue | Incomplete snapshot, state that is not captured | Required |
 | D4 | Fork from checkpoint vs original continuing with the same input | Fork isolation, shared mutable state, copy-on-write mistakes | Required |
 | D5 | Test backend vs real backend on a shared contract subset | Contract drift; not emulation accuracy | Deferred until a real backend exists |
-| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Post-repair PASS for two synthetic ROMs (address projection, opcode/ROM-byte audit, final state, negative control). No timing or interrupt comparison |
+| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Post-repair PASS for three synthetic ROMs (address projection, opcode/ROM-byte audit, final state, negative controls, including the masked-ROM default-quantum gating control). No timing or interrupt comparison |
 | D7 | Linux vs Windows vs macOS; x86_64 vs aarch64 | Endianness, float formatting, host assumptions | Deferred; gate before a cross-platform release |
 | D8 | Mutated trace/checkpoint bytes | Comparison and validation robustness | Required self-test |
 | D9 | Session replay from an input log | Replay completeness, event ordering | Required once session replay exists |

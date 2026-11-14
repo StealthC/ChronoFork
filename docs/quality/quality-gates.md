@@ -95,6 +95,9 @@ chronofork megadrive demo: PASS
 6. Any determinism or snapshot claim needs an executable invariant test.
 7. Any incorporated code needs provenance and license review before merge.
 
+These gates cover correctness and formatting. Code structure, duplication and resource
+budgets are governed by the [anti-slop policy](anti-slop-policy.md).
+
 ## Test categories and current coverage
 
 | Category | Bootstrap status |

@@ -14,10 +14,12 @@ replay.
 **Current status:** bootstrap + partial real-hardware slice. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
 subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic
-instruction-quantum VBlank/HBlank interrupt scheduler. Rendering, DMA, audio, Z80,
-controllers, `RTE`, SR mask gating and cycle accuracy remain absent, and most 68000
-instructions are not implemented. Do not present either backend as a complete
-emulator or claim game compatibility.
+instruction-quantum VBlank/HBlank interrupt scheduler. The slice includes 68000 SR-mask
+interrupt gating (level 7 always admitted, other levels only when strictly above the
+mask), `RTE` handler return and VDP VINT pending/acknowledge. Rendering, DMA, audio,
+Z80, controllers, privilege enforcement, other exception groups and cycle accuracy
+remain absent, and most 68000 instructions are not implemented. Do not present either
+backend as a complete emulator or claim game compatibility.
 
 ## Repository map
 
@@ -112,6 +114,9 @@ More detail: [architecture overview](docs/architecture/overview.md),
 
 ## Code quality rules
 
+- Follow the [anti-slop policy](docs/quality/anti-slop-policy.md): one source of truth per
+  rule/format, no speculative public API or dead code, bounded resource use, and no
+  duplicated canonical documentation.
 - Prefer simple implementations over speculative abstraction.
 - Use explicit typed errors; avoid stringly errors and silent failure.
 - Avoid `unwrap()` in production code. `expect()` is allowed in tests with a useful

@@ -31,18 +31,27 @@ credible hardware slice.
 - [x] Minimal VDP status/control and VRAM window.
 - [x] Deterministic interrupt/tick scheduler.
 - [x] Bounded debug-only instruction trace and `megadrive trace` CLI.
-- [x] Differential trace evidence against the Exodus oracle — post-repair PASS 2/2:
-  `rom_alu` 99/99 and `rom_mem_vdp` 51/51 projected addresses with equal
-  projection SHA-256, equal final states and 2/2 negative controls. Pre-repair
-  divergence at `0x00027A` and the E2-13 absolute-long `MOVE` repair are recorded in
+- [x] Differential trace evidence against the Exodus oracle — current PASS 3/3:
+  `rom_alu` 99/99 and `rom_mem_vdp` 51/51 at the explicit 1,000,000-instruction
+  controlled window, plus `rom_masked` 155/155 at the CLI default quantum 64 with
+  the flag omitted, with equal projection SHA-256 and final states, negative
+  controls 3/3 and the masked default-quantum gating control. `rom_masked` crosses
+  two HBlank boundaries at SR mask 7 with no handler entry, so it is negative
+  gating evidence, not interrupt-delivery equivalence. The earlier post-repair
+  two-ROM PASS 2/2, the pre-repair divergence at `0x00027A` and the E2-13
+  absolute-long `MOVE` repair are preserved as history in
   [oracle differential evidence](../research/oracle-differential-evidence.md).
 - [ ] Complete production hardware state, including VDP/audio/Z80.
 
 **Exit:** a known synthetic ROM executes deterministically; snapshot/restore/fork
 works on the real core; differential evidence exists. The hardware slice, VDP port
-window, interrupt scheduler, bounded debug trace and differential evidence for two
-synthetic ROMs are done; remaining hardware (rendering, Z80, audio, DMA) and the
-E2-15 interrupt-mask/`RTE` gap are still pending.
+window, interrupt scheduler with SR-mask gating/`RTE`/VINT pending-acknowledge,
+bounded debug trace and differential evidence for three synthetic ROMs are done for
+the modelled slice, and E2-15 is done. Remaining hardware (rendering, Z80, audio,
+DMA) is still pending, and the modelled slice keeps its documented limits:
+privilege is not enforced; only HBlank level 4 / VBlank level 6 sources exist, with
+level 7 a predicate rule only; no interrupt-timing equivalence is claimed; and VDP
+interrupt-enable/acknowledge logic is absent.
 
 ## Stage 2 — Sessions, forks and save states at product quality
 

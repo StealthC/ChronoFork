@@ -75,10 +75,10 @@ bootstrap).
 | FR-MD-006 | Fork/restore a real-core session without source mutation. | Implemented | Session integration test |
 | FR-MD-007 | VDP status/control, VRAM and DMA. | Partial | Port window, registers, 64 KiB VRAM and versioned VDP snapshot implemented; DMA, CRAM/VSRAM, rendering and raster timing absent |
 | FR-MD-008 | YM2612, PSG and audio. | Planned | Not implemented |
-| FR-MD-009 | Z80, interrupts and exception processing. | Partial | Deterministic HBlank/VBlank scheduler and 68000 interrupt entry implemented; no Z80, timer interrupts, `RTE` or SR mask gating |
+| FR-MD-009 | Z80, interrupts and exception processing. | Partial | Deterministic HBlank/VBlank scheduler, 68000 SR-mask gated interrupt entry, `RTE` handler return and VDP VINT-pending/acknowledge implemented for the modelled slice; no Z80, timer/controller interrupt sources, other exception groups, privilege enforcement or interrupt-timing equivalence; only HBlank level 4 and VBlank level 6 sources exist, and level 7 is a predicate rule only |
 | FR-MD-010 | Controller input and multi-port schema. | Planned | Input is not consumed yet |
 | FR-MD-011 | ROM header/region/TMSS and cartridge mapper. | Planned | Not implemented |
-| FR-MD-012 | Differential traces against the Exodus oracle. | Implemented | Pinned oracle built; post-repair harness passes 2/2 ROMs (`rom_alu` 99/99, `rom_mem_vdp` 51/51), both final states equal, negative controls 2/2; pre-repair divergence and E2-13 repair recorded |
+| FR-MD-012 | Differential traces against the Exodus oracle. | Implemented | Pinned oracle built; post-repair harness passes 3/3 ROMs (`rom_alu` 99/99 and `rom_mem_vdp` 51/51 at the explicit 1,000,000-instruction controlled window, `rom_masked` 155/155 at the CLI default quantum 64 with the flag omitted), all final states equal, negative controls 3/3; the earlier two-ROM run is preserved as pre-E2-15 controlled-condition history, and the pre-repair divergence/E2-13 repair remain recorded |
 
 Tick semantics: one executed 68000 instruction equals one ChronoFork tick in this
 slice. The interrupt scheduler maps a configurable number of instruction ticks to

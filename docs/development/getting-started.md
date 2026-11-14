@@ -64,10 +64,18 @@ Expected evidence for the Mega Drive slice:
   interrupt pushes stay inside RAM);
 - the synthetic ROM computes `1 + 2`, programs VDP register `0x0F`, writes and
   reads back the VRAM word `0x1234`, and captures the VDP status;
-- an HBlank request is pending at tick 64 (level 4, vector `0x70`) and is delivered
-  on the next instruction boundary;
-- a VBlank request is pending at the start of vertical blanking (level 6, vector
-  `0x78`) and survives a snapshot/restore round-trip;
+- at the reset mask 7, an HBlank request stays pending at tick 64 (level 4, vector
+  `0x70`, `deliverable=0`); it is blocked at the next instruction boundary at tick
+  65 and no handler runs;
+- a VBlank request stays pending at the start of vertical blanking (level 6, vector
+  `0x78`) with the VDP VBlank and VINT status bits set, and the pending state
+  survives a snapshot/restore round-trip;
+- the separate `interrupt_rom` scenario then lowers the mask with
+  `MOVE.W #$2300,SR`, after which the retained HBlank is delivered at IPM 4 at tick
+  9 and `RTE` restores `SR=0x2300` and the interrupted PC; the demo's "HBlank
+  delivered" lines refer to that later, mask-lowered scenario. A subsequent VBlank
+  entry at IPM 6 blocks the still-pending HBlank (no nested handler) until its own
+  `RTE`;
 - a fork/RAM mutation diverges while the source stays unchanged;
 - restoring the checkpoint reproduces the original CPU, VDP and scheduler hash;
 - final line: `chronofork megadrive demo: PASS`.

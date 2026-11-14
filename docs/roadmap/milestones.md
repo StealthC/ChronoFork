@@ -26,13 +26,18 @@ its exit criteria are demonstrated by tests or documented evidence.
 - [x] Minimal VDP status/control and VRAM window.
 - [x] Deterministic interrupt/tick scheduler.
 - [x] VDP + interrupt scheduler integrated into backend snapshots, state hashes and CLI.
-- [x] Differential trace evidence against the approved reference — post-repair PASS
-  2/2: `rom_alu` 99/99 projected addresses (projection SHA-256 `2b6f191c…`),
-  `rom_mem_vdp` 51/51 (`ba4f3948…`), both final states equal, negative controls
-  caught indices 49 and 25 with exit 1. Controlled with an explicit
-  1,000,000-instructions-per-scanline quantum (SR mask gating is pending E2-15),
-  marker-bounded address projection, effective-SR-only comparison and excluded VDP
-  data reads. Pre-repair FAIL and the E2-13 repair are recorded in
+- [x] Differential trace evidence against the approved reference — current PASS 3/3:
+  `rom_alu` 99/99 projected addresses (projection SHA-256 `2b6f191c…`),
+  `rom_mem_vdp` 51/51 (`ba4f3948…`) and `rom_masked` 155/155 (`02891e15…`) at the
+  CLI default quantum 64 with the flag omitted. All final states equal; negative
+  controls caught indices 49, 25 and 77 with exit 1; scheduler/gating control 3/3
+  (masked gating 1/1). `rom_masked` crosses two HBlank boundaries while the SR mask
+  stays 7 and enters no handler, so it is negative gating evidence, not an
+  interrupt-delivery comparison. `rom_alu`/`rom_mem_vdp` still use the explicit
+  1,000,000-instructions-per-scanline controlled window; the pre-E2-15 two-ROM
+  evidence at that quantum is preserved under ignored
+  `.research/evidence/before-e2-15/`. Pre-repair FAIL and the E2-13 repair are
+  recorded in
   [Oracle differential evidence](../research/oracle-differential-evidence.md).
 - [x] Capabilities report matches reality for the implemented slice.
 
@@ -89,12 +94,17 @@ its exit criteria are demonstrated by tests or documented evidence.
 
 ## Current milestone
 
-**M1 is complete.** The differential item is ticked on the post-repair PASS 2/2
-evidence: both synthetic ROMs match the pinned oracle's projected address streams,
-selected final state and negative controls under the documented controlled
-conditions. EPIC-0002 remains open for E2-15 (interrupt-mask/`RTE`) and E2-11, and
-Stage 1's broader production-hardware work (rendering, Z80, audio, DMA) is still
-pending; M2 is the next milestone but has not started. See
+**M1 is complete.** The differential item is ticked on the current PASS 3/3
+evidence: three synthetic ROMs match the pinned oracle's projected address streams,
+selected final state and negative controls, and the masked-ROM control at the CLI
+default quantum 64 crosses two HBlank boundaries with the SR mask at 7 and no handler
+entry (negative gating evidence, not interrupt-timing/delivery equivalence). The
+earlier explicit-1,000,000-quantum two-ROM evidence is preserved as
+controlled-condition history. EPIC-0002 E2-15 (SR-mask gating, `RTE`, VINT
+pending/acknowledge) is done; the epic remains open for E2-11 (ROM identity), broader
+E2-13 instruction/addressing coverage and remaining hardware (rendering, Z80, audio,
+DMA, controllers, timers, other exception groups, privilege enforcement). M2 is the
+next milestone but has not started. See
 [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
 [oracle differential evidence](../research/oracle-differential-evidence.md) and
 [ADR-0002](../adr/0002-backend-boundaries.md).
