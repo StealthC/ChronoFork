@@ -23,17 +23,37 @@
 //!   byte into both halves (the documented VDP data-port byte-write
 //!   behaviour), and byte reads return the requested byte lane of the
 //!   transferred word.
-//! - The status-register bits covered by [`STATUS_MASK`]. VBlank is controlled
-//!   by [`Vdp::set_vblank`]. FIFO-empty is always set because data writes
-//!   complete immediately and no write FIFO is modelled. Every other status
-//!   bit is a documented constant with no hardware behind it yet.
+//! - The status-register bits covered by [`STATUS_MASK`]. VBlank (bit 3) is
+//!   controlled by [`Vdp::set_vblank`] and VBlank-interrupt-pending, VINT
+//!   (bit 7), by [`Vdp::set_vint_pending`]. FIFO-empty is always set because
+//!   data writes complete immediately and no write FIFO is modelled. Every
+//!   other status bit is a documented constant with no hardware behind it yet.
 //! - Versioned, fixed-length snapshots through [`Vdp::snapshot_bytes`] and
 //!   [`Vdp::restore_bytes`].
 //!
+//! # VINT-pending is derived state
+//!
+//! The VINT-pending status bit is a latch that the owning machine drives from
+//! its canonical interrupt state. The minimal Mega Drive backend sets it while
+//! its scheduler holds a pending VBlank (68000 level 6) request — including
+//! while that request is masked by the `SR` interrupt-priority mask — and clears
+//! it only when that request is delivered and acknowledged. It is deliberately
+//! **not** serialized into the VDP snapshot: the scheduler's pending request is
+//! the single source of truth, it is already snapshotted and hashed by the
+//! backend, and duplicating it here would create two values that could disagree
+//! after a restore. The backend recomputes the latch on restore before anything
+//! inspects it. A standalone [`Vdp`] user must drive it explicitly.
+//!
+//! A control-port (status) read returns the status word and cancels only a
+//! half-latched command word; it never acknowledges, clears or otherwise
+//! consumes an interrupt request.
+//!
 //! **Not implemented (and not claimed):** rendering, planes, window, sprites,
-//! scrolling, CRAM, VSRAM, DMA, FIFO/access timing, H/V counters, interrupts,
-//! Z80/PSG interaction, audio, the byte-swapped/interleaved physical VRAM
-//! layout, and cycle-accurate port timing.
+//! scrolling, CRAM, VSRAM, DMA, FIFO/access timing, H/V counters, VDP interrupt
+//! enable registers and VDP-side acknowledge logic (status bit 7 is driven by
+//! the external scheduler), Z80/PSG interaction, audio, the
+//! byte-swapped/interleaved physical VRAM layout, and cycle-accurate port
+//! timing.
 //!
 //! **Deterministic reset state:** VRAM is zeroed and all 24 registers are
 //! zero. In particular register `0x0F` (auto-increment) starts at zero, so a
@@ -71,8 +91,14 @@ pub const STATUS_ODD_FRAME: u16 = 0x0010;
 pub const STATUS_SPRITE_COLLISION: u16 = 0x0020;
 /// Sprite-overflow flag (status bit 6). Always 0: no sprites.
 pub const STATUS_SPRITE_OVERFLOW: u16 = 0x0040;
-/// VBlank-interrupt-pending flag (status bit 7). Always 0: the external
-/// interrupt scheduler is not wired into the VDP status register yet.
+/// VBlank-interrupt-pending flag (status bit 7).
+///
+/// Driven by [`Vdp::set_vint_pending`]. The minimal Mega Drive backend sets it
+/// while its scheduler holds a pending VBlank (level 6) request, including while
+/// the 68000 `SR` interrupt-priority mask blocks delivery, and clears it only
+/// when that request is delivered and acknowledged. It is derived state, not
+/// part of the serialized VDP snapshot, and a control-port status read never
+/// changes it.
 pub const STATUS_VINT_PENDING: u16 = 0x0080;
 /// FIFO-empty flag (status bit 8). Always set: no write FIFO is modelled, so
 /// every accepted data-port write has already completed.
@@ -226,6 +252,9 @@ pub struct Vdp {
     address: u16,
     command_pending: bool,
     vblank: bool,
+    /// Derived VINT-pending latch driven by the owning machine's interrupt
+    /// source. Deliberately absent from the serialized snapshot.
+    vint_pending: bool,
 }
 
 impl Vdp {
@@ -240,30 +269,58 @@ impl Vdp {
             address: 0,
             command_pending: false,
             vblank: false,
+            vint_pending: false,
         }
     }
 
     /// Returns the ten-bit status register.
     ///
-    /// Only VBlank and FIFO-empty can be set by this slice; the remaining bits
-    /// are documented constants. Upper bits are zero rather than the floating
-    /// values real hardware returns.
+    /// VBlank (bit 3), VINT pending (bit 7) and FIFO-empty (bit 8) are the only
+    /// bits this slice drives; the remaining bits are documented constants.
+    /// Upper bits are zero rather than the floating values real hardware
+    /// returns. Reading the status through a control-port access does not
+    /// acknowledge the VINT-pending latch; only [`Vdp::set_vint_pending`] changes
+    /// it.
     #[must_use]
     pub fn status(&self) -> u16 {
         let mut status = STATUS_FIFO_EMPTY;
         if self.vblank {
             status |= STATUS_VBLANK;
         }
+        if self.vint_pending {
+            status |= STATUS_VINT_PENDING;
+        }
         status
     }
 
-    /// Sets or clears the VBlank status flag.
+    /// Sets or clears the video VBlank status flag (bit 3).
     ///
-    /// This is the only status source that can change in this slice. A future
-    /// interrupt scheduler is expected to drive it from its deterministic
-    /// virtual clock.
+    /// The minimal Mega Drive backend drives this from the scheduler's
+    /// deterministic scanline position, so it reflects the vertical blanking
+    /// interval rather than a pending CPU request.
     pub fn set_vblank(&mut self, active: bool) {
         self.vblank = active;
+    }
+
+    /// Sets or clears the derived VBlank-interrupt-pending latch (status bit 7).
+    ///
+    /// The minimal Mega Drive backend drives this latch from the scheduler's
+    /// pending VBlank (level 6) request: set while the request is pending — even
+    /// while the 68000 `SR` mask blocks delivery — and cleared when the request
+    /// is delivered and acknowledged. The latch is **not** part of
+    /// [`Vdp::snapshot_bytes`]; see the module documentation for why it is
+    /// derived. A standalone `Vdp` user must call this explicitly.
+    pub fn set_vint_pending(&mut self, pending: bool) {
+        self.vint_pending = pending;
+    }
+
+    /// Returns the derived VINT-pending latch (status bit 7).
+    ///
+    /// This is the same value [`Vdp::status`] encodes as
+    /// [`STATUS_VINT_PENDING`], exposed separately for tests and diagnostics.
+    #[must_use]
+    pub const fn vint_pending(&self) -> bool {
+        self.vint_pending
     }
 
     /// Returns the flat 64 KiB VRAM contents.
@@ -336,6 +393,9 @@ impl Vdp {
     /// code set up through the control port and apply auto-increment; reads
     /// from the control port return the status register and cancel any
     /// half-completed command; HV-counter reads return zero.
+    ///
+    /// A control-port read does not acknowledge any interrupt: the derived
+    /// VINT-pending latch is unchanged by the read.
     pub fn read16(&mut self, offset: u8) -> Result<u16, VdpError> {
         Self::validate_offset(offset)?;
         if offset & 1 != 0 {
@@ -376,6 +436,11 @@ impl Vdp {
     /// code byte, little-endian `u16` address, 24 registers and 64 KiB of
     /// VRAM. The format is versioned and self-describing; consumers must not
     /// reinterpret bytes from another version.
+    ///
+    /// The derived VINT-pending latch is intentionally excluded: it is a
+    /// function of the owning machine's canonical interrupt state, which that
+    /// machine snapshots and hashes separately. The payload version therefore
+    /// does not change when the VDP exposes the bit.
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(SNAPSHOT_LEN);
@@ -401,6 +466,11 @@ impl Vdp {
     /// Length, magic, version, reserved flag bits and the command-code width
     /// are validated before any field is mutated, so a rejected snapshot
     /// leaves the VDP exactly as it was.
+    ///
+    /// The derived VINT-pending latch is not serialized and is left untouched;
+    /// the owning machine must recompute it from its canonical interrupt state
+    /// after restoring (the minimal Mega Drive backend does this before returning
+    /// from its own restore). This method never acknowledges an interrupt.
     pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), VdpError> {
         if bytes.len() != SNAPSHOT_LEN {
             return Err(VdpError::SnapshotLengthMismatch {
@@ -538,6 +608,7 @@ impl fmt::Debug for Vdp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vdp")
             .field("vblank", &self.vblank)
+            .field("vint_pending", &self.vint_pending)
             .field("command_pending", &self.command_pending)
             .field("code", &format_args!("0x{:02X}", self.code))
             .field("address", &format_args!("0x{:04X}", self.address))
@@ -685,6 +756,85 @@ mod tests {
         assert_eq!(
             vdp.read8(CONTROL_PORT_OFFSET + 1).expect("low status byte"),
             0x00
+        );
+    }
+
+    #[test]
+    fn vint_pending_bit_is_driven_and_status_reads_never_clear_it() {
+        let mut vdp = Vdp::new();
+        assert_eq!(vdp.status() & STATUS_VINT_PENDING, 0);
+        assert!(!vdp.vint_pending());
+
+        vdp.set_vint_pending(true);
+        assert!(vdp.vint_pending());
+        assert_eq!(
+            vdp.status(),
+            STATUS_FIFO_EMPTY | STATUS_VINT_PENDING,
+            "bit 7 reports the pending VBlank request"
+        );
+        // A control-port read reports the bit but does not acknowledge it.
+        assert_eq!(
+            vdp.read16(CONTROL_PORT_OFFSET).expect("status read"),
+            STATUS_FIFO_EMPTY | STATUS_VINT_PENDING
+        );
+        assert!(
+            vdp.vint_pending(),
+            "a status read must not acknowledge VINT"
+        );
+        assert_eq!(
+            vdp.read8(CONTROL_PORT_OFFSET).expect("high status byte"),
+            0x01
+        );
+        assert_eq!(
+            vdp.read8(CONTROL_PORT_OFFSET + 1).expect("low status byte"),
+            0x80
+        );
+        assert!(
+            vdp.vint_pending(),
+            "byte status reads must not acknowledge VINT either"
+        );
+
+        // The video-blank flag (bit 3) and interrupt-pending flag (bit 7) are
+        // independent: blanking can end while the request is still pending.
+        vdp.set_vblank(true);
+        assert_eq!(vdp.status() & 0x0088, STATUS_VBLANK | STATUS_VINT_PENDING);
+        vdp.set_vblank(false);
+        assert_eq!(vdp.status() & 0x0088, STATUS_VINT_PENDING);
+
+        // Only the owner of the canonical request clears the latch.
+        vdp.set_vint_pending(false);
+        assert_eq!(vdp.status() & STATUS_VINT_PENDING, 0);
+    }
+
+    #[test]
+    fn snapshot_excludes_the_derived_vint_latch() {
+        let mut vdp = Vdp::new();
+        vdp.set_vint_pending(true);
+        let snapshot = vdp.snapshot_bytes();
+
+        let mut restored = Vdp::new();
+        restored.restore_bytes(&snapshot).expect("restore snapshot");
+        assert_eq!(
+            restored.snapshot_bytes(),
+            snapshot,
+            "the derived latch is not serialized"
+        );
+        assert!(
+            !restored.vint_pending(),
+            "restore_bytes must not invent derived state"
+        );
+
+        // A restore into a VDP that already has the derived latch set leaves it
+        // untouched, so the owning machine can recompute or preserve it.
+        let mut already_pending = Vdp::new();
+        already_pending.set_vint_pending(true);
+        already_pending
+            .restore_bytes(&snapshot)
+            .expect("restore snapshot");
+        assert!(already_pending.vint_pending());
+        assert_eq!(
+            already_pending.status() & STATUS_VINT_PENDING,
+            STATUS_VINT_PENDING
         );
     }
 

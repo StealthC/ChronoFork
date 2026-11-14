@@ -11,17 +11,26 @@
 //! - `CMP.B/W/L Dn,Dn`, `TST.B/W/L Dn`, `CLR.W/L`, `LEA (abs).L,An`, `PEA (abs).L`;
 //! - `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL`, `DBRA`,
 //!   `JMP`, `JSR`, `RTS`;
-//! - interrupt exception entry (`M68000::interrupt`) through a vector-table
-//!   entry, with a supervisor stack frame and the `SR` supervisor bit;
+//! - interrupt-priority-mask gating through [`interrupt_level_deliverable`]: an
+//!   interrupt at level 7 is always taken, and every other level is taken only
+//!   when it is strictly greater than the `SR` interrupt-priority mask. The
+//!   CPU exposes the same rule as [`M68000::accepts_interrupt_level`];
+//! - interrupt exception entry ([`M68000::interrupt`]) at an explicit accepted
+//!   level: the previous raw `SR` and return PC are pushed, `S` is set, the CCR
+//!   is preserved and the interrupt-priority mask becomes the accepted level;
+//!   `RTE` (0x4E73) restores the raw `SR` and program counter from that frame
+//!   and advances `A7` by six;
+//! - `MOVE.W #imm,SR` (0x46FC), so a program can change its interrupt mask;
 //! - an optional bounded instruction trace (see [`crate::trace`]) recording each
 //!   fetched address/opcode pair. It is disabled by default and is debug data:
 //!   it is not part of snapshots, state hashes or registers.
 //!
-//! Not implemented: effective-address modes beyond the listed forms, interrupt
-//! levels/priority masks and automatic vector selection, other exception groups,
-//! separate user/supervisor stack pointers, prefetch, cycle-accurate timing, and
-//! the rest of the instruction set. Unsupported opcodes are errors, never
-//! silently skipped.
+//! Not implemented: effective-address modes beyond the listed forms, automatic
+//! interrupt-vector selection (the caller supplies the vector address), other
+//! exception groups, privilege enforcement (`RTE` and `MOVE.W #imm,SR` execute
+//! in either mode here), separate user/supervisor stack pointers, prefetch,
+//! cycle-accurate timing, and the rest of the instruction set. Unsupported
+//! opcodes are errors, never silently skipped.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -38,6 +47,33 @@ const FLAG_X: u16 = 0x0010;
 const SR_SUPERVISOR: u16 = 0x2000;
 const SR_INTERRUPT_MASK: u16 = 0x0700;
 const RESET_SR: u16 = SR_SUPERVISOR | SR_INTERRUPT_MASK;
+
+/// Returns the 68000 interrupt-priority mask (IPM) encoded in
+/// `status_register` (bits 10-8).
+#[must_use]
+pub const fn interrupt_priority_mask(status_register: u16) -> u8 {
+    ((status_register & SR_INTERRUPT_MASK) >> 8) as u8
+}
+
+/// Returns whether the 68000 takes an interrupt request at `level` while the
+/// status register holds `status_register`.
+///
+/// This is the single source of truth for the 68000 delivery rule in this
+/// slice: level 7 is always taken, and every other level is taken only when it
+/// is strictly greater than the interrupt-priority mask,
+/// `(status_register >> 8) & 7`. Only the 68000 interrupt levels 1..=7 are
+/// valid inputs: level 0 is the 68000's "no request" level and values above 7
+/// do not exist, so both are never deliverable. The rule is independent of the
+/// `S` bit and of the condition codes.
+///
+/// The backend gates delivery through [`M68000::accepts_interrupt_level`] and
+/// the scheduler through
+/// [`InterruptScheduler::next_deliverable`](crate::interrupts::InterruptScheduler::next_deliverable),
+/// so both apply exactly this predicate.
+#[must_use]
+pub const fn interrupt_level_deliverable(level: u8, status_register: u16) -> bool {
+    matches!(level, 1..=7) && (level == 7 || level > interrupt_priority_mask(status_register))
+}
 
 /// A failure while executing one 68000 instruction.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +98,11 @@ pub enum CpuError {
     AddressOverflow,
     /// The stack pointer moved outside the representable address space.
     StackOverflow,
+    /// The requested interrupt level is not a 68000 interrupt level.
+    InvalidInterruptLevel {
+        /// Rejected level.
+        level: u8,
+    },
     /// The bus rejected an access.
     Bus(BusError),
 }
@@ -79,6 +120,12 @@ impl fmt::Display for CpuError {
             }
             Self::AddressOverflow => f.write_str("68000 address overflow"),
             Self::StackOverflow => f.write_str("68000 stack pointer overflow"),
+            Self::InvalidInterruptLevel { level } => {
+                write!(
+                    f,
+                    "68000 interrupt level {level} is invalid (expected 1..=7)"
+                )
+            }
             Self::Bus(error) => write!(f, "68000 bus error: {error}"),
         }
     }
@@ -165,29 +212,48 @@ impl M68000 {
         self.ensure_even_pc()
     }
 
-    /// Enters a 68000 interrupt exception through one vector-table entry.
+    /// Enters a 68000 interrupt exception at `level` through one vector-table
+    /// entry.
+    ///
+    /// `level` must be an accepted 68000 interrupt level (1..=7); 0, which means
+    /// "no request", and values above 7 are rejected with
+    /// [`CpuError::InvalidInterruptLevel`] before any state changes.
     ///
     /// The processor builds its exception frame on the (supervisor) stack: a
-    /// word containing the current status register at the lowest address and a
-    /// long containing the return program counter immediately above it, so the
-    /// stack pointer decreases by six. The target program counter is then read
-    /// as a big-endian long from `vector_address` (for example `0x78` for the
-    /// level-6 autovector normally used by VBlank), the supervisor bit in `SR`
-    /// is set, and execution jumps to the handler. An interrupt also clears the
-    /// halted latch, so a halted processor resumes at the handler.
+    /// word containing the previous raw status register at the lowest address
+    /// and a long containing the return program counter immediately above it, so
+    /// the stack pointer decreases by six. It then sets the supervisor bit, keeps
+    /// every CCR bit and loads the accepted level into the interrupt-priority
+    /// mask, `SR = (previous & !0x0700) | (level << 8) | S`, so the same level
+    /// and lower levels stay blocked until `RTE` restores the frame.
     ///
-    /// The caller owns interrupt prioritisation: this slice models neither
-    /// interrupt levels nor the `SR` interrupt mask, pending-request
-    /// bookkeeping, automatic vector selection or the other exception groups.
+    /// The target program counter is then read as a big-endian long from
+    /// `vector_address` (for example `0x78` for the level-6 autovector normally
+    /// used by VBlank and `0x7C` for level 7), and execution jumps to the
+    /// handler. An interrupt also clears the halted latch, so a halted processor
+    /// resumes at the handler.
+    ///
+    /// The caller owns interrupt selection: this method performs the exception
+    /// entry it is given and does not itself decide whether a request may be
+    /// taken. Use [`M68000::accepts_interrupt_level`] (or the scheduler's
+    /// [`next_deliverable`](crate::interrupts::InterruptScheduler::next_deliverable))
+    /// to apply the 68000 priority-mask rule before calling this method.
+    /// Automatic vector selection, pending-request bookkeeping and the other
+    /// exception groups are not modelled.
     /// An odd or unmapped `vector_address`, a stack pointer without six bytes
     /// below it, or a vector entry holding an odd program counter is an error.
-    /// The frame is pushed and the supervisor bit is set before the vector is
-    /// fetched, like real hardware, so a bad vector leaves both behind.
+    /// The frame is pushed and the new `SR` applied before the vector is fetched,
+    /// like real hardware, so a bad vector leaves both behind.
     pub fn interrupt(
         &mut self,
+        level: u8,
         vector_address: u32,
         bus: &mut MegadriveBus,
     ) -> Result<(), CpuError> {
+        if !(1..=7).contains(&level) {
+            return Err(CpuError::InvalidInterruptLevel { level });
+        }
+
         let stack = self.a[7].checked_sub(6).ok_or(CpuError::StackOverflow)?;
         let return_pc = self.pc;
         let previous_sr = self.sr;
@@ -196,7 +262,7 @@ impl M68000 {
         let return_pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         bus.write32(return_pc_address, return_pc)?;
         self.a[7] = stack;
-        self.sr = previous_sr | SR_SUPERVISOR;
+        self.sr = (previous_sr & !SR_INTERRUPT_MASK) | (u16::from(level) << 8) | SR_SUPERVISOR;
 
         let target = bus.read32(vector_address)?;
         self.write_pc(target)?;
@@ -215,6 +281,24 @@ impl M68000 {
     #[must_use]
     pub const fn sr(&self) -> u16 {
         self.sr
+    }
+
+    /// Returns the interrupt-priority mask currently encoded in `SR`.
+    #[must_use]
+    pub const fn interrupt_priority_mask(&self) -> u8 {
+        interrupt_priority_mask(self.sr)
+    }
+
+    /// Returns whether this processor would take an interrupt request at `level`
+    /// in its current state.
+    ///
+    /// This applies [`interrupt_level_deliverable`] to the raw current `SR`: the
+    /// level is 7 (always taken) or strictly greater than
+    /// [`M68000::interrupt_priority_mask`]. It does not consume or acknowledge
+    /// any request; callers still own pending bookkeeping and vector selection.
+    #[must_use]
+    pub const fn accepts_interrupt_level(&self, level: u8) -> bool {
+        interrupt_level_deliverable(level, self.sr)
     }
 
     /// Returns whether the CPU is halted.
@@ -350,7 +434,16 @@ impl M68000 {
         }
 
         match opcode {
+            0x46FC => {
+                // MOVE.W #imm,SR. Privileged on real hardware; privilege is not
+                // enforced in this slice. The immediate word replaces the raw
+                // SR, including the interrupt-priority mask.
+                let value = self.fetch_u16(bus)?;
+                self.sr = value;
+                Ok(())
+            }
             0x4E71 => Ok(()),
+            0x4E73 => self.execute_rte(bus),
             0x4E75 => {
                 let pc = self.pop_long(bus)?;
                 self.write_pc(pc)
@@ -661,6 +754,31 @@ impl M68000 {
         }
     }
 
+    /// Executes `RTE` (0x4E73).
+    ///
+    /// The exception frame lives on the supervisor stack: the raw status
+    /// register word at `A7` and the long return program counter at `A7 + 2`.
+    /// The complete frame is read and validated before any canonical state is
+    /// changed, so an underflowing stack pointer, a bus error or an odd return
+    /// program counter leaves `SR`, `PC` (beyond the normal opcode fetch) and
+    /// `A7` untouched. On success the exact raw `SR` word is restored (IPM, `S`
+    /// and CCR, with no implicit supervisor re-entry), the program counter is
+    /// set to the restored value, and `A7` advances by six.
+    fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+        let frame = self.a[7];
+        let return_pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
+        let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
+
+        let restored_sr = bus.read16(frame)?;
+        let restored_pc = bus.read32(return_pc_address)?;
+        self.ensure_even(restored_pc)?;
+
+        self.sr = restored_sr;
+        self.pc = restored_pc;
+        self.a[7] = restored_a7;
+        Ok(())
+    }
+
     fn relative_target(&self, displacement: i32) -> Result<u32, CpuError> {
         let target = i64::from(self.pc) + i64::from(displacement);
         if target < 0 || target > i64::from(u32::MAX) {
@@ -839,7 +957,7 @@ impl Default for M68000 {
 mod tests {
     use std::sync::Arc;
 
-    use super::{CpuError, M68000};
+    use super::{CpuError, M68000, interrupt_level_deliverable, interrupt_priority_mask};
     use crate::bus::{BusError, MegadriveBus};
     use crate::trace::TraceError;
 
@@ -883,6 +1001,28 @@ mod tests {
 
     fn cpu_with_vector(vector_address: u32, target: u32) -> (M68000, MegadriveBus) {
         let mut bus = vector_bus(vector_address, target);
+        let mut cpu = M68000::new();
+        cpu.reset(&mut bus).expect("reset");
+        (cpu, bus)
+    }
+
+    /// Builds a bus with a NOP at 0x200, `handler` bytes at `target`, and
+    /// `target` registered in the vector table, so an exception entry can run a
+    /// real handler (for example `RTE`).
+    fn cpu_with_vector_and_handler(
+        vector_address: u32,
+        target: u32,
+        handler: &[u8],
+    ) -> (M68000, MegadriveBus) {
+        let mut rom = vec![0_u8; 0x400];
+        rom[0..4].copy_from_slice(&INITIAL_STACK.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x200..0x202].copy_from_slice(&[0x4E, 0x71]);
+        let handler_start = target as usize;
+        rom[handler_start..handler_start + handler.len()].copy_from_slice(handler);
+        let start = vector_address as usize;
+        rom[start..start + 4].copy_from_slice(&target.to_be_bytes());
+        let mut bus = MegadriveBus::new(Arc::from(rom.into_boxed_slice()));
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).expect("reset");
         (cpu, bus)
@@ -1092,7 +1232,7 @@ mod tests {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         cpu.step(&mut bus).expect("nop");
         let previous_sr = cpu.sr();
-        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        cpu.interrupt(6, 0x78, &mut bus).expect("interrupt");
         assert_eq!(cpu.pc(), 0x300);
         assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
         assert_eq!(
@@ -1100,7 +1240,8 @@ mod tests {
             previous_sr
         );
         assert_eq!(bus.read32(INITIAL_STACK - 4).expect("pushed pc"), 0x202);
-        assert!(cpu.sr() & 0x2000 != 0, "entry must be in supervisor mode");
+        assert_eq!(cpu.sr(), 0x2600, "level 6 is loaded into IPM with S set");
+        assert_eq!(cpu.interrupt_priority_mask(), 6);
         assert!(!cpu.halted());
     }
 
@@ -1108,17 +1249,21 @@ mod tests {
     fn interrupt_enters_supervisor_mode_and_preserves_condition_codes() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         cpu.sr = 0x0004; // User mode with Z set.
-        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        cpu.interrupt(6, 0x78, &mut bus).expect("interrupt");
         assert_eq!(bus.read16(INITIAL_STACK - 6).expect("pushed sr"), 0x0004);
         assert_eq!(bus.read32(INITIAL_STACK - 4).expect("pushed pc"), 0x200);
-        assert_eq!(cpu.sr(), 0x2004);
+        assert_eq!(
+            cpu.sr(),
+            0x2604,
+            "S set, IPM becomes the accepted level, CCR preserved"
+        );
     }
 
     #[test]
     fn interrupt_wakes_a_halted_processor() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         cpu.halted = true;
-        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        cpu.interrupt(6, 0x78, &mut bus).expect("interrupt");
         assert!(!cpu.halted());
         assert_eq!(cpu.pc(), 0x300);
     }
@@ -1127,7 +1272,10 @@ mod tests {
     fn interrupt_rejects_stack_underflow() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         cpu.a[7] = 0;
-        assert_eq!(cpu.interrupt(0x78, &mut bus), Err(CpuError::StackOverflow));
+        assert_eq!(
+            cpu.interrupt(6, 0x78, &mut bus),
+            Err(CpuError::StackOverflow)
+        );
         assert_eq!(cpu.pc(), 0x200);
     }
 
@@ -1137,7 +1285,7 @@ mod tests {
         cpu.a[7] = 0x0000_0300;
         cpu.sr = 0x0000;
         assert_eq!(
-            cpu.interrupt(0x78, &mut bus),
+            cpu.interrupt(6, 0x78, &mut bus),
             Err(CpuError::Bus(BusError::WriteProtected {
                 address: 0x0000_02FA
             }))
@@ -1150,7 +1298,7 @@ mod tests {
     fn interrupt_rejects_an_unmapped_vector() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         assert_eq!(
-            cpu.interrupt(0x0080_0000, &mut bus),
+            cpu.interrupt(6, 0x0080_0000, &mut bus),
             Err(CpuError::Bus(BusError::UnmappedRead {
                 address: 0x0080_0000
             }))
@@ -1166,7 +1314,7 @@ mod tests {
     fn interrupt_rejects_an_odd_vector_address() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         assert_eq!(
-            cpu.interrupt(0x79, &mut bus),
+            cpu.interrupt(6, 0x79, &mut bus),
             Err(CpuError::Bus(BusError::OddAddress { address: 0x79 }))
         );
         assert_ne!(cpu.sr() & 0x2000, 0);
@@ -1177,16 +1325,75 @@ mod tests {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0301);
         cpu.sr = 0x0000;
         assert_eq!(
-            cpu.interrupt(0x78, &mut bus),
+            cpu.interrupt(6, 0x78, &mut bus),
             Err(CpuError::AddressError { address: 0x301 })
         );
         assert_eq!(cpu.pc(), 0x200);
         assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
         assert_eq!(
             cpu.sr(),
-            0x2000,
-            "supervisor mode is entered before the jump"
+            0x2600,
+            "supervisor mode and the accepted IPM are applied before the jump"
         );
+    }
+
+    #[test]
+    fn interrupt_loads_the_accepted_level_into_ipm() {
+        // Level 6 entry from mask 3, user mode, Z set. The handler is RTE so the
+        // full round trip can be checked in one test.
+        let (mut cpu, mut bus) = cpu_with_vector_and_handler(0x78, 0x0000_0300, &[0x4E, 0x73]);
+        cpu.sr = 0x2304;
+        cpu.interrupt(6, 0x78, &mut bus).expect("level 6 entry");
+
+        assert_eq!(cpu.sr(), 0x2604, "S set, IPM 6, user CCR preserved");
+        assert_eq!(cpu.interrupt_priority_mask(), 6);
+        assert!(
+            !cpu.accepts_interrupt_level(4),
+            "a pending HBlank must not nest inside the VBlank handler"
+        );
+        assert!(!cpu.accepts_interrupt_level(5));
+        assert!(!cpu.accepts_interrupt_level(6));
+        assert!(cpu.accepts_interrupt_level(7), "level 7 stays always taken");
+        assert_eq!(bus.read16(INITIAL_STACK - 6).expect("frame sr"), 0x2304);
+        assert_eq!(bus.read32(INITIAL_STACK - 4).expect("frame pc"), 0x200);
+
+        cpu.step(&mut bus).expect("rte");
+        assert_eq!(cpu.sr(), 0x2304, "RTE restores the exact pre-interrupt SR");
+        assert_eq!(cpu.interrupt_priority_mask(), 3);
+        assert!(!cpu.accepts_interrupt_level(3));
+        assert!(cpu.accepts_interrupt_level(4));
+        assert_eq!(
+            cpu.pc(),
+            0x200,
+            "RTE returns to the interrupted instruction"
+        );
+    }
+
+    #[test]
+    fn interrupt_level_seven_sets_ipm_seven() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x7C, 0x0000_0300);
+        cpu.sr = 0x2500;
+        cpu.interrupt(7, 0x7C, &mut bus).expect("level 7 entry");
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.interrupt_priority_mask(), 7);
+        assert!(cpu.accepts_interrupt_level(7));
+        assert!(!cpu.accepts_interrupt_level(6));
+        assert_eq!(bus.read16(INITIAL_STACK - 6).expect("frame sr"), 0x2500);
+    }
+
+    #[test]
+    fn interrupt_rejects_invalid_levels_before_touching_state() {
+        for level in [0_u8, 8, 0xFF] {
+            let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+            assert_eq!(
+                cpu.interrupt(level, 0x78, &mut bus),
+                Err(CpuError::InvalidInterruptLevel { level }),
+                "level {level} must be a typed error"
+            );
+            assert_eq!(cpu.pc(), 0x200);
+            assert_eq!(cpu.sr(), 0x2700);
+            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        }
     }
 
     #[test]
@@ -1410,5 +1617,210 @@ mod tests {
         assert_eq!(bus.read32(0x00FF_0004), Ok(0xDEAD_BEEF));
         assert_eq!(cpu.pc(), 0x212);
         assert_eq!(cpu.sr(), 0x2708, "the final long store sets N");
+    }
+
+    #[test]
+    fn interrupt_priority_mask_selects_only_levels_above_the_mask() {
+        assert_eq!(interrupt_priority_mask(0x2700), 7);
+        // At mask 7 the VDP's VBlank (level 6) and HBlank (level 4) stay
+        // pending, while level 7 is always taken.
+        assert!(interrupt_level_deliverable(7, 0x2700));
+        assert!(!interrupt_level_deliverable(6, 0x2700));
+        assert!(!interrupt_level_deliverable(4, 0x2700));
+        // The threshold is strict: level == mask is rejected, level > mask is
+        // taken. VBlank (6) is admitted from mask 5 and below; HBlank (4) from
+        // mask 3 and below.
+        assert!(!interrupt_level_deliverable(6, 0x2600));
+        assert!(interrupt_level_deliverable(6, 0x2500));
+        assert!(!interrupt_level_deliverable(5, 0x2500));
+        assert!(!interrupt_level_deliverable(4, 0x2400));
+        assert!(interrupt_level_deliverable(5, 0x2400));
+        assert!(interrupt_level_deliverable(4, 0x2300));
+        assert!(
+            interrupt_level_deliverable(4, 0x2300 | 0x2000),
+            "the S bit does not change the mask rule"
+        );
+        assert!(interrupt_level_deliverable(4, 0x0000));
+        assert!(
+            !interrupt_level_deliverable(0, 0x0000),
+            "level 0 is the 68000 'no request' level"
+        );
+        // Only 68000 levels 1..=7 exist; 0 and values above 7 are never
+        // deliverable even at mask 0.
+        assert!(!interrupt_level_deliverable(0, 0x2700));
+        assert!(!interrupt_level_deliverable(8, 0x0000));
+        assert!(!interrupt_level_deliverable(u8::MAX, 0x2700));
+        // Level 7 is taken even at the highest mask and in user mode.
+        assert!(interrupt_level_deliverable(7, 0x0700));
+        assert!(interrupt_level_deliverable(7, 0x0000));
+        // Only IPM bits 10-8 form the mask; S and the CCR do not.
+        assert_eq!(interrupt_priority_mask(0x20FF), 0);
+        assert_eq!(interrupt_priority_mask(0xFFFF), 7);
+    }
+
+    #[test]
+    fn accepts_interrupt_level_reads_the_current_raw_sr() {
+        let (mut cpu, _bus) = cpu_at_program(&[]);
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.interrupt_priority_mask(), 7);
+        assert!(cpu.accepts_interrupt_level(7));
+        assert!(!cpu.accepts_interrupt_level(6));
+        assert!(!cpu.accepts_interrupt_level(4));
+        assert!(!cpu.accepts_interrupt_level(8), "level 8 does not exist");
+
+        cpu.sr = 0x2500;
+        assert_eq!(cpu.interrupt_priority_mask(), 5);
+        assert!(cpu.accepts_interrupt_level(6));
+        assert!(!cpu.accepts_interrupt_level(5));
+        assert!(!cpu.accepts_interrupt_level(4));
+
+        cpu.sr = 0x2300;
+        assert!(
+            cpu.accepts_interrupt_level(4),
+            "HBlank is admitted at mask 3"
+        );
+    }
+
+    #[test]
+    fn move_immediate_to_sr_sets_the_raw_status_register_and_mask() {
+        // MOVE.W #$2000,SR; MOVE.W #$2508,SR
+        let (mut cpu, mut bus) = cpu_at_program(&[
+            0x46, 0xFC, 0x20, 0x00, //
+            0x46, 0xFC, 0x25, 0x08,
+        ]);
+        assert!(!cpu.accepts_interrupt_level(6), "reset masks level 6");
+
+        cpu.step(&mut bus).expect("move.w #$2000,sr");
+        assert_eq!(cpu.sr(), 0x2000);
+        assert_eq!(cpu.interrupt_priority_mask(), 0);
+        assert!(cpu.accepts_interrupt_level(4));
+        assert!(cpu.accepts_interrupt_level(6));
+
+        cpu.step(&mut bus).expect("move.w #$2508,sr");
+        assert_eq!(cpu.sr(), 0x2508, "the raw word replaces SR exactly");
+        assert_eq!(cpu.interrupt_priority_mask(), 5);
+        assert!(cpu.accepts_interrupt_level(6));
+        assert!(!cpu.accepts_interrupt_level(4));
+        assert_eq!(cpu.pc(), 0x208);
+    }
+
+    #[test]
+    fn rte_restores_raw_sr_pc_and_advances_the_stack_pointer() {
+        // RTE with a frame holding S=1, IPM=5 and CCR=0x35.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = INITIAL_STACK;
+        cpu.sr = 0x2700;
+        bus.write16(INITIAL_STACK, 0x2535).expect("frame sr");
+        bus.write32(INITIAL_STACK + 2, 0x0000_0400)
+            .expect("frame pc");
+
+        cpu.step(&mut bus).expect("rte");
+        assert_eq!(cpu.sr(), 0x2535, "raw SR incl. IPM/S/CCR is restored");
+        assert_eq!(cpu.interrupt_priority_mask(), 5);
+        assert!(cpu.accepts_interrupt_level(6));
+        assert!(!cpu.accepts_interrupt_level(5));
+        assert!(!cpu.accepts_interrupt_level(4));
+        assert!(cpu.accepts_interrupt_level(7));
+        assert_eq!(cpu.pc(), 0x400);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK + 6));
+    }
+
+    #[test]
+    fn rte_restores_user_mode_and_condition_codes_exactly() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = INITIAL_STACK;
+        bus.write16(INITIAL_STACK, 0x0015).expect("frame sr");
+        bus.write32(INITIAL_STACK + 2, 0x0000_0300)
+            .expect("frame pc");
+
+        cpu.step(&mut bus).expect("rte");
+        assert_eq!(cpu.sr(), 0x0015, "user mode and CCR are restored verbatim");
+        assert_eq!(cpu.sr() & 0x2000, 0, "RTE does not force supervisor mode");
+        assert_eq!(cpu.pc(), 0x300);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK + 6));
+    }
+
+    #[test]
+    fn rte_rejects_stack_underflow_without_touching_state() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = 0xFFFF_FFFC;
+        assert_eq!(cpu.step(&mut bus), Err(CpuError::StackOverflow));
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.address_register(7), Some(0xFFFF_FFFC));
+        assert_eq!(cpu.pc(), 0x202, "only the opcode word was fetched");
+    }
+
+    #[test]
+    fn rte_rejects_an_unmapped_frame_without_touching_state() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = 0x0080_0000;
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::Bus(BusError::UnmappedRead {
+                address: 0x0080_0000
+            }))
+        );
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.address_register(7), Some(0x0080_0000));
+        assert_eq!(cpu.pc(), 0x202);
+    }
+
+    #[test]
+    fn rte_rejects_an_unmapped_pc_read_after_a_valid_sr_read() {
+        // The SR word is readable but the return PC crosses the RAM window end,
+        // so the frame must be validated before any state is committed.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = 0x00FF_FFFE;
+        cpu.sr = 0x2701;
+        bus.write16(0x00FF_FFFE, 0x2004).expect("frame sr");
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::Bus(BusError::UnmappedRead {
+                address: 0x0100_0000
+            }))
+        );
+        assert_eq!(cpu.sr(), 0x2701, "the valid SR read must not be committed");
+        assert_eq!(cpu.address_register(7), Some(0x00FF_FFFE));
+        assert_eq!(cpu.pc(), 0x202);
+    }
+
+    #[test]
+    fn rte_rejects_an_odd_restored_pc_without_touching_state() {
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
+        cpu.a[7] = INITIAL_STACK;
+        bus.write16(INITIAL_STACK, 0x2000).expect("frame sr");
+        bus.write32(INITIAL_STACK + 2, 0x0000_0401)
+            .expect("frame pc");
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::AddressError { address: 0x401 })
+        );
+        assert_eq!(cpu.sr(), 0x2700);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        assert_eq!(cpu.pc(), 0x202);
+    }
+
+    #[test]
+    fn trace_records_move_to_sr_and_rte() {
+        // MOVE.W #$2000,SR; RTE
+        let (mut cpu, mut bus) = cpu_at_program(&[0x46, 0xFC, 0x20, 0x00, 0x4E, 0x73]);
+        cpu.a[7] = INITIAL_STACK;
+        bus.write16(INITIAL_STACK, 0x2000).expect("frame sr");
+        bus.write32(INITIAL_STACK + 2, 0x0000_0300)
+            .expect("frame pc");
+        cpu.enable_trace(4).expect("trace capacity 4");
+
+        cpu.step(&mut bus).expect("move.w #imm,sr");
+        cpu.step(&mut bus).expect("rte");
+
+        let records: Vec<(u64, u32, u16)> = cpu
+            .trace()
+            .expect("trace enabled")
+            .entries()
+            .map(|entry| (entry.index(), entry.pc(), entry.opcode()))
+            .collect();
+        assert_eq!(records, vec![(0, 0x200, 0x46FC), (1, 0x204, 0x4E73)]);
+        assert_eq!(cpu.pc(), 0x300);
+        assert_eq!(cpu.sr(), 0x2000);
     }
 }

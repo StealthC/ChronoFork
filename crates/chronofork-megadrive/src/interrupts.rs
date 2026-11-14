@@ -28,9 +28,17 @@
 //! keeps its original issued tick and the queue cannot grow without bound.
 //! Requests of different levels are retained independently. Delivery order is
 //! 68000 interrupt priority (VBlank level 6 before HBlank level 4), not arrival
-//! order. The scheduler never applies the CPU interrupt mask itself; use
-//! [`InterruptScheduler::next_deliverable`] to observe which pending level the CPU
-//! mask would currently admit. Acknowledging a level clears its pending request.
+//! order. The scheduler does not mutate the CPU:
+//! [`InterruptScheduler::next_deliverable`] applies the single 68000 delivery
+//! predicate from
+//! [`interrupt_level_deliverable`] to a
+//! supplied status register, so level 7 is always deliverable while every other
+//! level must be strictly greater than the `SR` interrupt-priority mask.
+//! Exception entry itself belongs to the CPU:
+//! [`M68000::interrupt`](crate::cpu::M68000::interrupt) loads the accepted level
+//! into the mask so a lower pending level cannot nest inside the handler, and
+//! `RTE` restores the previous mask from the pushed frame.
+//! Acknowledging a level clears its pending request.
 //!
 //! # Snapshot payload
 //!
@@ -46,6 +54,8 @@
 
 use std::error::Error;
 use std::fmt;
+
+use crate::cpu::interrupt_level_deliverable;
 
 /// 68000 interrupt level requested by the VDP at vertical blank.
 pub const VBLANK_INTERRUPT_LEVEL: u8 = 6;
@@ -587,16 +597,20 @@ impl InterruptScheduler {
         self.pending_events().next().map(|event| event.level())
     }
 
-    /// Returns the highest-priority pending request the 68000 mask would admit.
+    /// Returns the highest-priority pending request the 68000 would take with
+    /// `status_register` in `SR`.
     ///
-    /// Only the low three bits of `interrupt_mask` are considered. A request is
-    /// deliverable when its level is strictly greater than the mask, matching the
-    /// 68000 interrupt-priority rule. This method does not acknowledge anything.
+    /// This is the scheduler-facing view of
+    /// [`interrupt_level_deliverable`],
+    /// the single source of truth for the 68000 rule: level 7 is always
+    /// deliverable, and every other level must be strictly greater than the
+    /// interrupt-priority mask `(status_register >> 8) & 7`. Only the IPM bits
+    /// of the status register are consulted. This method does not acknowledge
+    /// anything.
     #[must_use]
-    pub fn next_deliverable(&self, interrupt_mask: u8) -> Option<InterruptLevel> {
-        let mask = interrupt_mask & 0x07;
+    pub fn next_deliverable(&self, status_register: u16) -> Option<InterruptLevel> {
         self.pending_events()
-            .find(|event| event.level().level() > mask)
+            .find(|event| interrupt_level_deliverable(event.level().level(), status_register))
             .map(|event| event.level())
     }
 
@@ -848,6 +862,7 @@ mod tests {
         NTSC_ACTIVE_LINES, NTSC_LINES_PER_FRAME, PendingInterrupt, SchedulerConfig, SchedulerError,
         VBLANK_INTERRUPT_LEVEL, VideoStandard,
     };
+    use crate::cpu::interrupt_level_deliverable;
 
     fn scheduler(instructions_per_line: u32) -> InterruptScheduler {
         let config = SchedulerConfig::new(VideoStandard::Ntsc, instructions_per_line)
@@ -1023,13 +1038,62 @@ mod tests {
             .advance(vblank_tick)
             .expect("advance to vertical blank");
         assert_eq!(scheduler.next_pending(), Some(vblank()));
-        assert_eq!(scheduler.next_deliverable(7), None);
-        assert_eq!(scheduler.next_deliverable(6), None);
-        assert_eq!(scheduler.next_deliverable(5), Some(vblank()));
-        assert_eq!(scheduler.next_deliverable(3), Some(vblank()));
+        assert_eq!(scheduler.next_deliverable(0x2700), None);
+        assert_eq!(scheduler.next_deliverable(0x2600), None);
+        assert_eq!(scheduler.next_deliverable(0x2500), Some(vblank()));
+        assert_eq!(scheduler.next_deliverable(0x2300), Some(vblank()));
         assert!(scheduler.acknowledge(vblank()));
-        assert_eq!(scheduler.next_deliverable(4), None);
-        assert_eq!(scheduler.next_deliverable(3), Some(hblank()));
+        assert_eq!(scheduler.next_deliverable(0x2400), None);
+        assert_eq!(scheduler.next_deliverable(0x2300), Some(hblank()));
+    }
+
+    #[test]
+    fn delivery_view_applies_the_level_seven_rule() {
+        let mut scheduler = scheduler(4);
+        scheduler
+            .advance(u64::from(NTSC_ACTIVE_LINES) * 4)
+            .expect("advance to vertical blank");
+        // The VDP only drives levels 6 and 4, so mask 7 delivers nothing even
+        // though level 7 itself would always be taken. The rule is visible in
+        // the shared predicate and in the CPU view of it.
+        assert!(!interrupt_level_deliverable(VBLANK_INTERRUPT_LEVEL, 0x2700));
+        assert!(!interrupt_level_deliverable(HBLANK_INTERRUPT_LEVEL, 0x2700));
+        assert!(interrupt_level_deliverable(7, 0x2700));
+        assert!(interrupt_level_deliverable(7, 0x0700));
+        assert_eq!(scheduler.next_deliverable(0x2700), None);
+    }
+
+    #[test]
+    fn scheduler_and_cpu_agree_on_the_shared_delivery_predicate() {
+        let mut scheduler = scheduler(4);
+        scheduler
+            .advance(u64::from(NTSC_ACTIVE_LINES) * 4)
+            .expect("advance to vertical blank");
+        assert_eq!(scheduler.pending_len(), 2, "VBlank and HBlank pending");
+
+        let mut cpu = crate::cpu::M68000::new();
+        for status_register in [0x2700_u16, 0x2600, 0x2500, 0x2400, 0x2300, 0x2000, 0x0000] {
+            let expected = InterruptLevel::ALL
+                .into_iter()
+                .rev()
+                .find(|level| interrupt_level_deliverable(level.level(), status_register));
+            assert_eq!(
+                scheduler.next_deliverable(status_register),
+                expected,
+                "scheduler must reuse the CPU predicate for SR 0x{status_register:04X}"
+            );
+            // The CPU-facing view applies exactly the same predicate to the
+            // same raw SR value.
+            cpu.restore_state([0; 8], [0; 8], 0, status_register, false);
+            assert_eq!(
+                cpu.accepts_interrupt_level(VBLANK_INTERRUPT_LEVEL),
+                interrupt_level_deliverable(VBLANK_INTERRUPT_LEVEL, status_register)
+            );
+            assert_eq!(
+                cpu.accepts_interrupt_level(HBLANK_INTERRUPT_LEVEL),
+                interrupt_level_deliverable(HBLANK_INTERRUPT_LEVEL, status_register)
+            );
+        }
     }
 
     #[test]

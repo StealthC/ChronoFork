@@ -73,8 +73,6 @@ fn trace_and_state_are_byte_stable_across_two_runs() {
             path_str(&rom),
             "--instructions",
             "5",
-            "--instructions-per-line",
-            "1000000",
             "--trace-out",
             path_str(&trace_path),
             "--state-out",
@@ -105,7 +103,7 @@ fn trace_and_state_are_byte_stable_across_two_runs() {
     for line in [
         "executed=5",
         "tick=5",
-        "instructions_per_line=1000000",
+        "instructions_per_line=64",
         "video=ntsc",
         "halted=0",
         "pc=0000020e",
@@ -150,8 +148,6 @@ fn trace_respects_the_stop_address() {
         "100",
         "--stop-pc",
         "0x204",
-        "--instructions-per-line",
-        "1000000",
         "--trace-out",
         path_str(&trace_path),
         "--state-out",
@@ -180,8 +176,6 @@ fn trace_writes_to_stdout_when_no_trace_file_is_given() {
         path_str(&rom),
         "--instructions",
         "3",
-        "--instructions-per-line",
-        "1000000",
         "--state-out",
         path_str(&state_path),
     ]);
@@ -217,10 +211,57 @@ fn default_scheduler_quantum_is_still_64_and_is_never_hidden() {
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(output.status.success(), "trace run failed: {stderr}");
     let state = std::fs::read_to_string(&state_path).expect("state file");
-    assert!(state.lines().any(|line| line == "instructions_per_line=64"));
     assert!(
-        stderr.contains("does not gate interrupts with the SR mask (E2-15)"),
-        "the interrupt-mask limitation must not be hidden: {stderr}"
+        state.lines().any(|line| line == "instructions_per_line=64"),
+        "the default quantum must still be 64: {state}"
+    );
+    for expected in [
+        "the default is 64",
+        "interrupt-priority mask",
+        "level 7 is always taken",
+        "stays pending",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "the gating description is missing `{expected}`: {stderr}"
+        );
+    }
+    for stale in ["does not gate interrupts", "E2-15", "1000000"] {
+        assert!(
+            !stderr.contains(stale),
+            "stale interrupt text `{stale}` must be gone: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn explicit_quantum_is_still_recorded_in_state() {
+    let dir = temp_dir("explicit-quantum");
+    let rom = write_rom(&dir);
+    let state_path = dir.join("state.txt");
+    let output = run(&[
+        "megadrive",
+        "trace",
+        "--rom",
+        path_str(&rom),
+        "--instructions",
+        "3",
+        "--instructions-per-line",
+        "8",
+        "--state-out",
+        path_str(&state_path),
+    ]);
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(output.status.success(), "trace run failed: {stderr}");
+    let state = std::fs::read_to_string(&state_path).expect("state file");
+    assert!(
+        state.lines().any(|line| line == "instructions_per_line=8"),
+        "explicit quantum must be recorded: {state}"
+    );
+    assert!(
+        !stderr.contains("note: scheduler quantum"),
+        "three instructions do not complete a line at quantum 8: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -240,14 +281,32 @@ fn trace_help_documents_formats_and_options() {
         "Final-state format:",
         "chronofork-megadrive-state v1",
         "ram_base=00ff0000",
-        "E2-15",
-        "--instructions-per-line 1000000",
+        "level 7 is always taken",
+        "stays pending",
+        "RTE",
+        "not cycle-accurate",
+        "never changed implicitly",
     ] {
         assert!(
             stdout.contains(expected),
             "help text is missing `{expected}`"
         );
     }
+    for stale in [
+        "does not gate interrupts",
+        "E2-15",
+        "--instructions-per-line 1000000",
+        "must therefore pass",
+    ] {
+        assert!(
+            !stdout.contains(stale),
+            "stale interrupt help `{stale}` must be gone: {stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("The default is 64"),
+        "help must state the default quantum: {stdout}"
+    );
 }
 
 #[test]
@@ -326,8 +385,6 @@ fn zero_instruction_budget_writes_an_empty_trace_and_initial_state() {
         path_str(&rom),
         "--instructions",
         "0",
-        "--instructions-per-line",
-        "1000000",
         "--trace-out",
         path_str(&trace_path),
         "--state-out",

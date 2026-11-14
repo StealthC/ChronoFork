@@ -15,7 +15,7 @@ use chronofork_backend_api::{Backend, BackendFactory};
 use chronofork_core::InputFrame;
 use chronofork_megadrive::{
     DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveFactory, RAM_BASE,
-    RAM_SIZE, SchedulerConfig, VideoStandard, demo_rom,
+    RAM_SIZE, SchedulerConfig, VideoStandard, demo_rom, interrupt_rom,
 };
 use chronofork_sessions::{SessionManager, Snapshot};
 use chronofork_test_backend::SyntheticBackendFactory;
@@ -390,7 +390,7 @@ fn run_megadrive_trace(args: &[String]) -> Result<(), Box<dyn Error>> {
     );
     if executed > u64::from(options.scheduler.instructions_per_line()) {
         eprintln!(
-            "note: scheduler quantum is {} instruction(s) per line, so HBlank interrupts were delivered in this window. This core does not gate interrupts with the SR mask (E2-15); pass --instructions-per-line 1000000 for an interrupt-free differential window.",
+            "note: scheduler quantum is {} instruction(s) per line (the default is {DEFAULT_INSTRUCTIONS_PER_LINE}); one executed instruction is one quantum, so this is an instruction-quantum interrupt model, not cycle-accurate VDP timing. Interrupt delivery is gated by the 68000 SR interrupt-priority mask: level 7 is always taken and any other level only when strictly above the mask, so a masked VDP request stays pending instead of running a handler.",
             options.scheduler.instructions_per_line()
         );
     }
@@ -568,17 +568,19 @@ fn print_trace_help() {
     println!("    ram=<2 hex digits per byte, lowercase>");
     println!();
     println!("Interrupts:");
+    println!("  Interrupts use an instruction-quantum model, not cycle-accurate VDP timing:");
     println!(
-        "  The default scheduler quantum is {DEFAULT_INSTRUCTIONS_PER_LINE} instructions per line, so an"
+        "  one executed instruction is one scheduler quantum. The default is {DEFAULT_INSTRUCTIONS_PER_LINE}"
     );
-    println!(
-        "  HBlank request is raised after every {DEFAULT_INSTRUCTIONS_PER_LINE} instructions. This core does"
-    );
-    println!("  not gate interrupts with the 68000 SR mask yet (documented E2-15 gap),");
-    println!("  while the external oracle honours mask 7 and takes none. Differential");
-    println!("  runs must therefore pass a large explicit quantum, for example");
-    println!("  `--instructions-per-line 1000000`, so no interrupt is raised inside the");
-    println!("  measured window. The default is never changed implicitly.");
+    println!("  instructions per scanline, `--instructions-per-line` changes the model,");
+    println!("  and the default is never changed implicitly. Delivery is gated by the 68000");
+    println!("  SR interrupt-priority mask: level 7 is always taken, and every other level");
+    println!("  is taken only when strictly above the mask. A masked VDP request");
+    println!("  stays pending — it is not acknowledged or dropped — until the program");
+    println!("  lowers the mask (for example with MOVE.W #imm,SR); handlers return with");
+    println!("  RTE, which restores the saved raw SR. VDP interrupt-enable registers and");
+    println!("  cycle-accurate timing are not modelled, so this is a mask-gating model, not");
+    println!("  a timing-equivalence claim.");
 }
 
 fn describe_backend() -> Result<(), Box<dyn Error>> {
@@ -799,8 +801,8 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     );
     println!("vdp: program wrote and read back VRAM word 0x1234 through the data port");
 
-    // A request raised at the end of one instruction is visible in inspection and
-    // taken at the next instruction boundary.
+    // The demo ROM never writes SR, so the reset interrupt-priority mask 7 keeps
+    // both VDP levels masked: the request is retained but never delivered.
     for _ in 23..64 {
         manager.step(source, InputFrame::NEUTRAL)?;
     }
@@ -817,66 +819,42 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         pending.machine.registers["irq_vector"] == 0x70,
         "HBlank should select autovector 0x70",
     )?;
+    ensure(
+        pending.machine.registers["irq_mask"] == 7,
+        "the reset mask should still be 7",
+    )?;
+    ensure(
+        pending.machine.registers["irq_deliverable"] == 0,
+        "mask 7 must block HBlank delivery",
+    )?;
+    ensure(
+        pending.machine.registers["d7"] == 0,
+        "no handler may run while masked",
+    )?;
     println!(
-        "interrupt: HBlank pending at tick 64 (level 4, vector 0x70, mask {})",
-        pending.machine.registers["irq_mask"]
+        "interrupt: masked HBlank pending at tick 64 (level 4, vector 0x70, mask 7, deliverable=0)"
     );
 
     manager.step(source, InputFrame::NEUTRAL)?;
-    let delivered = manager.inspect(source)?;
+    let masked_step = manager.inspect(source)?;
     ensure(
-        delivered.machine.registers["d7"] == 1,
-        "HBlank handler did not run exactly once",
+        masked_step.machine.registers["irq_pending_level"] == 4,
+        "the masked HBlank must stay pending at tick 65",
     )?;
     ensure(
-        delivered.machine.registers["irq_pending_level"] == 0,
-        "HBlank request was not acknowledged",
+        masked_step.machine.registers["d7"] == 0,
+        "the masked HBlank must not run a handler",
     )?;
-    println!(
-        "interrupt: HBlank delivered; handler pc=0x{:X} D7={}",
-        delivered.machine.registers["pc"], delivered.machine.registers["d7"]
-    );
+    println!("interrupt: mask 7 blocked delivery at tick 65; request retained, no handler ran");
 
-    // VBlank needs 224 active scanlines. A shorter instruction quantum keeps the
-    // demonstration compact while exercising the same scheduler path.
-    let fast_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
-    let fast_factory = MegadriveFactory::with_scheduler_config(demo_rom(), fast_config)?;
-    let mut fast_manager = SessionManager::new(Arc::new(fast_factory));
-    let fast = fast_manager.create_session()?;
-    let vblank_tick = u64::from(VideoStandard::Ntsc.active_lines()) * 4;
-    for _ in 0..vblank_tick {
-        fast_manager.step(fast, InputFrame::NEUTRAL)?;
-    }
-    let vblank_view = fast_manager.inspect(fast)?;
-    ensure(
-        vblank_view.machine.registers["irq_pending_level"] == 6,
-        "VBlank should have priority at the start of vertical blanking",
-    )?;
-    ensure(
-        vblank_view.machine.registers["irq_vector"] == 0x78,
-        "VBlank should select autovector 0x78",
-    )?;
-    ensure(
-        vblank_view.machine.registers["vdp_status"] & 0x0008 != 0,
-        "VDP VBlank status flag should be set",
-    )?;
-    let vblank_checkpoint = fast_manager.snapshot(fast)?;
-    fast_manager.step(fast, InputFrame::NEUTRAL)?;
-    ensure(
-        fast_manager.inspect(fast)?.machine.registers["d6"] == 1,
-        "VBlank handler did not run exactly once",
-    )?;
-    fast_manager.restore(fast, vblank_checkpoint)?;
-    ensure(
-        fast_manager.inspect(fast)?.machine.registers["irq_pending_level"] == 6,
-        "snapshot restore did not preserve the pending VBlank request",
-    )?;
-    println!(
-        "interrupt: VBlank pending level 6 vector 0x78 at tick {vblank_tick} (quantum=4); snapshot restored it"
-    );
-
+    // Fork/restore still reproduces VDP, scheduler and CPU state, including the
+    // masked pending request.
     let checkpoint = manager.snapshot(source)?;
     let before = manager.inspect(source)?;
+    ensure(
+        before.machine.registers["irq_pending_level"] == 4,
+        "the checkpoint should hold the pending HBlank",
+    )?;
     let fork = manager.fork_from_snapshot(source, checkpoint)?;
     manager.write_memory(fork, u64::from(RAM_BASE), &[0xAA])?;
     manager.step(fork, InputFrame::NEUTRAL)?;
@@ -890,6 +868,14 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         source_view.machine.state_hash == before.machine.state_hash,
         "source was mutated by the fork",
     )?;
+    ensure(
+        source_view.machine.registers["irq_pending_level"] == 4,
+        "the source should keep its masked HBlank",
+    )?;
+    ensure(
+        source_view.machine.registers["d7"] == 0,
+        "the source must not run a masked handler",
+    )?;
     println!(
         "fork isolation: fork={} source={}",
         fork_view.machine.state_hash, source_view.machine.state_hash
@@ -901,7 +887,295 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         restored.machine.state_hash == before.machine.state_hash,
         "restore did not reproduce the checkpoint",
     )?;
-    println!("snapshot: VDP, scheduler and CPU state reproduced from the checkpoint");
+    ensure(
+        restored.machine.registers["irq_pending_level"] == 4,
+        "restore did not preserve the masked request",
+    )?;
+    println!(
+        "snapshot: VDP, scheduler and CPU state reproduced from the checkpoint (masked HBlank preserved)"
+    );
+
+    // The same ROM at a shorter quantum reaches vertical blanking, where VBlank
+    // (level 6) is pending but still masked; the VDP status exposes it as bits 3
+    // and 7.
+    let fast_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
+    let fast_factory = MegadriveFactory::with_scheduler_config(demo_rom(), fast_config)?;
+    let mut fast_manager = SessionManager::new(Arc::new(fast_factory));
+    let fast = fast_manager.create_session()?;
+    let vblank_tick = u64::from(VideoStandard::Ntsc.active_lines()) * 4;
+    for _ in 0..vblank_tick {
+        fast_manager.step(fast, InputFrame::NEUTRAL)?;
+    }
+    let vblank_view = fast_manager.inspect(fast)?;
+    ensure(
+        vblank_view.machine.tick.raw() == vblank_tick,
+        "unexpected tick at vertical blank",
+    )?;
+    ensure(
+        vblank_view.machine.registers["irq_mask"] == 7,
+        "vertical blank should still be masked",
+    )?;
+    ensure(
+        vblank_view.machine.registers["irq_pending_level"] == 6,
+        "VBlank should be pending with priority over HBlank",
+    )?;
+    ensure(
+        vblank_view.machine.registers["irq_vector"] == 0x78,
+        "VBlank should select autovector 0x78",
+    )?;
+    ensure(
+        vblank_view.machine.registers["irq_deliverable"] == 0,
+        "mask 7 must block VBlank delivery",
+    )?;
+    ensure(
+        vblank_view.machine.registers["d6"] == 0 && vblank_view.machine.registers["d7"] == 0,
+        "no handler may run while vertical blank is masked",
+    )?;
+    ensure(
+        vblank_view.machine.registers["vdp_status"] & 0x0088 == 0x0088,
+        "VDP VBlank and VINT-pending status bits should both be set",
+    )?;
+    let vblank_checkpoint = fast_manager.snapshot(fast)?;
+    fast_manager.step(fast, InputFrame::NEUTRAL)?;
+    let still_masked = fast_manager.inspect(fast)?;
+    ensure(
+        still_masked.machine.registers["irq_pending_level"] == 6,
+        "the masked VBlank must stay pending",
+    )?;
+    ensure(
+        still_masked.machine.registers["d6"] == 0,
+        "the masked VBlank must not run a handler",
+    )?;
+    fast_manager.restore(fast, vblank_checkpoint)?;
+    let restored_vblank = fast_manager.inspect(fast)?;
+    ensure(
+        restored_vblank.machine.state_hash == vblank_view.machine.state_hash,
+        "VBlank checkpoint restore changed the state hash",
+    )?;
+    ensure(
+        restored_vblank.machine.registers["irq_pending_level"] == 6,
+        "snapshot restore did not preserve the pending VBlank request",
+    )?;
+    ensure(
+        restored_vblank.machine.registers["vdp_status"] & 0x0080 != 0,
+        "snapshot restore did not restore the VINT-pending status bit",
+    )?;
+    println!(
+        "interrupt: masked VBlank pending level 6 vector 0x78 at tick {vblank_tick} (mask 7); VDP VBlank/VINT bits set and snapshot restored them"
+    );
+
+    // The interrupt ROM lowers the mask with MOVE.W #imm,SR. The retained HBlank
+    // is delivered at the next boundary, its handler runs and RTE restores the
+    // interrupted PC with the saved raw SR (mask and CCR).
+    let gated_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
+    let gated_factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), gated_config)?;
+    let mut gated_manager = SessionManager::new(Arc::new(gated_factory));
+    let gated = gated_manager.create_session()?;
+    for _ in 0..7 {
+        gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    }
+    let masked_hblank = gated_manager.inspect(gated)?;
+    ensure(
+        masked_hblank.machine.tick.raw() == 7,
+        "unexpected tick before the mask is lowered",
+    )?;
+    ensure(
+        masked_hblank.machine.registers["irq_mask"] == 7,
+        "the interrupt ROM should still be masked at tick 7",
+    )?;
+    ensure(
+        masked_hblank.machine.registers["irq_pending_level"] == 4,
+        "HBlank should be retained while masked",
+    )?;
+    ensure(
+        masked_hblank.machine.registers["d7"] == 0,
+        "no handler may run before the mask is lowered",
+    )?;
+    println!("interrupt: interrupt ROM retained HBlank at tick 7 under mask 7 (no handler)");
+
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let lowered = gated_manager.inspect(gated)?;
+    ensure(
+        lowered.machine.registers["irq_mask"] == 3,
+        "MOVE.W #imm,SR should lower the mask to 3",
+    )?;
+    ensure(
+        lowered.machine.registers["irq_pending_level"] == 4,
+        "the retained HBlank should still be pending at tick 8",
+    )?;
+    ensure(
+        lowered.machine.registers["irq_deliverable"] == 1,
+        "mask 3 should admit HBlank at tick 8",
+    )?;
+    ensure(
+        lowered.machine.registers["d7"] == 0,
+        "delivery is evaluated at the next instruction boundary",
+    )?;
+    println!(
+        "interrupt: MOVE.W #$2300,SR lowered the mask to 3 at tick 8; the retained HBlank became deliverable"
+    );
+
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let delivered_hblank = gated_manager.inspect(gated)?;
+    ensure(
+        delivered_hblank.machine.registers["irq_pending_level"] == 0,
+        "HBlank should be acknowledged on delivery",
+    )?;
+    ensure(
+        delivered_hblank.machine.registers["d7"] == 1,
+        "the HBlank handler did not run exactly once",
+    )?;
+    ensure(
+        delivered_hblank.machine.registers["pc"] == 0x2C2,
+        "unexpected handler pc right after HBlank delivery",
+    )?;
+    ensure(
+        delivered_hblank.machine.registers["irq_mask"] == 4,
+        "exception entry should load IPM 4 into the HBlank handler",
+    )?;
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    ensure(
+        gated_manager.inspect(gated)?.machine.registers["sr"] == 0x2408,
+        "the HBlank handler should set CCR N on top of handler IPM 4",
+    )?;
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let returned_hblank = gated_manager.inspect(gated)?;
+    ensure(
+        returned_hblank.machine.registers["pc"] == 0x214,
+        "RTE did not return to the interrupted pc",
+    )?;
+    ensure(
+        returned_hblank.machine.registers["sr"] == 0x2300,
+        "RTE did not restore the saved raw SR",
+    )?;
+    ensure(
+        returned_hblank.machine.registers["irq_mask"] == 3,
+        "RTE did not restore the lowered mask",
+    )?;
+    ensure(
+        returned_hblank.machine.registers["a7"] == 0x0100_0000,
+        "RTE did not pop the six-byte frame",
+    )?;
+    ensure(
+        returned_hblank.machine.registers["d7"] == 1,
+        "the handler counter should survive RTE",
+    )?;
+    println!(
+        "interrupt: HBlank delivered at tick 9 with handler IPM 4; handler ran; RTE at tick 11 returned to pc=0x214 with SR=0x2300 (mask 3, CCR restored)"
+    );
+
+    // At vertical blanking VBlank (level 6) is delivered before the pending
+    // HBlank (level 4); the handler runs at IPM 6, so the pending HBlank cannot
+    // nest before RTE restores mask 3. Acknowledging VBlank clears the VINT bit.
+    for _ in 11..vblank_tick {
+        gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    }
+    let vblank_pending = gated_manager.inspect(gated)?;
+    ensure(
+        vblank_pending.machine.tick.raw() == vblank_tick,
+        "unexpected tick at vertical blank",
+    )?;
+    ensure(
+        vblank_pending.machine.registers["irq_pending_level"] == 6,
+        "VBlank should be pending with priority over HBlank",
+    )?;
+    ensure(
+        vblank_pending.machine.registers["irq_deliverable"] == 1,
+        "mask 3 should admit VBlank",
+    )?;
+    ensure(
+        vblank_pending.machine.registers["d6"] == 0,
+        "the VBlank handler should not have run yet",
+    )?;
+    ensure(
+        vblank_pending.machine.registers["vdp_status"] & 0x0080 != 0,
+        "the VDP VINT-pending status bit should be set",
+    )?;
+    let pre_pc = vblank_pending.machine.registers["pc"];
+    let pre_sr = vblank_pending.machine.registers["sr"];
+    let d7_before_vblank = vblank_pending.machine.registers["d7"];
+    let vblank_gated_checkpoint = gated_manager.snapshot(gated)?;
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let vblank_delivered = gated_manager.inspect(gated)?;
+    ensure(
+        vblank_delivered.machine.registers["d6"] == 1,
+        "the VBlank handler did not run exactly once",
+    )?;
+    ensure(
+        vblank_delivered.machine.registers["pc"] == 0x2E2,
+        "unexpected handler pc right after VBlank delivery",
+    )?;
+    ensure(
+        vblank_delivered.machine.registers["irq_mask"] == 6,
+        "exception entry should load IPM 6 into the VBlank handler",
+    )?;
+    ensure(
+        vblank_delivered.machine.registers["irq_pending_level"] == 4,
+        "the pending HBlank should survive the VBlank acknowledge",
+    )?;
+    ensure(
+        vblank_delivered.machine.registers["vdp_status"] & 0x0080 == 0,
+        "VINT pending should clear when the VBlank request is acknowledged",
+    )?;
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let vblank_body = gated_manager.inspect(gated)?;
+    ensure(
+        vblank_body.machine.registers["irq_mask"] == 6,
+        "the VBlank handler should still run at IPM 6",
+    )?;
+    ensure(
+        vblank_body.machine.registers["irq_pending_level"] == 4,
+        "the pending HBlank must stay pending inside the VBlank handler",
+    )?;
+    ensure(
+        vblank_body.machine.registers["d7"] == d7_before_vblank,
+        "the pending HBlank must not nest inside the VBlank handler",
+    )?;
+    ensure(
+        vblank_body.machine.registers["a7"] == 0x00FF_FFFA,
+        "only the VBlank exception frame should be on the stack",
+    )?;
+    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let vblank_returned = gated_manager.inspect(gated)?;
+    ensure(
+        vblank_returned.machine.registers["pc"] == pre_pc,
+        "VBlank RTE did not return to the interrupted pc",
+    )?;
+    ensure(
+        vblank_returned.machine.registers["sr"] == pre_sr,
+        "VBlank RTE did not restore the saved raw SR",
+    )?;
+    ensure(
+        vblank_returned.machine.registers["irq_mask"] == 3,
+        "VBlank RTE did not restore the program mask 3",
+    )?;
+    ensure(
+        vblank_returned.machine.registers["a7"] == 0x0100_0000,
+        "VBlank RTE did not pop the six-byte frame",
+    )?;
+    ensure(
+        vblank_returned.machine.registers["d6"] == 1,
+        "the VBlank counter should survive RTE",
+    )?;
+
+    gated_manager.restore(gated, vblank_gated_checkpoint)?;
+    let vblank_restored = gated_manager.inspect(gated)?;
+    ensure(
+        vblank_restored.machine.state_hash == vblank_pending.machine.state_hash,
+        "VBlank checkpoint restore changed the state hash",
+    )?;
+    ensure(
+        vblank_restored.machine.registers["irq_pending_level"] == 6,
+        "restore did not preserve the pending VBlank request",
+    )?;
+    ensure(
+        vblank_restored.machine.registers["vdp_status"] & 0x0080 != 0,
+        "restore did not recompute the VINT-pending status bit",
+    )?;
+    println!(
+        "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler); RTE returned to pc=0x{pre_pc:X} with SR=0x{pre_sr:04X} (mask restored); snapshot preserved the pending VBlank/VINT state"
+    );
+
     println!("chronofork megadrive demo: PASS");
     Ok(())
 }

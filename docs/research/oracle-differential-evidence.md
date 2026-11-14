@@ -1,15 +1,18 @@
 # Oracle Differential Instruction-Trace Evidence
 
-- **Status:** Final post-repair evidence **PASS 2/2** against the pinned Exodus
-  headless oracle: both synthetic ROMs have identical projected address streams,
-  equal selected final state and passing negative controls. The earlier pre-repair
-  divergence (real 68000 absolute-long `MOVE` decoding defect) is preserved below
-  as history and was fixed under [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
-  E2-13.
+- **Status:** Current evidence **PASS 3/3** against the pinned Exodus headless
+  oracle: three independently authored synthetic ROMs have identical projected
+  address streams, equal selected final state and passing negative controls. The
+  E2-15 addition `rom_masked` omits `--instructions-per-line`, runs at the CLI
+  default quantum of 64, crosses two HBlank boundaries while the 68000 SR
+  interrupt mask stays 7, and enters no interrupt handler. The earlier
+  pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect) is
+  preserved below as history and was fixed under
+  [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md) E2-13.
 - **Scope:** instruction-address streams, opcode/ROM-byte consistency and selected
-  final architectural state for two independently authored synthetic ROMs. **Not**
-  cycle accuracy, interrupt behaviour, rendering, audio, Z80, DMA or game
-  compatibility.
+  final architectural state for three synthetic ROMs, plus a negative gating
+  control on the masked ROM. **Not** cycle accuracy, interrupt timing, interrupt
+  delivery equivalence, rendering, audio, Z80, DMA or game compatibility.
 - **Related:** [Mega Drive 68000 slice](../architecture/megadrive-slice.md),
   [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
   [provenance](../licensing/provenance.md),
@@ -20,17 +23,27 @@
 The reproducible harness `scripts/oracle-diff.py` runs the pinned Exodus headless
 oracle and ChronoFork's bounded instruction trace over the same generated ROM, then
 compares the executed-address sequence, opcode/ROM-byte consistency and selected
-final state.
+final state. It also records the per-ROM scheduler quantum and, for the masked ROM,
+checks the instruction-quantum HBlank crossing and mask-7 gating control.
 
-| ROM | Projected addresses | Projection SHA-256 | Final state | Negative control |
-|---|---|---|---|---|
-| `rom_alu` | 99/99 identical | `2b6f191c…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 49 caught, exit 1 |
-| `rom_mem_vdp` | 51/51 identical | `ba4f3948…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 25 caught, exit 1 |
+| ROM | Quantum | Projected addresses | Projection SHA-256 | Final state | Negative control |
+|---|---|---|---|---|---|
+| `rom_alu` | 1,000,000 (explicit) | 99/99 identical | `2b6f191c…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 49 caught, exit 1 |
+| `rom_mem_vdp` | 1,000,000 (explicit) | 51/51 identical | `ba4f3948…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 25 caught, exit 1 |
+| `rom_masked` | **64 (CLI default, flag omitted)** | 155/155 identical | `02891e15…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 77 caught, exit 1 |
 
-Overall post-repair summary: `status: pass`, 2/2 trace matches, 2/2 final-state
-matches, 2/2 negative controls, harness exit 0. The canonical evidence is
-`.research/evidence/oracle-diff.{json,md}`; an identical audit run is under
-`.research/evidence/after-repair/`, and the preserved pre-repair run is under
+Current summary: `status: pass`, 3/3 trace matches, 3/3 final-state matches,
+3/3 negative controls, 3/3 scheduler controls (masked gating 1/1), harness exit 0.
+`rom_masked` executed 155 instructions at quantum 64, completed two scanlines
+(boundaries at ticks 64 and 128) with the SR mask at 7 on both sides, executed no
+SR-writing opcode and entered no handler stub.
+
+The canonical evidence is `.research/evidence/oracle-diff.{json,md}` (schema
+`chronofork.oracle-diff.v2`). The pre-E2-15 canonical Phase-10 evidence —
+two ROMs, explicit 1,000,000-instruction quantum, no masked-ROM run — is preserved
+unchanged under `.research/evidence/before-e2-15/` (with a file manifest).
+Identical behavioral audit runs are under `.research/evidence/repro-e2-15/` and
+`/tmp/chronofork-e2-15-verify/`, and the preserved pre-repair E2-13 run is under
 `.research/evidence/before-repair/`.
 
 ### History at a glance
@@ -62,19 +75,22 @@ finding was never masked by weakening the comparison.
 | Module | `Data/Modules/Sega Mega Drive 1600.xml` |
 | Trace device | `Main 68000` |
 | Oracle frames | 1 |
-| ChronoFork commit | `ec4c1ca7c36558e3d95f0463ee4e4d3cd9902c04` (last commit; evidence worktree dirty) |
-| ChronoFork post-repair binary SHA-256 | `17f7e4f8fabe14ef38886b392cf6c642c0c744555fa39631dc219202bbfbe911` |
-| Post-repair harness SHA-256 | `241a62f321b79ecd07577e56f0104b87953a0a97219cae47bf7dbbbac4543403` |
+| ChronoFork commit | `f8a0e2c6efcbf34e683e57e59bcc8495c9479e3d` (last commit; evidence worktree dirty) |
+| ChronoFork evidence binary SHA-256 | `ff7a48f0912d891f0de74134c1523bbc861ced5ea153421c718e11c8804040eb` |
+| E2-15 harness SHA-256 | `d7f3561f5a1fd2e632951d07a5cbebbcfb2f416187ed1133f00a064fe2208792` |
+| Evidence schema | `chronofork.oracle-diff.v2` |
 | Pre-repair ChronoFork binary SHA-256 | `ee46501022034f19f364657ccd9247a52f5361ea5dcb877d7f8cc6e7596b30ed` |
 | Pre-repair harness SHA-256 | `8230ab267419bd483b842b3bba20ed09f507e92696da9dddd5367ce2f157e970` |
-| Scheduler quantum | 1,000,000 instructions per scanline (explicit) |
+| Scheduler quantum | per ROM: 1,000,000 explicit (`rom_alu`, `rom_mem_vdp`); CLI default 64 with the flag omitted (`rom_masked`) |
 | Compared RAM | 64 bytes at `0x00FF0000` |
 
-The ChronoFork entry is the last repository commit plus uncommitted trace/CLI/
-harness/repair work; the exact binary digest is therefore recorded rather than
+The ChronoFork entry is the last repository commit plus uncommitted E2-15
+trace/CLI/backend work; the exact binary digest is therefore recorded rather than
 relying on the commit alone. No commit or push was made for this evidence. The
 pre-repair binary and harness digests are listed so the historical FAIL can be tied
-to exact artifacts.
+to exact artifacts. The old `17f7e4f8…` binary and `241a62f3…` harness digests
+belong to the preserved pre-E2-15 canonical run under
+`.research/evidence/before-e2-15/`.
 
 ## Package prerequisites and oracle build
 
@@ -105,22 +121,33 @@ A separate build-validation run executed a 1024-byte synthetic smoke ROM and
 produced **2367** trace records starting at reset PC `0x200`, with two runs
 byte-identical at SHA-256
 `d720aa8417838894ddbcf868ac6fac33b092a5a6b92173da87bcb23726cd9fc4`. That smoke ROM
-is not one of the two differential ROMs below; its count and digest are recorded
+is not one of the three differential ROMs below; its count and digest are recorded
 here only as build/probe evidence and must not be conflated with the differential
 numbers.
 
 ## Synthetic differential ROMs
 
-Both ROMs are 4096 bytes, independently authored and generated deterministically by
-`scripts/oracle-diff.py`. They contain the Mega Drive header fields needed by the
-oracle loader, load the initial stack pointer and PC from the reset vectors, and end
-in a marker self-loop. Neither ROM uses absolute-word loads, PC-relative addressing,
-`RTE`, or any instruction outside the documented ChronoFork subset.
+All three ROMs are 4096 bytes, independently authored and generated
+deterministically by `scripts/oracle-diff.py`. They contain the Mega Drive header
+fields needed by the oracle loader, load the initial stack pointer and PC from the
+reset vectors, and end in a marker self-loop. None uses absolute-word loads,
+PC-relative addressing, or any instruction outside the documented ChronoFork
+subset.
 
 | ROM | SHA-256 | Size | Marker PC | Purpose |
 |---|---|---|---|---|
 | `rom_alu` | `f80bf48a29a428b6f3399d013103a7c41c7de13a058dfc7ae1bd67901aee563f` | 4096 | `0x000352` | ALU, shifts, flags and branch conditions; no absolute-long loads |
 | `rom_mem_vdp` | `9b43d7e9ebf8fa4182f5cf306489fa55a2b728267916fde71c54648f7e9d93ce` | 4096 | `0x0002E0` | Byte/word/long memory forms, absolute-long loads, VDP control/data writes |
+| `rom_masked` | `6c44450627402550df6c698960cb79c4b62adafd960b39ab644d3df6043e3c70` | 4096 | `0x0002EE` | Ten-iteration self-checking arithmetic recurrence, SR mask never written, 155 executed instructions at the default quantum |
+
+`rom_masked` is the E2-15 masked-ROM control. It contains **no** SR-writing opcode
+(no `MOVE` to SR, `ORI`/`ANDI`/`EORI` to SR, `STOP` or `RTE`), so it stays at the
+68000 reset interrupt-priority mask 7 for the entire run; the oracle also takes no
+interrupt at mask 7. Its 155-instruction run crosses two HBlank scheduling
+boundaries (ticks 64 and 128 at quantum 64). Its level-4/level-6 autovector table
+entries at `0x70`/`0x78` point at distinct `BRA.S *` stubs at `0x40`/`0x48`, so any
+gating regression that delivered an interrupt would park the CPU at a detectable
+address and diverge from the oracle rather than silently passing.
 
 The ROMs explicitly initialise every compared data/address register they use; the
 reset vector sets the same stack pointer on both sides. This matters because the
@@ -138,8 +165,11 @@ stream.
    mnemonic+args rendering, and the oracle's `cycle` and `time` columns are
    oracle-specific and are never compared.
 2. **ChronoFork trace.** Run `chronofork megadrive trace` with the same ROM, an
-   instruction budget, `--stop-pc <marker>`, `--ram-bytes 64` and an explicit
-   `--instructions-per-line 1000000`.
+   instruction budget, `--stop-pc <marker>` and `--ram-bytes 64`. `rom_alu` and
+   `rom_mem_vdp` pass an explicit `--instructions-per-line 1000000`; `rom_masked`
+   **omits** the flag and therefore runs at the CLI default quantum of 64. The
+   harness reads `instructions_per_line` back from each state file and records it
+   per ROM in JSON, Markdown and console output.
 3. **Projection.** Reduce both traces to the ordered sequence of executed
    instruction addresses up to but excluding the marker self-loop. The oracle keeps
    executing the marker loop until the frame ends, so its total record count is
@@ -158,24 +188,35 @@ stream.
    64 work-RAM bytes.
 6. **Negative control.** Corrupt one projected oracle record in a copy and require
    the comparator to exit 1 and report that exact index.
-7. **Determinism.** Run the oracle probe twice and the ChronoFork trace twice per
-   ROM; require byte-identical trace files and states across runs. The post-repair
-   evidence was also reproduced by an independent run into a separate output
-   directory.
+7. **Scheduler/gating control.** Read the per-ROM quantum from the state file and
+   derive the instruction-quantum scanline boundaries from the recorded tick,
+   quantum and video standard. For `rom_masked`, additionally require more than one
+   full quantum, at least one HBlank boundary, SR mask 7 on both sides, no
+   SR-writing opcode executed or present in the program region, and no handler-stub
+   entry. Derived boundary counts are ChronoFork control quantities, not oracle
+   timing comparisons.
+8. **Determinism.** Run the oracle probe twice and the ChronoFork trace twice per
+   ROM; require byte-identical trace files and states across runs. The current
+   evidence was also reproduced into fresh output directories (an ignored
+   `.research/evidence/repro-e2-15/` directory and `/tmp/chronofork-e2-15-verify/`)
+   with identical behavioral evidence.
 
 Controlled conditions that make the comparison meaningful in this slice:
 
-- **Interrupt-free measured window.** The oracle honours the reset SR mask (`7`) and
-  takes no interrupts. ChronoFork does **not** gate interrupts with the SR mask yet
-  (EPIC-0002 E2-15), so the harness must pass an explicit
-  `--instructions-per-line 1000000`; no interrupt is raised inside the measured
-  window. The CLI's default quantum of 64 is unchanged and is never altered
-  implicitly. This is a controlled workaround, not interrupt equivalence;
-  interrupt delivery is not part of this evidence.
+- **Per-ROM scheduler quantum.** `rom_alu` and `rom_mem_vdp` use an explicit
+  1,000,000-instruction quantum, so no HBlank/VBlank request is raised inside
+  their short measured windows and both sides run an interrupt-free stream. Their
+  results are unchanged from the preserved Phase-10 run.
+- **Masked default-quantum window.** `rom_masked` runs at the CLI default quantum
+  of 64 with `--instructions-per-line` omitted. The program contains no
+  SR-writing opcode, so the 68000 reset interrupt-priority mask 7 holds throughout;
+  HBlank requests raised at ticks 64 and 128 stay pending and no handler runs. The
+  pinned oracle also honours mask 7 and takes no interrupt. This is negative
+  evidence for gating, not interrupt-delivery equivalence.
 - **Marker-bounded windows.** Each ROM ends in a known self-loop; comparing only the
   pre-marker addresses removes frame-length and loop-count differences from the
   strict comparison.
-- **Explicit register initialisation.** Both ROMs write every compared register, so
+- **Explicit register initialisation.** Every ROM writes every compared register, so
   the oracle's undefined reset data/address values cannot affect the result.
 - **Effective, not raw, SR.** The oracle reports `0x7FE0` at rest while ChronoFork
   reports `0x2700`; only IPM, S and CCR are compared.
@@ -228,14 +269,15 @@ encodings. The pre-repair evidence is preserved under
 `.research/evidence/before-repair/` (JSON, Markdown and artifacts); it was copied,
 not overwritten.
 
-## Post-repair trace results
+## Current trace results (three ROMs)
 
 Projection = executed-address sequence up to but excluding the marker loop.
 
-| ROM | Oracle total records | Oracle projected | ChronoFork retained records | ChronoFork executed | ChronoFork projected | Addresses match |
-|---|---:|---:|---:|---:|---:|---|
-| `rom_alu` | 2375 | 99 | 99 | 99 | 99 | **yes** |
-| `rom_mem_vdp` | 2363 | 51 | 51 | 51 | 51 | **yes** |
+| ROM | Quantum | Oracle total records | Oracle projected | ChronoFork retained records | ChronoFork executed | ChronoFork projected | Addresses match |
+|---|---|---:|---:|---:|---:|---:|---|
+| `rom_alu` | 1,000,000 | 2375 | 99 | 99 | 99 | 99 | **yes** |
+| `rom_mem_vdp` | 1,000,000 | 2363 | 51 | 51 | 51 | 51 | **yes** |
+| `rom_masked` | **64 (CLI default)** | 2388 | 155 | 155 | 155 | 155 | **yes** |
 
 ### `rom_alu` — pass
 
@@ -276,13 +318,68 @@ Projection = executed-address sequence up to but excluding the marker loop.
   (ChronoFork record `28  00027a  2239`, ROM word `0x2239`) and continues through
   all 51 projected records to the marker.
 
-## Post-repair final-state comparison
+### `rom_masked` — pass at the CLI default quantum
+
+- Oracle projected SHA-256:
+  `02891e15765a342496196564e17d1649f10d39a069b4494fa96d7fb11ca3cd11`
+- ChronoFork projected SHA-256: the same digest.
+- First divergence: none.
+- Oracle trace dump SHA-256:
+  `2924bda26dad3c5b69a24dd076a7fdcb141fc31cda0e6b8318891bdff8f21032`
+  (identical across both runs).
+- ChronoFork trace SHA-256:
+  `870c850de53422c97a7ecd168766ba0ece135142a5abd0f85b65670f61ec7dc5`
+  (identical across both runs); state SHA-256:
+  `8426771b2319596861fa377e88225961d83a3f0ba9e8637f5e31c7f1f04162a4`.
+- Opcode audit: oracle projected mnemonic+args SHA-256
+  `51a168e07a3666046a2ae10cef0e4086e14df072708ebcde2ed64d05793a3435`;
+  ChronoFork projected opcode-word SHA-256
+  `03b45e8715f25aca92886430dae61dfe03151a2015a8120543843cdeffe5e71a`;
+  every projected opcode matches the ROM word, first mismatch none.
+- All 155 projected records match the oracle, so the oracle also executed no
+  handler and the two sides agree on the plain masked stream. The oracle's 2388
+  total records include the marker loop to the end of the frame.
+
+### Masked-ROM default-quantum gating control (E2-15)
+
+`rom_masked` was run **without** `--instructions-per-line`. The state file records
+`instructions_per_line=64`, so the harness verifies the CLI default rather than
+imitating it with an explicit flag.
+
+| Item | Observed |
+|---|---|
+| Per-ROM quantum | 64 (`cli-default`, flag omitted) |
+| Executed instructions / tick | 155 / 155 |
+| Full quanta completed | 2 scanlines (`tick // 64`) |
+| HBlank boundaries crossed | 2 (event ticks 64 and 128) |
+| VBlank boundaries crossed | 0 |
+| SR mask, ChronoFork / oracle | 7 / 7 |
+| SR-writing opcodes executed | 0 |
+| SR-writing opcodes in program region | 0 |
+| Handler-stub entries (`0x40`, `0x48`, `0x70`, `0x78`) | 0 |
+| Control checks | all passed |
+
+The program's arithmetic self-checks final registers D0=`0x00000000`,
+D1=`0x00000001`, D3=`0x00000035`, D4=`0x00000036`, D5–D7=`0x00000055`, and its
+work-RAM signature covers `0x00FF0000`–`0x00FF0013` (see the final-state section).
+Because the program contains no SR-writing opcode and no exception is entered,
+the SR mask is 7 at every instruction boundary; the harness still checks the final
+mask on both sides and scans the program region for SR-writing opcodes rather than
+assuming it.
+
+The autovector table entries at `0x70`/`0x78` point at `BRA.S *` stubs, so a gating
+regression would park the CPU at `0x40`/`0x48` and break the projected-stream and
+final-state comparisons. The pass is therefore **negative evidence for mask
+gating** — no handler executes while masked — not a positive comparison of
+interrupt delivery, acknowledge, nesting or interrupt timing.
+
+## Current final-state comparison
 
 Method: after one frame, one MCP session per ROM reads `cpu.registers` for
 `Main 68000` and `cpu.read_memory` for 64 bytes at `0xFF0000`; ChronoFork writes the
 same fields to a deterministic key=value state file. Raw SR words are recorded but
-not compared; effective IPM, S and CCR fields are compared instead. Both ROMs match
-on registers, effective SR and 64 work-RAM bytes.
+not compared; effective IPM, S and CCR fields are compared instead. All three ROMs
+match on registers, effective SR and 64 work-RAM bytes.
 
 ### `rom_alu` — match
 
@@ -310,16 +407,31 @@ on registers, effective SR and 64 work-RAM bytes.
   `000000000000000000000000000000000000000000000000000000000000000011223344ccdddd000000000000000000112233440000ccdd000000ddccdd0000`
   on both sides.
 
+### `rom_masked` — match
+
+- PC: oracle `0x000002EE`, ChronoFork `0x000002EE`.
+- Effective SR: IPM 7, S=1, CCR=0 on both sides (raw oracle `0x7FE0`, raw
+  ChronoFork `0x2700`).
+- D0–D7: `0x00000000`, `0x00000001`, `0x00000005`, `0x00000035`, `0x00000036`,
+  `0x00000055`, `0x00000055`, `0x00000055` on both sides.
+- A0–A7: `0x00FF1000`, `0x00FF1010`, `0x00FF1020`, `0x00FF1030`, `0x00FF1040`,
+  `0x00FF1050`, `0x00FF1060`, `0x00FFFF00` on both sides.
+- Work RAM at `0xFF0000`:
+  `00000037000000350000003600000000370000550000000000000000000000000000000000000000000000000000000000000000000000000000000000000000`
+  on both sides. This encodes the stored signature (55, 53, 54, 0, byte 0x37,
+  word 0x0055) inside the compared 64-byte window.
+
 ## Negative control
 
 The comparator is driven from the oracle projection; one projected record is
 corrupted in a copy and the comparator must exit 1 and report the corrupted index.
-Both post-repair controls pass.
+All three current controls pass.
 
 | ROM | Corrupted index | Reported index | Exit code | Status |
 |---|---:|---:|---:|---|
 | `rom_alu` | 49 | 49 | 1 | passed |
 | `rom_mem_vdp` | 25 | 25 | 1 | passed |
+| `rom_masked` | 77 | 77 | 1 | passed |
 
 ## Determinism and reproduction of the result
 
@@ -327,35 +439,66 @@ Both post-repair controls pass.
 |---|---|---|---|
 | `rom_alu` | yes (byte-identical) | yes (byte-identical) | yes (byte-identical) |
 | `rom_mem_vdp` | yes (byte-identical) | yes (byte-identical) | yes (byte-identical) |
+| `rom_masked` | yes (byte-identical) | yes (byte-identical) | yes (byte-identical) |
 
-The post-repair evidence was generated three times into separate output directories
-(`.research/evidence/after-repair/`, the canonical `.research/evidence/`, and an
-independent `/tmp` run) and produced the same behavioral evidence: ROM hashes,
-record counts, projection/mnemonic/opcode digests, final-state match and
-negative-control indices. The harness exits 0 for the post-repair run.
+The E2-15 evidence was generated three times into separate output directories
+(the canonical `.research/evidence/`, a fresh ignored
+`.research/evidence/repro-e2-15/`, and `/tmp/chronofork-e2-15-verify/`) and produced
+identical behavioral evidence: ROM hashes, record counts,
+projection/mnemonic/opcode/trace/state digests, final-state match, per-ROM quantum,
+HBlank control values and negative-control indices. The harness exits 0.
 
 ## Evidence locations
 
 All of this is ignored by Git and is not distributed with ChronoFork:
 
-- `.research/evidence/oracle-diff.json` and `oracle-diff.md` — canonical post-repair
-  evidence.
-- `.research/evidence/after-repair/` — identical audit run and artifacts.
+- `.research/evidence/oracle-diff.json` and `oracle-diff.md` — canonical E2-15
+  evidence (schema v2, three ROMs, per-ROM quantum).
+- `.research/evidence/before-e2-15/` — preserved, unchanged canonical Phase-10
+  evidence from before the E2-15 regeneration: the old `oracle-diff.json`
+  (SHA-256 `f6307be0ded33aca07de6c92e030c3eae19b6ef005a8f200d336060a211f52a7`),
+  `oracle-diff.md`
+  (SHA-256 `420013a52e01f633fbe9cdf2894ff985c0ff4e371eba4e5bd1a5143125dafb29`)
+  and `artifacts/` (two ROMs, explicit 1,000,000-instruction quantum, no
+  masked-ROM run), plus `PRESERVED.md` and a verified `SHA256SUMS` manifest.
+- `.research/evidence/repro-e2-15/` — fresh ignored reproduction of the canonical
+  E2-15 run with identical behavioral evidence.
 - `.research/evidence/before-repair/` — preserved original pre-repair evidence
   (JSON/Markdown/artifacts) that recorded the index-28 divergence.
-- `.research/evidence/STATUS.md` — post-repair status summary and the exact
+- `.research/evidence/after-repair/` — preserved audit run from the E2-13 repair.
+- `.research/evidence/STATUS.md` — post-repair E2-13 status summary and the exact
   pre/post record pair for `0x00027A`.
 - `.research/evidence/artifacts/<rom>/` — trace dumps, projections, final-state
   files, MCP transcripts, stderr/stdout and negative-control files for the canonical
-  run.
+  E2-15 run.
 
 ## Evidence commands
 
-Harness (generates ROMs, runs both tools twice per ROM, compares and writes the
-evidence files):
+Harness (generates the ROMs, runs both tools twice per ROM, compares, checks the
+per-ROM quantum/gating control and writes the evidence files):
 
 ```sh
 python3 scripts/oracle-diff.py --out-dir .research/evidence
+```
+
+Fresh-directory reproduction and the independent `/tmp` check:
+
+```sh
+python3 scripts/oracle-diff.py --out-dir .research/evidence/repro-e2-15
+python3 scripts/oracle-diff.py --out-dir /tmp/chronofork-e2-15-verify
+```
+
+Preserving the pre-E2-15 canonical evidence before regenerating (already done;
+copy, never overwrite):
+
+```sh
+cd .research/evidence
+test ! -e before-e2-15
+mkdir -p before-e2-15
+cp -a oracle-diff.json oracle-diff.md artifacts before-e2-15/
+cd before-e2-15
+find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+sha256sum -c SHA256SUMS --quiet
 ```
 
 Per-ROM oracle probe (run 1; run 2 is the same command with `run2` output names;
@@ -370,16 +513,26 @@ working directory is the pinned oracle checkout, so the module path resolves):
   "Data/Modules/Sega Mega Drive 1600.xml"
 ```
 
-Per-ROM ChronoFork trace (run 1; the marker is `0x352` for `rom_alu` and `0x2E0`
-for `rom_mem_vdp`):
+Per-ROM ChronoFork trace (run 1; markers: `0x352` `rom_alu`, `0x2E0`
+`rom_mem_vdp`, `0x2EE` `rom_masked`). `rom_alu` and `rom_mem_vdp` pass the explicit
+1,000,000 quantum; `rom_masked` **omits** `--instructions-per-line` so the CLI
+default of 64 applies and the state file records it:
 
 ```sh
+# rom_alu and rom_mem_vdp
 target/debug/chronofork megadrive trace \
   --rom .research/evidence/artifacts/roms/<rom>.bin \
   --instructions 10000 --stop-pc <marker> \
   --instructions-per-line 1000000 --ram-bytes 64 \
   --trace-out .research/evidence/artifacts/<rom>/chronofork.run1.trace \
   --state-out .research/evidence/artifacts/<rom>/chronofork.run1.state
+
+# rom_masked: no --instructions-per-line (CLI default 64)
+target/debug/chronofork megadrive trace \
+  --rom .research/evidence/artifacts/roms/rom_masked.bin \
+  --instructions 10000 --stop-pc 0x2EE --ram-bytes 64 \
+  --trace-out .research/evidence/artifacts/rom_masked/chronofork.run1.trace \
+  --state-out .research/evidence/artifacts/rom_masked/chronofork.run1.state
 ```
 
 Oracle final-state MCP sequence (one session per ROM, private `--base-path`):
@@ -394,8 +547,8 @@ cpu.read_memory {"device": "Main 68000", "address": "0xFF0000", "length": 64}
 shutdown
 ```
 
-Preserving a pre-repair baseline before regenerating evidence (as was done for the
-E2-13 history):
+Preserving the pre-repair E2-13 baseline (done before that repair) used the same
+copy-not-overwrite pattern:
 
 ```sh
 cd .research/evidence
@@ -405,19 +558,32 @@ cp -a oracle-diff.json oracle-diff.md artifacts before-repair/
 
 ## Limitations
 
-- **Instruction-address projection is not cycle equivalence.** Oracle cycle and time
-  columns are ignored; the oracle sees a different absolute start time, and
-  ChronoFork's tick model is one instruction per tick. No timing, prefetch,
-  bus-cycle, or scheduler-rate equivalence is claimed.
-- **Interrupt behaviour is not compared.** ChronoFork lacks SR mask gating and
-  `RTE` (E2-15); the measured window is kept interrupt-free with an explicit
-  1,000,000-instruction quantum. Interrupt delivery equivalence remains untested.
-- **Two synthetic 4096-byte ROMs are not general conformance.** Both pass now, but
+- **Instruction-address projection and selected state are not cycle equivalence.**
+  Oracle cycle and time columns are ignored; the oracle sees a different absolute
+  start time, and ChronoFork's tick model is one instruction per tick. No timing,
+  prefetch, bus-cycle, scheduler-rate or per-instruction-cost equivalence is claimed.
+- **Interrupt timing and interrupt delivery are not compared.** The masked-ROM
+  result is **negative evidence for mask gating**: at SR mask 7 the program contains
+  no SR-writing opcode, the scheduler raises HBlank boundaries behind it, no handler
+  stub is entered and both sides agree on the plain instruction stream and final
+  state. It does not compare interrupt delivery order, acknowledge semantics,
+  nesting, latency, vector fetch or handler execution against the oracle. The
+  E2-15 gating/RTE/VINT behaviour is covered by Rust tests, not by this differential
+  evidence.
+- **The explicit 1,000,000-instruction quantum is a controlled window, not
+  equivalence.** `rom_alu` and `rom_mem_vdp` avoid interrupts that way; `rom_masked`
+  uses the CLI default 64 and stays masked instead. The harness reads the quantum
+  back from each state file and reports it; it does not prove that a different
+  quantum would reproduce the same observable stream.
+- **Three synthetic 4096-byte ROMs are not general conformance.** All pass now, but
   the evidence does not establish the full 68000 instruction set, all addressing
-  modes, or arbitrary program behavior.
+  modes, exception behaviour or arbitrary program behavior.
 - **Final-state coverage is narrow.** Only D0–D7, A0–A7, PC, effective SR and 64
   work-RAM bytes at `0xFF0000` are compared. VRAM, CRAM, VSRAM, the full 64 KiB of
-  RAM, device state and scheduler state are not compared.
+  RAM, VDP registers/status beyond program-visible effects, device state and
+  scheduler/interrupt state are not compared. The derived HBlank boundary counts are
+  ChronoFork control quantities from the documented instruction-quantum model, not
+  oracle timing measurements.
 - **Opcodes are audited, not cross-format compared.** The oracle dump exposes
   mnemonic+args while ChronoFork exposes raw opcode words; agreement rests on the
   identical address streams, ROM-byte verification of every projected opcode, the
@@ -431,7 +597,7 @@ cp -a oracle-diff.json oracle-diff.md artifacts before-repair/
   recorded final effective-SR equality is valid for these ROMs; it is not a general
   reset-flag equivalence.
 - **The oracle's reset data/address registers are undefined** (`0xFFFFFFFF` for
-  D0–D7 and A0–A6); both ROMs initialise every compared register they use and the
+  D0–D7 and A0–A6); every ROM initialises every compared register it uses and the
   reset vector supplies the same stack pointer.
 - **VDP data-port reads are excluded** because the oracle's VRAM read prefetch
   differs from the minimal VDP model. VDP writes are included in the instruction
@@ -439,10 +605,11 @@ cp -a oracle-diff.json oracle-diff.md artifacts before-repair/
   claimed.
 - **No audio, Z80, controller, or full-hardware claim.** Only the 68000 instruction
   stream and selected state above are observed.
+- **No commercial ROM, BIOS or game-compatibility claim.** The ROMs are small,
+  independently authored synthetic programs.
 - **The oracle trace ring is bounded** (default 1,000,000 entries). These runs use at
-  most 2375 records, so no start-of-run records were dropped; a longer run could
+  most 2388 records, so no start-of-run records were dropped; a longer run could
   silently evict its beginning.
-- **No commercial ROM, BIOS or game compatibility is claimed.**
 - **The oracle binary is pinned by commit and SHA-256, not reproduced
   bit-for-bit.** Rebuilding the same commit with the recorded toolchain is expected
   to reproduce behaviour, not necessarily an identical executable.
@@ -487,16 +654,20 @@ python3 scripts/oracle-diff.py --out-dir .research/evidence
 sha256sum .research/evidence/oracle-diff.json .research/evidence/oracle-diff.md
 ```
 
-Expected post-repair exit code: **0** — both ROMs pass projection, final-state and
-negative-control comparisons. To reproduce the historical pre-repair FAIL, check out
-the pre-repair core revision and harness and preserve its output under a separate
-directory before running again.
+Expected exit code: **0** — all three ROMs pass projection, final-state and
+negative-control comparisons, and the scheduler/gating control passes (3/3
+scheduler controls, masked gating 1/1). The harness verifies that `rom_masked`
+recorded quantum 64 with the flag omitted and that `rom_alu`/`rom_mem_vdp` recorded
+the explicit 1,000,000 quantum. To reproduce the historical pre-repair FAIL, check
+out the pre-repair core revision and harness and preserve its output under a
+separate directory before running again.
 
-The harness writes `oracle-diff.json` (machine-readable) and `oracle-diff.md`
-(human-readable) plus per-ROM artifacts under
+The harness writes `oracle-diff.json` (machine-readable, schema v2) and
+`oracle-diff.md` (human-readable) plus per-ROM artifacts under
 `.research/evidence/artifacts/<rom>/`: both trace dumps per run, projections,
 final-state files, MCP transcripts, stderr/stdout and negative-control files. All of
-this is ignored by Git.
+this is ignored by Git. The preserved pre-E2-15 evidence under
+`.research/evidence/before-e2-15/` is not touched by a new run.
 
 ## Provenance
 

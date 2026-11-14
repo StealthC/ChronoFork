@@ -1,11 +1,14 @@
 //! Minimal deterministic Sega Mega Drive / Genesis backend slice.
 //!
-//! **Scope:** 68000 reset vectors, a documented instruction subset, ROM + 64 KiB
-//! work RAM, the VDP status/control/VRAM port window, a deterministic
-//! instruction-quantum VBlank/HBlank interrupt scheduler, versioned snapshots and
-//! session integration. **Not implemented:** rendering, audio, Z80, DMA,
-//! controllers, mapper hardware and cycle-accurate timing. This is real-hardware
-//! groundwork, not a playable emulator.
+//! **Scope:** 68000 reset vectors, a documented instruction subset (including
+//! `RTE` and `MOVE.W #imm,SR`), ROM + 64 KiB work RAM, the VDP
+//! status/control/VRAM port window with a derived VINT-pending status bit, a
+//! deterministic instruction-quantum VBlank/HBlank interrupt scheduler whose
+//! delivery honours the 68000 `SR` interrupt-priority mask (level 7 always,
+//! otherwise strictly above the mask), versioned snapshots and session
+//! integration. **Not implemented:** rendering, audio, Z80, DMA, controllers,
+//! mapper hardware, VDP interrupt-enable/acknowledge registers and cycle-accurate
+//! timing. This is real-hardware groundwork, not a playable emulator.
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
@@ -18,7 +21,7 @@ pub mod vdp;
 
 pub use backend::{
     BACKEND_ID, HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-    VBLANK_VECTOR_ADDRESS, demo_rom,
+    VBLANK_VECTOR_ADDRESS, demo_rom, interrupt_rom,
 };
 pub use bus::{
     BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END, VDP_BASE, VDP_END,

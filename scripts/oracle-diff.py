@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Oracle differential trace harness for the minimal Mega Drive 68000 slice.
 
-Task t3 (Phase 10, EPIC-0002 E2-12). This script is deliberately self-contained
-(Python 3 standard library only) and original code; it does not copy upstream
-Exodus source. It:
+Task t3 (Phase 10, EPIC-0002 E2-12), extended under E2-15. This script is
+deliberately self-contained (Python 3 standard library only) and original code;
+it does not copy upstream Exodus source. It:
 
-1. generates two independently authored synthetic Mega Drive ROMs deterministically
-   (``rom_alu`` and ``rom_mem_vdp``) and records their SHA-256 digests;
+1. generates three independently authored synthetic Mega Drive ROMs
+   deterministically (``rom_alu``, ``rom_mem_vdp`` and ``rom_masked``) and
+   records their SHA-256 digests;
 2. runs the pinned ``exodus-probe`` oracle twice per ROM and records both trace
    dumps (``--frames N``, ``--trace-device "Main 68000"``, default module);
-3. runs ``chronofork megadrive trace`` twice per ROM with an explicit large
-   scheduler quantum (1,000,000 instructions per line) so no interrupt is raised
-   in the measured window;
+3. runs ``chronofork megadrive trace`` twice per ROM. ``rom_alu`` and
+   ``rom_mem_vdp`` use an explicit 1,000,000-instruction scheduler quantum so no
+   interrupt is raised in their measured window. ``rom_masked`` omits
+   ``--instructions-per-line`` and therefore runs at the CLI default quantum of
+   64, crossing at least one instruction-quantum HBlank boundary while its SR
+   interrupt mask stays 7;
 4. projects both traces to the executed-address sequence up to the ROM marker
    loop and compares record count and every address, printing the first
    divergence with preceding context and exiting 1 on mismatch;
@@ -20,9 +24,15 @@ Exodus source. It:
    effective SR fields (IPM, S, CCR), never the raw SR word;
 6. runs a negative control that corrupts one projected record and asserts the
    comparator exits 1 at the corrupted index;
-7. writes machine-readable ``<out-dir>/oracle-diff.json`` and human-readable
-   ``<out-dir>/oracle-diff.md`` with pinned revisions, binary/ROM hashes, record
-   counts, projection digests, final state, commands and observed values.
+7. audits the masked-ROM gating control: the recorded per-ROM scheduler quantum,
+   the HBlank boundaries derived from ChronoFork's tick/quantum, the SR mask on
+   both sides and the absence of any SR-writing opcode or handler entry. This is
+   negative evidence about mask gating (no handler executes), not a comparison of
+   interrupt delivery or timing;
+8. writes machine-readable ``<out-dir>/oracle-diff.json`` and human-readable
+   ``<out-dir>/oracle-diff.md`` with pinned revisions, binary/ROM hashes,
+   per-ROM quantum, record counts, projection digests, final state, commands and
+   observed values.
 
 The oracle trace format is ``cycle, address(hex), opcode, args, time`` after three
 ``#`` header lines. Cycle and time are oracle-specific and are never compared.
@@ -30,13 +40,18 @@ ChronoFork trace lines are ``index, pc(hex), opcode(hex)``.
 
 Known scope limits (also written into the evidence):
 - the oracle starts the 68000 with undefined D/A registers set to ``0xFFFFFFFF``
-  while ChronoFork zeroes them, so both ROMs explicitly initialise every register
+  while ChronoFork zeroes them, so all ROMs explicitly initialise every register
   they compare;
 - raw SR words differ (oracle ``0x7FE0`` vs ChronoFork ``0x2700``); only effective
   fields are compared;
 - VDP data-port *read* behaviour is not compared (the oracle's VRAM read prefetch
   state does not match the minimal VDP model); VDP control/data *writes* are
   executed and compared as part of the instruction stream;
+- no cycle, interrupt-timing, rendering, audio, Z80, DMA or game-compatibility
+  equivalence is claimed; the address projection and selected final state of
+  synthetic ROMs are the only compared observables;
+- the masked-ROM pass is negative evidence about mask gating (no handler runs),
+  not a positive comparison of interrupt delivery;
 - a real divergence is reported as a finding and is never masked by editing the
   core or by weakening the comparison.
 
@@ -69,11 +84,28 @@ TRACE_DEVICE = "Main 68000"
 DEFAULT_FRAMES = 1
 DEFAULT_INSTRUCTION_BUDGET = 10_000
 DIFF_QUANTUM = 1_000_000
+# CLI default scheduler quantum (one 68000 instruction per scheduler quantum).
+CLI_DEFAULT_QUANTUM = 64
 RAM_BYTES = 64
 PROJECTION_CONTEXT = 5
 ROM_SIZE = 0x1000
 PROGRAM_AT = 0x200
 ORACLE_HEADER = "# exodus trace dump"
+# Masked-ROM interrupt handler stubs: HBlank/VBlank autovector table entries
+# (0x70/0x78) point at BRA.S * stubs at 0x40/0x48, so a gating regression parks
+# the CPU at a detectable address instead of running into the ROM header.
+MASKED_HANDLER_STUBS = (0x40, 0x48)
+MASKED_VECTOR_ENTRIES = (0x70, 0x78)
+MASKED_HANDLER_ADDRESSES = MASKED_HANDLER_STUBS + MASKED_VECTOR_ENTRIES
+ACTIVE_LINES = {"ntsc": 224, "pal": 240}
+LINES_PER_FRAME = {"ntsc": 262, "pal": 313}
+# 68000 instructions that can write the interrupt-priority mask (or the whole SR).
+SR_WRITE_OPCODES = {0x007C, 0x027C, 0x0A7C, 0x4E72, 0x4E73}
+
+
+def is_sr_write_opcode(opcode):
+    """Return True when the 68000 opcode word can write SR (and thus the IPM)."""
+    return (opcode & 0xFFC0) == 0x46C0 or opcode in SR_WRITE_OPCODES
 
 
 class HarnessError(RuntimeError):
@@ -482,9 +514,110 @@ def build_mem_vdp_rom():
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF MEM VDP ROM"), asm.labels
 
 
+def build_masked_rom():
+    """Self-checking arithmetic ROM that never leaves the reset SR mask 7.
+
+    The program contains no SR-writing opcode, so the 68000 reset
+    interrupt-priority mask 7 (oracle effective IPM 7; ChronoFork SR 0x2700)
+    holds for the whole run and neither side can take a VDP interrupt. The
+    ten-iteration recurrence executes well over one full CLI default quantum of
+    64 instructions before the marker loop, so the instruction-quantum scheduler
+    raises at least one HBlank request behind the masked program.
+
+    Two autovector table entries point at distinct ``BRA.S *`` stubs outside the
+    measured program region. If mask gating regressed and a request were
+    delivered, the CPU would park at a detectable stub address and both the
+    projected address stream and the final state would diverge from the oracle.
+    That makes the pass negative evidence against handler entry while masked,
+    not a positive comparison of interrupt delivery.
+    """
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+
+    # Ten-iteration recurrence. Repeated loop addresses make the projected
+    # stream comfortably longer than one default quantum of 64 instructions.
+    asm.moveq(10, 0)  # D0 = iteration counter
+    asm.moveq(0, 1)  # D1 = accumulated sum
+    asm.moveq(5, 2)  # D2 = recurrence increment
+    asm.moveq(3, 3)  # D3 = recurrence state
+    asm.label("loop")
+    asm.add_dn_dn("l", 1, 0)  # D1 += D0
+    asm.add_dn_dn("l", 3, 2)  # D3 += 5
+    asm.move_dn_dn("l", 3, 4)
+    asm.addq("l", 4, 1)  # D4 = D3 + 1
+    asm.assert_flag(BNE)  # D4 != 0
+    asm.cmp_dn_dn("l", 3, 4)  # D3 - D4 = -1: N set, Z clear
+    asm.assert_flag(BMI)
+    asm.assert_flag(BNE)
+    asm.subq("l", 0, 1)  # D0 -= 1
+    asm.bne("loop")
+
+    # Self-checks: D0 = 0, D1 = 10+9+...+1 = 55, D3 = 3 + 10*5 = 53, D4 = 54.
+    asm.move_imm_dn("l", 55, 5)
+    asm.cmp_dn_dn("l", 1, 5)
+    asm.assert_flag(BEQ)
+    asm.move_imm_dn("l", 53, 5)
+    asm.cmp_dn_dn("l", 3, 5)
+    asm.assert_flag(BEQ)
+    asm.move_imm_dn("l", 54, 5)
+    asm.cmp_dn_dn("l", 4, 5)
+    asm.assert_flag(BEQ)
+    asm.tst("l", 0)
+    asm.assert_flag(BEQ)
+    asm.assert_flag(BPL)
+
+    # Store the computed signature, then read part of it back.
+    asm.move_dn_abs("l", 1, 0x00FF0000)
+    asm.move_dn_abs("l", 3, 0x00FF0004)
+    asm.move_dn_abs("l", 4, 0x00FF0008)
+    asm.move_dn_abs("l", 0, 0x00FF000C)
+    asm.clr("l", 6)
+    asm.move_abs_dn("l", 0x00FF0004, 6)
+    asm.move_imm_dn("l", 53, 5)
+    asm.cmp_dn_dn("l", 6, 5)
+    asm.assert_flag(BEQ)
+
+    # Byte/word memory forms: 0x37 is the low byte of 55.
+    asm.move_dn_abs("b", 1, 0x00FF0010)
+    asm.clr("l", 6)
+    asm.move_abs_dn("b", 0x00FF0010, 6)
+    asm.move_imm_dn("w", 0x0037, 5)
+    asm.cmp_dn_dn("w", 6, 5)
+    asm.assert_flag(BEQ)
+    asm.move_imm_dn("w", 0x0055, 5)
+    asm.move_dn_abs("w", 5, 0x00FF0012)
+    asm.clr("l", 6)
+    asm.move_abs_dn("w", 0x00FF0012, 6)
+    asm.move_imm_dn("w", 0x0055, 7)
+    asm.cmp_dn_dn("w", 6, 7)
+    asm.assert_flag(BEQ)
+
+    # Final CCR: X=N=Z=V=C=0 on both sides (the oracle resets X=1).
+    asm.moveq(0, 1)
+    asm.addq("l", 1, 1)
+    asm.label("marker")
+    asm.bra_self()
+    asm.label("program_end")
+
+    rom = bytearray(_make_rom(asm.encode(), b"CHRONOFORK DIFF MASKED ROM"))
+    # Level 4 (0x70) and level 6 (0x78) autovector table entries point at
+    # self-loop stubs at 0x40/0x48, outside the program region.
+    rom[MASKED_HANDLER_STUBS[0] : MASKED_HANDLER_STUBS[0] + 2] = b"\x60\xfe"
+    rom[MASKED_HANDLER_STUBS[1] : MASKED_HANDLER_STUBS[1] + 2] = b"\x60\xfe"
+    rom[MASKED_VECTOR_ENTRIES[0] : MASKED_VECTOR_ENTRIES[0] + 4] = struct.pack(
+        ">I", MASKED_HANDLER_STUBS[0]
+    )
+    rom[MASKED_VECTOR_ENTRIES[1] : MASKED_VECTOR_ENTRIES[1] + 4] = struct.pack(
+        ">I", MASKED_HANDLER_STUBS[1]
+    )
+    return bytes(rom), asm.labels
+
+
+# (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
 ROMS = (
-    ("rom_alu", build_alu_rom),
-    ("rom_mem_vdp", build_mem_vdp_rom),
+    ("rom_alu", build_alu_rom, DIFF_QUANTUM, False),
+    ("rom_mem_vdp", build_mem_vdp_rom, DIFF_QUANTUM, False),
+    ("rom_masked", build_masked_rom, None, True),
 )
 
 
@@ -767,6 +900,7 @@ def parse_chronofork_state(path):
             "executed": int(values["executed"]),
             "tick": int(values["tick"]),
             "instructions_per_line": int(values["instructions_per_line"]),
+            "video": values.get("video", "ntsc"),
             "d": [int(values["d{}".format(i)], 16) for i in range(8)],
             "a": [int(values["a{}".format(i)], 16) for i in range(8)],
             "pc": int(values["pc"], 16),
@@ -1015,11 +1149,113 @@ class McpSession:
 
 
 # ---------------------------------------------------------------------------
+# Per-ROM scheduler/gating control
+# ---------------------------------------------------------------------------
+
+
+def _rom_sr_writes(rom, start, end):
+    """Return '<address>:<opcode>' entries for SR-writing words in a ROM range."""
+    writes = []
+    for offset in range(start, min(end, len(rom)) - 1, 2):
+        word = int.from_bytes(rom[offset : offset + 2], "big")
+        if is_sr_write_opcode(word):
+            writes.append("0x{:06X}:0x{:04X}".format(offset, word))
+    return writes
+
+
+def scheduler_control(name, spec_quantum, require_gating, state, rom, labels,
+                      projected_records, oracle_final):
+    """Derive and check the per-ROM scheduler quantum and gating conditions.
+
+    HBlank/VBlank boundary counts are derived deterministically from the
+    recorded ChronoFork instruction-quantum tick, the per-ROM scheduler quantum
+    and the video standard, using the scheduler's documented model: completing
+    line ``l`` raises HBlank at tick ``(l + 1) * quantum`` while ``l`` is in the
+    active region, and raises VBlank when ``l + 1 == active_lines``. They are
+    ChronoFork-side control quantities, not oracle timing comparisons.
+    """
+    quantum = state["instructions_per_line"]
+    executed = state["executed"]
+    tick = state["tick"]
+    video = state.get("video", "ntsc")
+    active = ACTIVE_LINES.get(video)
+    frame_lines = LINES_PER_FRAME.get(video)
+    if active is None or frame_lines is None:
+        raise HarnessError("unknown video standard {!r} in ChronoFork state".format(video))
+    completed_lines = tick // quantum
+    hblank = min(completed_lines, active)
+    vblank = 0 if completed_lines < active else (completed_lines - active) // frame_lines + 1
+    expected_quantum = CLI_DEFAULT_QUANTUM if spec_quantum is None else spec_quantum
+    source = "cli-default" if spec_quantum is None else "explicit"
+    program_end = labels.get("program_end", len(rom))
+    executed_sr_writes = [
+        "0x{:06X}:0x{:04X}".format(record["pc"], record["opcode"])
+        for record in projected_records
+        if is_sr_write_opcode(record["opcode"])
+    ]
+    rom_sr_writes = _rom_sr_writes(rom, PROGRAM_AT, program_end)
+    handler_entries = [
+        "0x{:06X}".format(record["pc"])
+        for record in projected_records
+        if record["pc"] in MASKED_HANDLER_ADDRESSES
+    ]
+    chronofork_mask = effective_sr(state["sr"])["ipm"]
+    oracle_mask = effective_sr(oracle_final["sr"])["ipm"]
+
+    checks = {
+        "quantum_recorded": quantum > 0,
+        "quantum_as_expected": quantum == expected_quantum,
+        "tick_equals_executed": tick == executed,
+        "no_sr_writing_opcode_executed": not executed_sr_writes,
+        "no_sr_writing_opcode_in_program": not rom_sr_writes,
+    }
+    if require_gating:
+        checks.update(
+            {
+                "quantum_flag_omitted": spec_quantum is None,
+                "quantum_matches_cli_default": (
+                    source == "cli-default" and quantum == CLI_DEFAULT_QUANTUM
+                ),
+                "more_than_one_quantum": executed > quantum,
+                "hblank_boundary_crossed": hblank >= 1,
+                "sr_mask_seven_on_both_sides": chronofork_mask == 7 and oracle_mask == 7,
+                "no_handler_entry": not handler_entries,
+            }
+        )
+    return {
+        "gating_required": require_gating,
+        "default_cli_quantum": CLI_DEFAULT_QUANTUM,
+        "expected_quantum": expected_quantum,
+        "scheduler_quantum": quantum,
+        "quantum_source": source,
+        "quantum_flag_omitted": spec_quantum is None,
+        "executed": executed,
+        "tick": tick,
+        "video": video,
+        "active_lines": active,
+        "lines_per_frame": frame_lines,
+        "completed_lines": completed_lines,
+        "hblank_boundaries_crossed": hblank,
+        "vblank_boundaries_crossed": vblank,
+        "chronofork_sr_raw": "0x{:04X}".format(state["sr"]),
+        "chronofork_sr_mask": chronofork_mask,
+        "oracle_sr_raw": "0x{:04X}".format(oracle_final["sr"]),
+        "oracle_sr_mask": oracle_mask,
+        "sr_write_opcodes_executed": executed_sr_writes,
+        "sr_write_opcodes_in_program": rom_sr_writes,
+        "handler_stub_addresses": ["0x{:06X}".format(pc) for pc in MASKED_HANDLER_ADDRESSES],
+        "handler_entries": handler_entries,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Per-ROM differential run
 # ---------------------------------------------------------------------------
 
 
-def run_rom(name, builder, options):
+def run_rom(name, builder, spec_quantum, require_gating, options):
     work = options.artifacts / name
     work.mkdir(parents=True, exist_ok=True)
     rom, labels = builder()
@@ -1068,15 +1304,19 @@ def run_rom(name, builder, options):
             str(options.instruction_budget),
             "--stop-pc",
             "0x{:X}".format(marker),
-            "--instructions-per-line",
-            str(DIFF_QUANTUM),
-            "--ram-bytes",
-            str(RAM_BYTES),
-            "--trace-out",
-            str(trace_path),
-            "--state-out",
-            str(state_path),
         ]
+        if spec_quantum is not None:
+            command.extend(["--instructions-per-line", str(spec_quantum)])
+        command.extend(
+            [
+                "--ram-bytes",
+                str(RAM_BYTES),
+                "--trace-out",
+                str(trace_path),
+                "--state-out",
+                str(state_path),
+            ]
+        )
         returncode = run_command(command, REPO, work / "chronofork.{}.stdout".format(tag), stderr_path)
         return {
             "command": command,
@@ -1201,6 +1441,17 @@ def run_rom(name, builder, options):
             ),
         }
 
+    control = scheduler_control(
+        name,
+        spec_quantum,
+        require_gating,
+        chronofork_state,
+        rom,
+        labels,
+        chronofork_projected_records,
+        oracle_final,
+    )
+
     return {
         "name": name,
         "rom": {
@@ -1238,6 +1489,8 @@ def run_rom(name, builder, options):
             "deterministic": chronofork_deterministic,
             "record_count_total": len(chronofork_records),
             "executed": chronofork_state["executed"],
+            "scheduler_quantum": control["scheduler_quantum"],
+            "quantum_source": control["quantum_source"],
             "projected_record_count": len(chronofork_projection),
             "projected_sha256": projection_digest(chronofork_projection),
             "projected_opcode_sha256": chronofork_opcode_digest(
@@ -1260,6 +1513,7 @@ def run_rom(name, builder, options):
             ),
             "failure": failure,
         },
+        "scheduler_control": control,
         "trace_comparison": {
             "matched": divergence is None,
             "first_divergence": divergence,
@@ -1360,7 +1614,7 @@ def chronofork_provenance(options):
             "path": str(options.chronofork_bin),
             "sha256": sha256_file(options.chronofork_bin),
         },
-        "scheduler_quantum": DIFF_QUANTUM,
+        "default_scheduler_quantum": CLI_DEFAULT_QUANTUM,
         "ram_bytes": RAM_BYTES,
     }
 
@@ -1371,11 +1625,16 @@ def write_evidence_json(path, evidence):
 
 def write_evidence_markdown(path, evidence):
     lines = []
-    lines.append("# Oracle differential trace evidence (Phase 10, E2-12)")
+    lines.append("# Oracle differential trace evidence (Phase 10 E2-12/E2-13; E2-15 masked-ROM)")
     lines.append("")
     lines.append("Generated by `scripts/oracle-diff.py` at {}.".format(evidence["generated_utc"]))
     lines.append("")
     lines.append("**Overall status: {}**".format(evidence["summary"]["status"].upper()))
+    lines.append("")
+    lines.append("This is address-projection and selected-state agreement for synthetic ROMs only.")
+    lines.append("It is not cycle, interrupt-timing, rendering, audio, Z80, DMA or game equivalence.")
+    lines.append("The `rom_masked` pass is negative evidence for mask gating (no handler executes),")
+    lines.append("not a positive comparison of interrupt delivery.")
     lines.append("")
     if evidence["findings"]:
         lines.append("## Findings")
@@ -1402,33 +1661,36 @@ def write_evidence_markdown(path, evidence):
     for name, binary in evidence["oracle"]["binaries"].items():
         lines.append("| `{}` sha256 | `{}` |".format(name, binary["sha256"]))
     lines.append("| Generator script sha256 | `{}` |".format(evidence["generator_sha256"]))
-    lines.append("| Scheduler quantum | {} instructions/line |".format(
-        evidence["chronofork"]["scheduler_quantum"]))
+    lines.append("| CLI default scheduler quantum | {} instructions/line |".format(
+        evidence["chronofork"]["default_scheduler_quantum"]))
     lines.append("| Oracle frames | {} |".format(evidence["oracle"]["frames"]))
     lines.append("")
     lines.append("## ROMs")
     lines.append("")
-    lines.append("| ROM | sha256 | bytes | marker PC |")
-    lines.append("|---|---|---|---|")
+    lines.append("| ROM | sha256 | bytes | marker PC | scheduler quantum | quantum source |")
+    lines.append("|---|---|---|---|---|---|")
     for result in evidence["roms"]:
-        lines.append("| `{}` | `{}` | {} | `{}` |".format(
+        control = result["scheduler_control"]
+        lines.append("| `{}` | `{}` | {} | `{}` | {} | {} |".format(
             result["name"], result["rom"]["sha256"], result["rom"]["size"],
-            result["rom"]["marker_pc"]))
+            result["rom"]["marker_pc"], control["scheduler_quantum"],
+            control["quantum_source"]))
     lines.append("")
     lines.append("## Trace comparison")
     lines.append("")
     lines.append("Projected to the executed-address sequence up to (but excluding) the marker loop.")
     lines.append("Oracle `cycle` and `time` columns are oracle-specific and are not compared.")
     lines.append("")
-    lines.append("| ROM | oracle total | oracle projected | ChronoFork records | ChronoFork projected | addresses match |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| ROM | oracle total | oracle projected | ChronoFork records | ChronoFork projected | addresses match | quantum |")
+    lines.append("|---|---|---|---|---|---|---|")
     for result in evidence["roms"]:
-        lines.append("| `{}` | {} | {} | {} | {} | {} |".format(
+        lines.append("| `{}` | {} | {} | {} | {} | {} | {} |".format(
             result["name"], result["oracle"]["record_count_total"],
             result["oracle"]["projected_record_count"],
             result["chronofork"]["record_count_total"],
             result["chronofork"]["projected_record_count"],
-            "yes" if result["trace_comparison"]["matched"] else "**no**"))
+            "yes" if result["trace_comparison"]["matched"] else "**no**",
+            result["chronofork"]["scheduler_quantum"]))
     lines.append("")
     lines.append("The oracle dump's opcode column is a mnemonic/args rendering while ChronoFork's")
     lines.append("is the raw opcode word, so numeric opcode equality is not a cross-format")
@@ -1470,6 +1732,58 @@ def write_evidence_markdown(path, evidence):
             if failure["recorded_instruction"]:
                 lines.append("- instruction attempted and rejected: {}".format(
                     json.dumps(failure["recorded_instruction"], sort_keys=True)))
+        lines.append("")
+    lines.append("## Scheduler quantum and masked-ROM gating control")
+    lines.append("")
+    lines.append("The per-ROM scheduler quantum is read back from the ChronoFork state file. `rom_alu`")
+    lines.append("and `rom_mem_vdp` pass an explicit 1,000,000-instruction quantum so their measured")
+    lines.append("window stays interrupt-free; `rom_masked` omits `--instructions-per-line` and must")
+    lines.append("record the CLI default quantum of {}. HBlank/VBlank boundary counts are derived".format(
+        CLI_DEFAULT_QUANTUM))
+    lines.append("from the recorded ChronoFork tick, quantum and video standard using the documented")
+    lines.append("instruction-quantum scheduler model; they are ChronoFork-side control quantities,")
+    lines.append("not oracle timing comparisons. Boundary and gate checks are required only for")
+    lines.append("`rom_masked`; the other ROMs report the same fields for transparency.")
+    lines.append("")
+    lines.append("| ROM | quantum | source | executed | tick | HBlank boundaries | VBlank boundaries | ChronoFork SR mask | oracle SR mask | SR-writing opcodes executed | handler entries | control |")
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|")
+    for result in evidence["roms"]:
+        control = result["scheduler_control"]
+        lines.append("| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+            result["name"], control["scheduler_quantum"], control["quantum_source"],
+            control["executed"], control["tick"], control["hblank_boundaries_crossed"],
+            control["vblank_boundaries_crossed"], control["chronofork_sr_mask"],
+            control["oracle_sr_mask"], len(control["sr_write_opcodes_executed"]),
+            len(control["handler_entries"]),
+            "passed" if control["passed"] else "**failed**"))
+    lines.append("")
+    masked = next(
+        (result for result in evidence["roms"] if result["scheduler_control"]["gating_required"]),
+        None,
+    )
+    if masked is not None:
+        control = masked["scheduler_control"]
+        lines.append("`rom_masked` control detail:")
+        lines.append("")
+        lines.append("- program executes {} instructions at quantum {} (more than one full quantum: {}),".format(
+            control["executed"], control["scheduler_quantum"],
+            "yes" if control["checks"]["more_than_one_quantum"] else "**no**"))
+        lines.append("  completing {} scanline(s) and crossing {} HBlank boundary(ies) at SR mask {}.".format(
+            control["completed_lines"], control["hblank_boundaries_crossed"],
+            control["chronofork_sr_mask"]))
+        lines.append("- SR-writing opcodes executed: {}; SR-writing opcodes in the program region: {}."
+                     .format(len(control["sr_write_opcodes_executed"]),
+                             len(control["sr_write_opcodes_in_program"])))
+        lines.append("- handler-entry records at stubs {}: {}.".format(
+            ", ".join(control["handler_stub_addresses"]), len(control["handler_entries"])))
+        lines.append("- gating checks: `{}`.".format(json.dumps(control["checks"], sort_keys=True)))
+        lines.append("")
+        lines.append("The pinned oracle also honours the mask-7 reset state and takes no interrupt, so")
+        lines.append("both sides run the same plain instruction stream. The autovector entries point at")
+        lines.append("`BRA.S *` stubs: if gating regressed and a request were delivered, the CPU would")
+        lines.append("park at a stub and the projected stream/final state would diverge. The pass is")
+        lines.append("therefore negative evidence against handler entry while masked, not a positive")
+        lines.append("comparison of interrupt delivery or interrupt timing.")
         lines.append("")
     lines.append("## Final state comparison")
     lines.append("")
@@ -1678,9 +1992,15 @@ def main(argv):
     chronofork = chronofork_provenance(options)
 
     results = []
-    for name, builder in ROMS:
-        print("running {}...".format(name), flush=True)
-        results.append(run_rom(name, builder, options))
+    for name, builder, spec_quantum, require_gating in ROMS:
+        print(
+            "running {} (quantum: {})...".format(
+                name,
+                "CLI default" if spec_quantum is None else spec_quantum,
+            ),
+            flush=True,
+        )
+        results.append(run_rom(name, builder, spec_quantum, require_gating, options))
 
     controls = []
     for result in results:
@@ -1706,36 +2026,36 @@ def main(argv):
         if not result["trace_comparison"]["matched"]:
             failure = result["chronofork"]["failure"]
             recorded = failure["recorded_instruction"] if failure else None
-            if recorded:
-                findings.append(
-                    {
-                        "rom": result["name"],
-                        "title": "ChronoFork instruction decoding diverges from the 68000",
-                        "detail": (
-                            "The pinned oracle executes the instruction at `{}` (opcode `{}`), but "
-                            "ChronoFork rejects it and stops after {} executed instruction(s): {}. "
-                            "The core's MOVE.B/W/L (absolute-long),Dn decoder matches source "
-                            "mode/register 111/000 (the absolute-*word* encoding, low byte 0x38) and "
-                            "then fetches a 4-byte address; the 68000 encodes absolute-long as 111/001 "
-                            "(low byte 0x39). The synthetic ROM uses the real 68000 encoding, so this "
-                            "is a pre-existing core decoding defect, not a harness or ROM error. No "
-                            "core code was edited to mask it."
-                        ).format(
-                            recorded["pc"],
-                            recorded["opcode"],
+            divergence = result["trace_comparison"]["first_divergence"]
+            findings.append(
+                {
+                    "rom": result["name"],
+                    "title": "ChronoFork instruction stream diverges from the 68000",
+                    "detail": (
+                        "The pinned oracle and ChronoFork disagree before the marker loop "
+                        "(first divergence index {}, reason: {}). ChronoFork executed {} "
+                        "instruction(s){}".format(
+                            divergence["index"] if divergence else "unknown",
+                            divergence["reason"] if divergence else "unknown",
                             result["chronofork"]["executed"],
-                            failure["message"],
-                        ),
-                        "observed": "{}; recorded trace entry {}".format(
-                            failure["message"], json.dumps(recorded, sort_keys=True)
-                        ),
-                        "implication": (
-                            "rom_mem_vdp cannot provide differential evidence until the core accepts "
-                            "the absolute-long load encoding (candidate EPIC-0002 E2-13 work). "
-                            "rom_alu avoids absolute-long loads and matches the oracle exactly."
-                        ),
-                    }
-                )
+                            " and attempted the instruction at {}".format(recorded["pc"])
+                            if recorded
+                            else "",
+                        )
+                        + ". This is reported as a finding: no comparator was weakened and no "
+                        "core code was edited to mask it."
+                    ),
+                    "observed": (
+                        format_divergence(divergence)
+                        if divergence
+                        else (failure["message"] if failure else "no divergence detail")
+                    ),
+                    "implication": (
+                        "{} cannot provide differential evidence until the cause is resolved."
+                        .format(result["name"])
+                    ),
+                }
+            )
         final = result["final_state_comparison"]
         if final.get("comparable", True) and not final["match"]:
             findings.append(
@@ -1745,6 +2065,17 @@ def main(argv):
                     "detail": "Registers, effective SR or work RAM differ; see the final-state section.",
                     "observed": json.dumps(final["differences"]),
                     "implication": "The core's architectural state is not equivalent for this ROM.",
+                }
+            )
+        control = result["scheduler_control"]
+        if not control["passed"]:
+            findings.append(
+                {
+                    "rom": result["name"],
+                    "title": "Scheduler/gating control check failed",
+                    "detail": "The per-ROM quantum, instruction-quantum boundary or SR-mask gating control did not hold.",
+                    "observed": json.dumps(control["checks"], sort_keys=True),
+                    "implication": "The evidence window's controlled conditions are not satisfied.",
                 }
             )
 
@@ -1757,30 +2088,40 @@ def main(argv):
                 return "divergence"
             if result["negative_control"]["status"] != "passed":
                 return "fail"
+            if not result["scheduler_control"]["passed"]:
+                return "fail"
         return "pass"
 
     limitations = [
         "The oracle starts with undefined D0-D7/A0-A6 at 0xFFFFFFFF; ChronoFork zeroes them. "
-        "Both ROMs explicitly initialise every register used in the final-state comparison.",
+        "Every ROM explicitly initialises every register used in the final-state comparison.",
         "Raw SR words are not comparable (oracle 0x7FE0 vs ChronoFork 0x2700); only effective "
         "fields (IPM, S, CCR X/N/Z/V/C) are compared.",
         "Oracle trace cycle and time columns are oracle-specific and ignored; only the projected "
-        "executed-address sequence is compared.",
+        "executed-address sequence is compared. No cycle or timing equivalence is claimed.",
         "VDP data-port reads are not compared: the oracle's VRAM read prefetch behaviour does not "
         "match the minimal VDP model. VDP control/data-port writes are executed and are part of "
-        "the compared instruction stream.",
+        "the compared instruction stream. No rendering, DMA, CRAM/VSRAM or raster timing is claimed.",
         "The oracle trace ring defaults to 1,000,000 entries; these runs stay far below it, so no "
         "start-of-run records are dropped.",
-        "The oracle honours the SR interrupt mask (7) and takes no interrupts; ChronoFork has no "
-        "mask gating yet (E2-15), so the harness passes --instructions-per-line 1000000 to keep "
-        "the measured window interrupt-free.",
+        "rom_alu and rom_mem_vdp use an explicit 1,000,000-instruction scheduler quantum to keep "
+        "their measured window interrupt-free. rom_masked omits --instructions-per-line and runs "
+        "at the CLI default quantum of 64, staying at SR mask 7 so no interrupt is delivered.",
+        "The masked-ROM pass is negative evidence for mask gating: the program contains no "
+        "SR-writing opcode, no handler entry occurs and the ordered address sequence/final state "
+        "match the oracle, which also takes no interrupt at mask 7. It is not a positive comparison "
+        "of interrupt delivery, acknowledge, nesting or interrupt timing.",
+        "This evidence compares instruction-address projection and a narrow selected final state "
+        "for three independently authored synthetic ROMs. It does not establish full 68000 "
+        "instruction-set conformance, general program behaviour, or game compatibility, and it "
+        "makes no audio, Z80, controller or full-hardware claim.",
         "Instruction semantics beyond the compared address stream are covered by the ROMs' "
         "self-checking flag branches and the final register/RAM comparison, not by per-opcode "
         "timing or cycle checks.",
     ]
 
     evidence = {
-        "schema": "chronofork.oracle-diff.v1",
+        "schema": "chronofork.oracle-diff.v2",
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "out_dir": str(options.out_dir),
         "generator_sha256": sha256_file(Path(__file__).resolve()),
@@ -1810,6 +2151,18 @@ def main(argv):
             "negative_controls_passed": sum(
                 1 for result in results if result["negative_control"]["status"] == "passed"
             ),
+            "scheduler_controls_passed": sum(
+                1 for result in results if result["scheduler_control"]["passed"]
+            ),
+            "masked_gating_controls_passed": sum(
+                1
+                for result in results
+                if result["scheduler_control"]["gating_required"]
+                and result["scheduler_control"]["passed"]
+            ),
+            "masked_gating_controls_required": sum(
+                1 for result in results if result["scheduler_control"]["gating_required"]
+            ),
         },
         "commands": {"harness": command_line()},
     }
@@ -1833,6 +2186,27 @@ def main(argv):
     )
     print("  negative controls passed: {}/{}".format(
         summary["negative_controls_passed"], summary["roms_compared"]))
+    print("  scheduler controls passed: {}/{} (masked gating {}/{})".format(
+        summary["scheduler_controls_passed"], summary["roms_compared"],
+        summary["masked_gating_controls_passed"],
+        summary["masked_gating_controls_required"]))
+    print("")
+    for result in results:
+        control = result["scheduler_control"]
+        print(
+            "  {}: quantum {} ({}){}; executed {}; HBlank boundaries {}; SR mask "
+            "ChronoFork {} / oracle {}{}".format(
+                result["name"],
+                control["scheduler_quantum"],
+                control["quantum_source"],
+                " (flag omitted)" if control["quantum_flag_omitted"] else "",
+                control["executed"],
+                control["hblank_boundaries_crossed"],
+                control["chronofork_sr_mask"],
+                control["oracle_sr_mask"],
+                "" if control["passed"] else " [CONTROL FAILED]",
+            )
+        )
     for result in results:
         divergence = result["trace_comparison"]["first_divergence"]
         if divergence:
