@@ -11,9 +11,11 @@ platform built primarily in Rust. It treats emulated execution as deterministic,
 independent, forkable sessions that humans, scripts and AI agents can inspect and
 replay.
 
-**Current status:** bootstrap. The repository contains a deterministic synthetic
-test backend, not a Sega Mega Drive / Genesis emulator. Do not present synthetic
-behavior as hardware emulation or claim game compatibility.
+**Current status:** bootstrap + first real-hardware slice. The repository contains a
+deterministic synthetic test backend and a minimal 68000 + ROM/RAM Mega Drive
+backend. VDP, audio, Z80, interrupts, controllers and most 68000 instructions are
+not implemented. Do not present either backend as a complete emulator or claim game
+compatibility.
 
 ## Repository map
 
@@ -23,11 +25,12 @@ behavior as hardware emulation or claim game compatibility.
 | `crates/chronofork-backend-api/` | Backend, capability, snapshot, inspection traits |
 | `crates/chronofork-sessions/` | Session lifecycle, checkpoints, lineage, forks |
 | `crates/chronofork-test-backend/` | Synthetic deterministic validation backend |
+| `crates/chronofork-megadrive/` | Minimal real 68000 + ROM/RAM Mega Drive slice |
 | `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features |
 | `docs/` | Durable official documentation |
 | `docs/README.md` | Documentation index; start here |
 | `docs/adr/` | Architectural decisions and status |
-| `docs/epics/` | Epics, tasks and acceptance criteria |
+| `docs/epics/` | EPIC-0001 foundation and EPIC-0002 Mega Drive slice |
 | `docs/research/` | Evidence-backed upstream research |
 | `scripts/check.sh` | Local quality gate |
 | `.planning/` | Ignored operational planning memory |
@@ -53,7 +56,7 @@ chronofork-backend-api
     ↑
 chronofork-sessions ← chronofork-cli
     ↑
-concrete backend (test now, real backend later)
+concrete backends (synthetic + minimal Mega Drive)
 ```
 
 Rules:
@@ -80,13 +83,13 @@ More detail: [architecture overview](docs/architecture/overview.md),
 1. Read this `AGENTS.md`.
 2. Read [docs/README.md](docs/README.md) and the relevant linked documents.
 3. Inspect `git status --short --branch` and the latest commits.
-4. Read relevant ADRs in [docs/adr/](docs/adr/README.md). Do not implement a
-   `Proposed` decision as if accepted.
+4. Read relevant ADRs in [docs/adr/](docs/adr/README.md). ADR-0002 is accepted;
+   do not treat a still-`Proposed` decision as accepted.
 5. Recover active planning state if a planning skill is installed. For
    `planning-with-files`, resolve the selected plan and read `task_plan.md`,
    `findings.md` and `progress.md`. Do not invent a plan directory.
 6. Identify the current epic and your assigned task in
-   [docs/epics/](docs/epics/).
+   [docs/epics/](docs/epics/). EPIC-0002 tracks the Mega Drive slice.
 7. Read the task's acceptance criteria, dependencies and file ownership.
 8. Inspect the existing implementation before editing.
 9. Implement incrementally, with tests.
@@ -135,6 +138,7 @@ Also run:
 
 ```sh
 cargo run -p chronofork-cli -- demo
+cargo run -p chronofork-cli -- megadrive demo
 ```
 
 A change is not complete because it compiles. Required behavior needs an automated
@@ -197,7 +201,7 @@ Use these sources, in order:
 1. `git status --short --branch` and recent commits.
 2. [docs/README.md](docs/README.md) and the relevant architecture/ADR pages.
 3. The active planning files, if the skill is installed.
-4. The current [epic](docs/epics/EPIC-0001-foundation.md) and
+4. The current [epic](docs/epics/EPIC-0002-megadrive-slice.md) and
    [milestones](docs/roadmap/milestones.md).
 5. `cargo test --workspace` output, not assumptions.
 

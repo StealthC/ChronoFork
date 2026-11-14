@@ -45,7 +45,7 @@ recorded here for consistency; this document does not edit them.
 |---|---|---|
 | `LICENSE` | MIT, "Copyright (c) 2026 ChronoFork contributors" | Matches `Cargo.toml` (`license = "MIT"`); no upstream code is claimed |
 | `THIRD_PARTY_NOTICES.md` | 10 third-party Rust crates (`sha2` + transitives), all MIT/Apache-2.0; three research references explicitly marked **not distributed**; no ROM/firmware fixtures | The 10 packages and versions match `Cargo.lock` exactly; the research-reference statements are consistent with this assessment |
-| `README.md` | States that the repository ships a deterministic synthetic test backend, "not a Sega Mega Drive / Genesis emulator", with 26 tests and no ROMs | Consistent with the code inventory: no upstream emulator source or assets are present in the workspace |
+| `README.md` | States that the repository ships a deterministic synthetic test backend and a minimal 68000 + ROM/RAM Mega Drive backend, neither a complete emulator; 40 tests and no ROMs | Consistent with the code inventory: no upstream emulator source or assets are present in the workspace |
 
 The cross-referenced `docs/licensing/policy.md` and `docs/licensing/provenance.md` were
 created later in the same bootstrap day and record the same research-only posture

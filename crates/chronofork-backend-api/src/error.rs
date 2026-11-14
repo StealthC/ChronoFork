@@ -27,6 +27,8 @@ pub enum BackendError {
     },
     /// The machine has halted and cannot execute another quantum.
     Halted,
+    /// The backend failed while executing an instruction or accessing its bus.
+    Execution(String),
     /// A memory access falls outside the backend's address space.
     OutOfBounds {
         /// First requested address.
@@ -58,6 +60,7 @@ impl fmt::Display for BackendError {
                 "incompatible snapshot {field}: expected {expected}, found {found}"
             ),
             Self::Halted => f.write_str("machine has halted"),
+            Self::Execution(message) => write!(f, "backend execution error: {message}"),
             Self::OutOfBounds {
                 address,
                 length,

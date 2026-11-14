@@ -5,6 +5,7 @@ members = [
     "crates/chronofork-backend-api",
     "crates/chronofork-sessions",
     "crates/chronofork-test-backend",
+    "crates/chronofork-megadrive",
     "crates/chronofork-cli",
 ]
 
@@ -19,6 +20,7 @@ chronofork-core = { path = "crates/chronofork-core" }
 chronofork-backend-api = { path = "crates/chronofork-backend-api" }
 chronofork-sessions = { path = "crates/chronofork-sessions" }
 chronofork-test-backend = { path = "crates/chronofork-test-backend" }
+chronofork-megadrive = { path = "crates/chronofork-megadrive" }
 sha2 = "0.10"
 
 [workspace.lints.rust]

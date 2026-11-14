@@ -30,7 +30,7 @@ failure.
 | Formatting | `cargo fmt --all -- --check` | Passed after applying `cargo fmt --all` |
 | Compilation | `cargo check --workspace` | Passed |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Passed |
-| Tests | `cargo test --workspace` | 26 passed, 0 failed |
+| Tests | `cargo test --workspace` | 40 passed, 0 failed |
 | Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Passed; broken intra-doc link fixed |
 | Demo | `cargo run -p chronofork-cli -- demo` | Exit 0, `chronofork demo: PASS` |
 | Capabilities | `cargo run -p chronofork-cli -- backend describe` | Exit 0, real capability values |
@@ -40,7 +40,8 @@ Test breakdown:
 - `chronofork-core`: 8 unit tests.
 - `chronofork-sessions`: 4 snapshot-codec tests + 5 acceptance tests.
 - `chronofork-test-backend`: 7 unit tests.
-- `chronofork-cli`: 2 integration tests.
+- `chronofork-megadrive`: 13 unit/integration tests.
+- `chronofork-cli`: 3 integration tests.
 - Doc tests: 0.
 
 ## Gate policy

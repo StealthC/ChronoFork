@@ -16,7 +16,7 @@ documentation, not meeting notes.
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-rust-workspace.md) | Rust workspace and crate boundaries | Accepted |
-| [0002](0002-backend-boundaries.md) | Backend strategy and boundaries | Proposed |
+| [0002](0002-backend-boundaries.md) | Backend strategy and boundaries | Accepted |
 
 ## Template
 

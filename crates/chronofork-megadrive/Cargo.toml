@@ -1,0 +1,17 @@
+[package]
+name = "chronofork-megadrive"
+description = "Minimal deterministic Mega Drive 68000 backend slice for ChronoFork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-core.workspace = true
+chronofork-backend-api.workspace = true
+
+[dev-dependencies]
+chronofork-sessions.workspace = true
+
+[lints]
+workspace = true

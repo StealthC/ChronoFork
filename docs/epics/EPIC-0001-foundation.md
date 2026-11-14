@@ -1,6 +1,6 @@
 # EPIC-0001 — Project Foundation, Research and Deterministic Session Architecture
 
-- **Status:** Complete (bootstrap foundation); E1-14 remains pending owner approval
+- **Status:** Complete (bootstrap foundation); ADR-0002 accepted 2026-11-13
 - **Milestone:** M0
 - **Owner:** Lead architect
 - **Created:** 2026-11-13
@@ -59,7 +59,7 @@ real backend will implement.
 | E1-11 | Session lifecycle, snapshot, restore, fork | Lead | E1-10 | Done |
 | E1-12 | Acceptance tests and quality gates | Lead | E1-11 | Done |
 | E1-13 | Minimal CLI demo | Lead | E1-11 | Done |
-| E1-14 | Backend strategy decision | Lead + owner | E1-05..07 | Proposed (approval required) |
+| E1-14 | Backend strategy decision | Lead + owner | E1-05..07 | Done (Option E accepted) |
 | E1-15 | Final review, evidence, handoff | Lead | all | Done |
 
 ## Acceptance criteria
@@ -77,7 +77,7 @@ real backend will implement.
 10. `AGENTS.md` is harness-independent and links the docs index.
 11. Licensing policy, notices and provenance exist; no upstream code is
     incorporated.
-12. The real-backend decision is documented as **Proposed**, not silently assumed.
+12. The real-backend decision is documented; ADR-0002 is **Accepted**, and EPIC-0002 tracks implementation.
 13. The final report distinguishes implemented, unverified, blocked and next work.
 
 ## Testing expectations

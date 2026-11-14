@@ -29,12 +29,13 @@ multi-service architecture?
 
 ## Decision
 
-Use a Cargo workspace with five crates:
+Use a Cargo workspace with six crates:
 
 - `chronofork-core` — backend-agnostic vocabulary (IDs, ticks, input, hashes).
 - `chronofork-backend-api` — capability, snapshot, inspection and backend traits.
 - `chronofork-sessions` — session lifecycle, checkpoints, lineage, fork/restore.
 - `chronofork-test-backend` — deterministic synthetic implementation.
+- `chronofork-megadrive` — minimal real 68000 + ROM/RAM backend slice.
 - `chronofork-cli` — minimal presentation/composition layer.
 
 Use Rust edition 2024, workspace-level lints, `unsafe_code = "forbid"`, and a
@@ -66,6 +67,6 @@ Negative / trade-offs:
 
 - Toolchain: `rustc 1.100.0`, `cargo 1.100.0`, rustfmt 1.11.0, clippy 0.1.100.
 - `cargo check --workspace` passes.
-- `cargo test --workspace` passes 26 tests at bootstrap.
+- `cargo test --workspace` passes 40 tests after the Mega Drive slice.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Layout is recorded in [architecture overview](../architecture/overview.md).

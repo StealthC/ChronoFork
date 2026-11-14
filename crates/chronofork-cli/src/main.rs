@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use chronofork_backend_api::BackendFactory;
 use chronofork_core::InputFrame;
+use chronofork_megadrive::{MegadriveFactory, RAM_BASE, demo_rom};
 use chronofork_sessions::{SessionManager, Snapshot};
 use chronofork_test_backend::SyntheticBackendFactory;
 
@@ -42,9 +43,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         (Some("demo"), None) => run_demo(),
+        (Some("megadrive"), Some("demo")) => run_megadrive_demo(),
         (Some("backend"), Some("describe")) => describe_backend(),
         (Some("backend"), None) => {
             Err(CliError("`backend` requires a subcommand: describe".to_owned()).into())
+        }
+        (Some("megadrive"), None) => {
+            Err(CliError("`megadrive` requires a subcommand: demo".to_owned()).into())
         }
         _ => Err(CliError("unknown command; see `chronofork help`".to_owned()).into()),
     }
@@ -57,8 +62,11 @@ fn print_usage() {
     println!("synthetic test backend, not a Sega Mega Drive emulator.");
     println!();
     println!("Usage:");
-    println!("  chronofork demo               Run the deterministic fork/restore scenario");
-    println!("  chronofork backend describe   Show backend identity and capabilities");
+    println!(
+        "  chronofork demo               Run the deterministic synthetic fork/restore scenario"
+    );
+    println!("  chronofork megadrive demo      Run the minimal 68000 backend slice");
+    println!("  chronofork backend describe   Show synthetic backend identity and capabilities");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
 }
@@ -223,6 +231,70 @@ fn run_demo() -> Result<(), Box<dyn Error>> {
     );
 
     println!("chronofork demo: PASS");
+    Ok(())
+}
+
+fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
+    let factory = MegadriveFactory::new(demo_rom())?;
+    let mut manager = SessionManager::new(Arc::new(factory));
+    let descriptor = manager.backend_descriptor().clone();
+
+    println!("chronofork megadrive demo: minimal 68000 backend slice");
+    println!(
+        "backend: {} ({})",
+        descriptor.display_name(),
+        descriptor.version()
+    );
+    println!("scope: 68000 subset + ROM/RAM; no VDP, audio, Z80 or interrupts");
+
+    let source = manager.create_session()?;
+    for _ in 0..6 {
+        manager.step(source, InputFrame::NEUTRAL)?;
+    }
+    let before = manager.inspect(source)?;
+    println!(
+        "after 6 instructions: tick={} pc={} d0={} d2={}",
+        before.machine.tick,
+        before.machine.registers["pc"],
+        before.machine.registers["d0"],
+        before.machine.registers["d2"]
+    );
+    ensure(
+        before.machine.registers["d0"] == 3,
+        "demo program did not compute 1 + 2",
+    )?;
+    ensure(
+        before.machine.registers["d2"] == 3,
+        "demo program did not reload the RAM value",
+    )?;
+
+    let checkpoint = manager.snapshot(source)?;
+    let fork = manager.fork_from_snapshot(source, checkpoint)?;
+    manager.write_memory(fork, u64::from(RAM_BASE), &[0xAA])?;
+    manager.step(fork, InputFrame::NEUTRAL)?;
+    let fork_view = manager.inspect(fork)?;
+    let source_view = manager.inspect(source)?;
+    ensure(
+        fork_view.machine.state_hash != before.machine.state_hash,
+        "fork did not diverge after a RAM mutation",
+    )?;
+    ensure(
+        source_view.machine.state_hash == before.machine.state_hash,
+        "source was mutated by the fork",
+    )?;
+    println!(
+        "fork isolation: fork={} source={}",
+        fork_view.machine.state_hash, source_view.machine.state_hash
+    );
+
+    manager.restore(fork, checkpoint)?;
+    let restored = manager.inspect(fork)?;
+    ensure(
+        restored.machine.state_hash == before.machine.state_hash,
+        "restore did not reproduce the checkpoint",
+    )?;
+    println!("restore: checkpoint state reproduced");
+    println!("chronofork megadrive demo: PASS");
     Ok(())
 }
 

@@ -9,10 +9,10 @@ methodology from them and defines what ChronoFork should build for itself. The
 licensing constraints that shape this strategy are in
 [`docs/research/licensing-assessment.md`](../research/licensing-assessment.md).
 
-At audit time the workspace declares five crates (`chronofork-core`,
+At audit time the workspace declares six crates (`chronofork-core`,
 `chronofork-backend-api`, `chronofork-sessions`, `chronofork-test-backend`,
-`chronofork-cli`) and strict workspace lints. The lead's bootstrap implementation
-was present by the end of the audit: the workspace has 26 passing tests, including
+`chronofork-megadrive`, `chronofork-cli`) and strict workspace lints. The lead's bootstrap implementation
+was present by the end of the audit: the workspace has 40 passing tests, including
 core-primitive, test-backend, snapshot, session-acceptance and CLI tests. There is
 still no CI workflow, no dependency-policy configuration, no fixture manifest and
 no property/fuzz target. The gates below are the target contract; §2.3 maps what
@@ -131,7 +131,7 @@ workspace. Full results are recorded in `docs/quality/quality-gates.md`; the sum
 | `cargo fmt --all -- --check` | passed |
 | `cargo check --workspace` | passed |
 | `cargo clippy --workspace --all-targets -- -D warnings` | passed |
-| `cargo test --workspace` | 26 passed, 0 failed, 0 ignored |
+| `cargo test --workspace` | 40 passed, 0 failed, 0 ignored |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | passed |
 | `cargo run -p chronofork-cli -- demo` | passed (`chronofork demo: PASS`) |
 | `./scripts/check.sh` | passed (wraps the five commands above) |
@@ -549,7 +549,7 @@ Status at 2026-11-13 (the implementation may advance after this audit):
 
 | # | Criterion | Status | Evidence / gap |
 |---|---|---|---|
-| 1 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass from a clean checkout | **Pass** | Verified in §2.3; 26 tests |
+| 1 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass from a clean checkout | **Pass** | Verified in §2.3; 40 tests |
 | 2 | A reusable `Backend` contract suite exists and passes against `chronofork-test-backend` | **Partial** | Backend unit tests cover determinism, divergence, snapshot, bounds, errors; not yet extracted as a shared conformance suite |
 | 3 | INV-01…INV-13 covered by executable tests, including negative control, debug/release determinism, snapshot round-trip, restore-continue and fork isolation | **Partial** | In-process invariants covered; debug/release and cross-process determinism absent; negative control exists for snapshot corruption but not for trace comparison |
 | 4 | Snapshot format versioning has an `IncompatibleSnapshot` test and a canonical golden state | **Partial** | Version/corruption/truncation rejection present; no golden bytes/canonical fixture |

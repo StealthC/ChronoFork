@@ -23,17 +23,20 @@ and the real-backend decision is explicitly proposed.
 **Goal:** select a real Mega Drive backend strategy and implement the smallest
 credible hardware slice.
 
-- Approve/adjust ADR-0002.
-- If Rust-native: 68000 execution subset, memory map, reset vectors, minimal VDP
-  status/control, deterministic tick scheduler.
-- If an adapter is approved: reproducible Linux/Windows build, multi-instance and
-  state-export proof.
-- ROM identity/config hashing; synthetic test ROMs generated from source.
-- Differential trace harness against the approved reference.
-- Complete snapshot/restore for the real core, including hidden device state.
+- [x] Approve ADR-0002 (Option E accepted).
+- [x] Rust-native 68000 subset, ROM/RAM map, reset vectors, deterministic
+  instruction-quantum tick.
+- [x] ROM identity/config hash and an independently authored synthetic ROM.
+- [x] Snapshot/restore/fork on the real core.
+- [ ] Minimal VDP status/control and VRAM window.
+- [ ] Deterministic interrupt/tick scheduler.
+- [ ] Differential trace harness against the Exodus oracle (blocked on Ninja/clang/
+  libpng and oracle build approval).
+- [ ] Complete production hardware state, including VDP/audio/Z80.
 
 **Exit:** a known synthetic ROM executes deterministically; snapshot/restore/fork
-works on the real core; differential evidence exists.
+works on the real core; differential evidence exists. The first three are done;
+differential evidence and remaining hardware are pending.
 
 ## Stage 2 — Sessions, forks and save states at product quality
 

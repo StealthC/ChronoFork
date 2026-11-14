@@ -90,7 +90,7 @@ than pretending a debugger write is a bus write.
 
 ## Real-backend requirements
 
-Any future real Mega Drive backend must demonstrate:
+A production-grade real Mega Drive backend must eventually demonstrate:
 
 - Two independent instances in one host process **or** a documented process
   isolation model.
@@ -102,6 +102,23 @@ Any future real Mega Drive backend must demonstrate:
 - Differential test evidence against a trusted reference.
 
 Features not yet demonstrated must stay `false` in capabilities.
+
+## Current real slice
+
+`chronofork-megadrive` is the first real-hardware slice. It satisfies the backend
+contract for a minimal 68000 + ROM/RAM machine:
+
+- 68000 reset vectors, a documented instruction subset, big-endian ROM/RAM bus.
+- Versioned snapshots, restore validation and canonical state hashing.
+- Independent instances and session fork/restore/isolation tests.
+- Headless build/test path and no UI dependency.
+- Explicit errors for unsupported opcodes and unmapped/odd-address accesses.
+- MIT-licensed original code; no upstream source incorporated.
+
+It does **not** yet satisfy a production Mega Drive backend: no VDP, audio, Z80,
+interrupts, controllers, mapper/SRAM, timing accuracy or differential oracle
+evidence. Capabilities report these as `false`/absent. See
+[Mega Drive 68000 slice](megadrive-slice.md).
 
 ## Open questions
 

@@ -57,17 +57,37 @@ bootstrap).
 |---|---|---|---|
 | FR-BACKEND-001 | Report capabilities as real guarantees. | Implemented | `Capabilities`; CLI output |
 | FR-BACKEND-002 | Identify test backends explicitly. | Implemented | `is_test_backend`; CLI check |
-| FR-BACKEND-003 | Validate snapshot backend identity, version and config hash. | Implemented | Synthetic backend `restore` tests |
+| FR-BACKEND-003 | Validate snapshot backend identity, version and config hash. | Implemented | Synthetic and Mega Drive `restore` tests |
 | FR-BACKEND-004 | Provide side-effect-free inspection and memory reads. | Implemented | `inspect`, `read_memory` |
 | FR-BACKEND-005 | Provide debugger memory writes distinct from bus writes. | Implemented | `write_memory`; isolation test |
 | FR-BACKEND-006 | Support multiple independent backend instances per manager. | Implemented | 3-way fork test |
-| FR-BACKEND-007 | Select and integrate a real Mega Drive backend. | Planned | Blocked on ADR-0002 approval |
+| FR-BACKEND-007 | Select and integrate a real Mega Drive backend. | Partial | ADR-0002 accepted; minimal 68000 + ROM/RAM slice implemented |
+
+## Mega Drive minimal slice
+
+| ID | Requirement | Status | Evidence |
+|---|---|---|---|
+| FR-MD-001 | Load reset vectors from ROM and initialize `SP`/`PC`/`SR`. | Implemented | `M68000::reset`; CPU/backend tests |
+| FR-MD-002 | Execute a documented 68000 subset deterministically. | Implemented | `crates/chronofork-megadrive`; 13 tests |
+| FR-MD-003 | Map ROM and 64 KiB work RAM big-endian. | Implemented | Bus tests |
+| FR-MD-004 | Reject unmapped, odd-address and ROM-write accesses. | Implemented | Bus/backend error tests |
+| FR-MD-005 | Snapshot/restore complete slice state with config/state hashes. | Implemented | Snapshot round-trip and mismatch tests |
+| FR-MD-006 | Fork/restore a real-core session without source mutation. | Implemented | Session integration test |
+| FR-MD-007 | VDP status/control, VRAM and DMA. | Planned | Not implemented |
+| FR-MD-008 | YM2612, PSG and audio. | Planned | Not implemented |
+| FR-MD-009 | Z80, interrupts and exception processing. | Planned | Not implemented |
+| FR-MD-010 | Controller input and multi-port schema. | Planned | Input is not consumed yet |
+| FR-MD-011 | ROM header/region/TMSS and cartridge mapper. | Planned | Not implemented |
+| FR-MD-012 | Differential traces against the Exodus oracle. | Blocked | Ninja/clang/libpng and a ROM/oracle build absent |
+
+Tick semantics: one executed 68000 instruction equals one ChronoFork tick in this
+slice. This is deterministic but **not** cycle-accurate hardware timing.
 
 ## Debugging, tracing, TAS and interfaces
 
 | ID | Requirement | Status |
 |---|---|---|
-| FR-DEBUG-001 | Register inspection | Implemented (synthetic) |
+| FR-DEBUG-001 | Register inspection | Implemented (synthetic + minimal 68000) |
 | FR-DEBUG-002 | Conditional breakpoints | Planned |
 | FR-DEBUG-003 | Memory watchpoints | Planned |
 | FR-DEBUG-004 | Event breakpoints, logpoints, interrupt monitoring | Planned |

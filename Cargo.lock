@@ -30,6 +30,7 @@ version = "0.1.0"
 dependencies = [
  "chronofork-backend-api",
  "chronofork-core",
+ "chronofork-megadrive",
  "chronofork-sessions",
  "chronofork-test-backend",
 ]
@@ -39,6 +40,15 @@ name = "chronofork-core"
 version = "0.1.0"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "chronofork-megadrive"
+version = "0.1.0"
+dependencies = [
+ "chronofork-backend-api",
+ "chronofork-core",
+ "chronofork-sessions",
 ]
 
 [[package]]

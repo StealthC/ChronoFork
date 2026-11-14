@@ -14,18 +14,19 @@ its exit criteria are demonstrated by tests or documented evidence.
 - [x] Format, check, Clippy and test gates run.
 - [x] Official docs and `AGENTS.md` exist.
 - [x] Licensing/provenance policy and notices exist.
-- [ ] Real-backend decision approved (M0 can close with a proposal pending user
-      approval; implementation is M1).
+- [x] Real-backend decision approved (ADR-0002 accepted 2026-11-13).
 
 ## M1 — Backend decision and minimal hardware slice
 
-- [ ] ADR-0002 approved or replaced.
-- [ ] Build path for the chosen backend reproducible on Linux.
-- [ ] ROM identity and hardware configuration represented in `config_hash`.
-- [ ] Minimal synthetic ROM executes deterministically on the real backend.
-- [ ] Snapshot/restore/fork passes on the real backend.
+- [x] ADR-0002 approved or replaced.
+- [x] Build path for the Rust-native slice reproducible on Linux.
+- [x] ROM identity (`config_hash`) and a minimal hardware configuration represented.
+- [x] Minimal synthetic ROM executes deterministically on the real backend.
+- [x] Snapshot/restore/fork passes on the real backend.
+- [ ] Minimal VDP status/control and VRAM window.
+- [ ] Deterministic interrupt/tick scheduler.
 - [ ] Differential trace evidence against the approved reference.
-- [ ] Capabilities report matches reality.
+- [x] Capabilities report matches reality for the implemented slice.
 
 ## M2 — Durable sessions
 

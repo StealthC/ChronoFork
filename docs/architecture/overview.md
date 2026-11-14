@@ -26,20 +26,21 @@ backends; layer 4 must not own canonical emulated state.
 ├──────────────────────────────────────────────────────────────┤
 │ chronofork-backend-api         (capabilities, contracts)     │
 ├───────────────────────────────┬──────────────────────────────┤
-│ chronofork-core               │ real backend (future)        │
-│ (IDs, ticks, input, hashes)   │ - not yet selected           │
+│ chronofork-core               │ backends                     │
+│ (IDs, ticks, input, hashes)   │                              │
 └───────────────────────────────┴──────────────────────────────┘
         ▲
-        │ implements backend-api
-┌───────┴──────────────────────────────────────────────────────┐
-│ chronofork-test-backend      (synthetic validation backend)  │
-└──────────────────────────────────────────────────────────────┘
+        │ implement backend-api
+┌───────┴───────────────────────┬──────────────────────────────┐
+│ chronofork-test-backend       │ chronofork-megadrive         │
+│ (synthetic validation)        │ (minimal 68000 + ROM/RAM)    │
+└───────────────────────────────┴──────────────────────────────┘
 ```
 
 `chronofork-backend-api` depends only on `chronofork-core`.
 `chronofork-sessions` depends on both, but never on a concrete backend.
-`chronofork-test-backend` depends on the contract, not on sessions.
-`chronofork-cli` composes sessions and the test backend.
+Each backend depends on the contract, not on sessions.
+`chronofork-cli` composes sessions with a selected backend.
 
 ## Data flow
 
@@ -64,8 +65,8 @@ SessionManager::step(id, InputFrame)
   → StepOutcome { tick, state_hash, halted }
 ```
 
-There is no background execution thread in the bootstrap. The caller owns the
-cadence, which makes tests and agent automation explicit.
+There is no background execution thread in the current implementation. The caller
+owns the cadence, which makes tests and agent automation explicit.
 
 ### Snapshot
 
@@ -127,7 +128,8 @@ mutable state with its source.
 | Snapshot/restore/import | Implemented |
 | Fork + lineage | Implemented |
 | Deterministic synthetic backend | Implemented |
-| Real Mega Drive hardware | Not implemented |
+| Minimal 68000 + ROM/RAM Mega Drive slice | Implemented (partial hardware) |
+| VDP, audio, Z80, interrupts | Not implemented |
 | HTTP/MCP/GUI | Not implemented |
 | Breakpoints/watchpoints/tracing | Contract sketches only |
 | TAS movie format | Not implemented |

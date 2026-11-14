@@ -7,21 +7,23 @@ platform. It treats emulated execution as a first-class, reproducible, forkable
 timeline: sessions own independent machine state, checkpoints are versioned, and
 branches can diverge without mutating each other.
 
-> **Project status: bootstrap.** This repository currently ships a deterministic
-> **synthetic test backend**, not a Sega Mega Drive / Genesis emulator. It proves
-> the session, snapshot, fork, replay and isolation contracts that a real backend
-> will plug into. No commercial ROMs or firmware are included.
+> **Project status: bootstrap + first real-hardware slice.** This repository ships a
+> deterministic **synthetic test backend** and a minimal **68000 + ROM/RAM Mega Drive
+> backend**. Neither is a complete Mega Drive / Genesis emulator: VDP, audio, Z80,
+> interrupts, controllers and most 68000 instructions are not implemented yet. No
+> commercial ROMs or firmware are included.
 
 ## What works today
 
-- A Rust 2024 Cargo workspace with five focused crates.
+- A Rust 2024 Cargo workspace with six focused crates.
 - A capability-based backend contract with explicitly reported guarantees.
+- A minimal 68000 + ROM/RAM Mega Drive backend with versioned snapshots and session integration.
 - Independent sessions with create / step / pause / resume / reset / close.
 - Versioned, checksummed snapshots with round-trip and corruption tests.
 - Snapshot restore, replay verification and three-way forking.
 - Session lineage, state digests, comparison and memory isolation tests.
 - A CLI demonstration that runs the acceptance scenario end to end.
-- 26 automated tests, plus `rustfmt`, `cargo check` and Clippy gates.
+- 40 automated tests, plus `rustfmt`, `cargo check`, Clippy and rustdoc gates.
 
 ## Quick start
 
@@ -33,6 +35,7 @@ git clone <repository-url> ChronoFork
 cd ChronoFork
 cargo test --workspace
 cargo run -p chronofork-cli -- demo
+cargo run -p chronofork-cli -- megadrive demo
 cargo run -p chronofork-cli -- backend describe
 ```
 
@@ -47,6 +50,7 @@ source/memory isolation checks, replay verification, and `chronofork demo: PASS`
 | `chronofork-backend-api` | Capability, snapshot, inspection and backend traits |
 | `chronofork-sessions` | Session lifecycle, checkpoints, lineage, fork/restore |
 | `chronofork-test-backend` | Deterministic synthetic machine used for validation |
+| `chronofork-megadrive` | Minimal real 68000 + ROM/RAM Mega Drive backend slice |
 | `chronofork-cli` | Minimal executable demonstration of implemented features |
 
 The session layer depends on the backend contract, never the reverse. The test
@@ -61,7 +65,9 @@ Start at [docs/README.md](docs/README.md). Key entry points:
 - [Architecture overview](docs/architecture/overview.md)
 - [Session model](docs/architecture/session-model.md)
 - [Backend model](docs/architecture/backend-model.md)
-- [Backend strategy proposal](docs/architecture/backend-strategy.md)
+- [Backend strategy](docs/architecture/backend-strategy.md) (accepted)
+- [Mega Drive 68000 slice](docs/architecture/megadrive-slice.md)
+- [EPIC-0002](docs/epics/EPIC-0002-megadrive-slice.md)
 - [EPIC-0001](docs/epics/EPIC-0001-foundation.md)
 - [Roadmap](docs/roadmap/roadmap.md)
 - [Testing strategy](docs/quality/testing-strategy.md)

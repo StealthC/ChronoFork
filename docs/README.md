@@ -6,11 +6,11 @@ it is never a substitute for these documents.
 
 ## Status
 
-Bootstrap foundation complete. The repository builds and tests a deterministic
-synthetic backend and the generic session layer. It does **not** yet contain a real
-Mega Drive / Genesis emulation core, and the real-backend decision (ADR-0002) is
-pending owner approval. Claims below distinguish implemented facts from proposals
-and upstream research claims.
+Bootstrap foundation complete, with the first real-hardware slice implemented. The
+repository builds and tests a deterministic synthetic backend, the generic session
+layer, and a minimal 68000 + ROM/RAM Mega Drive backend. VDP, audio, Z80 and
+interrupts are not implemented. ADR-0002 is accepted. Claims below distinguish
+implemented facts from proposals and upstream research claims.
 
 ## Start here
 
@@ -23,12 +23,14 @@ and upstream research claims.
 | [Backend model](architecture/backend-model.md) | Capability contract and snapshot compatibility |
 | [Session model](architecture/session-model.md) | Identity, lifecycle, fork and isolation |
 | [Execution model](architecture/execution-model.md) | Virtual time, determinism and replay |
-| [Backend strategy](architecture/backend-strategy.md) | Comparison of real-backend options |
+| [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
+| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented minimal real-hardware slice |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term stages |
 | [Milestones](roadmap/milestones.md) | Deliverable checkpoints |
-| [EPIC-0001](epics/EPIC-0001-foundation.md) | Current epic, tasks and acceptance criteria |
+| [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
+| [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
 | [Licensing policy](licensing/policy.md) | Reuse and attribution rules |

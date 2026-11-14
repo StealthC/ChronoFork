@@ -2,10 +2,10 @@
 
 ## Status
 
-**Proposal — not approved.** This document compares real-backend strategies. The
-bootstrap deliberately implements only backend-neutral contracts and a synthetic
-validation backend. Do not treat any option as selected until the user approves an
-ADR or an explicit decision.
+**Accepted 2026-11-13.** The project owner approved Option E (staged hybrid) and
+[ADR-0002](../adr/0002-backend-boundaries.md). Stage 1 has produced its first slice: a minimal 68000 + ROM/RAM backend under
+`crates/chronofork-megadrive`. The Exodus oracle path is still pending because
+Ninja, clang and `libpng` are not installed.
 
 ## Requirements that discriminate between options
 
@@ -100,7 +100,7 @@ Treat a remote or separately versioned emulator as a service.
 **Disadvantages:** network dependency, latency, authentication, deployment and
 determinism concerns; premature for a local-first bootstrap.
 
-### E. Staged hybrid (recommended for discussion)
+### E. Staged hybrid (accepted)
 
 Keep the backend-neutral host (done). Use an **external Exodus headless reference
 harness** only for differential traces and real-ROM validation, not as the
@@ -132,8 +132,7 @@ a large effort.
 
 ## Recommendation
 
-**Recommendation: Option E, with a user decision gate before production backend
-work.**
+**Accepted: Option E (staged hybrid).**
 
 1. Approve the backend-neutral host architecture (already implemented).
 2. Build a **read-only differential harness** around exodus-headless in a separate

@@ -39,9 +39,13 @@ Run the full local gate:
 
 ```sh
 cargo run -p chronofork-cli -- demo
+cargo run -p chronofork-cli -- megadrive demo
 ```
 
-Expected evidence:
+The first command runs the synthetic contract scenario. The second runs the
+minimal real 68000 + ROM/RAM slice; it is not a full Mega Drive emulator.
+
+Expected evidence for the synthetic demo:
 
 - backend is explicitly identified as a synthetic test backend;
 - a checkpoint is created at tick 12;
@@ -52,6 +56,15 @@ Expected evidence:
 - restoring and replaying reproduces the branch hash;
 - serialized checkpoint checksum is verified;
 - final line: `chronofork demo: PASS`.
+
+Expected evidence for the Mega Drive slice:
+
+- reset vectors load PC `0x200` and A7 `0x00FF0000`;
+- the synthetic ROM computes `1 + 2` in `D0` and reloads it into `D2`;
+- six instructions advance to tick 6;
+- a fork/RAM mutation diverges while the source stays unchanged;
+- restoring the checkpoint reproduces the original hash;
+- final line: `chronofork megadrive demo: PASS`.
 
 Inspect advertised capabilities:
 
@@ -71,6 +84,7 @@ crates/
   chronofork-backend-api/  capability/backend contracts
   chronofork-sessions/     lifecycle, snapshots, forks, lineage
   chronofork-test-backend/ synthetic deterministic machine
+  chronofork-megadrive/    minimal 68000 + ROM/RAM slice
   chronofork-cli/          minimal demo CLI
 docs/                      official documentation
 scripts/check.sh           local quality gate

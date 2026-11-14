@@ -36,3 +36,21 @@ fn backend_describe_reports_real_capabilities() {
     assert!(stdout.contains("capability.breakpoints: false"));
     assert!(stdout.contains("capability.tracing: false"));
 }
+
+#[test]
+fn megadrive_demo_runs_the_minimal_68000_slice() {
+    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
+        .args(["megadrive", "demo"])
+        .output()
+        .expect("megadrive demo runs");
+    let stdout = String::from_utf8(output.stdout).expect("megadrive stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("megadrive stderr is UTF-8");
+    assert!(
+        output.status.success(),
+        "megadrive demo failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("minimal 68000 backend slice"));
+    assert!(stdout.contains("no VDP, audio, Z80 or interrupts"));
+    assert!(stdout.contains("restore: checkpoint state reproduced"));
+    assert!(stdout.contains("chronofork megadrive demo: PASS"));
+}

@@ -15,6 +15,7 @@ chronofork-backend-api.workspace = true
 chronofork-core.workspace = true
 chronofork-sessions.workspace = true
 chronofork-test-backend.workspace = true
+chronofork-megadrive.workspace = true
 
 [lints]
 workspace = true

@@ -1,8 +1,10 @@
 # ADR-0002: Backend Strategy and Boundaries
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-13
-- **Decision owner:** Project owner (approval required)
+- **Decision owner:** Project owner (approved 2026-11-13)
+- **Approval evidence:** owner approved Option E and authorized the initial commit/push
+  (`85f7aaa`, pushed to `origin/main`)
 - **Supersedes:** none
 
 ## Context
@@ -34,7 +36,7 @@ E. Staged hybrid: backend-neutral host + external Exodus reference harness for
 
 Full comparison: [backend strategy](../architecture/backend-strategy.md).
 
-## Decision (proposed)
+## Decision (accepted)
 
 Adopt **Option E**:
 
@@ -46,8 +48,8 @@ Adopt **Option E**:
 4. Revisit Options B/C only after proving reproducible builds, multi-instance
    support and versioned state export.
 
-**This decision is not accepted.** No real backend work may begin under it until
-the project owner approves.
+The project owner approved this decision on 2026-11-13. Stage 1 implementation may
+proceed under it, while the residual risks below remain tracked.
 
 ## Rationale
 
@@ -78,8 +80,8 @@ Negative / risks:
   real tests; neither is available in the current environment.
 - If the Rust-native path stalls, a C++ adapter may become attractive and could
   reintroduce ABI/build complexity.
-- The recommendation remains unproven until the headless port is built and its
-  multi-instance/state behavior is measured.
+- The selected strategy remains unproven in practice: the Rust-native slice is only
+  beginning, and the headless port has not been built or measured yet.
 
 ## Evidence
 
