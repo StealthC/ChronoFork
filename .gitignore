@@ -1,0 +1,127 @@
+# Rust build outputs
+/target/
+**/target/
+*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.dSYM/
+
+# Cargo local overrides / caches
+.cargo/
+!/Cargo.toml
+**/.cargo/config.toml
+**/.cargo/config
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+*.token
+
+# Operational planning memory (planning-with-files)
+.planning/
+.plan-attestation
+.plan-*
+
+# Agent Teams orchestration state (local only)
+.agent-teams/
+
+# Upstream research clones — never tracked, never submodules
+.research/
+**/.research/
+
+# Local runtime data, captures and generated media
+/run/
+local-data/
+sessions/
+snapshots/
+states/
+traces/
+recordings/
+captures/
+exports/
+*.cfstate
+*.cfsnap
+*.cfmovie
+*.cftrace
+*.cfz
+*.mkv
+*.mp4
+*.webm
+*.avi
+*.wav
+*.flac
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ppm
+
+# ROMs / firmware / BIOS — never commit
+roms/
+**/roms/
+firmware/
+**/firmware/
+bios/
+**/bios/
+*.rom
+*.bin
+*.smd
+*.gen
+*.32x
+*.iso
+*.cue
+*.img
+*.gg
+*.sms
+
+# Local databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+core
+core.*
+*.crash
+crashdumps/
+*.log
+logs/
+
+# Coverage / fuzz / benchmark artifacts
+coverage/
+*.lcov
+fuzz/artifacts/
+fuzz/corpus/
+criterion/
+
+# Local agent notes (prefer .planning/ or docs/)
+.agent-notes/
+.ai-notes/
+
+# OS-level WSL metadata
+*.lnk
+desktop.ini
+
+# Harness/skill installation metadata (local only)
+.agents/

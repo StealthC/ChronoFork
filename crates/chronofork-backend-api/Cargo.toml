@@ -1,0 +1,13 @@
+[package]
+name = "chronofork-backend-api"
+description = "Backend capability, snapshot and inspection contracts for ChronoFork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-core.workspace = true
+
+[lints]
+workspace = true

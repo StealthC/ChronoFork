@@ -1,0 +1,38 @@
+#![allow(clippy::expect_used)]
+
+use std::process::Command;
+
+#[test]
+fn demo_runs_the_acceptance_scenario() {
+    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
+        .arg("demo")
+        .output()
+        .expect("chronofork demo runs");
+    let stdout = String::from_utf8(output.stdout).expect("demo stdout is UTF-8");
+    let stderr = String::from_utf8(output.stderr).expect("demo stderr is UTF-8");
+    assert!(
+        output.status.success(),
+        "demo failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("not a Mega Drive emulator"));
+    assert!(stdout.contains("checkpoint:"));
+    assert!(stdout.contains("serialized checkpoint:"));
+    assert!(stdout.contains("source isolation:"));
+    assert!(stdout.contains("memory isolation:"));
+    assert!(stdout.contains("replay verification:"));
+    assert!(stdout.contains("chronofork demo: PASS"));
+}
+
+#[test]
+fn backend_describe_reports_real_capabilities() {
+    let output = Command::new(env!("CARGO_BIN_EXE_chronofork"))
+        .args(["backend", "describe"])
+        .output()
+        .expect("backend describe runs");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("describe stdout is UTF-8");
+    assert!(stdout.contains("backend: chronofork.test.synthetic"));
+    assert!(stdout.contains("test_backend: true"));
+    assert!(stdout.contains("capability.breakpoints: false"));
+    assert!(stdout.contains("capability.tracing: false"));
+}

@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/chronofork-core",
+    "crates/chronofork-backend-api",
+    "crates/chronofork-sessions",
+    "crates/chronofork-test-backend",
+    "crates/chronofork-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+chronofork-core = { path = "crates/chronofork-core" }
+chronofork-backend-api = { path = "crates/chronofork-backend-api" }
+chronofork-sessions = { path = "crates/chronofork-sessions" }
+chronofork-test-backend = { path = "crates/chronofork-test-backend" }
+sha2 = "0.10"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"

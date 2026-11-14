@@ -1,0 +1,311 @@
+//! Session registry and fork orchestration.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
+
+use chronofork_backend_api::{BackendDescriptor, BackendFactory, StepOutcome};
+use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
+
+use crate::error::SessionError;
+use crate::lineage::Lineage;
+use crate::session::{Session, SessionInspection, SessionState};
+use crate::snapshot::Snapshot;
+
+/// A compact view of one session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionSummary {
+    /// Session identifier.
+    pub id: SessionId,
+    /// Lifecycle state.
+    pub state: SessionState,
+    /// Current tick.
+    pub tick: Tick,
+    /// Current state digest.
+    pub state_hash: StateHash,
+    /// Fork provenance.
+    pub lineage: Lineage,
+}
+
+/// Result of comparing two sessions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionComparison {
+    /// Left session.
+    pub left: SessionId,
+    /// Right session.
+    pub right: SessionId,
+    /// Left tick.
+    pub left_tick: Tick,
+    /// Right tick.
+    pub right_tick: Tick,
+    /// Left state digest.
+    pub left_hash: StateHash,
+    /// Right state digest.
+    pub right_hash: StateHash,
+    /// Whether both sessions have the same tick and state digest.
+    pub equivalent: bool,
+}
+
+/// Owns all independent sessions created from one backend factory.
+///
+/// Mutations require `&mut self`. ChronoFork intentionally does not hide a
+/// global lock or a background executor inside this type; transport adapters
+/// that need shared access must add an explicit synchronization boundary and
+/// document it.
+pub struct SessionManager {
+    factory: Arc<dyn BackendFactory>,
+    sessions: BTreeMap<SessionId, Session>,
+    next_session_id: u64,
+}
+
+impl SessionManager {
+    /// Creates a manager using a backend factory.
+    #[must_use]
+    pub fn new(factory: Arc<dyn BackendFactory>) -> Self {
+        Self {
+            factory,
+            sessions: BTreeMap::new(),
+            next_session_id: 1,
+        }
+    }
+
+    /// Returns the backend descriptor.
+    #[must_use]
+    pub fn backend_descriptor(&self) -> &BackendDescriptor {
+        self.factory.descriptor()
+    }
+
+    /// Creates a fresh session from the factory's initial state.
+    pub fn create_session(&mut self) -> Result<SessionId, SessionError> {
+        let backend = self.factory.create()?;
+        let initial_state = backend.snapshot()?;
+        let id = self.allocate_session_id()?;
+        let session = Session::new(id, backend, Lineage::root(), initial_state);
+        self.sessions.insert(id, session);
+        Ok(id)
+    }
+
+    /// Creates a session by importing serialized snapshot bytes.
+    ///
+    /// The imported session is a root in this manager's fork tree, but its
+    /// lineage records the snapshot it came from.
+    pub fn create_session_from_snapshot_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<SessionId, SessionError> {
+        let snapshot = Snapshot::from_bytes(bytes)?;
+        self.ensure_snapshot_backend(&snapshot)?;
+        let mut backend = self.factory.create()?;
+        backend.restore(snapshot.backend())?;
+        let initial_state = backend.snapshot()?;
+        let id = self.allocate_session_id()?;
+        let mut session =
+            Session::new(id, backend, Lineage::imported(snapshot.id()), initial_state);
+        session.adopt_snapshot(snapshot)?;
+        self.sessions.insert(id, session);
+        Ok(id)
+    }
+
+    /// Forks a session from one of its stored checkpoints.
+    pub fn fork_from_snapshot(
+        &mut self,
+        source_session: SessionId,
+        snapshot_id: SnapshotId,
+    ) -> Result<SessionId, SessionError> {
+        let (snapshot, parent_depth) = {
+            let source = self
+                .sessions
+                .get(&source_session)
+                .ok_or(SessionError::UnknownSession(source_session))?;
+            let snapshot = source
+                .snapshot_record(snapshot_id)
+                .ok_or(SessionError::UnknownSnapshot {
+                    session: source_session,
+                    snapshot: snapshot_id,
+                })?
+                .clone();
+            (snapshot, source.lineage().depth())
+        };
+        self.ensure_snapshot_backend(&snapshot)?;
+        let mut backend = self.factory.create()?;
+        backend.restore(snapshot.backend())?;
+        let initial_state = backend.snapshot()?;
+        let id = self.allocate_session_id()?;
+        let lineage = Lineage::child(source_session, snapshot_id, parent_depth);
+        let mut session = Session::new(id, backend, lineage, initial_state);
+        session.adopt_snapshot(snapshot)?;
+        self.sessions.insert(id, session);
+        Ok(id)
+    }
+
+    /// Captures the current state of a session and immediately forks it.
+    pub fn fork_current(&mut self, source_session: SessionId) -> Result<SessionId, SessionError> {
+        let snapshot_id = self.snapshot(source_session)?;
+        self.fork_from_snapshot(source_session, snapshot_id)
+    }
+
+    /// Captures a checkpoint for a session.
+    pub fn snapshot(&mut self, session: SessionId) -> Result<SnapshotId, SessionError> {
+        self.session_mut(session)?.snapshot()
+    }
+
+    /// Serializes a checkpoint.
+    pub fn snapshot_bytes(
+        &self,
+        session: SessionId,
+        snapshot: SnapshotId,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.session(session)?.snapshot_bytes(snapshot)
+    }
+
+    /// Restores a checkpoint in place.
+    pub fn restore(
+        &mut self,
+        session: SessionId,
+        snapshot: SnapshotId,
+    ) -> Result<(), SessionError> {
+        self.session_mut(session)?.restore(snapshot)
+    }
+
+    /// Restores a session's creation state.
+    pub fn reset(&mut self, session: SessionId) -> Result<(), SessionError> {
+        self.session_mut(session)?.reset()
+    }
+
+    /// Advances a session by one backend-defined quantum.
+    pub fn step(
+        &mut self,
+        session: SessionId,
+        input: InputFrame,
+    ) -> Result<StepOutcome, SessionError> {
+        self.session_mut(session)?.step(input)
+    }
+
+    /// Pauses a session.
+    pub fn pause(&mut self, session: SessionId) -> Result<(), SessionError> {
+        self.session_mut(session)?.pause()
+    }
+
+    /// Resumes a session.
+    pub fn resume(&mut self, session: SessionId) -> Result<(), SessionError> {
+        self.session_mut(session)?.resume()
+    }
+
+    /// Closes a session.
+    pub fn close(&mut self, session: SessionId) -> Result<(), SessionError> {
+        self.session_mut(session)?.close()
+    }
+
+    /// Reads emulated memory through the debugger path.
+    pub fn read_memory(
+        &self,
+        session: SessionId,
+        address: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, SessionError> {
+        self.session(session)?.read_memory(address, length)
+    }
+
+    /// Writes emulated memory through the debugger path.
+    pub fn write_memory(
+        &mut self,
+        session: SessionId,
+        address: u64,
+        data: &[u8],
+    ) -> Result<(), SessionError> {
+        self.session_mut(session)?.write_memory(address, data)
+    }
+
+    /// Returns a read-only inspection of one session.
+    pub fn inspect(&self, session: SessionId) -> Result<SessionInspection, SessionError> {
+        self.session(session)?.inspect()
+    }
+
+    /// Compares two sessions by tick and canonical state digest.
+    pub fn compare(
+        &self,
+        left: SessionId,
+        right: SessionId,
+    ) -> Result<SessionComparison, SessionError> {
+        let left_view = self.inspect(left)?;
+        let right_view = self.inspect(right)?;
+        let equivalent = left_view.machine.tick == right_view.machine.tick
+            && left_view.machine.state_hash == right_view.machine.state_hash;
+        Ok(SessionComparison {
+            left,
+            right,
+            left_tick: left_view.machine.tick,
+            right_tick: right_view.machine.tick,
+            left_hash: left_view.machine.state_hash,
+            right_hash: right_view.machine.state_hash,
+            equivalent,
+        })
+    }
+
+    /// Returns summaries of every session, in identifier order.
+    pub fn summaries(&self) -> Result<Vec<SessionSummary>, SessionError> {
+        self.sessions
+            .values()
+            .map(|session| {
+                let machine = session.inspect()?.machine;
+                Ok(SessionSummary {
+                    id: session.id(),
+                    state: session.state(),
+                    tick: machine.tick,
+                    state_hash: machine.state_hash,
+                    lineage: session.lineage().clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the number of registered sessions, including closed ones.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Returns whether no sessions are registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
+    fn session(&self, id: SessionId) -> Result<&Session, SessionError> {
+        self.sessions
+            .get(&id)
+            .ok_or(SessionError::UnknownSession(id))
+    }
+
+    fn session_mut(&mut self, id: SessionId) -> Result<&mut Session, SessionError> {
+        self.sessions
+            .get_mut(&id)
+            .ok_or(SessionError::UnknownSession(id))
+    }
+
+    fn ensure_snapshot_backend(&self, snapshot: &Snapshot) -> Result<(), SessionError> {
+        if snapshot.backend().backend_id() != self.factory.descriptor().id() {
+            return Err(SessionError::IncompatibleSnapshot(format!(
+                "snapshot backend {} does not match manager backend {}",
+                snapshot.backend().backend_id(),
+                self.factory.descriptor().id()
+            )));
+        }
+        Ok(())
+    }
+
+    fn allocate_session_id(&mut self) -> Result<SessionId, SessionError> {
+        let id = self.next_session_id;
+        self.next_session_id = id.checked_add(1).ok_or(SessionError::IdSpaceExhausted)?;
+        Ok(SessionId::from_raw(id))
+    }
+}
+
+impl fmt::Debug for SessionManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionManager")
+            .field("backend", &self.factory.descriptor().id())
+            .field("sessions", &self.sessions.len())
+            .finish()
+    }
+}

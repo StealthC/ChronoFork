@@ -1,0 +1,13 @@
+[package]
+name = "chronofork-core"
+description = "Core identifiers, time, input and hashing primitives for ChronoFork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+
+[lints]
+workspace = true
