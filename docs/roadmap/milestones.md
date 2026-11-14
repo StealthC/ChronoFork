@@ -23,8 +23,9 @@ its exit criteria are demonstrated by tests or documented evidence.
 - [x] ROM identity (`config_hash`) and a minimal hardware configuration represented.
 - [x] Minimal synthetic ROM executes deterministically on the real backend.
 - [x] Snapshot/restore/fork passes on the real backend.
-- [ ] Minimal VDP status/control and VRAM window.
-- [ ] Deterministic interrupt/tick scheduler.
+- [x] Minimal VDP status/control and VRAM window.
+- [x] Deterministic interrupt/tick scheduler.
+- [x] VDP + interrupt scheduler integrated into backend snapshots, state hashes and CLI.
 - [ ] Differential trace evidence against the approved reference.
 - [x] Capabilities report matches reality for the implemented slice.
 
@@ -81,6 +82,6 @@ its exit criteria are demonstrated by tests or documented evidence.
 
 ## Current milestone
 
-**M0**, with the real-backend decision explicitly pending. See
-[EPIC-0001](../epics/EPIC-0001-foundation.md) and
+**M1**, with differential trace evidence against the approved reference still
+pending. See [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md) and
 [ADR-0002](../adr/0002-backend-boundaries.md).

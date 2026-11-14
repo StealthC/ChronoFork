@@ -102,9 +102,12 @@ best-effort parse.
 
 ## Known limitations
 
-- No real hardware timing, DMA, interrupts or audio.
+- No cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The Mega
+  Drive slice has an instruction-quantum VBlank/HBlank scheduler and 68000 interrupt
+  entry, but no `RTE`, SR-mask gating or VINT-pending wiring.
 - No trace format, conditional breakpoints or watchpoints.
 - No frame pacing, rewind or seek.
 - No cross-platform determinism claim beyond repeated runs on the current host.
-- State hash covers only synthetic state; real backends need a documented
-  canonicalization.
+- The synthetic backend state hash covers only synthetic state; the real Mega Drive
+  slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend
+  canonicalization remains undefined.

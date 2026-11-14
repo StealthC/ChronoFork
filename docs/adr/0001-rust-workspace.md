@@ -67,6 +67,7 @@ Negative / trade-offs:
 
 - Toolchain: `rustc 1.100.0`, `cargo 1.100.0`, rustfmt 1.11.0, clippy 0.1.100.
 - `cargo check --workspace` passes.
-- `cargo test --workspace` passes 40 tests after the Mega Drive slice.
+- `cargo test --workspace` passes 98 tests in the 2026-11-14 stage-1b run (71 in
+  `chronofork-megadrive`); see [quality gates](../quality/quality-gates.md).
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Layout is recorded in [architecture overview](../architecture/overview.md).

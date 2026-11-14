@@ -1,12 +1,20 @@
-//! Big-endian Mega Drive memory bus for the first backend slice.
+//! Big-endian Mega Drive memory bus for the real-hardware slice.
 //!
-//! Only the ROM cartridge window and the 64 KiB work RAM are mapped. VDP, PSG,
-//! Z80, controller and mapper windows are deliberately absent from this slice;
-//! accessing them is an explicit error rather than silent open-bus behavior.
+//! The cartridge ROM window, the 64 KiB work RAM window and the VDP port window
+//! at `0xC00000..=0xC0000F` are mapped. PSG, Z80, controller and mapper windows
+//! remain deliberately absent from this slice; accessing them is an explicit
+//! error rather than silent open-bus behavior.
+//!
+//! VDP accesses are side-effecting (the data port advances the internal address),
+//! so the bus read methods take `&mut self`. Debugger-style reads use
+//! [`MegadriveBus::read_memory`], which is side-effect free and therefore rejects
+//! the side-effecting VDP window instead of silently changing device state.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
+
+use crate::vdp::{Vdp, VdpError};
 
 /// First address of the cartridge ROM window.
 pub const ROM_BASE: u32 = 0x0000_0000;
@@ -18,16 +26,22 @@ pub const RAM_BASE: u32 = 0x00FF_0000;
 pub const RAM_END: u32 = 0x0100_0000;
 /// Size of work RAM in bytes.
 pub const RAM_SIZE: usize = 0x0001_0000;
+/// First address of the VDP port window.
+pub const VDP_BASE: u32 = 0x00C0_0000;
+/// Size of the VDP port window in bytes.
+pub const VDP_WINDOW_SIZE: u32 = 0x0010;
+/// Exclusive end of the VDP port window.
+pub const VDP_END: u32 = VDP_BASE + VDP_WINDOW_SIZE;
 
 /// A bus access that the current slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BusError {
-    /// A read outside ROM or RAM.
+    /// A read outside ROM, RAM or a mapped device window.
     UnmappedRead {
         /// Requested address.
         address: u32,
     },
-    /// A write outside ROM or RAM.
+    /// A write outside ROM, RAM or a mapped device window.
     UnmappedWrite {
         /// Requested address.
         address: u32,
@@ -48,6 +62,13 @@ pub enum BusError {
         address: u32,
         /// Requested byte count.
         length: usize,
+    },
+    /// The VDP rejected a port access.
+    Vdp(VdpError),
+    /// A side-effect-free debugger read targeted a side-effecting device port.
+    SideEffectingRead {
+        /// Requested address.
+        address: u32,
     },
 }
 
@@ -70,21 +91,36 @@ impl fmt::Display for BusError {
                 f,
                 "address overflow at 0x{address:06X} for {length} byte(s)"
             ),
+            Self::Vdp(error) => write!(f, "VDP port access failed: {error}"),
+            Self::SideEffectingRead { address } => write!(
+                f,
+                "side-effect-free read at 0x{address:06X} targets a side-effecting device port"
+            ),
         }
     }
 }
 
-impl Error for BusError {}
+impl Error for BusError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Vdp(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
-/// ROM + 64 KiB work RAM, accessed big-endian like the 68000 bus.
+/// ROM + 64 KiB work RAM + the VDP port window, accessed big-endian like the
+/// 68000 bus.
 #[derive(Clone, Debug)]
 pub struct MegadriveBus {
     rom: Arc<[u8]>,
     ram: Vec<u8>,
+    vdp: Vdp,
 }
 
 impl MegadriveBus {
-    /// Creates a bus over an immutable cartridge image.
+    /// Creates a bus over an immutable cartridge image with a VDP in its
+    /// deterministic reset state.
     ///
     /// The factory validates the image size before constructing a bus.
     #[must_use]
@@ -92,6 +128,7 @@ impl MegadriveBus {
         Self {
             rom,
             ram: vec![0; RAM_SIZE],
+            vdp: Vdp::new(),
         }
     }
 
@@ -107,8 +144,34 @@ impl MegadriveBus {
         &self.ram
     }
 
-    /// Reads one byte.
-    pub fn read8(&self, address: u32) -> Result<u8, BusError> {
+    /// Returns the VDP state.
+    #[must_use]
+    pub const fn vdp(&self) -> &Vdp {
+        &self.vdp
+    }
+
+    /// Returns the VDP state for snapshot restore and scheduler synchronization.
+    pub(crate) const fn vdp_mut(&mut self) -> &mut Vdp {
+        &mut self.vdp
+    }
+
+    /// Reads one byte through the bus, including side-effecting VDP ports.
+    pub fn read8(&mut self, address: u32) -> Result<u8, BusError> {
+        if let Some(offset) = vdp_offset(address) {
+            return self.vdp.read8(offset).map_err(BusError::Vdp);
+        }
+        self.peek8(address)
+    }
+
+    /// Reads one byte without side effects.
+    ///
+    /// The VDP window is rejected because a read there can advance the VDP's
+    /// internal address; use [`MegadriveBus::read8`] when emulated execution is
+    /// allowed to observe device side effects.
+    pub fn peek8(&self, address: u32) -> Result<u8, BusError> {
+        if vdp_offset(address).is_some() {
+            return Err(BusError::SideEffectingRead { address });
+        }
         if address < ROM_END {
             let index = usize::try_from(address).map_err(|_| BusError::UnmappedRead { address })?;
             return self
@@ -129,10 +192,13 @@ impl MegadriveBus {
         Err(BusError::UnmappedRead { address })
     }
 
-    /// Reads a big-endian word.
-    pub fn read16(&self, address: u32) -> Result<u16, BusError> {
+    /// Reads a big-endian word through the bus.
+    pub fn read16(&mut self, address: u32) -> Result<u16, BusError> {
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
+        }
+        if let Some(offset) = vdp_offset(address) {
+            return self.vdp.read16(offset).map_err(BusError::Vdp);
         }
         let high = self.read8(address)?;
         let low = self.read8(
@@ -143,10 +209,21 @@ impl MegadriveBus {
         Ok(u16::from_be_bytes([high, low]))
     }
 
-    /// Reads a big-endian long word.
-    pub fn read32(&self, address: u32) -> Result<u32, BusError> {
+    /// Reads a big-endian long word through the bus.
+    pub fn read32(&mut self, address: u32) -> Result<u32, BusError> {
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
+        }
+        if let Some(offset) = vdp_offset(address) {
+            let second_address = address
+                .checked_add(2)
+                .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+            let second_offset = vdp_offset(second_address).ok_or(BusError::UnmappedRead {
+                address: second_address,
+            })?;
+            let high = u32::from(self.vdp.read16(offset).map_err(BusError::Vdp)?);
+            let low = u32::from(self.vdp.read16(second_offset).map_err(BusError::Vdp)?);
+            return Ok((high << 16) | low);
         }
         let high = u32::from(self.read16(address)?);
         let low = u32::from(
@@ -181,8 +258,11 @@ impl MegadriveBus {
         Ok(())
     }
 
-    /// Writes one byte to work RAM.
+    /// Writes one byte to a mapped window.
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        if let Some(offset) = vdp_offset(address) {
+            return self.vdp.write8(offset, value).map_err(BusError::Vdp);
+        }
         self.ensure_ram_write_range(address, 1)?;
         let offset =
             usize::try_from(address & 0xFFFF).map_err(|_| BusError::UnmappedWrite { address })?;
@@ -193,10 +273,13 @@ impl MegadriveBus {
         Err(BusError::UnmappedWrite { address })
     }
 
-    /// Writes a big-endian word to work RAM.
+    /// Writes a big-endian word to a mapped window.
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
+        }
+        if let Some(offset) = vdp_offset(address) {
+            return self.vdp.write16(offset, value).map_err(BusError::Vdp);
         }
         self.ensure_ram_write_range(address, 2)?;
         let bytes = value.to_be_bytes();
@@ -207,10 +290,26 @@ impl MegadriveBus {
         self.write8(second, bytes[1])
     }
 
-    /// Writes a big-endian long word to work RAM.
+    /// Writes a big-endian long word to a mapped window.
     pub fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
+        }
+        if let Some(offset) = vdp_offset(address) {
+            let second_address = address
+                .checked_add(2)
+                .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+            let second_offset = vdp_offset(second_address).ok_or(BusError::UnmappedWrite {
+                address: second_address,
+            })?;
+            let bytes = value.to_be_bytes();
+            self.vdp
+                .write16(offset, u16::from_be_bytes([bytes[0], bytes[1]]))
+                .map_err(BusError::Vdp)?;
+            return self
+                .vdp
+                .write16(second_offset, u16::from_be_bytes([bytes[2], bytes[3]]))
+                .map_err(BusError::Vdp);
         }
         self.ensure_ram_write_range(address, 4)?;
         let bytes = value.to_be_bytes();
@@ -224,13 +323,16 @@ impl MegadriveBus {
         Ok(())
     }
 
-    /// Reads a byte range for debugger consumers.
+    /// Reads a byte range for debugger consumers without device side effects.
+    ///
+    /// The VDP port window is rejected rather than read, because a VDP read can
+    /// change device state. This keeps inspection side-effect free.
     pub fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BusError> {
         let mut current =
             u32::try_from(address).map_err(|_| BusError::UnmappedRead { address: u32::MAX })?;
         let mut output = Vec::with_capacity(length);
         for _ in 0..length {
-            output.push(self.read8(current)?);
+            output.push(self.peek8(current)?);
             current = current.checked_add(1).ok_or(BusError::AddressOverflow {
                 address: current,
                 length,
@@ -268,17 +370,33 @@ impl MegadriveBus {
     }
 }
 
+fn vdp_offset(address: u32) -> Option<u8> {
+    let offset = address.checked_sub(VDP_BASE)?;
+    if offset < VDP_WINDOW_SIZE {
+        u8::try_from(offset).ok()
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::{MegadriveBus, RAM_BASE};
+    use super::{BusError, MegadriveBus, RAM_BASE};
 
     fn bus() -> MegadriveBus {
         let mut rom = vec![0_u8; 0x400];
         rom[0] = 0x12;
         rom[1] = 0x34;
         MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+    }
+
+    fn set_vram_address(bus: &mut MegadriveBus, address: u16, first_word: u16) {
+        bus.write16(0x00C0_0004, first_word | (address & 0x3FFF))
+            .expect("control first word");
+        bus.write16(0x00C0_0004, (address >> 14) & 0x0003)
+            .expect("control second word");
     }
 
     #[test]
@@ -302,9 +420,95 @@ mod tests {
 
     #[test]
     fn rejects_unmapped_access() {
-        let bus = bus();
-        assert!(bus.read8(0x00C0_0000).is_err());
+        let mut bus = bus();
+        assert!(matches!(
+            bus.read8(0x00C0_0010),
+            Err(BusError::UnmappedRead { .. })
+        ));
+        assert!(matches!(
+            bus.read8(0x00A0_0000),
+            Err(BusError::UnmappedRead { .. })
+        ));
         assert!(bus.read8(0x00FF_FFFF).is_ok());
+    }
+
+    #[test]
+    fn vdp_control_data_and_status_are_mapped_through_the_bus() {
+        let mut bus = bus();
+        bus.write16(0x00C0_0004, 0x8F02).expect("auto-increment");
+        assert_eq!(bus.vdp().register(15), Some(2));
+
+        set_vram_address(&mut bus, 0x0010, 0x4000);
+        bus.write16(0x00C0_0000, 0xABCD).expect("vram write");
+        assert_eq!(&bus.vdp().vram()[0x10..0x12], &[0xAB, 0xCD]);
+
+        set_vram_address(&mut bus, 0x0010, 0x0000);
+        assert_eq!(bus.read16(0x00C0_0000).expect("vram read"), 0xABCD);
+
+        // A byte read still transfers a whole word, so each lane needs its own
+        // address setup; the selected byte lane comes from the port offset.
+        set_vram_address(&mut bus, 0x0010, 0x0000);
+        assert_eq!(bus.read8(0x00C0_0000).expect("high byte"), 0xAB);
+        set_vram_address(&mut bus, 0x0010, 0x0000);
+        assert_eq!(bus.read8(0x00C0_0001).expect("low byte"), 0xCD);
+
+        // Data-port byte writes duplicate into both halves.
+        set_vram_address(&mut bus, 0x0020, 0x4000);
+        bus.write8(0x00C0_0000, 0x5A).expect("byte write");
+        assert_eq!(&bus.vdp().vram()[0x20..0x22], &[0x5A, 0x5A]);
+
+        assert_eq!(bus.read16(0x00C0_0004).expect("status"), 0x0100);
+        assert_eq!(bus.read16(0x00C0_0008).expect("hv counter"), 0);
+    }
+
+    #[test]
+    fn vdp_port_errors_and_other_devices_are_explicit() {
+        let mut bus = bus();
+        assert!(matches!(
+            bus.read16(0x00C0_0001),
+            Err(BusError::OddAddress { .. })
+        ));
+        bus.write16(0x00C0_0004, 0x8F02).expect("auto-increment");
+        assert!(matches!(
+            bus.write16(0x00C0_0004, 0x9800),
+            Err(BusError::Vdp(_))
+        ));
+        assert!(matches!(
+            bus.read8(0x00C0_0011),
+            Err(BusError::UnmappedRead { .. })
+        ));
+        assert!(matches!(
+            bus.write8(0x00C0_0011, 0),
+            Err(BusError::UnmappedWrite { .. })
+        ));
+        assert!(matches!(
+            bus.read8(0x00A1_0000),
+            Err(BusError::UnmappedRead { .. })
+        ));
+        assert!(matches!(
+            bus.write16(0x00A1_0000, 0),
+            Err(BusError::UnmappedWrite { .. })
+        ));
+    }
+
+    #[test]
+    fn debugger_reads_of_vdp_ports_are_side_effect_free() {
+        let mut bus = bus();
+        set_vram_address(&mut bus, 0x0010, 0x4000);
+        bus.write16(0x00C0_0000, 0xABCD).expect("vram write");
+        set_vram_address(&mut bus, 0x0010, 0x0000);
+        let address_before = bus.vdp().address();
+        assert_eq!(
+            bus.read_memory(0x00C0_0000, 1),
+            Err(BusError::SideEffectingRead {
+                address: 0x00C0_0000
+            })
+        );
+        assert_eq!(bus.vdp().address(), address_before);
+        assert_eq!(
+            bus.read_memory(u64::from(RAM_BASE), 2).expect("ram peek"),
+            vec![0, 0]
+        );
     }
 
     #[test]

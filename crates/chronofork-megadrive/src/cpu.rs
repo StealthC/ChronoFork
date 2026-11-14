@@ -8,12 +8,17 @@
 //!
 //! - `MOVEQ`, `MOVE.B/W/L` between `Dn`, immediate and absolute-long operands;
 //! - `ADD.B/W/L`/`SUB.B/W/L` between data registers, plus `ADDQ`/`SUBQ` word/long;
-//! - `CLR.W/L`, `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `JMP`, `JSR`, `RTS`.
+//! - `CMP.B/W/L Dn,Dn`, `TST.B/W/L Dn`, `CLR.W/L`, `LEA (abs).L,An`, `PEA (abs).L`;
+//! - `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL`, `DBRA`,
+//!   `JMP`, `JSR`, `RTS`;
+//! - interrupt exception entry (`M68000::interrupt`) through a vector-table
+//!   entry, with a supervisor stack frame and the `SR` supervisor bit.
 //!
-//! Not implemented: effective-address modes beyond the listed forms, exception
-//! processing, interrupts, supervisor/user separation, prefetch, cycle-accurate
-//! timing, and the rest of the instruction set. Unsupported opcodes are errors,
-//! never silently skipped.
+//! Not implemented: effective-address modes beyond the listed forms, interrupt
+//! levels/priority masks and automatic vector selection, other exception groups,
+//! separate user/supervisor stack pointers, prefetch, cycle-accurate timing, and
+//! the rest of the instruction set. Unsupported opcodes are errors, never
+//! silently skipped.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -150,6 +155,46 @@ impl M68000 {
         self.ensure_even_pc()
     }
 
+    /// Enters a 68000 interrupt exception through one vector-table entry.
+    ///
+    /// The processor builds its exception frame on the (supervisor) stack: a
+    /// word containing the current status register at the lowest address and a
+    /// long containing the return program counter immediately above it, so the
+    /// stack pointer decreases by six. The target program counter is then read
+    /// as a big-endian long from `vector_address` (for example `0x78` for the
+    /// level-6 autovector normally used by VBlank), the supervisor bit in `SR`
+    /// is set, and execution jumps to the handler. An interrupt also clears the
+    /// halted latch, so a halted processor resumes at the handler.
+    ///
+    /// The caller owns interrupt prioritisation: this slice models neither
+    /// interrupt levels nor the `SR` interrupt mask, pending-request
+    /// bookkeeping, automatic vector selection or the other exception groups.
+    /// An odd or unmapped `vector_address`, a stack pointer without six bytes
+    /// below it, or a vector entry holding an odd program counter is an error.
+    /// The frame is pushed and the supervisor bit is set before the vector is
+    /// fetched, like real hardware, so a bad vector leaves both behind.
+    pub fn interrupt(
+        &mut self,
+        vector_address: u32,
+        bus: &mut MegadriveBus,
+    ) -> Result<(), CpuError> {
+        let stack = self.a[7].checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        let return_pc = self.pc;
+        let previous_sr = self.sr;
+
+        bus.write16(stack, previous_sr)?;
+        let return_pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        bus.write32(return_pc_address, return_pc)?;
+        self.a[7] = stack;
+        self.sr = previous_sr | SR_SUPERVISOR;
+
+        let target = bus.read32(vector_address)?;
+        self.write_pc(target)?;
+
+        self.halted = false;
+        Ok(())
+    }
+
     /// Returns the program counter.
     #[must_use]
     pub const fn pc(&self) -> u32 {
@@ -278,6 +323,44 @@ impl M68000 {
             return Ok(());
         }
 
+        // LEA (abs).L,An. The absolute-long encoding ends in 0xF9; the
+        // absolute-word (0xF8) and PC-relative (0xFA/0xFB) forms are not
+        // implemented and must fall through to the illegal-opcode error.
+        if (opcode & 0xF1FF) == 0x41F9 {
+            let register = usize::from((opcode >> 9) & 0x7);
+            let address = self.fetch_u32(bus)?;
+            self.a[register] = address;
+            return Ok(());
+        }
+
+        // PEA (abs).L, whose full opcode is 0x4879. Do not accept the
+        // absolute-word (0x4878) or PC-relative (0x487A) encodings.
+        if opcode == 0x4879 {
+            let address = self.fetch_u32(bus)?;
+            self.push_long(bus, address)?;
+            return Ok(());
+        }
+
+        // TST.B/W/L Dn
+        if (opcode & 0xFFF8) == 0x4A00 {
+            let register = usize::from(opcode & 0x7);
+            let value = self.read_dn(register, Size::Byte);
+            self.set_logic_flags(value, Size::Byte);
+            return Ok(());
+        }
+        if (opcode & 0xFFF8) == 0x4A40 {
+            let register = usize::from(opcode & 0x7);
+            let value = self.read_dn(register, Size::Word);
+            self.set_logic_flags(value, Size::Word);
+            return Ok(());
+        }
+        if (opcode & 0xFFF8) == 0x4A80 {
+            let register = usize::from(opcode & 0x7);
+            let value = self.d[register];
+            self.set_logic_flags(value, Size::Long);
+            return Ok(());
+        }
+
         // MOVE.W/L #imm,Dn
         if (opcode & 0xF1FF) == 0x303C {
             let register = usize::from((opcode >> 9) & 0x7);
@@ -373,6 +456,41 @@ impl M68000 {
             return Ok(());
         }
 
+        // CMP.B/W/L Dn,Dn. As with ADD/SUB, the destination mode is bits 5-3
+        // and the size is bits 7-6; bit 8 distinguishes CMP from EOR.
+        if (opcode & 0xF100) == 0xB000 && (opcode & 0x0038) == 0 {
+            let source = usize::from(opcode & 0x7);
+            let destination = usize::from((opcode >> 9) & 0x7);
+            let size = match opcode & 0x00C0 {
+                0x0000 => Size::Byte,
+                0x0040 => Size::Word,
+                0x0080 => Size::Long,
+                _ => {
+                    return Err(CpuError::Unsupported(
+                        "CMP only supports data-register operands".to_owned(),
+                    ));
+                }
+            };
+            let source_value = self.read_dn(source, size);
+            let destination_value = self.read_dn(destination, size);
+            self.set_cmp_flags(destination_value, source_value, size);
+            return Ok(());
+        }
+
+        // DBRA Dn,disp16 (the DBcc encoding with condition 0x1).
+        if (opcode & 0xFFF8) == 0x51C8 {
+            let register = usize::from(opcode & 0x7);
+            let displacement = self.fetch_u16(bus)? as i16;
+            let counter = self.read_dn(register, Size::Word);
+            let decremented = counter.wrapping_sub(1) & Size::Word.mask();
+            self.write_dn(register, decremented, Size::Word);
+            if decremented == 0xFFFF {
+                return Ok(());
+            }
+            let target = self.relative_target(i32::from(displacement))?;
+            return self.write_pc(target);
+        }
+
         // ADDQ / SUBQ (Dn only).
         if (opcode & 0xF000) == 0x5000 {
             let subtract = opcode & 0x0100 != 0;
@@ -438,34 +556,36 @@ impl M68000 {
     fn execute_branch(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
         let displacement = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
         let condition = (opcode >> 8) & 0xF;
-        match condition {
-            0x0 | 0x1 => {
-                let target = self.relative_target(displacement)?;
-                if condition == 0x1 {
-                    let return_pc = self.pc;
-                    self.push_long(bus, return_pc)?;
-                }
-                self.write_pc(target)
+        let taken = match condition {
+            // BRA, and BSR which also pushes a return address.
+            0x0 | 0x1 => true,
+            // BCC/BCS.
+            0x4 => !self.flag(FLAG_C),
+            0x5 => self.flag(FLAG_C),
+            // BEQ/BNE.
+            0x6 => !self.flag(FLAG_Z),
+            0x7 => self.flag(FLAG_Z),
+            // BMI/BPL.
+            0xA => !self.flag(FLAG_N),
+            0xB => self.flag(FLAG_N),
+            _ => {
+                return Err(CpuError::Unsupported(format!(
+                    "branch condition 0x{condition:X} is not implemented"
+                )));
             }
-            0x6 => {
-                if self.flag(FLAG_Z) {
-                    Ok(())
-                } else {
-                    let target = self.relative_target(displacement)?;
-                    self.write_pc(target)
-                }
-            }
-            0x7 => {
-                if self.flag(FLAG_Z) {
-                    let target = self.relative_target(displacement)?;
-                    self.write_pc(target)
-                } else {
-                    Ok(())
-                }
-            }
-            _ => Err(CpuError::Unsupported(format!(
-                "branch condition 0x{condition:X} is not implemented"
-            ))),
+        };
+        let target = if taken {
+            Some(self.relative_target(displacement)?)
+        } else {
+            None
+        };
+        if condition == 0x1 {
+            let return_pc = self.pc;
+            self.push_long(bus, return_pc)?;
+        }
+        match target {
+            Some(target) => self.write_pc(target),
+            None => Ok(()),
         }
     }
 
@@ -538,19 +658,34 @@ impl M68000 {
     }
 
     fn set_sub_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
+        let (carry, overflow, zero, negative) =
+            Self::subtract_condition_codes(destination, source, result, size);
+        self.set_ccr(carry, overflow, zero, negative, carry);
+    }
+
+    /// Sets flags for `CMP`, which is a subtraction that leaves `X` untouched.
+    fn set_cmp_flags(&mut self, destination: u32, source: u32, size: Size) {
+        let mask = size.mask();
+        let result = (destination & mask).wrapping_sub(source & mask) & mask;
+        let (carry, overflow, zero, negative) =
+            Self::subtract_condition_codes(destination, source, result, size);
+        let extend = self.flag(FLAG_X);
+        self.set_ccr(carry, overflow, zero, negative, extend);
+    }
+
+    fn subtract_condition_codes(
+        destination: u32,
+        source: u32,
+        result: u32,
+        size: Size,
+    ) -> (bool, bool, bool, bool) {
         let mask = size.mask();
         let destination = destination & mask;
         let source = source & mask;
         let result = result & mask;
         let borrow = u64::from(destination) < u64::from(source);
         let overflow = ((destination ^ source) & (destination ^ result) & size.sign_bit()) != 0;
-        self.set_ccr(
-            borrow,
-            overflow,
-            result == 0,
-            result & size.sign_bit() != 0,
-            borrow,
-        );
+        (borrow, overflow, result == 0, result & size.sign_bit() != 0)
     }
 
     fn set_ccr(&mut self, carry: bool, overflow: bool, zero: bool, negative: bool, extend: bool) {
@@ -632,14 +767,59 @@ impl Default for M68000 {
 mod tests {
     use std::sync::Arc;
 
-    use super::M68000;
-    use crate::bus::MegadriveBus;
+    use super::{CpuError, M68000};
+    use crate::bus::{BusError, MegadriveBus};
+
+    /// Stack top used by the new-instruction helpers. Work RAM on this bus ends
+    /// at 0x01000000; starting near the top keeps downward pushes inside RAM.
+    const INITIAL_STACK: u32 = 0x00FF_FF00;
 
     fn bus_with_vectors() -> MegadriveBus {
         let mut rom = vec![0_u8; 0x400];
         rom[0..4].copy_from_slice(&0x00FF_0000_u32.to_be_bytes());
         rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
         MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+    }
+
+    /// Builds a bus whose reset vectors load `program` at address 0x200.
+    fn program_bus(program: &[u8]) -> MegadriveBus {
+        let mut rom = vec![0_u8; 0x400];
+        rom[0..4].copy_from_slice(&INITIAL_STACK.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x200..0x200 + program.len()].copy_from_slice(program);
+        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+    }
+
+    fn cpu_at_program(program: &[u8]) -> (M68000, MegadriveBus) {
+        let mut bus = program_bus(program);
+        let mut cpu = M68000::new();
+        cpu.reset(&mut bus).expect("reset");
+        (cpu, bus)
+    }
+
+    /// Builds a bus with a NOP at 0x200 and `target` in the vector table.
+    fn vector_bus(vector_address: u32, target: u32) -> MegadriveBus {
+        let mut rom = vec![0_u8; 0x400];
+        rom[0..4].copy_from_slice(&INITIAL_STACK.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x200..0x202].copy_from_slice(&[0x4E, 0x71]);
+        let start = vector_address as usize;
+        rom[start..start + 4].copy_from_slice(&target.to_be_bytes());
+        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+    }
+
+    fn cpu_with_vector(vector_address: u32, target: u32) -> (M68000, MegadriveBus) {
+        let mut bus = vector_bus(vector_address, target);
+        let mut cpu = M68000::new();
+        cpu.reset(&mut bus).expect("reset");
+        (cpu, bus)
+    }
+
+    fn run_branch(opcode: u16, sr: u16) -> u32 {
+        let (mut cpu, mut bus) = cpu_at_program(&opcode.to_be_bytes());
+        cpu.sr = sr;
+        cpu.step(&mut bus).expect("conditional branch");
+        cpu.pc()
     }
 
     #[test]
@@ -668,5 +848,271 @@ mod tests {
         cpu.step(&mut bus).expect("add");
         assert_eq!(cpu.data_register(0), Some(3));
         assert_eq!(cpu.data_register(1), Some(2));
+    }
+
+    #[test]
+    fn lea_abs_long_loads_an_address_register() {
+        // LEA (0x12345678).L,A3
+        let (mut cpu, mut bus) = cpu_at_program(&[0x47, 0xF9, 0x12, 0x34, 0x56, 0x78]);
+        let flags = cpu.sr();
+        cpu.step(&mut bus).expect("lea");
+        assert_eq!(cpu.address_register(3), Some(0x1234_5678));
+        assert_eq!(cpu.pc(), 0x206);
+        assert_eq!(cpu.sr(), flags, "LEA must not change the condition codes");
+    }
+
+    #[test]
+    fn pea_abs_long_pushes_the_address() {
+        // PEA (0x00FF1000).L
+        let (mut cpu, mut bus) = cpu_at_program(&[0x48, 0x79, 0x00, 0xFF, 0x10, 0x00]);
+        let flags = cpu.sr();
+        cpu.step(&mut bus).expect("pea");
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 4));
+        assert_eq!(
+            bus.read32(INITIAL_STACK - 4).expect("pushed address"),
+            0x00FF_1000
+        );
+        assert_eq!(cpu.sr(), flags, "PEA must not change the condition codes");
+    }
+
+    #[test]
+    fn absolute_word_and_pc_relative_forms_are_rejected_as_illegal() {
+        // These encodings are LEA/PEA, but not absolute-long: the old masks
+        // silently executed them with a 32-bit fetch. They must be errors.
+        for (bytes, opcode) in [
+            ([0x41, 0xF8], 0x41F8_u16), // LEA (abs).W,A0
+            ([0x48, 0x78], 0x4878),     // PEA (abs).W
+            ([0x41, 0xFA], 0x41FA),     // LEA (d16,PC),A0
+            ([0x48, 0x7A], 0x487A),     // PEA (d16,PC)
+        ] {
+            let (mut cpu, mut bus) = cpu_at_program(&bytes);
+            assert_eq!(
+                cpu.step(&mut bus),
+                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
+                "opcode 0x{opcode:04X} must not be executed as absolute-long"
+            );
+            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
+            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+            assert_eq!(cpu.sr(), 0x2700);
+        }
+    }
+
+    #[test]
+    fn tst_byte_sets_negative_and_preserves_extend() {
+        // TST.B D0 with the byte sign bit set; X already set and must survive.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4A, 0x00]);
+        cpu.d[0] = 0xFFFF_FF80;
+        cpu.sr = 0x2710;
+        cpu.step(&mut bus).expect("tst.b");
+        assert_eq!(cpu.sr(), 0x2718, "N set, Z/C/V clear, X preserved");
+        assert_eq!(cpu.data_register(0), Some(0xFFFF_FF80));
+    }
+
+    #[test]
+    fn tst_word_zero_sets_zero_and_clears_carry_and_overflow() {
+        // TST.W D1: only the low word decides the flags.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4A, 0x41]);
+        cpu.d[1] = 0x0001_0000;
+        cpu.sr = 0x2703;
+        cpu.step(&mut bus).expect("tst.w");
+        assert_eq!(cpu.sr(), 0x2704, "Z set, C/V/N clear, X stays clear");
+    }
+
+    #[test]
+    fn tst_long_uses_all_32_bits() {
+        // TST.L D2: a sign bit outside the low word must set N.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x4A, 0x82]);
+        cpu.d[2] = 0x8000_0000;
+        cpu.step(&mut bus).expect("tst.l");
+        assert_eq!(cpu.sr(), 0x2708);
+    }
+
+    #[test]
+    fn cmp_byte_sets_borrow_and_negative_without_changing_extend() {
+        // CMP.B D1,D0 compares 0x10 with 0x20: 0x10 - 0x20 = 0xF0.
+        let (mut cpu, mut bus) = cpu_at_program(&[0xB0, 0x01]);
+        cpu.d[0] = 0x10;
+        cpu.d[1] = 0x20;
+        cpu.sr = 0x2710;
+        cpu.step(&mut bus).expect("cmp.b");
+        assert_eq!(cpu.sr(), 0x2719, "N and C set, Z/V clear, X preserved");
+        assert_eq!(cpu.data_register(0), Some(0x10));
+        assert_eq!(cpu.data_register(1), Some(0x20));
+    }
+
+    #[test]
+    fn cmp_word_equal_sets_zero_without_carry() {
+        // CMP.W D1,D0: 0x1234 - 0x1234 = 0.
+        let (mut cpu, mut bus) = cpu_at_program(&[0xB0, 0x41]);
+        cpu.d[0] = 0x1234;
+        cpu.d[1] = 0x1234;
+        cpu.step(&mut bus).expect("cmp.w");
+        assert_eq!(cpu.sr(), 0x2704, "Z set, N/C/V clear");
+    }
+
+    #[test]
+    fn cmp_long_detects_signed_overflow() {
+        // CMP.L D1,D0: 0x80000000 - 1 overflows into 0x7FFFFFFF.
+        let (mut cpu, mut bus) = cpu_at_program(&[0xB0, 0x81]);
+        cpu.d[0] = 0x8000_0000;
+        cpu.d[1] = 1;
+        cpu.step(&mut bus).expect("cmp.l");
+        assert_eq!(cpu.sr(), 0x2702, "V set, N/C/Z clear");
+        assert_eq!(cpu.data_register(0), Some(0x8000_0000));
+    }
+
+    #[test]
+    fn dbra_loops_until_the_counter_wraps_to_minus_one() {
+        // MOVEQ #2,D0; DBRA D0,-4; NOP
+        let (mut cpu, mut bus) = cpu_at_program(&[0x70, 0x02, 0x51, 0xC8, 0xFF, 0xFC, 0x4E, 0x71]);
+        cpu.step(&mut bus).expect("moveq");
+        let flags_after_moveq = cpu.sr();
+        let mut iterations = 0;
+        while cpu.pc() != 0x206 {
+            cpu.step(&mut bus).expect("dbra");
+            iterations += 1;
+            assert!(iterations <= 4, "DBRA did not terminate");
+        }
+        assert_eq!(iterations, 3, "counter 2, 1, 0 then 0xFFFF");
+        assert_eq!(cpu.data_register(0), Some(0xFFFF));
+        assert_eq!(cpu.sr(), flags_after_moveq, "DBRA must not change flags");
+        assert_eq!(cpu.pc(), 0x206);
+    }
+
+    #[test]
+    fn dbra_odd_target_is_an_address_error() {
+        // DBRA D0,-3 targets 0x201 after the two displacement bytes.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFD]);
+        cpu.d[0] = 2;
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::AddressError { address: 0x201 })
+        );
+    }
+
+    #[test]
+    fn bcc_branches_when_carry_is_clear() {
+        assert_eq!(run_branch(0x6402, 0x2700), 0x204);
+        assert_eq!(run_branch(0x6402, 0x2701), 0x202);
+    }
+
+    #[test]
+    fn bcs_branches_when_carry_is_set() {
+        assert_eq!(run_branch(0x6502, 0x2701), 0x204);
+        assert_eq!(run_branch(0x6502, 0x2700), 0x202);
+    }
+
+    #[test]
+    fn bmi_branches_when_negative_is_set() {
+        assert_eq!(run_branch(0x6B02, 0x2708), 0x204);
+        assert_eq!(run_branch(0x6B02, 0x2700), 0x202);
+    }
+
+    #[test]
+    fn bpl_branches_when_negative_is_clear() {
+        assert_eq!(run_branch(0x6A02, 0x2700), 0x204);
+        assert_eq!(run_branch(0x6A02, 0x2708), 0x202);
+    }
+
+    #[test]
+    fn interrupt_pushes_frame_sets_supervisor_and_jumps_through_vector() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        cpu.step(&mut bus).expect("nop");
+        let previous_sr = cpu.sr();
+        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        assert_eq!(cpu.pc(), 0x300);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
+        assert_eq!(
+            bus.read16(INITIAL_STACK - 6).expect("pushed sr"),
+            previous_sr
+        );
+        assert_eq!(bus.read32(INITIAL_STACK - 4).expect("pushed pc"), 0x202);
+        assert!(cpu.sr() & 0x2000 != 0, "entry must be in supervisor mode");
+        assert!(!cpu.halted());
+    }
+
+    #[test]
+    fn interrupt_enters_supervisor_mode_and_preserves_condition_codes() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        cpu.sr = 0x0004; // User mode with Z set.
+        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        assert_eq!(bus.read16(INITIAL_STACK - 6).expect("pushed sr"), 0x0004);
+        assert_eq!(bus.read32(INITIAL_STACK - 4).expect("pushed pc"), 0x200);
+        assert_eq!(cpu.sr(), 0x2004);
+    }
+
+    #[test]
+    fn interrupt_wakes_a_halted_processor() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        cpu.halted = true;
+        cpu.interrupt(0x78, &mut bus).expect("interrupt");
+        assert!(!cpu.halted());
+        assert_eq!(cpu.pc(), 0x300);
+    }
+
+    #[test]
+    fn interrupt_rejects_stack_underflow() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        cpu.a[7] = 0;
+        assert_eq!(cpu.interrupt(0x78, &mut bus), Err(CpuError::StackOverflow));
+        assert_eq!(cpu.pc(), 0x200);
+    }
+
+    #[test]
+    fn interrupt_rejects_a_rom_stack() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        cpu.a[7] = 0x0000_0300;
+        cpu.sr = 0x0000;
+        assert_eq!(
+            cpu.interrupt(0x78, &mut bus),
+            Err(CpuError::Bus(BusError::WriteProtected {
+                address: 0x0000_02FA
+            }))
+        );
+        assert_eq!(cpu.sr(), 0x0000, "a failed first push leaves SR untouched");
+        assert_eq!(cpu.pc(), 0x200);
+    }
+
+    #[test]
+    fn interrupt_rejects_an_unmapped_vector() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        assert_eq!(
+            cpu.interrupt(0x0080_0000, &mut bus),
+            Err(CpuError::Bus(BusError::UnmappedRead {
+                address: 0x0080_0000
+            }))
+        );
+        // The exception frame is pushed and supervisor mode entered before the
+        // vector fetch fails.
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
+        assert_eq!(cpu.pc(), 0x200);
+        assert_ne!(cpu.sr() & 0x2000, 0);
+    }
+
+    #[test]
+    fn interrupt_rejects_an_odd_vector_address() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
+        assert_eq!(
+            cpu.interrupt(0x79, &mut bus),
+            Err(CpuError::Bus(BusError::OddAddress { address: 0x79 }))
+        );
+        assert_ne!(cpu.sr() & 0x2000, 0);
+    }
+
+    #[test]
+    fn interrupt_rejects_an_odd_target_pc() {
+        let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0301);
+        cpu.sr = 0x0000;
+        assert_eq!(
+            cpu.interrupt(0x78, &mut bus),
+            Err(CpuError::AddressError { address: 0x301 })
+        );
+        assert_eq!(cpu.pc(), 0x200);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
+        assert_eq!(
+            cpu.sr(),
+            0x2000,
+            "supervisor mode is entered before the jump"
+        );
     }
 }

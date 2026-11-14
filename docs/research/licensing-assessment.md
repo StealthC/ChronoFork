@@ -45,7 +45,7 @@ recorded here for consistency; this document does not edit them.
 |---|---|---|
 | `LICENSE` | MIT, "Copyright (c) 2026 ChronoFork contributors" | Matches `Cargo.toml` (`license = "MIT"`); no upstream code is claimed |
 | `THIRD_PARTY_NOTICES.md` | 10 third-party Rust crates (`sha2` + transitives), all MIT/Apache-2.0; three research references explicitly marked **not distributed**; no ROM/firmware fixtures | The 10 packages and versions match `Cargo.lock` exactly; the research-reference statements are consistent with this assessment |
-| `README.md` | States that the repository ships a deterministic synthetic test backend and a minimal 68000 + ROM/RAM Mega Drive backend, neither a complete emulator; 40 tests and no ROMs | Consistent with the code inventory: no upstream emulator source or assets are present in the workspace |
+| `README.md` (audited 2026-11-13) | At audit time: shipped a deterministic synthetic test backend and a minimal 68000 + ROM/RAM Mega Drive backend, neither a complete emulator; 40 tests and no ROMs | Dated snapshot of the bootstrap tree, not a current claim. The tree has since grown (2026-11-14 gate: 98 tests, VDP port + interrupt scheduler added); the inventory conclusion (no upstream emulator source or assets) still holds |
 
 The cross-referenced `docs/licensing/policy.md` and `docs/licensing/provenance.md` were
 created later in the same bootstrap day and record the same research-only posture

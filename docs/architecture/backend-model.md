@@ -106,18 +106,26 @@ Features not yet demonstrated must stay `false` in capabilities.
 ## Current real slice
 
 `chronofork-megadrive` is the first real-hardware slice. It satisfies the backend
-contract for a minimal 68000 + ROM/RAM machine:
+contract for a minimal 68000 + ROM/RAM + VDP-port machine with a deterministic
+interrupt scheduler:
 
 - 68000 reset vectors, a documented instruction subset, big-endian ROM/RAM bus.
-- Versioned snapshots, restore validation and canonical state hashing.
+- VDP status/control ports and a 64 KiB VRAM window at `0xC00000..=0xC0000F`, with
+  typed errors for PSG/Z80/controller and other unmapped windows.
+- An instruction-quantum VBlank/HBlank interrupt scheduler whose pending requests
+  are delivered through the 68000 interrupt-entry API (VBlank before HBlank).
+- Versioned snapshots, restore validation and canonical state hashing that include
+  CPU, RAM, VDP and scheduler state.
 - Independent instances and session fork/restore/isolation tests.
 - Headless build/test path and no UI dependency.
 - Explicit errors for unsupported opcodes and unmapped/odd-address accesses.
 - MIT-licensed original code; no upstream source incorporated.
 
-It does **not** yet satisfy a production Mega Drive backend: no VDP, audio, Z80,
-interrupts, controllers, mapper/SRAM, timing accuracy or differential oracle
-evidence. Capabilities report these as `false`/absent. See
+It does **not** yet satisfy a production Mega Drive backend: rendering, DMA, audio,
+Z80, controllers, mapper/SRAM, `RTE`, SR-mask gating, cycle accuracy and differential
+oracle evidence are absent. The VDP port window and interrupt scheduler are partial
+slices, not a complete VDP or hardware-timed interrupt controller. Capabilities
+report rendering/audio/tracing as `false`/absent. See
 [Mega Drive 68000 slice](megadrive-slice.md).
 
 ## Open questions

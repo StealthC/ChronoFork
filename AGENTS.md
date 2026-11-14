@@ -11,11 +11,13 @@ platform built primarily in Rust. It treats emulated execution as deterministic,
 independent, forkable sessions that humans, scripts and AI agents can inspect and
 replay.
 
-**Current status:** bootstrap + first real-hardware slice. The repository contains a
-deterministic synthetic test backend and a minimal 68000 + ROM/RAM Mega Drive
-backend. VDP, audio, Z80, interrupts, controllers and most 68000 instructions are
-not implemented. Do not present either backend as a complete emulator or claim game
-compatibility.
+**Current status:** bootstrap + partial real-hardware slice. The repository contains a
+deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
+subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic
+instruction-quantum VBlank/HBlank interrupt scheduler. Rendering, DMA, audio, Z80,
+controllers, `RTE`, SR mask gating and cycle accuracy remain absent, and most 68000
+instructions are not implemented. Do not present either backend as a complete
+emulator or claim game compatibility.
 
 ## Repository map
 
@@ -25,7 +27,7 @@ compatibility.
 | `crates/chronofork-backend-api/` | Backend, capability, snapshot, inspection traits |
 | `crates/chronofork-sessions/` | Session lifecycle, checkpoints, lineage, forks |
 | `crates/chronofork-test-backend/` | Synthetic deterministic validation backend |
-| `crates/chronofork-megadrive/` | Minimal real 68000 + ROM/RAM Mega Drive slice |
+| `crates/chronofork-megadrive/` | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice |
 | `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features |
 | `docs/` | Durable official documentation |
 | `docs/README.md` | Documentation index; start here |

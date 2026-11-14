@@ -49,8 +49,11 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
         output.status.success(),
         "megadrive demo failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(stdout.contains("minimal 68000 backend slice"));
-    assert!(stdout.contains("no VDP, audio, Z80 or interrupts"));
-    assert!(stdout.contains("restore: checkpoint state reproduced"));
+    assert!(stdout.contains("68000 + VDP port + interrupt scheduler slice"));
+    assert!(stdout.contains("no rendering, audio, Z80"));
+    assert!(stdout.contains("vdp: register 15 (auto-increment)=2"));
+    assert!(stdout.contains("interrupt: HBlank pending at tick 64"));
+    assert!(stdout.contains("interrupt: VBlank pending level 6 vector 0x78"));
+    assert!(stdout.contains("snapshot: VDP, scheduler and CPU state reproduced"));
     assert!(stdout.contains("chronofork megadrive demo: PASS"));
 }

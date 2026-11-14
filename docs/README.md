@@ -6,11 +6,13 @@ it is never a substitute for these documents.
 
 ## Status
 
-Bootstrap foundation complete, with the first real-hardware slice implemented. The
+Bootstrap foundation complete, with a partial real-hardware slice implemented. The
 repository builds and tests a deterministic synthetic backend, the generic session
-layer, and a minimal 68000 + ROM/RAM Mega Drive backend. VDP, audio, Z80 and
-interrupts are not implemented. ADR-0002 is accepted. Claims below distinguish
-implemented facts from proposals and upstream research claims.
+layer, and a minimal 68000 + ROM/RAM Mega Drive backend with a VDP
+status/control/VRAM port window and a deterministic instruction-quantum interrupt
+scheduler. Rendering, DMA, audio, Z80 and controllers are not implemented. ADR-0002
+is accepted. Claims below distinguish implemented facts from proposals and upstream
+research claims.
 
 ## Start here
 
@@ -24,7 +26,7 @@ implemented facts from proposals and upstream research claims.
 | [Session model](architecture/session-model.md) | Identity, lifecycle, fork and isolation |
 | [Execution model](architecture/execution-model.md) | Virtual time, determinism and replay |
 | [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
-| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented minimal real-hardware slice |
+| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term stages |

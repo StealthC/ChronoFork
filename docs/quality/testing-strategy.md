@@ -123,6 +123,10 @@ determinism test.
 
 ### 2.3 Verified bootstrap baseline (2026-11-13)
 
+> This table records the bootstrap baseline as executed on 2026-11-13 (40 tests).
+> The current stage-1b tree passes 98 tests; the authoritative current gate results
+> live in [quality gates](quality-gates.md).
+
 The quality workstream ran the repository's existing gates against the implemented
 workspace. Full results are recorded in `docs/quality/quality-gates.md`; the summary is:
 
@@ -549,7 +553,7 @@ Status at 2026-11-13 (the implementation may advance after this audit):
 
 | # | Criterion | Status | Evidence / gap |
 |---|---|---|---|
-| 1 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass from a clean checkout | **Pass** | Verified in §2.3; 40 tests |
+| 1 | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` pass from a clean checkout | **Pass** | Verified in §2.3 (bootstrap, 40 tests) and in the 2026-11-14 stage-1b gate (98 tests) |
 | 2 | A reusable `Backend` contract suite exists and passes against `chronofork-test-backend` | **Partial** | Backend unit tests cover determinism, divergence, snapshot, bounds, errors; not yet extracted as a shared conformance suite |
 | 3 | INV-01…INV-13 covered by executable tests, including negative control, debug/release determinism, snapshot round-trip, restore-continue and fork isolation | **Partial** | In-process invariants covered; debug/release and cross-process determinism absent; negative control exists for snapshot corruption but not for trace comparison |
 | 4 | Snapshot format versioning has an `IncompatibleSnapshot` test and a canonical golden state | **Partial** | Version/corruption/truncation rejection present; no golden bytes/canonical fixture |

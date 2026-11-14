@@ -28,15 +28,16 @@ credible hardware slice.
   instruction-quantum tick.
 - [x] ROM identity/config hash and an independently authored synthetic ROM.
 - [x] Snapshot/restore/fork on the real core.
-- [ ] Minimal VDP status/control and VRAM window.
-- [ ] Deterministic interrupt/tick scheduler.
+- [x] Minimal VDP status/control and VRAM window.
+- [x] Deterministic interrupt/tick scheduler.
 - [ ] Differential trace harness against the Exodus oracle (blocked on Ninja/clang/
   libpng and oracle build approval).
 - [ ] Complete production hardware state, including VDP/audio/Z80.
 
 **Exit:** a known synthetic ROM executes deterministically; snapshot/restore/fork
-works on the real core; differential evidence exists. The first three are done;
-differential evidence and remaining hardware are pending.
+works on the real core; differential evidence exists. The hardware slice,
+VDP port window and interrupt scheduler are done; differential evidence and
+remaining hardware (rendering, Z80, audio, DMA) are pending.
 
 ## Stage 2 — Sessions, forks and save states at product quality
 

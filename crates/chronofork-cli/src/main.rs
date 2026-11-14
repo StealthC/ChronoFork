@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use chronofork_backend_api::BackendFactory;
 use chronofork_core::InputFrame;
-use chronofork_megadrive::{MegadriveFactory, RAM_BASE, demo_rom};
+use chronofork_megadrive::{MegadriveFactory, RAM_BASE, SchedulerConfig, VideoStandard, demo_rom};
 use chronofork_sessions::{SessionManager, Snapshot};
 use chronofork_test_backend::SyntheticBackendFactory;
 
@@ -65,7 +65,7 @@ fn print_usage() {
     println!(
         "  chronofork demo               Run the deterministic synthetic fork/restore scenario"
     );
-    println!("  chronofork megadrive demo      Run the minimal 68000 backend slice");
+    println!("  chronofork megadrive demo      Run the minimal 68000 + VDP + interrupt slice");
     println!("  chronofork backend describe   Show synthetic backend identity and capabilities");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
@@ -239,36 +239,134 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let mut manager = SessionManager::new(Arc::new(factory));
     let descriptor = manager.backend_descriptor().clone();
 
-    println!("chronofork megadrive demo: minimal 68000 backend slice");
+    println!("chronofork megadrive demo: 68000 + VDP port + interrupt scheduler slice");
     println!(
         "backend: {} ({})",
         descriptor.display_name(),
         descriptor.version()
     );
-    println!("scope: 68000 subset + ROM/RAM; no VDP, audio, Z80 or interrupts");
+    println!(
+        "scope: 68000 subset, ROM/RAM, VDP status/control/VRAM window, deterministic interrupt scheduler"
+    );
+    println!("limitations: no rendering, audio, Z80, DMA, controllers or cycle-accurate timing");
 
     let source = manager.create_session()?;
-    for _ in 0..6 {
+    for _ in 0..23 {
         manager.step(source, InputFrame::NEUTRAL)?;
     }
-    let before = manager.inspect(source)?;
-    println!(
-        "after 6 instructions: tick={} pc={} d0={} d2={}",
-        before.machine.tick,
-        before.machine.registers["pc"],
-        before.machine.registers["d0"],
-        before.machine.registers["d2"]
-    );
+    let vdp_view = manager.inspect(source)?;
+    let registers = &vdp_view.machine.registers;
+    let computed = manager.read_memory(source, 0x00FF_0000, 2)?;
     ensure(
-        before.machine.registers["d0"] == 3,
+        computed == vec![0x00, 0x03],
         "demo program did not compute 1 + 2",
     )?;
     ensure(
-        before.machine.registers["d2"] == 3,
-        "demo program did not reload the RAM value",
+        registers["d2"] == 0x1234,
+        "demo program did not read the VDP data port",
     )?;
+    ensure(
+        registers["vdp_auto_increment"] == 2,
+        "demo program did not set VDP register 15",
+    )?;
+    ensure(
+        registers["vdp_status"] == 0x0100,
+        "VDP status should be FIFO-empty with VBlank clear",
+    )?;
+    let vram_readback = manager.read_memory(source, 0x00FF_0004, 2)?;
+    ensure(
+        vram_readback == vec![0x12, 0x34],
+        "demo program did not read back VRAM word 0x1234",
+    )?;
+    let stored_status = manager.read_memory(source, 0x00FF_0006, 2)?;
+    ensure(
+        stored_status == vec![0x01, 0x00],
+        "demo program did not capture the VDP status word",
+    )?;
+    println!(
+        "vdp: register 15 (auto-increment)={} status=0x{:04X} address=0x{:04X}",
+        registers["vdp_auto_increment"], registers["vdp_status"], registers["vdp_address"]
+    );
+    println!("vdp: program wrote and read back VRAM word 0x1234 through the data port");
+
+    // A request raised at the end of one instruction is visible in inspection and
+    // taken at the next instruction boundary.
+    for _ in 23..64 {
+        manager.step(source, InputFrame::NEUTRAL)?;
+    }
+    let pending = manager.inspect(source)?;
+    ensure(
+        pending.machine.tick.raw() == 64,
+        "unexpected tick before HBlank",
+    )?;
+    ensure(
+        pending.machine.registers["irq_pending_level"] == 4,
+        "HBlank should be pending at tick 64",
+    )?;
+    ensure(
+        pending.machine.registers["irq_vector"] == 0x70,
+        "HBlank should select autovector 0x70",
+    )?;
+    println!(
+        "interrupt: HBlank pending at tick 64 (level 4, vector 0x70, mask {})",
+        pending.machine.registers["irq_mask"]
+    );
+
+    manager.step(source, InputFrame::NEUTRAL)?;
+    let delivered = manager.inspect(source)?;
+    ensure(
+        delivered.machine.registers["d7"] == 1,
+        "HBlank handler did not run exactly once",
+    )?;
+    ensure(
+        delivered.machine.registers["irq_pending_level"] == 0,
+        "HBlank request was not acknowledged",
+    )?;
+    println!(
+        "interrupt: HBlank delivered; handler pc=0x{:X} D7={}",
+        delivered.machine.registers["pc"], delivered.machine.registers["d7"]
+    );
+
+    // VBlank needs 224 active scanlines. A shorter instruction quantum keeps the
+    // demonstration compact while exercising the same scheduler path.
+    let fast_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
+    let fast_factory = MegadriveFactory::with_scheduler_config(demo_rom(), fast_config)?;
+    let mut fast_manager = SessionManager::new(Arc::new(fast_factory));
+    let fast = fast_manager.create_session()?;
+    let vblank_tick = u64::from(VideoStandard::Ntsc.active_lines()) * 4;
+    for _ in 0..vblank_tick {
+        fast_manager.step(fast, InputFrame::NEUTRAL)?;
+    }
+    let vblank_view = fast_manager.inspect(fast)?;
+    ensure(
+        vblank_view.machine.registers["irq_pending_level"] == 6,
+        "VBlank should have priority at the start of vertical blanking",
+    )?;
+    ensure(
+        vblank_view.machine.registers["irq_vector"] == 0x78,
+        "VBlank should select autovector 0x78",
+    )?;
+    ensure(
+        vblank_view.machine.registers["vdp_status"] & 0x0008 != 0,
+        "VDP VBlank status flag should be set",
+    )?;
+    let vblank_checkpoint = fast_manager.snapshot(fast)?;
+    fast_manager.step(fast, InputFrame::NEUTRAL)?;
+    ensure(
+        fast_manager.inspect(fast)?.machine.registers["d6"] == 1,
+        "VBlank handler did not run exactly once",
+    )?;
+    fast_manager.restore(fast, vblank_checkpoint)?;
+    ensure(
+        fast_manager.inspect(fast)?.machine.registers["irq_pending_level"] == 6,
+        "snapshot restore did not preserve the pending VBlank request",
+    )?;
+    println!(
+        "interrupt: VBlank pending level 6 vector 0x78 at tick {vblank_tick} (quantum=4); snapshot restored it"
+    );
 
     let checkpoint = manager.snapshot(source)?;
+    let before = manager.inspect(source)?;
     let fork = manager.fork_from_snapshot(source, checkpoint)?;
     manager.write_memory(fork, u64::from(RAM_BASE), &[0xAA])?;
     manager.step(fork, InputFrame::NEUTRAL)?;
@@ -293,7 +391,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         restored.machine.state_hash == before.machine.state_hash,
         "restore did not reproduce the checkpoint",
     )?;
-    println!("restore: checkpoint state reproduced");
+    println!("snapshot: VDP, scheduler and CPU state reproduced from the checkpoint");
     println!("chronofork megadrive demo: PASS");
     Ok(())
 }

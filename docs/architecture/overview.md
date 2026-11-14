@@ -122,14 +122,17 @@ mutable state with its source.
 
 ## Implemented versus planned
 
-| Area | Bootstrap |
+| Area | Current status |
 |---|---|
 | Session lifecycle | Implemented |
 | Snapshot/restore/import | Implemented |
 | Fork + lineage | Implemented |
 | Deterministic synthetic backend | Implemented |
-| Minimal 68000 + ROM/RAM Mega Drive slice | Implemented (partial hardware) |
-| VDP, audio, Z80, interrupts | Not implemented |
+| Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Implemented (partial hardware) |
+| VDP status/control/VRAM port window | Implemented (no rendering/DMA) |
+| Deterministic VBlank/HBlank interrupt scheduler | Implemented (instruction-quantum, not cycle-accurate) |
+| VDP rendering/DMA, audio, Z80, controllers, mapper/SRAM | Not implemented |
+| `RTE`, SR mask gating, VINT-pending status wiring | Not implemented |
 | HTTP/MCP/GUI | Not implemented |
 | Breakpoints/watchpoints/tracing | Contract sketches only |
 | TAS movie format | Not implemented |

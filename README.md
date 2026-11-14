@@ -7,23 +7,26 @@ platform. It treats emulated execution as a first-class, reproducible, forkable
 timeline: sessions own independent machine state, checkpoints are versioned, and
 branches can diverge without mutating each other.
 
-> **Project status: bootstrap + first real-hardware slice.** This repository ships a
-> deterministic **synthetic test backend** and a minimal **68000 + ROM/RAM Mega Drive
-> backend**. Neither is a complete Mega Drive / Genesis emulator: VDP, audio, Z80,
-> interrupts, controllers and most 68000 instructions are not implemented yet. No
-> commercial ROMs or firmware are included.
+> **Project status: bootstrap + partial real-hardware slice.** This repository ships
+> a deterministic **synthetic test backend** and a minimal **68000 + ROM/RAM + VDP
+> port + interrupt-scheduler Mega Drive backend**. Neither is a complete Mega Drive /
+> Genesis emulator: rendering, DMA, audio, Z80, controllers and most 68000
+> instructions are not implemented yet, and the interrupt model is
+> instruction-quantum rather than cycle-accurate. No commercial ROMs or firmware are
+> included.
 
 ## What works today
 
 - A Rust 2024 Cargo workspace with six focused crates.
 - A capability-based backend contract with explicitly reported guarantees.
-- A minimal 68000 + ROM/RAM Mega Drive backend with versioned snapshots and session integration.
+- A minimal 68000 + ROM/RAM + VDP-port Mega Drive backend with a deterministic
+  interrupt scheduler, versioned device-inclusive snapshots and session integration.
 - Independent sessions with create / step / pause / resume / reset / close.
 - Versioned, checksummed snapshots with round-trip and corruption tests.
 - Snapshot restore, replay verification and three-way forking.
 - Session lineage, state digests, comparison and memory isolation tests.
 - A CLI demonstration that runs the acceptance scenario end to end.
-- 40 automated tests, plus `rustfmt`, `cargo check`, Clippy and rustdoc gates.
+- 98 automated tests, plus `rustfmt`, `cargo check`, Clippy and rustdoc gates.
 
 ## Quick start
 
@@ -39,8 +42,11 @@ cargo run -p chronofork-cli -- megadrive demo
 cargo run -p chronofork-cli -- backend describe
 ```
 
-The demo prints the checkpoint, three independent forks, divergent state hashes,
-source/memory isolation checks, replay verification, and `chronofork demo: PASS`.
+The synthetic demo prints the checkpoint, three independent forks, divergent state
+hashes, source/memory isolation checks, replay verification, and
+`chronofork demo: PASS`. The Mega Drive demo additionally prints VDP
+register/VRAM/status evidence, pending and delivered interrupt vectors, and
+snapshot/fork/restore results for CPU + VDP + scheduler state.
 
 ## Workspace
 
@@ -50,7 +56,7 @@ source/memory isolation checks, replay verification, and `chronofork demo: PASS`
 | `chronofork-backend-api` | Capability, snapshot, inspection and backend traits |
 | `chronofork-sessions` | Session lifecycle, checkpoints, lineage, fork/restore |
 | `chronofork-test-backend` | Deterministic synthetic machine used for validation |
-| `chronofork-megadrive` | Minimal real 68000 + ROM/RAM Mega Drive backend slice |
+| `chronofork-megadrive` | Minimal 68000 + ROM/RAM + VDP port + interrupt scheduler slice |
 | `chronofork-cli` | Minimal executable demonstration of implemented features |
 
 The session layer depends on the backend contract, never the reverse. The test

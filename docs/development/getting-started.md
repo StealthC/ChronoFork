@@ -43,7 +43,8 @@ cargo run -p chronofork-cli -- megadrive demo
 ```
 
 The first command runs the synthetic contract scenario. The second runs the
-minimal real 68000 + ROM/RAM slice; it is not a full Mega Drive emulator.
+minimal real 68000 + ROM/RAM + VDP-port + interrupt-scheduler slice; it is not a
+full Mega Drive emulator.
 
 Expected evidence for the synthetic demo:
 
@@ -59,11 +60,16 @@ Expected evidence for the synthetic demo:
 
 Expected evidence for the Mega Drive slice:
 
-- reset vectors load PC `0x200` and A7 `0x00FF0000`;
-- the synthetic ROM computes `1 + 2` in `D0` and reloads it into `D2`;
-- six instructions advance to tick 6;
+- reset vectors load PC `0x200` and A7 `0x01000000` (the top of work RAM, so
+  interrupt pushes stay inside RAM);
+- the synthetic ROM computes `1 + 2`, programs VDP register `0x0F`, writes and
+  reads back the VRAM word `0x1234`, and captures the VDP status;
+- an HBlank request is pending at tick 64 (level 4, vector `0x70`) and is delivered
+  on the next instruction boundary;
+- a VBlank request is pending at the start of vertical blanking (level 6, vector
+  `0x78`) and survives a snapshot/restore round-trip;
 - a fork/RAM mutation diverges while the source stays unchanged;
-- restoring the checkpoint reproduces the original hash;
+- restoring the checkpoint reproduces the original CPU, VDP and scheduler hash;
 - final line: `chronofork megadrive demo: PASS`.
 
 Inspect advertised capabilities:
