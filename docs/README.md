@@ -26,6 +26,12 @@ Rendering, DMA, audio, Z80 and controllers are not implemented. ADR-0002 is
 accepted. Claims below distinguish implemented facts from proposals and upstream
 research claims.
 
+**M2 design is accepted; implementation has not started.** Fase A records an Accepted
+[ADR-0003](adr/0003-durable-session-storage.md) and a planned, not-yet-executed
+[M2 acceptance plan](quality/m2-durable-sessions-acceptance.md). No durable storage,
+named-snapshot metadata, persistence ownership/lock, storage-backed rehydration path or
+`chronofork session` CLI command exists; M2 is not complete.
+
 ## Start here
 
 | Document | Purpose |
@@ -47,6 +53,7 @@ research claims.
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
+| [M2 durable-sessions acceptance](quality/m2-durable-sessions-acceptance.md) | Executable, not-yet-executed acceptance criteria for durable sessions |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -55,6 +62,7 @@ research claims.
 | [Upstream inventory](research/upstream-repositories.md) | Repositories, branches, commits, evidence |
 | [Environment](development/environment.md) | Verified toolchain and limitations |
 | [Getting started](development/getting-started.md) | Build, test and demo instructions |
+| [ADR-0003: durable session storage](adr/0003-durable-session-storage.md) | Accepted durable-storage, metadata and ownership design (implementation pending) |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

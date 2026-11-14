@@ -24,6 +24,35 @@ marketing claims; each has a verification path.
 | NFR-ISO-004 | A failed restore must not leave partially corrupted state. | Backend contract + backend-specific tests (future real backend) |
 | NFR-ISO-005 | Snapshot compatibility failures must be explicit typed errors. | Corruption/version tests |
 
+## Durability and durable storage (accepted design; not implemented)
+
+> Status: design accepted by [ADR-0003](../adr/0003-durable-session-storage.md). No
+> durable storage, metadata or rehydration path exists in the current tree. Each
+> verification below is a planned Fase B gate, not a recorded result.
+
+| ID | Requirement | Verification |
+|---|---|---|
+| NFR-DUR-001 | A committed checkpoint must restore after a process restart with the same tick and state hash. | Planned: capture, restart, reopen and compare tick/state hash (Fase B) |
+| NFR-DUR-002 | Publishing a snapshot must be atomic: a crash must never expose a partially written snapshot as committed. | Planned: fault injection at each tmp+fsync+rename step; assert staging is invisible and no partial object loads (Fase B) |
+| NFR-DUR-003 | Checkpoint integrity must cover envelope magic/version/checksum and the metadata binding; corruption, truncation or a swapped file must be rejected with a typed error. | Planned: corruption, truncation, checksum-swap and metadata-mismatch tests (Fase B) |
+| NFR-DUR-004 | Storage, metadata, outer-envelope and backend compatibility must be reject-only; no silent migration or reinterpretation. | Planned: compatibility-matrix tests for unknown/future versions (Fase B) |
+| NFR-DUR-005 | Names, logical creation sequence and advisory host timestamps must never enter a checkpoint's bytes or state hash; host time must never order or validate snapshots. | Planned: metadata/timestamp variation test showing identical checkpoint bytes, state hash and replay result (Fase B) |
+| NFR-STOR-001 | Storage paths must be confined to the canonicalized root; all managed components are fixed names or canonical numeric keys, and traversal and symlink following are rejected. | Planned: traversal, symlink and wrong-file-type tests (Fase B) |
+| NFR-STOR-002 | Every file and listing read must be bounded; lengths are validated against limits before allocation. | Planned: oversized, growing and truncated input tests (Fase B) |
+| NFR-STOR-003 | Retention, listing and deletion must be explicit; opening, capturing, closing and exit must not delete data automatically. | Planned: filesystem inspection after each operation and after simulated restart (Fase B) |
+| NFR-STOR-004 | Invalid, partial or orphaned objects must be reported as typed anomalies, not repaired, migrated or silently skipped. | Planned: staging/tombstone/corrupt-object recovery tests (Fase B) |
+
+## Ownership and concurrency (accepted design; not implemented)
+
+> Status: design accepted by [ADR-0003](../adr/0003-durable-session-storage.md); not
+> implemented.
+
+| ID | Requirement | Verification |
+|---|---|---|
+| NFR-CONC-001 | One writer per durable session/checkpoint at a time; contention must be a typed error, with no silent retry and no hidden global lock. | Planned: two-writer contention test and code review of lock scope (Fase B) |
+| NFR-CONC-002 | An expired or corrupt writer lock must never be stolen automatically; recovery requires an explicit owner-checked action. | Planned: stale/corrupt lock recovery tests, including owner mismatch (Fase B) |
+| NFR-CONC-003 | Lock-free readers must observe a complete old object, a complete new object or a typed not-found result, never a torn file. | Planned: concurrent publish/read and delete/read tests (Fase B) |
+
 ## Portability
 
 | ID | Requirement | Verification |

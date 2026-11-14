@@ -43,11 +43,53 @@ its exit criteria are demonstrated by tests or documented evidence.
 
 ## M2 — Durable sessions
 
+Design status: Fase A produced [ADR-0003](../adr/0003-durable-session-storage.md)
+(Accepted 2026-11-14) and the [M2 acceptance
+plan](../quality/m2-durable-sessions-acceptance.md). **M2 is not complete.** No durable
+storage, named metadata, persistence ownership/lock, storage-backed rehydration path or
+`chronofork session` CLI command exists, and no M2 acceptance test has been executed.
+Fase B requires a separately approved implementation plan; the owner decisions were
+approved on 2026-11-14.
+
 - [ ] Checkpoints persist across process restarts.
+  - [ ] Versioned storage root and marker (`CFSTORE1`, layout v1) with an explicit
+        caller-supplied root and no implicit creation.
+  - [ ] Snapshot publish writes the canonical `Snapshot::to_bytes()` envelope verbatim
+        through the tmp+fsync+rename sequence; a crash never exposes a partial snapshot
+        as committed.
+  - [ ] A new process opens the root, validates the object and restores the recorded
+        tick and state hash.
+  - [ ] Staging, tombstone and orphan objects are reported as typed anomalies and are
+        never repaired or silently loaded.
+  - [ ] Restart, crash-recovery and canonical-bytes acceptance tests are executed and
+        recorded.
 - [ ] Named snapshots and metadata.
+  - [ ] One versioned metadata record round-trips name, logical creation sequence,
+        lineage keys and the mirrored envelope fields.
+  - [ ] Metadata-only rename changes no checkpoint bytes, state hash or replay result.
+  - [ ] Listing is deterministic; retention is caller-driven and deletion is explicit;
+        no operation performs automatic garbage collection.
+  - [ ] Metadata and retention acceptance tests are executed and recorded.
 - [ ] Version compatibility policy tested.
+  - [ ] Reject-only matrix for storage layout, metadata, outer envelope, backend
+        envelope and backend payload.
+  - [ ] Corrupt, truncated, checksum-bad, swapped and identity-mismatched input produces
+        typed errors; no silent migration or reinterpretation.
+  - [ ] Compatibility acceptance tests are executed and recorded.
 - [ ] Concurrency/ownership policy implemented at the service boundary.
+  - [ ] One writer per durable session through an explicit lock/lease; contention is a
+        typed error with no busy-wait or silent retry.
+  - [ ] Stale and corrupt lock recovery is explicit and owner-checked; no lock is stolen
+        automatically.
+  - [ ] Readers are lock-free and never observe a torn checkpoint.
+  - [ ] There is no hidden global lock; only the bounded root key-allocation lock is
+        shared, and it is never held during emulation, serialization or checkpoint I/O.
+  - [ ] Ownership and concurrency acceptance tests are executed and recorded.
 - [ ] No mutable state shared across sessions.
+  - [ ] Rehydrated sessions own independent mutable state; forks never share it.
+  - [ ] Publishing or deleting one session/snapshot never changes another's checkpoint
+        bytes, state hash or lineage.
+  - [ ] In-process and durable isolation acceptance tests are executed and recorded.
 
 ## M3 — TAS and replay
 
@@ -103,8 +145,16 @@ earlier explicit-1,000,000-quantum two-ROM evidence is preserved as
 controlled-condition history. EPIC-0002 E2-15 (SR-mask gating, `RTE`, VINT
 pending/acknowledge) is done; the epic remains open for E2-11 (ROM identity), broader
 E2-13 instruction/addressing coverage and remaining hardware (rendering, Z80, audio,
-DMA, controllers, timers, other exception groups, privilege enforcement). M2 is the
-next milestone but has not started. See
+DMA, controllers, timers, other exception groups, privilege enforcement). See
 [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
 [oracle differential evidence](../research/oracle-differential-evidence.md) and
 [ADR-0002](../adr/0002-backend-boundaries.md).
+
+**M2 is the current milestone. The M2 design is accepted and implementation has NOT
+started, so M2 is NOT complete.** Fase A has produced an Accepted
+[ADR-0003](../adr/0003-durable-session-storage.md) and a planned, not-yet-executed
+[M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md). No durable storage,
+named metadata, persistence ownership/lock, storage-backed rehydration path or
+`chronofork session` CLI command exists, and no M2 acceptance test has been executed.
+The M2 checkboxes above stay unchecked until their acceptance criteria run, pass and are
+recorded. Fase B starts only under a separately approved implementation plan.
