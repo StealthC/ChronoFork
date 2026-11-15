@@ -45,51 +45,73 @@ its exit criteria are demonstrated by tests or documented evidence.
 
 Design status: Fase A produced [ADR-0003](../adr/0003-durable-session-storage.md)
 (Accepted 2026-11-14) and the [M2 acceptance
-plan](../quality/m2-durable-sessions-acceptance.md). **M2 is not complete.** No durable
-storage, named metadata, persistence ownership/lock, storage-backed rehydration path or
-`chronofork session` CLI command exists, and no M2 acceptance test has been executed.
-Fase B requires a separately approved implementation plan; the owner decisions were
-approved on 2026-11-14.
+plan](../quality/m2-durable-sessions-acceptance.md). Fase B implemented the durable
+snapshot repository, named metadata, reject-only compatibility, storage-backed
+rehydration, cooperative writer ownership and the `chronofork session
+save/load/list/delete` CLI.
 
-- [ ] Checkpoints persist across process restarts.
-  - [ ] Versioned storage root and marker (`CFSTORE1`, layout v1) with an explicit
+Two independent verification rounds (2026-11-15) executed every acceptance criterion
+and the full gate on this tree. Round 1 passed M2-A1–A11 and found one medium,
+non-blocking CLI lock-scope finding (F1): `save --session` read the latest base before
+taking the writer lock. The repair made the continue-and-save workflow acquire the
+per-session lock before the read and hold it through rehydrate/advance/capture/publish
+(`with_writer_lock` plus `save_snapshot_with_lock`); round 2 re-verified F1 closed with
+typed contention, no stale-base double publish and no regression. Raw evidence is in
+the ignored `.research/m2-durable-sessions/fase-b/verification/` (round 1 plus
+`round2/`) and `.research/m2-durable-sessions/fase-b-repair-f1/`; the durable record is
+the [M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md) and the dated
+[quality gates](../quality/quality-gates.md) result.
+
+Residual limits: durability is verified only on local Linux filesystems (Windows and
+network filesystems unverified); the writer lock is cooperative metadata, not
+authentication; holding the lock across long in-memory `--steps` advances lengthens
+contention by design; a crashed holder needs explicit owner/generation-checked
+recovery; retention is manual with no automatic GC; there is no encryption,
+authentication or format migration; the public convenience `save_snapshot` remains
+publish-only for third-party callers (the CLI uses the lock-aware workflow); and
+`NFR-CONC-003` remains **Partial** because only sequential lock-free-reader evidence
+exists — a concurrent publish/read or delete/read interleaving is not separately tested.
+The checked M2 items rest on the executed M2-A criteria, not on that NFR clause.
+
+- [x] Checkpoints persist across process restarts.
+  - [x] Versioned storage root and marker (`CFSTORE1`, layout v1) with an explicit
         caller-supplied root and no implicit creation.
-  - [ ] Snapshot publish writes the canonical `Snapshot::to_bytes()` envelope verbatim
+  - [x] Snapshot publish writes the canonical `Snapshot::to_bytes()` envelope verbatim
         through the tmp+fsync+rename sequence; a crash never exposes a partial snapshot
         as committed.
-  - [ ] A new process opens the root, validates the object and restores the recorded
+  - [x] A new process opens the root, validates the object and restores the recorded
         tick and state hash.
-  - [ ] Staging, tombstone and orphan objects are reported as typed anomalies and are
+  - [x] Staging, tombstone and orphan objects are reported as typed anomalies and are
         never repaired or silently loaded.
-  - [ ] Restart, crash-recovery and canonical-bytes acceptance tests are executed and
+  - [x] Restart, crash-recovery and canonical-bytes acceptance tests are executed and
         recorded.
-- [ ] Named snapshots and metadata.
-  - [ ] One versioned metadata record round-trips name, logical creation sequence,
+- [x] Named snapshots and metadata.
+  - [x] One versioned metadata record round-trips name, logical creation sequence,
         lineage keys and the mirrored envelope fields.
-  - [ ] Metadata-only rename changes no checkpoint bytes, state hash or replay result.
-  - [ ] Listing is deterministic; retention is caller-driven and deletion is explicit;
+  - [x] Metadata-only rename changes no checkpoint bytes, state hash or replay result.
+  - [x] Listing is deterministic; retention is caller-driven and deletion is explicit;
         no operation performs automatic garbage collection.
-  - [ ] Metadata and retention acceptance tests are executed and recorded.
-- [ ] Version compatibility policy tested.
-  - [ ] Reject-only matrix for storage layout, metadata, outer envelope, backend
+  - [x] Metadata and retention acceptance tests are executed and recorded.
+- [x] Version compatibility policy tested.
+  - [x] Reject-only matrix for storage layout, metadata, outer envelope, backend
         envelope and backend payload.
-  - [ ] Corrupt, truncated, checksum-bad, swapped and identity-mismatched input produces
+  - [x] Corrupt, truncated, checksum-bad, swapped and identity-mismatched input produces
         typed errors; no silent migration or reinterpretation.
-  - [ ] Compatibility acceptance tests are executed and recorded.
-- [ ] Concurrency/ownership policy implemented at the service boundary.
-  - [ ] One writer per durable session through an explicit lock/lease; contention is a
+  - [x] Compatibility acceptance tests are executed and recorded.
+- [x] Concurrency/ownership policy implemented at the service boundary.
+  - [x] One writer per durable session through an explicit lock/lease; contention is a
         typed error with no busy-wait or silent retry.
-  - [ ] Stale and corrupt lock recovery is explicit and owner-checked; no lock is stolen
+  - [x] Stale and corrupt lock recovery is explicit and owner-checked; no lock is stolen
         automatically.
-  - [ ] Readers are lock-free and never observe a torn checkpoint.
-  - [ ] There is no hidden global lock; only the bounded root key-allocation lock is
+  - [x] Readers are lock-free and never observe a torn checkpoint.
+  - [x] There is no hidden global lock; only the bounded root key-allocation lock is
         shared, and it is never held during emulation, serialization or checkpoint I/O.
-  - [ ] Ownership and concurrency acceptance tests are executed and recorded.
-- [ ] No mutable state shared across sessions.
-  - [ ] Rehydrated sessions own independent mutable state; forks never share it.
-  - [ ] Publishing or deleting one session/snapshot never changes another's checkpoint
+  - [x] Ownership and concurrency acceptance tests are executed and recorded.
+- [x] No mutable state shared across sessions.
+  - [x] Rehydrated sessions own independent mutable state; forks never share it.
+  - [x] Publishing or deleting one session/snapshot never changes another's checkpoint
         bytes, state hash or lineage.
-  - [ ] In-process and durable isolation acceptance tests are executed and recorded.
+  - [x] In-process and durable isolation acceptance tests are executed and recorded.
 
 ## M3 — TAS and replay
 
@@ -136,25 +158,29 @@ approved on 2026-11-14.
 
 ## Current milestone
 
-**M1 is complete.** The differential item is ticked on the current PASS 3/3
-evidence: three synthetic ROMs match the pinned oracle's projected address streams,
-selected final state and negative controls, and the masked-ROM control at the CLI
-default quantum 64 crosses two HBlank boundaries with the SR mask at 7 and no handler
-entry (negative gating evidence, not interrupt-timing/delivery equivalence). The
-earlier explicit-1,000,000-quantum two-ROM evidence is preserved as
-controlled-condition history. EPIC-0002 E2-15 (SR-mask gating, `RTE`, VINT
-pending/acknowledge) is done; the epic remains open for E2-11 (ROM identity), broader
-E2-13 instruction/addressing coverage and remaining hardware (rendering, Z80, audio,
-DMA, controllers, timers, other exception groups, privilege enforcement). See
+**M1 and M2 are complete. M3 (TAS and replay) is the next milestone and has not
+started.** M1's differential item is ticked on the current PASS 3/3 evidence: three
+synthetic ROMs match the pinned oracle's projected address streams, selected final
+state and negative controls, and the masked-ROM control at the CLI default quantum 64
+crosses two HBlank boundaries with the SR mask at 7 and no handler entry (negative
+gating evidence, not interrupt-timing/delivery equivalence). The earlier
+explicit-1,000,000-quantum two-ROM evidence is preserved as controlled-condition
+history. EPIC-0002 E2-15 (SR-mask gating, `RTE`, VINT pending/acknowledge) is done; the
+epic remains open for E2-11 (ROM identity), broader E2-13 instruction/addressing
+coverage and remaining hardware (rendering, Z80, audio, DMA, controllers, timers,
+other exception groups, privilege enforcement). See
 [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
 [oracle differential evidence](../research/oracle-differential-evidence.md) and
 [ADR-0002](../adr/0002-backend-boundaries.md).
 
-**M2 is the current milestone. The M2 design is accepted and implementation has NOT
-started, so M2 is NOT complete.** Fase A has produced an Accepted
-[ADR-0003](../adr/0003-durable-session-storage.md) and a planned, not-yet-executed
-[M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md). No durable storage,
-named metadata, persistence ownership/lock, storage-backed rehydration path or
-`chronofork session` CLI command exists, and no M2 acceptance test has been executed.
-The M2 checkboxes above stay unchecked until their acceptance criteria run, pass and are
-recorded. Fase B starts only under a separately approved implementation plan.
+**M2 is complete at the implementation level and independently verified.** Fase B
+implemented the durable storage repository, named metadata, typed compatibility and
+ownership, storage-backed rehydration and the `chronofork session` CLI; round 1
+executed M2-A1–A11 and found the medium CLI lock-scope finding F1, and round 2 closed
+F1 after the repair with no regression. All M2 checkboxes above are checked on that
+evidence. Residual limits (not blockers) remain stated in the M2 section and in the
+[M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md) §10: Linux-local
+filesystem durability only, cooperative writer locking, long lock holds with large
+`--steps`, explicit stale-lock recovery, manual retention, no encryption/auth or
+migration, and the publish-only convenience `save_snapshot` caveat for third-party
+callers.

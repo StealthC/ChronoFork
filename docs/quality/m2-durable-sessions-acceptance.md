@@ -1,8 +1,10 @@
 # M2 Durable Sessions — Executable Acceptance Plan
 
-- **Status:** Fase A accepted design and acceptance plan. Every acceptance row below
-  is **planned - not yet executed**.
-- **Date:** 2026-11-14
+- **Status:** Fase A accepted design; Fase B implementation executed and independently
+  verified in two rounds (2026-11-15). Every acceptance row below is
+  **executed - passed**; the round-1 CLI lock-scope finding F1 was repaired and
+  re-verified closed in round 2.
+- **Date:** Fase A design 2026-11-14; execution record 2026-11-15
 - **Companion contract:** [ADR-0003: durable session
   storage](../adr/0003-durable-session-storage.md) (Accepted 2026-11-14)
 - **Related:** [session model](../architecture/session-model.md), [functional
@@ -11,11 +13,21 @@
   [testing strategy](testing-strategy.md), [quality gates](quality-gates.md),
   [anti-slop policy](anti-slop-policy.md).
 
-> **Implementation status.** Nothing in this document has been executed. The current
-> tree has no durable storage, no named metadata record, no durable writer lock, no
-> storage-backed rehydration path and no `chronofork session` CLI command. ADR-0003 is
-> Accepted (2026-11-14); no implementation exists. This document is an acceptance plan,
-> not evidence that any M2 capability exists; do not cite it as a pass result.
+> **Verification status (2026-11-15).** Fase B implemented every capability this plan
+> defines: the versioned storage repository, named metadata, reject-only compatibility,
+> crash recovery, storage-backed rehydration and the `chronofork session
+> save/load/list/delete` CLI. Independent verification ran twice on the same tree.
+> Round 1 executed M2-A1–A11 and the CLI contract and found one medium, non-blocking
+> finding (F1: the CLI continue-and-save read the latest snapshot before acquiring the
+> writer lock). The repair added `SnapshotRepository::with_writer_lock` and
+> `save_snapshot_with_lock`; the CLI now acquires the lock before the read and holds it
+> through rehydrate/advance/capture/publish. Round 2 re-verified F1 closed with typed
+> contention, no stale-base double publish and no regression. Raw evidence lives under
+> the ignored paths `.research/m2-durable-sessions/fase-b/verification/` (round 1 plus
+> `round2/`), `.research/m2-durable-sessions/fase-b-repair-f1/` and
+> `.research/m2-durable-sessions/fase-b-cli/`; the authoritative gate record is the
+> dated [quality gates](quality-gates.md) result. Do not cite this document as evidence
+> of Windows or network-filesystem durability; those remain unverified.
 
 > **Owner decisions (approved 2026-11-14).** Versioned per-snapshot directory; host
 > timestamps advisory only; explicit per-session writer lock/lease; manual list/delete
@@ -42,6 +54,9 @@
    not exist is still `planned - not yet executed`; do not rename it "passed" because
    the absent target produced no failure.
 
+As of 2026-11-15 no M2 row remains `planned`; the definitions above are retained for
+future criteria.
+
 ## 2. Scope, definitions and evidence
 
 - **Storage root:** an explicit caller-supplied directory. There is no default global
@@ -60,11 +75,15 @@
   `fsync` and rename behavior is known to be sound (ADR-0003 §4). Linux is the
   acceptance platform for M2. Windows and network filesystems remain unverified
   limitations, not implied passes.
-- **Evidence artifacts:** raw output is stored under the ignored
-  `.research/m2-durable-sessions/fase-b/` path (one file per criterion). Each artifact
-  records the command, tree commit, UTC start time, exit code, full stdout/stderr
-  summary and every relevant SHA-256. The artifact is diagnostic evidence, not a
-  durable claim; durable results are summarized without volatile counts.
+- **Evidence artifacts:** raw output is stored under ignored paths:
+  `.research/m2-durable-sessions/fase-b/verification/` (round 1: `SUMMARY.txt`,
+  `target-matrix.txt`, `MANIFEST.sha256` and per-criterion transcripts; round 2:
+  `round2/SUMMARY.txt`, `round2/MANIFEST.sha256` and `round2/targets/`),
+  `.research/m2-durable-sessions/fase-b-repair-f1/` (F1 repair) and
+  `.research/m2-durable-sessions/fase-b-cli/` (CLI process transcript). Each artifact
+  records the command, tree commit, exit code and the relevant stdout/stderr/SHA-256.
+  The artifacts are diagnostic evidence, not durable claims; durable results below are
+  summarized without volatile counts.
 - **No host time in canonical data:** host timestamps are advisory metadata only.
   Acceptance comparisons use tick, state hash, checkpoint bytes and logical creation
   sequence; they never compare wall-clock times or filesystem modification times.
@@ -90,30 +109,34 @@ M2-A10 and M2-A11 cover crash recovery and explicit retention required by ADR-00
 is `executed - passed`, and the full repository gate plus the new durable tests pass on
 the same tree. Design completion alone does not complete M2.
 
-## 4. Planned Fase B test targets
+The executed record satisfies these conditions: every criterion below is
+`executed - passed`, ADR-0003 is accepted, and `./scripts/check.sh` exited 0 in both
+verification rounds on the same tree. The round-1 CLI finding F1 was repaired and
+re-verified closed before this status was recorded.
 
-These target names are contract proposals, not existing files. The default placement
-is the existing `chronofork-sessions` crate: the M2 owner direction puts the snapshot
-repository there, and ADR-0003 proposes no new crate for layout v1. ADR-0003 §14
-currently records no crate-placement owner decision, so adding a new crate or moving
-these targets requires an explicit owner decision and an approved Fase B plan. If such
-a plan moves them, change only the `-p` package and path in the commands below. Test
-names, semantics and evidence requirements stay unchanged.
+## 4. Fase B test targets (implemented and executed)
 
-| Planned target | Planned target command | Criteria |
-|---|---|---|
-| `crates/chronofork-sessions/tests/restart.rs` | `cargo test -p chronofork-sessions --test restart` | M2-A1 (reopen complement), M2-A10 |
-| `crates/chronofork-sessions/tests/metadata.rs` | `cargo test -p chronofork-sessions --test metadata` | M2-A2 |
-| `crates/chronofork-sessions/tests/fork.rs` | `cargo test -p chronofork-sessions --test fork` | M2-A3 |
-| `crates/chronofork-sessions/tests/rejection.rs` | `cargo test -p chronofork-sessions --test rejection` | M2-A4 |
-| `crates/chronofork-sessions/tests/ownership.rs` | `cargo test -p chronofork-sessions --test ownership` | M2-A5 |
-| `crates/chronofork-sessions/tests/confinement.rs` | `cargo test -p chronofork-sessions --test confinement` | M2-A6 |
-| `crates/chronofork-sessions/tests/bounds.rs` | `cargo test -p chronofork-sessions --test bounds` | M2-A7 |
-| `crates/chronofork-sessions/tests/determinism.rs` | `cargo test -p chronofork-sessions --test determinism` and `cargo test -p chronofork-sessions --release --test determinism` | M2-A8 |
-| `crates/chronofork-sessions/tests/isolation.rs` | `cargo test -p chronofork-sessions --test isolation` | M2-A9 |
-| `crates/chronofork-sessions/tests/crash_recovery.rs` | `cargo test -p chronofork-sessions --test crash_recovery` | M2-A10 |
-| `crates/chronofork-sessions/tests/retention.rs` | `cargo test -p chronofork-sessions --test retention` | M2-A11 |
-| `crates/chronofork-cli/tests/session_storage.rs` | `cargo test -p chronofork-cli --test session_storage` | M2-A1, M2-A2, M2-A4, M2-A8, CLI contract |
+These targets exist and were executed. The implementation stayed in the existing
+`chronofork-sessions` crate plus the `chronofork-cli` test target, as planned; no new
+crate was needed. Every command below exited 0 in round 2 (per-target output is in
+`.research/m2-durable-sessions/fase-b/verification/round2/targets/`); the final test
+spelling is recorded there, while the command runs every test in the target. Round 1
+executed the same target matrix before the F1 repair.
+
+| Target | Executed command | Criteria | Result |
+|---|---|---|---|
+| `crates/chronofork-sessions/tests/restart.rs` | `cargo test -p chronofork-sessions --test restart` | M2-A1 (reopen complement), M2-A10 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/metadata.rs` | `cargo test -p chronofork-sessions --test metadata` | M2-A2 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/fork.rs` | `cargo test -p chronofork-sessions --test fork` | M2-A3 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/rejection.rs` | `cargo test -p chronofork-sessions --test rejection` | M2-A4 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/ownership.rs` | `cargo test -p chronofork-sessions --test ownership` | M2-A5 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/confinement.rs` | `cargo test -p chronofork-sessions --test confinement` | M2-A6 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/bounds.rs` | `cargo test -p chronofork-sessions --test bounds` | M2-A7 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/determinism.rs` | `cargo test -p chronofork-sessions --test determinism` and `cargo test -p chronofork-sessions --release --test determinism` | M2-A8 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/isolation.rs` | `cargo test -p chronofork-sessions --test isolation` | M2-A9 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/crash_recovery.rs` | `cargo test -p chronofork-sessions --test crash_recovery` | M2-A10 | exit 0 (round 2) |
+| `crates/chronofork-sessions/tests/retention.rs` | `cargo test -p chronofork-sessions --test retention` | M2-A11 | exit 0 (round 2) |
+| `crates/chronofork-cli/tests/session_storage.rs` | `cargo test -p chronofork-cli --test session_storage` | M2-A1, M2-A2, M2-A4, M2-A8, CLI contract | exit 0 (round 2) |
 
 The target command runs every test in that file. To prove an individual case during
 debugging, append the test function as the filter, for example
@@ -121,6 +144,20 @@ debugging, append the test function as the filter, for example
 The gate records the target command, not only the filtered command.
 
 ## 5. Acceptance criteria
+
+Executed record: every target command below ran at tree commit
+`3d840634ed21d305762d57513e1da9ff4e22479d` with `CARGO_HOME=/tmp/t7-cargo` in both
+verification rounds. All commands exited 0 in round 2, were independently reviewed
+(PASS verdict in
+`.research/m2-durable-sessions/fase-b/verification/round2/SUMMARY.txt`), and per-target
+stdout is in `.research/m2-durable-sessions/fase-b/verification/round2/targets/`.
+Round 1 executed the same criteria
+(`.research/m2-durable-sessions/fase-b/verification/SUMMARY.txt`,
+`.research/m2-durable-sessions/fase-b/verification/target-matrix.txt`); its one finding,
+F1, was repaired (`.research/m2-durable-sessions/fase-b-repair-f1/SUMMARY.txt`) and
+re-verified closed in round 2. Artifact paths named in each section are relative to
+`.research/m2-durable-sessions/fase-b/verification/` unless they name the repair or CLI
+directory. The final test spelling is recorded in the per-target artifacts.
 
 ### M2-A1 — Restart: a new process reads a committed checkpoint
 
@@ -134,17 +171,13 @@ exercises `save --session`: P2 re-opens the committed session, steps it and appe
 second snapshot under the same session key, and a third process re-reads both snapshots
 with increasing `creation_sequence` values.
 
-| Planned test | Planned command |
-|---|---|
-| `restart.rs::reopen_after_writer_close_round_trips` | `cargo test -p chronofork-sessions --test restart` |
-| `session_storage.rs::save_then_load_in_a_new_process_round_trips` | `cargo test -p chronofork-cli --test session_storage` |
-| `restart.rs::no_partial_object_is_visible_before_publish` | `cargo test -p chronofork-sessions --test restart` |
-| `session_storage.rs::save_session_continue_and_save_appends_snapshot` | `cargo test -p chronofork-cli --test session_storage` |
+| Executed target | Command | Result |
+|---|---|---|
+| Restart/reopen target | `cargo test -p chronofork-sessions --test restart` | exit 0 (round 2; `round2/targets/sessions-restart.out`) |
+| CLI process-restart target | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; `round2/targets/cli-session_storage.out`) |
+| Manual second-process transcript | `chronofork session save --root R --steps 7 --name baseline`, then a separate process `chronofork session load --root R --session 1` | exit 0 both; `A1-restart-manual.txt` |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A1-restart.txt` with both
-process command lines, exit codes, reported keys, tick and state hash, plus the
-continue-and-save invocation (same session key, new snapshot key and creation
-sequence, prior checkpoint bytes unchanged).
+**Evidence artifact:** `A1-restart-manual.txt` (both process command lines, exit codes, keys, tick, state hash and the continue-and-save record with unchanged prior checkpoint bytes), plus `round2/targets/sessions-restart.out` and `round2/targets/cli-session_storage.out`.
 
 **Existing precondition:** `Snapshot::to_bytes` and `Snapshot::from_bytes`
 (`crates/chronofork-sessions/src/snapshot.rs`) implement the canonical envelope; the
@@ -153,7 +186,7 @@ existing `serialized_checkpoint_can_seed_a_new_manager` test in
 manager **in one process**. That covers byte round-trip and import, not a process
 restart or filesystem persistence.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: the separate load process reproduces the saved tick and state hash, and continue-and-save appends a snapshot under the same session with the prior checkpoint bytes unchanged.
 
 ### M2-A2 — Named snapshot with metadata round-trip
 
@@ -167,23 +200,22 @@ must create a new snapshot under the same session key with a greater
 `creation_sequence`, and its name and metadata must round-trip after a later reopen.
 Duplicate names are allowed in v1 and must remain labels, not identity authorities.
 
-| Planned test | Planned command |
-|---|---|
-| `metadata.rs::named_snapshot_round_trips_metadata` | `cargo test -p chronofork-sessions --test metadata` |
-| `metadata.rs::rename_preserves_checkpoint_bytes_and_state_hash` | `cargo test -p chronofork-sessions --test metadata` |
-| `metadata.rs::duplicate_names_are_labels_not_identities` | `cargo test -p chronofork-sessions --test metadata` |
-| `metadata.rs::continue_and_save_appended_snapshot_metadata_round_trips` | `cargo test -p chronofork-sessions --test metadata` |
-| `session_storage.rs::save_name_is_visible_after_new_process` | `cargo test -p chronofork-cli --test session_storage` |
+| Executed target | Command | Result |
+|---|---|---|
+| Metadata target | `cargo test -p chronofork-sessions --test metadata` | exit 0 (round 2; `round2/targets/sessions-metadata.out`) |
+| CLI name round-trip target | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; `round2/targets/cli-session_storage.out`) |
+| Manual cross-process metadata transcript | save with `--name`, then load/list in a new process | the name (and the appended snapshot's `creation_sequence`) round-trips across processes (`A1-restart-manual.txt`); metadata-only rename bytes/state-hash is asserted by `rename_preserves_checkpoint_bytes_and_state_hash` in the metadata target, which prints pass lines only |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A2-metadata.txt` with the
-before/after checkpoint SHA-256, state hash, metadata field dump, list output and the
-appended snapshot metadata from `save --session`.
+**Evidence artifact:** `round2/targets/sessions-metadata.out` (metadata/rename assertions),
+`round2/targets/cli-session_storage.out` (cross-process CLI name round-trip) and
+`A1-restart-manual.txt` (cross-process name and continue-and-save record).
 
-**Existing precondition:** `Snapshot` exposes `id`, `origin_session`, `format_version`,
-`backend`, `tick` and `state_hash`; `Lineage` records parent, origin and depth. There
-is no metadata record format or name field in the current tree.
+**Pre-Fase-B precondition:** `Snapshot` exposes `id`, `origin_session`,
+`format_version`, `backend`, `tick` and `state_hash`; `Lineage` records parent, origin
+and depth. Fase B added the versioned metadata record (ADR-0003 §5), which round 2
+verifies.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: the metadata target round-trips name, logical creation sequence, lineage and the mirrored envelope fields after reopen; the CLI shows the name across processes; and a metadata-only rename leaves checkpoint bytes and state hash unchanged (asserted by the test, not printed by `cargo test`).
 
 ### M2-A3 — Fork after restart preserves lineage, tick and state hash
 
@@ -196,22 +228,23 @@ must not copy or mutate A's `checkpoint.cfsnap`, and the lineage must survive a 
 reopen. A1 supplies the actual cross-process guarantee; A3 is the test that must show
 that rehydration through the same validate-then-register path preserves lineage.
 
-| Planned test | Planned command |
-|---|---|
-| `fork.rs::fork_after_reopen_preserves_lineage_tick_and_hash` | `cargo test -p chronofork-sessions --test fork` |
-| `fork.rs::fork_publishes_under_child_session_key_without_copying_parent_checkpoint` | `cargo test -p chronofork-sessions --test fork` |
-| `fork.rs::lineage_survives_a_second_reopen` | `cargo test -p chronofork-sessions --test fork` |
+| Executed target | Command | Result |
+|---|---|---|
+| Fork-after-reopen target | `cargo test -p chronofork-sessions --test fork` | exit 0 (round 2; `round2/targets/sessions-fork.out`) |
+| Real cross-process boundary | owned by M2-A1; the approved CLI surface has no fork subcommand | `A1-restart-manual.txt` |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A3-fork.txt` with the
-parent/child durable keys, lineage values, ticks, state hashes and both checkpoint
-SHA-256 values.
+**Evidence artifact:** `round2/targets/sessions-fork.out` records the passing target run; the
+durable lineage keys, parent-checkpoint byte equality and second-reopen result are
+assertions in `fork.rs` (the captured output lists test names and status, not the
+asserted values). `A1-restart-manual.txt` supplies the separate real cross-process
+boundary.
 
-**Existing precondition:** `SessionManager::fork_from_snapshot` and `Lineage` implement
-in-process fork and lineage, and `three_way_fork_is_isolated_and_diverges` covers
-in-process fork isolation. No durable keys, storage-backed rehydration or persisted
-lineage exist.
+**Pre-Fase-B precondition:** `SessionManager::fork_from_snapshot` and `Lineage`
+implement in-process fork and lineage, and `three_way_fork_is_isolated_and_diverges`
+covers in-process fork isolation. Fase B added durable keys, persisted lineage and
+storage-backed rehydration.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: fork after reopen preserves lineage, tick and state hash, the child publishes under its own durable key without copying the parent checkpoint, and lineage survives a second reopen. By the accepted plan, A3 is the reopen test; A1 owns the real cross-process boundary.
 
 ### M2-A4 — Typed rejection of incompatible, corrupt and identity-mismatched input
 
@@ -246,19 +279,13 @@ decision must still come from `Snapshot::from_bytes`; storage must not add a sec
 reader. A malformed metadata record must never authorize guessing fields from a
 directory name.
 
-| Planned test | Planned command |
-|---|---|
-| `rejection.rs::root_and_layout_rejections_are_typed` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::metadata_corruption_and_version_rejections_are_typed` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::checkpoint_corruption_truncation_and_trailing_bytes_are_typed` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::backend_compatibility_fields_are_rejected_once` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::identity_and_metadata_binding_rejections_are_typed` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::unknown_keys_are_typed_and_do_not_create_state` | `cargo test -p chronofork-sessions --test rejection` |
-| `rejection.rs::arbitrary_record_bytes_never_panic` | `cargo test -p chronofork-sessions --test rejection` |
-| `session_storage.rs::unknown_session_exits_one_with_typed_diagnostic` | `cargo test -p chronofork-cli --test session_storage` |
+| Executed target | Command | Result |
+|---|---|---|
+| Rejection target | `cargo test -p chronofork-sessions --test rejection` | exit 0 (round 2; `round2/targets/sessions-rejection.out`) |
+| CLI typed-failure target | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; `round2/targets/cli-session_storage.out`) |
+| Manual rejection transcript | CLI invocations for missing root, unknown keys, foreign marker, unsupported layout, corrupt metadata and tampered checkpoint | exit 1 typed for each; full-list anomalies exit 0 (`A4-rejection-manual.txt`, `A4-corrupt-anomaly-manual.txt`) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A4-rejection.txt` with one
-line per case: mutation, expected category, observed category and exit code.
+**Evidence artifact:** `round2/targets/sessions-rejection.out` and `round2/targets/cli-session_storage.out`, with the CLI-level typed transcripts `A4-rejection-manual.txt` and `A4-corrupt-anomaly-manual.txt`.
 
 **Existing precondition:** `crates/chronofork-sessions/src/snapshot.rs` unit tests
 (`corruption_is_rejected`, `unsupported_outer_version_is_rejected`,
@@ -270,7 +297,7 @@ line per case: mutation, expected category, observed category and exit code.
 session-boundary translation for a foreign backend snapshot. None of these reads or
 validates a storage root, metadata record, lock record or directory key.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: every row of the rejection table returns its named typed category at the repository level or through the CLI, and no repair, migration or fallback path exists.
 
 ### M2-A5 — Ownership contention: one writer with typed contention and no hidden global lock
 
@@ -302,43 +329,30 @@ rename-aside recovery); the crash-between-publish-and-temp-cleanup and forced-re
 cases are also required by §13 (lock-record publication; forced recovery with the
 owner/generation check).
 
-| Planned test | Planned command |
-|---|---|
-| `ownership.rs::second_writer_is_rejected_with_typed_contention` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::half_written_or_empty_writer_lock_is_writer_contended_on_acquisition` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::crash_between_lock_publish_and_temp_cleanup_keeps_lock_and_reports_diagnostic` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::forced_recovery_with_owner_generation_succeeds_and_changed_owner_returns_not_lock_owner` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::release_or_recovery_with_changed_owner_keeps_successor_and_returns_not_lock_owner` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::unreadable_lock_on_explicit_recovery_is_corrupt_lock_and_removes_nothing` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::hard_link_unsupported_fails_closed_with_lock_primitive_unsupported` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::distinct_sessions_write_concurrently_without_a_global_lock` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::expired_lease_is_not_auto_stolen` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::key_allocation_lock_is_short_lived_and_root_scoped` | `cargo test -p chronofork-sessions --test ownership` |
-| `ownership.rs::lock_free_reader_never_observes_a_torn_checkpoint` | `cargo test -p chronofork-sessions --test ownership` |
+| Executed target | Command | Result |
+|---|---|---|
+| Ownership target | `cargo test -p chronofork-sessions --test ownership` | exit 0 (round 2; includes `with_writer_lock_makes_read_modify_publish_linearizable` and `save_snapshot_with_lock_rejects_released_and_foreign_handles`; `round2/targets/sessions-ownership.out`) |
+| CLI contention regression | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; `continue_and_save_contends_with_a_process_holding_the_writer_lock`; `round2/targets/cli-session_storage.out`) |
+| Cross-process held-lock transcript | helper process holds the real writer lock; real CLI `save --session` | exit 1 typed contention, no snapshot or key reserved; normal append after release (`A5-cross-process-lock.txt`, `round2/F1-manual-contention-and-normal.txt`) |
+| Timed real two-process races | repeated CLI `save --session` races | one winner and one typed contention per race, one new snapshot, no stale-base double publish (`round2/F1-real-cli-race-30.txt`, `round2/F1-linearizable-two-process.txt`) |
 
-**Planned evidence rows in A5-ownership.txt:**
+**Executed case coverage** (assertions in the ownership target; output in
+`round2/targets/sessions-ownership.out`):
 
-| Case | Row content |
+| Case | Verified behavior |
 |---|---|
 | F9 crash between hard-link publish and temp cleanup | acquisition succeeds; the leftover `writer.lock.<token>.tmp` is reported as a diagnostic and never treated as a lock; a later release/recovery against the canonical record succeeds |
 | F11 forced recovery | a non-expired lease returns `WriterContended`; explicit forced recovery with the matching owner/generation succeeds; forced recovery with a changed record returns `NotLockOwner` and leaves the successor record intact |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A5-ownership.txt` with
-the two-writer transcript, owner tokens, the half-written/empty lock classification,
-the crash-between-publish-and-temp-cleanup row, the forced-recovery row, the
-changed-owner release/recovery transcript showing the successor record survives, the
-unreadable-lock explicit-recovery transcript, the hard-link-unsupported
-classification, lock-scope review and a source scan showing no hidden global mutable
-state in the storage path. A review note records why the per-session lock and the root
-allocation lock are the only serialization points.
+**Evidence artifact:** `round2/targets/sessions-ownership.out`, `round2/targets/cli-session_storage.out`, `A5-cross-process-lock.txt`, `A5-cli-race-manual.txt` and the round-2 F1 transcripts `round2/F1-manual-contention-and-normal.txt`, `round2/F1-linearizable-two-process.txt` and `round2/F1-real-cli-race-30.txt`.
 
-**Existing precondition:** `SessionManager` and `Session` mutation require `&mut` and
-use `BTreeMap`; `three_way_fork_is_isolated_and_diverges` and
-`fork_current_does_not_mutate_the_source` cover in-process isolation. There is no
-cross-process lock, lock publication, lease, owner token or key-allocation lock in the
-tree.
+**Pre-Fase-B precondition:** `SessionManager` and `Session` mutation require `&mut`
+and use `BTreeMap`; `three_way_fork_is_isolated_and_diverges` and
+`fork_current_does_not_mutate_the_source` cover in-process isolation. Fase B added the
+cross-process writer lock/lease, owner token, atomic lock publication and root
+key-allocation lock.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds. Round 1 recorded finding F1: the CLI read the latest base before taking the writer lock. The repair added `with_writer_lock`/`save_snapshot_with_lock`; round 2 re-verified that the CLI acquires the lock before the read and holds it through publish, that the loser receives typed contention at acquisition, and that no stale-base double publish is reachable through the CLI. Residual: the lock is cooperative metadata, and the public convenience `save_snapshot` remains publish-only for third-party callers.
 
 ### M2-A6 — Path traversal and root confinement are rejected
 
@@ -353,24 +367,19 @@ rejected with `WrongFileType`. A snapshot or session name containing `../` or a
 separator remains a label and must create no file outside the root. A crafted hostile
 tree must produce typed anomalies without reading or writing outside the root.
 
-| Planned test | Planned command |
-|---|---|
-| `confinement.rs::noncanonical_key_components_are_rejected` | `cargo test -p chronofork-sessions --test confinement` |
-| `confinement.rs::managed_symlinks_are_rejected_and_not_followed` | `cargo test -p chronofork-sessions --test confinement` |
-| `confinement.rs::wrong_file_types_are_rejected` | `cargo test -p chronofork-sessions --test confinement` |
-| `confinement.rs::names_never_become_path_components` | `cargo test -p chronofork-sessions --test confinement` |
-| `confinement.rs::hostile_tree_cannot_escape_the_canonical_root` | `cargo test -p chronofork-sessions --test confinement` |
+| Executed target | Command | Result |
+|---|---|---|
+| Confinement target | `cargo test -p chronofork-sessions --test confinement` | exit 0 (round 2; `round2/targets/sessions-confinement.out`) |
+| Manual hostile-tree transcript | symlinked session directory, non-canonical keys, unknown directories and `../` labels | typed anomalies for the hostile components; load through the symlink exits 1; path-like labels remain labels and create nothing outside; outside sentinel unchanged (`A6-hostile-tree-manual.txt`) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A6-confinement.txt` with
-the hostile tree layout, each attempted path, the observed typed error and a
-before/after listing proving no file outside the root changed.
+**Evidence artifact:** `round2/targets/sessions-confinement.out` and `A6-hostile-tree-manual.txt` (hostile tree, outside sentinel hash and escape attempt).
 
-**Existing precondition:** there is no storage path code yet. The shared
+**Pre-Fase-B precondition:** there was no storage path code. The shared
 `chronofork_core::codec::{Reader, Writer}` is bounds-checked but has no path API.
-Windows reparse-point behavior remains unverified (ADR-0003 §11) and must not be
-claimed by this plan.
+Fase B added canonical-key parsing and path confinement; Windows reparse-point behavior
+remains unverified (ADR-0003 §11) and is not claimed.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: traversal components, non-canonical keys, managed symlinks and wrong file types are rejected or reported as typed anomalies; path-like names (`../…`, `a/b`) remain labels and create nothing outside the root; no file is created or read outside the canonical root. Residual: the checks are path-based and not race-free against a hostile process concurrently replacing a component.
 
 ### M2-A7 — Storage bounds: maximum sizes and bounded reads
 
@@ -386,25 +395,19 @@ than truncate silently. Truncated records remain typed
 Tests may lower the limits through configuration; raising a default requires the ADR
 and evidence update described in ADR-0003 §11.
 
-| Planned test | Planned command |
-|---|---|
-| `bounds.rs::oversized_checkpoint_is_rejected_before_full_read` | `cargo test -p chronofork-sessions --test bounds` |
-| `bounds.rs::oversized_metadata_and_lock_records_are_typed` | `cargo test -p chronofork-sessions --test bounds` |
-| `bounds.rs::file_that_grows_after_length_check_is_rejected` | `cargo test -p chronofork-sessions --test bounds` |
-| `bounds.rs::list_entry_cap_is_enforced` | `cargo test -p chronofork-sessions --test bounds` |
-| `bounds.rs::name_length_and_control_characters_are_rejected` | `cargo test -p chronofork-sessions --test bounds` |
-| `bounds.rs::truncated_files_never_panic` | `cargo test -p chronofork-sessions --test bounds` |
+| Executed target | Command | Result |
+|---|---|---|
+| Bounds target | `cargo test -p chronofork-sessions --test bounds` | exit 0 (round 2; `round2/targets/sessions-bounds.out`) |
+| Structural inspection | length-before-allocation and bounded-read audit | `structural-as01-as02.txt` (round 1; unchanged code paths in round 2) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A7-bounds.txt` with the
-lowered limit values, generated file sizes, observed errors and a code-review note
-confirming length-before-allocation and bounded-reader use.
+**Evidence artifact:** `round2/targets/sessions-bounds.out` and the length-before-allocation/bounded-read inspection in `structural-as01-as02.txt`.
 
-**Existing precondition:** `chronofork_core::codec` provides bounds-checked reading and
-writing; `Snapshot::from_bytes` rejects short input and trailing bytes. There is no
-file-length cap, growth check, list cap or name validation because no storage layer
-exists.
+**Pre-Fase-B precondition:** `chronofork_core::codec` provides bounds-checked reading
+and writing; `Snapshot::from_bytes` rejects short input and trailing bytes. Fase B added
+the file-length caps, growth check, list cap, name bounds and lock-record bounds that
+round 2 verifies.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: oversized, growing, truncated and over-long inputs are rejected with typed errors; lengths are validated before allocation and reads are bounded.
 
 ### M2-A8 — Determinism: the same checkpoint reproduces the same state hash after restart
 
@@ -417,21 +420,16 @@ host time must never order or validate snapshots. Two independent restarts and a
 debug/release pair must produce identical reports. No wall-clock time, filesystem
 modification time, process ID or entropy may enter the checkpoint or state hash.
 
-| Planned test | Planned command |
-|---|---|
-| `determinism.rs::stored_checkpoint_bytes_equal_canonical_envelope` | `cargo test -p chronofork-sessions --test determinism` |
-| `determinism.rs::restart_reproduces_tick_and_state_hash` | `cargo test -p chronofork-sessions --test determinism` |
-| `determinism.rs::metadata_changes_do_not_change_checkpoint_bytes_or_state_hash` | `cargo test -p chronofork-sessions --test determinism` |
-| `determinism.rs::two_restarts_produce_identical_reports` | `cargo test -p chronofork-sessions --test determinism` |
-| `determinism.rs::restart_report_is_stable_within_a_mode` | `cargo test -p chronofork-sessions --test determinism` and `cargo test -p chronofork-sessions --release --test determinism` |
-| `session_storage.rs::load_reports_the_same_hash_after_two_new_processes` | `cargo test -p chronofork-cli --test session_storage` |
+| Executed target | Command | Result |
+|---|---|---|
+| Determinism target (debug) | `cargo test -p chronofork-sessions --test determinism` | exit 0 (round 2; `round2/targets/sessions-determinism.out`) |
+| Determinism target (release) | `cargo test -p chronofork-sessions --release --test determinism` | exit 0 (round 2; `round2/targets/sessions-determinism-release.out`) |
+| Manual determinism transcript | two roots created about 1.2 s apart; helper compares stored bytes with `Snapshot::to_bytes`; debug and release CLI runs | identical checkpoint SHA-256 and state hash; byte-equal envelope; `created_at` only in metadata (`A8-determinism-manual.txt`) |
 
 Debug/release equality is compared **across the two recorded artifacts**, not inside one
 test process: run the target in both modes and compare the reports field by field.
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A8-determinism.txt` with
-the checkpoint SHA-256, canonical envelope SHA-256, tick, state hash, both debug and
-release commands and both process reports.
+**Evidence artifact:** `round2/targets/sessions-determinism.out`, `round2/targets/sessions-determinism-release.out` and `A8-determinism-manual.txt` (byte-equality with `Snapshot::to_bytes`, cross-root and debug/release hashes, `created_at` only in metadata).
 
 **Existing precondition:** `Snapshot::to_bytes` is the canonical serializer and the
 existing `serialized_checkpoints_round_trip_exactly` property test covers byte
@@ -439,7 +437,7 @@ round-trip in memory; `restore_and_replay_reproduce_the_branch_state` covers
 restore-plus-replay in one process. Neither covers filesystem bytes, restart or
 metadata variation.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: identical inputs reproduce byte-identical checkpoints, tick and state hash across roots, processes and debug/release builds; host timestamps never enter canonical bytes, ordering or validation.
 
 ### M2-A9 — No mutable state shared across sessions, including persistence
 
@@ -451,24 +449,19 @@ no hidden global mutable registry. The in-process ownership rules stay explicit:
 mutation requires `&mut`, and shared access at a future service boundary needs its own
 documented synchronization policy.
 
-| Planned test | Planned command |
-|---|---|
-| `isolation.rs::rehydrated_sessions_do_not_share_mutable_state` | `cargo test -p chronofork-sessions --test isolation` |
-| `isolation.rs::publishing_a_child_does_not_mutate_the_parent_checkpoint` | `cargo test -p chronofork-sessions --test isolation` |
-| `isolation.rs::deleting_one_snapshot_leaves_other_sessions_unchanged` | `cargo test -p chronofork-sessions --test isolation` |
-| `isolation.rs::independent_readers_are_side_effect_free` | `cargo test -p chronofork-sessions --test isolation` |
+| Executed target | Command | Result |
+|---|---|---|
+| Isolation target | `cargo test -p chronofork-sessions --test isolation` | exit 0 (round 2; `round2/targets/sessions-isolation.out`) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A9-isolation.txt` with
-before/after checkpoint SHA-256 and state hashes for every affected session, plus a
-review note confirming no hidden global mutable state was introduced.
+**Evidence artifact:** `round2/targets/sessions-isolation.out`.
 
-**Existing precondition:** `three_way_fork_is_isolated_and_diverges` and
+**Pre-Fase-B precondition:** `three_way_fork_is_isolated_and_diverges` and
 `fork_current_does_not_mutate_the_source` in
 `crates/chronofork-sessions/tests/acceptance.rs` cover in-process state and memory
-isolation; `SessionManager` uses `&mut` and an ordered `BTreeMap`. No durable session
-or storage-level isolation exists yet.
+isolation; `SessionManager` uses `&mut` and an ordered `BTreeMap`. Fase B added the
+durable session/storage-level isolation tests.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: rehydrated sessions own independent mutable state, forks never share it, and publishing or deleting one session/snapshot never changes another checkpoint, state hash or lineage.
 
 ### M2-A10 — Crash/fault recovery: staging and tombstones are never committed data
 
@@ -511,30 +504,14 @@ outcomes), §6 (typed durability/concurrency/allocation categories), §10
 (allocation-lock and counter rules) and §13 (reconciliation outcomes; corrupt/missing
 `state/session-keys` and counter gaps).
 
-| Planned test | Planned command |
-|---|---|
-| `crash_recovery.rs::staging_directory_is_reported_and_never_loaded` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::trash_tombstone_is_reported_and_never_resurrected` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::missing_or_corrupt_record_is_a_typed_anomaly` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::failed_publish_never_advances_visible_state` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::post_rename_parent_sync_failure_is_durability_unconfirmed` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::post_rename_failure_never_reports_success_or_retries_blindly` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::metadata_and_delete_post_rename_sync_failures_are_durability_unconfirmed` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::reconciliation_after_retried_parent_sync_confirms_visible_object` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::reconciliation_leaves_visible_object_unconfirmed` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::reconciliation_reports_object_lost_before_retry` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::stale_allocation_lock_recovery_is_explicit_and_owner_checked` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::allocation_lock_recovery_with_changed_owner_returns_not_lock_owner` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::allocation_lock_recovery_clears_lock_but_does_not_change_counter` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::unreadable_allocation_lock_recovery_is_corrupt_lock_and_removes_nothing` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::allocation_counter_update_failure_is_durability_unconfirmed` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::missing_short_oversized_or_unreadable_session_keys_is_corrupt_allocation_counter` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::persisted_counter_gap_is_never_reused` | `cargo test -p chronofork-sessions --test crash_recovery` |
-| `crash_recovery.rs::key_and_sequence_reservations_are_never_reused` | `cargo test -p chronofork-sessions --test crash_recovery` |
+| Executed target | Command | Result |
+|---|---|---|
+| Crash-recovery target | `cargo test -p chronofork-sessions --test crash_recovery` | exit 0 (round 2; Unix-gated, uid 1000; `round2/targets/sessions-crash_recovery.out`) |
 
-**Planned evidence rows in A10-crash.txt:**
+**Executed case coverage** (assertions in the crash-recovery target; output in
+`round2/targets/sessions-crash_recovery.out`):
 
-| Case | Row content |
+| Case | Verified behavior |
 |---|---|
 | F10(a) retried parent sync confirms | object remains visible; retried parent sync succeeds; re-open/validation matches; outcome recorded as visible-confirmed |
 | F10(b) still unconfirmed | object remains visible; parent sync still fails or is unconfirmed; no success is reported; outcome recorded as visible-unconfirmed |
@@ -542,17 +519,13 @@ outcomes), §6 (typed durability/concurrency/allocation categories), §10
 | F12 corrupt/missing session-keys | missing, short, oversized and unreadable `state/session-keys` each return `CorruptAllocationCounter`; counter is not reset to one |
 | F12 persisted-counter gap | gap is persisted; reserved key and every earlier gap key are never reused; next minted key is greater than every published key |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A10-crash.txt` with each
-constructed tree, the observed diagnostic/error, the injected failure point (if any),
-the post-rename `DurabilityUnconfirmed` transcript for publish/metadata/delete, the
-F10 confirmed/unconfirmed/lost reconciliation rows, the allocation-lock recovery
-transcript including owner/generation and the unchanged counter, the F12 corrupt
-counter and persisted-gap rows, and the before/after object listing.
+**Evidence artifact:** `round2/targets/sessions-crash_recovery.out` (Unix-gated permission fault injection; each staging/tombstone/sync/recovery case).
 
-**Existing precondition:** none. The current tree has no publish sequence, staging
-directory, tombstone, fsync, lock publication/recovery or storage path.
+**Pre-Fase-B precondition:** none. Fase B added the publish sequence, staging
+directory, tombstone, fsync and lock publication/recovery paths that these
+fault-injection tests exercise.
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds with real permission-fault injection: staging and tombstone objects are never committed, failed publishes never advance visible state, post-rename sync failures return typed `DurabilityUnconfirmed`, and allocation recovery is explicit and never reuses persisted gaps. Scope: injected filesystem faults, not power loss; crash recovery is Unix-gated and Windows durability is unverified.
 
 ### M2-A11 — Explicit retention: deterministic list/delete and no automatic GC
 
@@ -567,33 +540,31 @@ session's lineage. Deleting a session that still has snapshots is rejected until
 snapshots are explicitly deleted. Publishing with an existing key is a typed conflict,
 never an overwrite. A list scan over the configured cap fails with `ListLimitExceeded`.
 
-| Planned test | Planned command |
-|---|---|
-| `retention.rs::list_is_deterministic_and_ordered` | `cargo test -p chronofork-sessions --test retention` |
-| `retention.rs::invalid_entries_are_anomalies_not_silent_skips` | `cargo test -p chronofork-sessions --test retention` |
-| `retention.rs::open_capture_close_and_restart_delete_nothing` | `cargo test -p chronofork-sessions --test retention` |
-| `retention.rs::delete_is_explicit_target_only_and_non_cascading` | `cargo test -p chronofork-sessions --test retention` |
-| `retention.rs::delete_session_with_snapshots_is_rejected` | `cargo test -p chronofork-sessions --test retention` |
-| `retention.rs::existing_key_is_a_conflict_not_an_overwrite` | `cargo test -p chronofork-sessions --test retention` |
+| Executed target | Command | Result |
+|---|---|---|
+| Retention target | `cargo test -p chronofork-sessions --test retention` | exit 0 (round 2; `round2/targets/sessions-retention.out`) |
+| Restart/list manual evidence | `list` twice, save/load in separate processes | deterministic listing; open/capture/close/restart delete nothing (`A1-restart-manual.txt`) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/A11-retention.txt` with the
-directory listing and hashes before/after each operation, anomaly diagnostics, and the
-deterministic list output from two runs.
+**Evidence artifact:** `round2/targets/sessions-retention.out` and the list/restart record in `A1-restart-manual.txt`.
 
-**Existing precondition:** none. `chronofork-sessions` has no filesystem I/O; the CLI's
-only file writes are trace/state output paths and its only file read is the ROM path in
-`crates/chronofork-cli/src/main.rs`, not session persistence. `FR-SNAPSHOT-006` is Planned in the
-[functional requirements](../requirements/functional.md).
+**Pre-Fase-B precondition:** none. Before Fase B, `chronofork-sessions` performed no
+filesystem I/O and the CLI wrote only trace/state output; the `session` commands did not
+exist. Fase B added the retention surface and the `chronofork session` CLI;
+`FR-SNAPSHOT-006` is Implemented in the [functional
+requirements](../requirements/functional.md).
 
-**Status:** planned - not yet executed.
+**Status:** executed - passed in both rounds: listing is deterministic, retention is caller-driven, deletion is explicit and non-cascading, an existing key is a conflict rather than an overwrite, and no operation performs automatic garbage collection.
 
-## 6. Owner-approved minimal CLI surface (not implemented)
+## 6. Owner-approved minimal CLI surface (implemented and verified)
 
-The current CLI dispatch in `crates/chronofork-cli/src/main.rs` supports `demo`,
-`megadrive demo|trace` and `backend describe` only. It has no `session` subcommand and
-no storage root concept. Running `chronofork session ...` today is an unknown-command
-error. Do not add this surface to `chronofork help` or claim it until it is
-implemented and accepted.
+The CLI at `crates/chronofork-cli/src/main.rs` implements this surface and documents
+it in `chronofork help`. Round 1 verification found that `save --session` read the
+latest base before taking the writer lock (F1); the repaired
+implementation acquires the per-session writer lock before the read and holds it
+through rehydrate/advance/capture/publish via `SnapshotRepository::with_writer_lock`
+and `save_snapshot_with_lock`, and round 2 re-verified typed contention, no stale-base
+double publish and no regression. The CLI still performs no storage, serialization,
+compatibility or lock logic itself.
 
 The owner-approved M2 contract is deliberately small, std-only and line-oriented. It is
 the process boundary used by the M2-A1 restart test. The command names and flags below
@@ -627,6 +598,9 @@ Behavior contract:
   maximum; the existing snapshots' `checkpoint.cfsnap` bytes remain unchanged. It holds
   the session writer lock for the read-validate-publish sequence and releases it after
   publishing, then prints the session block followed by the new snapshot block.
+  Implementation note: the lock is acquired before `latest_snapshot`/`load_snapshot`
+  and released on every success and error path; a second writer receives typed
+  `WriterContended` at acquisition (F1, found in round 1 and closed in round 2).
 - **`load`** is a read operation: it rehydrates and prints the selected checkpoint
   without writing storage. `--steps`/`--input` advance only the in-memory instance and
   do not persist. `--snapshot` defaults to the latest committed snapshot by
@@ -676,24 +650,28 @@ diagnostics contaminate stdout. There is no network access and no telemetry.
 
 CLI acceptance tests and their conditions:
 
-| Planned test | Planned command |
-|---|---|
-| `session_storage.rs::session_usage_requires_explicit_root` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::save_then_load_in_a_new_process_round_trips` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::save_name_is_visible_after_new_process` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::save_session_continue_and_save_appends_snapshot` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::list_is_deterministic_and_ordered` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::load_does_not_create_a_missing_root` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::unknown_session_exits_one_with_typed_diagnostic` | `cargo test -p chronofork-cli --test session_storage` |
-| `session_storage.rs::delete_requires_an_explicit_target_and_never_cascades` | `cargo test -p chronofork-cli --test session_storage` |
+| Executed test | Command | Result |
+|---|---|---|
+| CLI session contract target (all §6 cases) | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; `round2/targets/cli-session_storage.out`) |
+| F1 contention regression: `continue_and_save_contends_with_a_process_holding_the_writer_lock` | `cargo test -p chronofork-cli --test session_storage` | exit 0 (round 2; typed contention, no snapshot or key reserved) |
+| Manual F1 contention and normal path | one holder process plus real CLI `save --session` | typed contention before any read; normal append after release (`round2/F1-manual-contention-and-normal.txt`) |
+| Manual lock-aware two-process sequence | two processes run the CLI sequence | one publish; loser receives typed contention; no stale-base publish (`round2/F1-linearizable-two-process.txt`) |
 
-**Evidence artifact:** `.research/m2-durable-sessions/fase-b/CLI-session.txt` with each
-CLI invocation, exit code, stdout/stderr split, parsed keys and state hashes; the
+**Evidence artifact:** `.research/m2-durable-sessions/fase-b-cli/CLI-session.txt` with
+each CLI invocation, exit code, stdout/stderr split, parsed keys and state hashes; the
 continue-and-save record shows the same session key, one new snapshot key with a greater
-`creation_sequence`, and unchanged bytes for the prior checkpoint.
+`creation_sequence`, and unchanged bytes for the prior checkpoint. Round-2 contention
+and race transcripts are in
+`.research/m2-durable-sessions/fase-b/verification/round2/` (`F1-*.txt`), with
+per-target stdout in
+`.research/m2-durable-sessions/fase-b/verification/round2/targets/`.
 
-**Status of the whole CLI surface:** owner-approved contract;
-**not implemented and not yet executed**.
+**Status of the whole CLI surface:** executed - passed in round 2. Round 1 passed the
+contract tests but recorded finding F1 (the writer lock did not cover the read); the
+repair and round-2 re-verification closed it without changing the approved contract
+text. Residual limits: the lock is cooperative, the CLI holds it across any in-memory
+`--steps` advance (long advances extend contention), and the public convenience
+`save_snapshot` remains publish-only for third-party callers.
 
 ## 7. Existing baseline: what exists and what it does not cover
 
@@ -711,10 +689,11 @@ results belong in [quality gates](quality-gates.md).
 | `crates/chronofork-sessions/src/manager.rs::importing_a_foreign_snapshot_is_rejected_at_the_session_boundary` | Backend incompatibility is translated to a session-level typed error | Storage metadata/binding and root validation |
 | `crates/chronofork-backend-api/src/snapshot.rs` tests | `validate_envelope` rejects each compatibility field by name | Storage-level compatibility matrix |
 | `crates/chronofork-core/src/codec.rs` | Bounds-checked reader/writer primitives | File-length caps, bounded file reads, list caps |
-| `crates/chronofork-cli/tests/demo.rs` and `trace.rs` | CLI process-level test pattern, temp directories, deterministic output | A `session` subcommand or storage root |
+| `crates/chronofork-cli/tests/demo.rs` and `trace.rs` | CLI process-level test pattern, temp directories, deterministic output | A `session` subcommand or storage root; the Fase B `session_storage` target in §4 covers that surface |
 
-Existing precondition commands, to be recorded with their real output when the plan is
-executed (not run by this design task):
+The Fase B targets listed in §4 are separate: they do satisfy the durable criteria and
+are recorded as `executed - passed`. The commands below were recorded during Fase B
+execution:
 
 ```sh
 cargo test -p chronofork-sessions --test acceptance
@@ -723,6 +702,18 @@ cargo test -p chronofork-sessions --lib
 cargo test -p chronofork-backend-api --lib
 cargo test -p chronofork-cli
 ```
+
+| Precondition command | Recorded result |
+|---|---|
+| `cargo test -p chronofork-sessions --test acceptance` | exit 0; 5 passed, 0 failed |
+| `cargo test -p chronofork-sessions --test snapshot_properties` | exit 0; 5 passed, 0 failed |
+| `cargo test -p chronofork-sessions --lib` | exit 0; 25 passed, 0 failed |
+| `cargo test -p chronofork-backend-api --lib` | exit 0; 3 passed, 0 failed |
+| `cargo test -p chronofork-cli` | exit 0; 10 passed, 0 failed |
+
+Recorded by the independent t6 verification in
+`.research/m2-durable-sessions/fase-b/verification/round3/precondition-commands.txt`
+(HEAD `3d84063`). The pass counts are that recorded-run's values, not current claims.
 
 ## 8. Traceability
 
@@ -741,35 +732,57 @@ cargo test -p chronofork-cli
 | M2-A11 retention | FR-SNAPSHOT-006, NFR-STOR-003/004 | §9 |
 | CLI contract | FR-SESSION-006, FR-SNAPSHOT-006 | §2, §9-10 |
 
-## 9. Execution procedure for Fase B
+`NFR-CONC-003` is not mapped to an M2-A criterion and remains **Partial**: the
+lock-free-reader tests are sequential (including a reader while a writer lock is held
+but no publish is in progress), and the concurrent publish/read and delete/read
+interleavings are not separately tested (see the requirements and §10). M2 completion
+rests on the executed M2-A rows, not on that NFR clause.
 
-1. ADR-0003 was accepted on 2026-11-14; a separately approved Fase B plan fixes the
-   package/path placement (default: the existing `chronofork-sessions` crate), final
-   CLI spelling and test-only fault-injection decision. Any new crate needs a separate
-   explicit owner decision because ADR-0003 §14 does not grant one.
-2. Implement storage without a second snapshot serializer, reader or compatibility
-   predicate; reuse `Snapshot::to_bytes`/`from_bytes`, `validate_envelope` and the
-   shared `chronofork_core::codec`.
-3. Add one test target at a time with its criterion ID in the test name or a comment;
-   keep every criterion row `planned - not yet executed` until its command runs.
-4. Run the target command, the existing precondition commands and the full repository
-   gate (`./scripts/check.sh` or its documented equivalent); store raw evidence under
-   `.research/m2-durable-sessions/fase-b/`.
-5. Record the authoritative gate result in [quality gates](quality-gates.md) via its
-   owner. Do not copy volatile test counts into this plan or the roadmap.
-6. Ask the verifier to review the evidence. Only then mark the criterion and the
-   milestone subitems; a self-review is not acceptance.
+## 9. Execution record (2026-11-15)
+
+1. Fase B was implemented under a separately approved plan in the existing
+   `chronofork-sessions` and `chronofork-cli` crates; no new crate was needed.
+2. Storage was implemented without a second snapshot serializer, reader or
+   compatibility predicate, reusing `Snapshot::to_bytes`/`from_bytes`,
+   `validate_envelope` and the shared `chronofork_core::codec`.
+3. Round 1 executed every target, the precondition commands and the full repository
+   gate. Raw evidence: `.research/m2-durable-sessions/fase-b/verification/`
+   (`SUMMARY.txt`, `target-matrix.txt`, `MANIFEST.sha256` and per-criterion
+   transcripts). The verdict was PASS for M2-A1–A11 with one medium, non-blocking CLI
+   lock-scope finding (F1).
+4. The F1 repair added `SnapshotRepository::with_writer_lock` and
+   `save_snapshot_with_lock`; the CLI `save --session` path acquires the lock before
+   the read and holds it through publish. Repair evidence:
+   `.research/m2-durable-sessions/fase-b-repair-f1/SUMMARY.txt`.
+5. Round 2 independently re-ran the gate and every target on the repaired tree, closed
+   F1 and found no regression
+   (`.research/m2-durable-sessions/fase-b/verification/round2/SUMMARY.txt`,
+   `MANIFEST.sha256`, `targets/`). The authoritative gate result is recorded in
+   [quality gates](quality-gates.md).
+6. Documentation was promoted from this record without copying volatile test counts;
+   the verifier remains the owner of the raw verification evidence.
 
 ## 10. Out of scope and stated limitations
 
-- No implementation, code change or execution is part of this Fase A document.
+- This document records an executed implementation; it is not itself the raw
+  verification evidence. Raw artifacts remain under the ignored `.research/` paths.
 - No claim of Windows or network-filesystem durability; directory `fsync`/rename
   behavior there is unverified (ADR-0003 §4).
 - No encryption, authentication, redaction, deduplication, compression or
-  multi-tenant isolation; the writer lock is cooperative, not a security boundary.
+  multi-tenant isolation; the writer lock is cooperative, not a security boundary. A
+  long in-memory `--steps` advance under `save --session` extends lock hold time by
+  design, and a crashed holder needs explicit owner/generation-checked recovery.
 - No automatic retention, garbage collection, background repair or silent migration in
   v1; retention is caller-driven and deletion is explicit.
-- No multi-writer or distributed lock; no `unsafe`; no new dependency is approved.
+- No distributed lock or multi-writer support. The public convenience
+  `save_snapshot` acquires its lock only at publish, so a third-party caller that reads
+  a base first can recreate the stale-base window; the CLI uses the lock-aware
+  `with_writer_lock` workflow. No `unsafe`; no new dependency was added.
+- `NFR-CONC-003` is **Partial**: lock-free readers are tested sequentially, including a
+  reader while a writer lock is held but no publish is in progress. A concurrent
+  publish/read or delete/read interleaving is not exercised by any test; those clauses
+  rely on the immutable published object and the atomic visibility-removing rename and
+  remain unverified. This NFR clause is not an M2-A exit criterion.
 - No performance, capacity or throughput target is claimed for M2.
 - No real-hardware compatibility claim; the acceptance fixture is the deterministic
   synthetic backend, with an optional Mega Drive repetition.
@@ -785,4 +798,5 @@ cargo test -p chronofork-cli
 - If a planned command cannot run because the target is absent, the row remains
   `planned - not yet executed`; the gap is reported, not hidden.
 - Once a row has executed, its result is append-only evidence linked from
-  [quality gates](quality-gates.md); do not rewrite history or relabel a failure.
+  [quality gates](quality-gates.md); do not rewrite history or relabel a failure. The
+  round-1 finding F1 and its round-2 closure are recorded, not erased.

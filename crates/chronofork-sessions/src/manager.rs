@@ -55,6 +55,7 @@ pub struct SessionComparison {
 pub struct SessionManager {
     factory: Arc<dyn BackendFactory>,
     sessions: BTreeMap<SessionId, Session>,
+    durable_session_keys: BTreeMap<SessionId, u64>,
     next_session_id: u64,
 }
 
@@ -65,6 +66,7 @@ impl SessionManager {
         Self {
             factory,
             sessions: BTreeMap::new(),
+            durable_session_keys: BTreeMap::new(),
             next_session_id: 1,
         }
     }
@@ -105,6 +107,76 @@ impl SessionManager {
         session.adopt_snapshot(snapshot)?;
         self.sessions.insert(id, session);
         Ok(id)
+    }
+
+    /// Creates a session by rehydrating a checkpoint already validated by the
+    /// durable storage layer.
+    ///
+    /// The checkpoint is restored through the existing backend compatibility
+    /// path, the runtime session is registered, and its durable session key is
+    /// recorded so a later fork can name the durable parent.
+    pub fn create_session_from_stored_snapshot(
+        &mut self,
+        snapshot: Snapshot,
+        storage_session_key: u64,
+    ) -> Result<SessionId, SessionError> {
+        if storage_session_key == 0 {
+            return Err(SessionError::UnknownStorageSession(0));
+        }
+        let mut backend = self.factory.create()?;
+        backend
+            .restore(snapshot.backend())
+            .map_err(map_backend_compatibility)?;
+        let initial_state = backend.snapshot()?;
+        let id = self.allocate_session_id()?;
+        let mut session =
+            Session::new(id, backend, Lineage::imported(snapshot.id()), initial_state);
+        session.adopt_snapshot(snapshot)?;
+        self.sessions.insert(id, session);
+        self.durable_session_keys.insert(id, storage_session_key);
+        Ok(id)
+    }
+
+    /// Records the durable session key for a runtime session.
+    ///
+    /// A session that is not stored yet has no durable key; callers attach one
+    /// after [`SnapshotRepository::create_session`](crate::SnapshotRepository::create_session)
+    /// publishes it. Attaching a different key to an already-attached session is
+    /// a typed conflict.
+    pub fn attach_storage_session(
+        &mut self,
+        session: SessionId,
+        storage_session_key: u64,
+    ) -> Result<(), SessionError> {
+        self.session(session)?;
+        if storage_session_key == 0 {
+            return Err(SessionError::UnknownStorageSession(0));
+        }
+        if let Some(existing) = self.durable_session_keys.get(&session) {
+            if *existing != storage_session_key {
+                return Err(SessionError::SessionConflict(*existing));
+            }
+        }
+        self.durable_session_keys
+            .insert(session, storage_session_key);
+        Ok(())
+    }
+
+    /// Returns the durable session key, if this runtime session is stored.
+    #[must_use]
+    pub fn durable_session_key(&self, session: SessionId) -> Option<u64> {
+        self.durable_session_keys.get(&session).copied()
+    }
+
+    /// Returns one stored checkpoint record.
+    pub fn snapshot_record(
+        &self,
+        session: SessionId,
+        snapshot: SnapshotId,
+    ) -> Result<&Snapshot, SessionError> {
+        self.session(session)?
+            .snapshot_record(snapshot)
+            .ok_or(SessionError::UnknownSnapshot { session, snapshot })
     }
 
     /// Forks a session from one of its stored checkpoints.

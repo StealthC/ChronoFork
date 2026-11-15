@@ -11,9 +11,16 @@ pub mod lineage;
 pub mod manager;
 pub mod session;
 pub mod snapshot;
+pub mod storage;
 
 pub use error::SessionError;
 pub use lineage::Lineage;
 pub use manager::{SessionComparison, SessionManager, SessionSummary};
 pub use session::{Session, SessionInspection, SessionState};
 pub use snapshot::{SNAPSHOT_FORMAT_VERSION, Snapshot};
+pub use storage::{
+    DurableLineage, LoadedSnapshot, LockIdentity, MAX_LOCK_BYTES, MAX_NAME_BYTES,
+    ReconciliationOutcome, STORAGE_LAYOUT_VERSION, STORAGE_METADATA_FORMAT_VERSION, SessionEntry,
+    SnapshotEntry, SnapshotRepository, StorageAnomaly, StorageAnomalyKind, StorageLimits,
+    StorageListing, WriterLock,
+};

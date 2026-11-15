@@ -13,7 +13,7 @@ bootstrap).
 | FR-SESSION-003 | Reject execution while paused or closed with a typed error. | Implemented | `SessionError::NotRunning` / `Closed`; lifecycle test |
 | FR-SESSION-004 | Inspect tick, state digest, registers, memory and lineage without side effects. | Implemented | `SessionInspection`; `Backend::inspect` |
 | FR-SESSION-005 | Close is idempotent and does not corrupt other sessions. | Implemented | `Session::close`; lifecycle test |
-| FR-SESSION-006 | Persist named session metadata and explicit writer ownership across process restarts. | Planned | [ADR-0003](../adr/0003-durable-session-storage.md) (Accepted); no persistence or ownership implementation exists |
+| FR-SESSION-006 | Persist named session metadata and explicit writer ownership across process restarts. | Implemented | `SnapshotRepository` layout v1, session/snapshot metadata and durable keys; explicit per-session writer lock/lease with typed contention and owner-checked recovery. Restart, metadata, ownership, isolation and retention targets pass; M2-A1/A2/A5/A11 verified in two independent rounds (2026-11-15), including the repaired CLI continue-and-save lock scope. See the [M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md) and [quality gates](../quality/quality-gates.md). |
 
 ## Snapshots
 
@@ -24,7 +24,7 @@ bootstrap).
 | FR-SNAPSHOT-003 | Restore a checkpoint and reject incompatible/corrupt input. | Implemented | Round-trip, corruption, version tests |
 | FR-SNAPSHOT-004 | Import serialized bytes into a new manager/session. | Implemented | `create_session_from_snapshot_bytes`; acceptance test |
 | FR-SNAPSHOT-005 | Version backend payloads independently from the outer envelope. | Implemented | `BACKEND_SNAPSHOT_FORMAT_VERSION`; synthetic payload version |
-| FR-SNAPSHOT-006 | Persist checkpoints to a versioned storage layout with explicit list/delete retention and no automatic garbage collection. | Planned | [ADR-0003](../adr/0003-durable-session-storage.md) (Accepted); checkpoints exist only in memory or as explicit byte envelopes |
+| FR-SNAPSHOT-006 | Persist checkpoints to a versioned storage layout with explicit list/delete retention and no automatic garbage collection. | Implemented | Versioned `CFSTORE1` root with per-session/per-snapshot directories; `checkpoint.cfsnap` is exactly `Snapshot::to_bytes()`; deterministic list, explicit non-cascading delete and no automatic GC. Compatibility/rejection, crash-recovery, determinism, retention and CLI targets pass; M2-A1–A4/A8/A11 and the CLI contract verified in two independent rounds (2026-11-15). See the [M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md) and [quality gates](../quality/quality-gates.md). |
 | FR-SNAPSHOT-007 | Guarantee atomic restore on failure for real backends. | Partial | Contract states it; synthetic backend validates before mutation |
 
 ## Forks and lineage

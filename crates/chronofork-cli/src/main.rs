@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -12,12 +13,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use chronofork_backend_api::{Backend, BackendFactory};
-use chronofork_core::InputFrame;
+use chronofork_core::{InputFrame, SessionId, StateHash};
 use chronofork_megadrive::{
     DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveFactory, RAM_BASE,
     RAM_SIZE, SchedulerConfig, VideoStandard, demo_rom, interrupt_rom,
 };
-use chronofork_sessions::{SessionManager, Snapshot};
+use chronofork_sessions::{
+    DurableLineage, LoadedSnapshot, SessionEntry, SessionError, SessionManager, Snapshot,
+    SnapshotEntry, SnapshotRepository,
+};
 use chronofork_test_backend::SyntheticBackendFactory;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,6 +63,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             run_demo()
         }
         Some("megadrive") => run_megadrive(&args[1..]),
+        Some("session") => run_session(&args[1..]),
         Some("backend") => match args.get(1).map(String::as_str) {
             Some("describe") => {
                 ensure(args.len() == 2, "`backend describe` takes no arguments")?;
@@ -106,8 +111,19 @@ fn print_usage() {
         "  chronofork megadrive trace     Run a bounded instruction trace and write final state"
     );
     println!("  chronofork backend describe   Show synthetic backend identity and capabilities");
+    println!("  chronofork session save --root <DIR> [--session <KEY>] [--name <NAME>]");
+    println!("                            [--steps <N>] [--input <U32>]");
+    println!("  chronofork session load --root <DIR> --session <KEY> [--snapshot <KEY>]");
+    println!("                            [--steps <N>] [--input <U32>]");
+    println!("  chronofork session list --root <DIR> [--session <KEY>]");
+    println!("  chronofork session delete --root <DIR> --session <KEY> [--snapshot <KEY>]");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
+    println!();
+    println!("`--root` is required for every session command. Only `session save` without");
+    println!("`--session` initializes a storage root; `load`, `list` and `delete` never create");
+    println!("one. Session commands print `key=value` record blocks to stdout and diagnostics");
+    println!("to stderr.");
     println!();
     println!("For trace file formats and options run:");
     println!("  chronofork megadrive trace --help");
@@ -864,6 +880,443 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
 
     println!("chronofork megadrive demo: PASS");
     Ok(())
+}
+
+/// Runs one `chronofork session` subcommand.
+///
+/// The `session` commands are a thin, line-oriented process boundary over
+/// [`SnapshotRepository`]: they parse flags, rehydrate through the manager's storage
+/// helpers and print `key=value` blocks. Serialization, compatibility, metadata and
+/// lock handling stay in `chronofork-sessions`; this code never re-implements them.
+fn run_session(args: &[String]) -> Result<(), Box<dyn Error>> {
+    match args.first().map(String::as_str) {
+        Some("save") => session_save(&args[1..]),
+        Some("load") => session_load(&args[1..]),
+        Some("list") => session_list(&args[1..]),
+        Some("delete") => session_delete(&args[1..]),
+        None => Err(CliError(
+            "`session` requires a subcommand: save, load, list or delete".to_owned(),
+        )
+        .into()),
+        Some(other) => Err(CliError(format!(
+            "unknown `session` subcommand `{other}`; expected save, load, list or delete"
+        ))
+        .into()),
+    }
+}
+
+/// Optional flags accepted by one `session` subcommand.
+#[derive(Clone, Copy, Debug)]
+struct SessionFlags {
+    session: bool,
+    snapshot: bool,
+    name: bool,
+    steps: bool,
+    input: bool,
+}
+
+impl SessionFlags {
+    const SAVE: Self = Self {
+        session: true,
+        snapshot: false,
+        name: true,
+        steps: true,
+        input: true,
+    };
+    const LOAD: Self = Self {
+        session: true,
+        snapshot: true,
+        name: false,
+        steps: true,
+        input: true,
+    };
+    const LIST: Self = Self {
+        session: true,
+        snapshot: false,
+        name: false,
+        steps: false,
+        input: false,
+    };
+    const DELETE: Self = Self {
+        session: true,
+        snapshot: true,
+        name: false,
+        steps: false,
+        input: false,
+    };
+
+    /// Flag list used in an unknown-option diagnostic.
+    fn describe(self) -> String {
+        let mut flags = vec!["--root <DIR>"];
+        if self.session {
+            flags.push("--session <KEY>");
+        }
+        if self.snapshot {
+            flags.push("--snapshot <KEY>");
+        }
+        if self.name {
+            flags.push("--name <NAME>");
+        }
+        if self.steps {
+            flags.push("--steps <N>");
+        }
+        if self.input {
+            flags.push("--input <U32>");
+        }
+        flags.join(" ")
+    }
+}
+
+/// Parsed flags shared by the `session` subcommands.
+#[derive(Debug, Default)]
+struct SessionArgs {
+    root: Option<PathBuf>,
+    session: Option<u64>,
+    snapshot: Option<u64>,
+    name: Option<String>,
+    steps: Option<u64>,
+    input: Option<u32>,
+}
+
+fn parse_session_args(
+    subcommand: &str,
+    args: &[String],
+    flags: SessionFlags,
+) -> Result<SessionArgs, CliError> {
+    let mut parsed = SessionArgs::default();
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].clone();
+        match flag.as_str() {
+            "--root" => set_once(
+                &mut parsed.root,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            "--session" if flags.session => set_once(
+                &mut parsed.session,
+                parse_key(option_value(args, &mut index, &flag)?, &flag)?,
+                &flag,
+            )?,
+            "--snapshot" if flags.snapshot => set_once(
+                &mut parsed.snapshot,
+                parse_key(option_value(args, &mut index, &flag)?, &flag)?,
+                &flag,
+            )?,
+            "--name" if flags.name => set_once(
+                &mut parsed.name,
+                option_value(args, &mut index, &flag)?.to_owned(),
+                &flag,
+            )?,
+            "--steps" if flags.steps => set_once(
+                &mut parsed.steps,
+                parse_u64(option_value(args, &mut index, &flag)?, &flag)?,
+                &flag,
+            )?,
+            "--input" if flags.input => set_once(
+                &mut parsed.input,
+                parse_u32(option_value(args, &mut index, &flag)?, &flag)?,
+                &flag,
+            )?,
+            other => {
+                return Err(CliError(format!(
+                    "unknown `session {subcommand}` option `{other}`; expected {}",
+                    flags.describe()
+                )));
+            }
+        }
+        index += 1;
+    }
+    Ok(parsed)
+}
+
+/// Parses a canonical durable key: positive decimal without leading zeroes.
+fn parse_key(value: &str, flag: &str) -> Result<u64, CliError> {
+    let canonical = !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && !value.starts_with('0');
+    if !canonical {
+        return Err(CliError(format!(
+            "`{flag}` expects a canonical positive decimal key, got `{value}`"
+        )));
+    }
+    value
+        .parse()
+        .map_err(|_| CliError(format!("`{flag}` key `{value}` is too large")))
+}
+
+fn session_save(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let options = parse_session_args("save", args, SessionFlags::SAVE)?;
+    let root = options
+        .root
+        .ok_or_else(|| CliError("`session save` requires `--root <DIR>`".to_owned()))?;
+    // `save` without `--session` starts a new durable session and may initialize an
+    // empty root. Continuing an existing session needs an existing root, so it never
+    // creates one as a side effect of a command that is about to fail.
+    let repository = match options.session {
+        Some(_) => SnapshotRepository::open(&root)?,
+        None => SnapshotRepository::initialize(&root)?,
+    };
+    let input = input_frame(options.input);
+    let steps = options.steps.unwrap_or(0);
+    let mut manager = synthetic_session_manager();
+
+    let (session, snapshot) = match options.session {
+        Some(session_key) => {
+            // Continue-and-save is one linearizable read-modify-publish workflow: the
+            // per-session writer lock is taken before the base is read and held
+            // through rehydration, advance, capture and publish. A second process
+            // fails here with typed `WriterContended` before it can read a stale base
+            // and publish from it. The repository owns every storage, serialization,
+            // metadata and lock detail; the CLI only orchestrates its public API.
+            repository.with_writer_lock::<_, Box<dyn Error>>(session_key, |repository, lock| {
+                let latest = repository.latest_snapshot(session_key)?.ok_or_else(|| {
+                    CliError(format!(
+                        "durable session {session_key} has no committed snapshot to \
+                             continue from"
+                    ))
+                })?;
+                let LoadedSnapshot { snapshot, .. } =
+                    repository.load_snapshot(session_key, latest.snapshot_key)?;
+                let runtime = manager.create_session_from_stored_snapshot(snapshot, session_key)?;
+                advance(&mut manager, runtime, steps, input)?;
+                let snapshot_id = manager.snapshot(runtime)?;
+                let record = manager.snapshot_record(runtime, snapshot_id)?;
+                let entry =
+                    repository.save_snapshot_with_lock(lock, record, options.name.as_deref())?;
+                Ok((repository.session(session_key)?, entry))
+            })?
+        }
+        None => {
+            let runtime = manager.create_session()?;
+            advance(&mut manager, runtime, steps, input)?;
+            let session = repository.create_session(
+                SessionId::from_raw(runtime.raw()),
+                options.name.as_deref(),
+                DurableLineage::root(),
+            )?;
+            manager.attach_storage_session(runtime, session.session_key)?;
+            let snapshot_id = manager.snapshot(runtime)?;
+            let record = manager.snapshot_record(runtime, snapshot_id)?;
+            let entry =
+                repository.save_snapshot(session.session_key, record, options.name.as_deref())?;
+            (session, entry)
+        }
+    };
+
+    let mut output = String::new();
+    write_session_block(&mut output, &session);
+    write_snapshot_block(&mut output, &snapshot);
+    print!("{output}");
+    Ok(())
+}
+
+fn session_load(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let options = parse_session_args("load", args, SessionFlags::LOAD)?;
+    let root = options
+        .root
+        .ok_or_else(|| CliError("`session load` requires `--root <DIR>`".to_owned()))?;
+    let session_key = options
+        .session
+        .ok_or_else(|| CliError("`session load` requires `--session <KEY>`".to_owned()))?;
+    // A load never initializes a root and never writes storage.
+    let repository = SnapshotRepository::open(&root)?;
+    let snapshot_key = match options.snapshot {
+        Some(snapshot_key) => snapshot_key,
+        None => {
+            repository
+                .latest_snapshot(session_key)?
+                .ok_or_else(|| {
+                    CliError(format!(
+                        "durable session {session_key} has no committed snapshot"
+                    ))
+                })?
+                .snapshot_key
+        }
+    };
+    let LoadedSnapshot { snapshot, entry } = repository.load_snapshot(session_key, snapshot_key)?;
+    let steps = options.steps.unwrap_or(0);
+    let mut manager = synthetic_session_manager();
+    let runtime = manager.create_session_from_stored_snapshot(snapshot, session_key)?;
+    advance(&mut manager, runtime, steps, input_frame(options.input))?;
+    // Read-only: `--steps`/`--input` advance only the in-memory instance. With the
+    // default zero steps the observed state is exactly the stored checkpoint.
+    let inspection = manager.inspect(runtime)?;
+    let report = SnapshotReport {
+        session_key: entry.session_key,
+        snapshot_key: entry.snapshot_key,
+        name: entry.name.as_deref(),
+        tick: inspection.machine.tick.raw(),
+        state_hash: inspection.machine.state_hash,
+        creation_sequence: entry.creation_sequence,
+        parent_session_key: entry.parent_session_key,
+        origin_snapshot_key: entry.origin_snapshot_key,
+    };
+    let mut output = String::new();
+    write_snapshot_report(&mut output, &report);
+    print!("{output}");
+    Ok(())
+}
+
+fn session_list(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let options = parse_session_args("list", args, SessionFlags::LIST)?;
+    let root = options
+        .root
+        .ok_or_else(|| CliError("`session list` requires `--root <DIR>`".to_owned()))?;
+    // A list never initializes a root and takes no writer lock.
+    let repository = SnapshotRepository::open(&root)?;
+    let mut output = String::new();
+    let mut anomalies = Vec::new();
+    match options.session {
+        Some(session_key) => {
+            let session = repository.session(session_key)?;
+            write_session_block(&mut output, &session);
+            let snapshots = repository.list_snapshots(session_key)?;
+            for entry in &snapshots.entries {
+                write_snapshot_block(&mut output, entry);
+            }
+            anomalies.extend(snapshots.anomalies);
+        }
+        None => {
+            let listing = repository.list_sessions()?;
+            for session in &listing.entries {
+                write_session_block(&mut output, session);
+                let snapshots = repository.list_snapshots(session.session_key)?;
+                for entry in &snapshots.entries {
+                    write_snapshot_block(&mut output, entry);
+                }
+                anomalies.extend(snapshots.anomalies);
+            }
+            anomalies.extend(listing.anomalies);
+        }
+    }
+    print!("{output}");
+    // Anomalies are diagnostics about entries that are not committed data. The listing
+    // still succeeds, nothing is repaired and only stderr is used.
+    for anomaly in anomalies {
+        eprintln!("chronofork: storage anomaly: {anomaly}");
+    }
+    Ok(())
+}
+
+fn session_delete(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let options = parse_session_args("delete", args, SessionFlags::DELETE)?;
+    let root = options
+        .root
+        .ok_or_else(|| CliError("`session delete` requires `--root <DIR>`".to_owned()))?;
+    let session_key = options
+        .session
+        .ok_or_else(|| CliError("`session delete` requires `--session <KEY>`".to_owned()))?;
+    // A delete never initializes a root and never cascades.
+    let repository = SnapshotRepository::open(&root)?;
+    match options.snapshot {
+        Some(snapshot_key) => repository.delete_snapshot(session_key, snapshot_key)?,
+        None => repository.delete_session(session_key)?,
+    }
+    let mut output = String::new();
+    write_deleted_block(&mut output, session_key, options.snapshot);
+    print!("{output}");
+    Ok(())
+}
+
+/// A manager over the deterministic synthetic test backend.
+fn synthetic_session_manager() -> SessionManager {
+    SessionManager::new(Arc::new(SyntheticBackendFactory::default()))
+}
+
+/// `--input` selection, defaulting to neutral input.
+fn input_frame(buttons: Option<u32>) -> InputFrame {
+    buttons.map_or(InputFrame::NEUTRAL, InputFrame::new)
+}
+
+/// Applies `steps` deterministic inputs to one in-memory session.
+fn advance(
+    manager: &mut SessionManager,
+    session: SessionId,
+    steps: u64,
+    input: InputFrame,
+) -> Result<(), SessionError> {
+    for _ in 0..steps {
+        manager.step(session, input)?;
+    }
+    Ok(())
+}
+
+/// Fields of one `record=snapshot` block.
+#[derive(Debug)]
+struct SnapshotReport<'a> {
+    session_key: u64,
+    snapshot_key: u64,
+    name: Option<&'a str>,
+    tick: u64,
+    state_hash: StateHash,
+    creation_sequence: u64,
+    parent_session_key: Option<u64>,
+    origin_snapshot_key: Option<u64>,
+}
+
+/// Starts one output record, separating it from a previous block by one blank line.
+fn begin_record(output: &mut String, record: &str) {
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    let _ = writeln!(output, "record={record}");
+}
+
+fn write_session_block(output: &mut String, entry: &SessionEntry) {
+    begin_record(output, "session");
+    let _ = writeln!(output, "session_key={}", entry.session_key);
+    let _ = writeln!(output, "name={}", entry.name.as_deref().unwrap_or(""));
+}
+
+fn write_snapshot_block(output: &mut String, entry: &SnapshotEntry) {
+    let report = SnapshotReport {
+        session_key: entry.session_key,
+        snapshot_key: entry.snapshot_key,
+        name: entry.name.as_deref(),
+        tick: entry.tick.raw(),
+        state_hash: entry.state_hash,
+        creation_sequence: entry.creation_sequence,
+        parent_session_key: entry.parent_session_key,
+        origin_snapshot_key: entry.origin_snapshot_key,
+    };
+    write_snapshot_report(output, &report);
+}
+
+fn write_snapshot_report(output: &mut String, report: &SnapshotReport<'_>) {
+    begin_record(output, "snapshot");
+    let _ = writeln!(output, "session_key={}", report.session_key);
+    let _ = writeln!(output, "snapshot_key={}", report.snapshot_key);
+    let _ = writeln!(output, "name={}", report.name.unwrap_or(""));
+    let _ = writeln!(output, "tick={}", report.tick);
+    let _ = writeln!(output, "state_hash={}", report.state_hash);
+    let _ = writeln!(output, "creation_sequence={}", report.creation_sequence);
+    let _ = writeln!(
+        output,
+        "parent_session_key={}",
+        optional_key(report.parent_session_key)
+    );
+    let _ = writeln!(
+        output,
+        "origin_snapshot_key={}",
+        optional_key(report.origin_snapshot_key)
+    );
+}
+
+fn write_deleted_block(output: &mut String, session_key: u64, snapshot_key: Option<u64>) {
+    begin_record(output, "deleted");
+    let _ = writeln!(output, "session_key={session_key}");
+    if let Some(snapshot_key) = snapshot_key {
+        let _ = writeln!(output, "snapshot_key={snapshot_key}");
+    }
+}
+
+/// Formats an optional durable key for the `-`-when-absent block convention.
+fn optional_key(key: Option<u64>) -> String {
+    match key {
+        Some(key) => key.to_string(),
+        None => "-".to_owned(),
+    }
 }
 
 fn ensure(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {

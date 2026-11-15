@@ -54,36 +54,40 @@ Session IDs are per manager; snapshot IDs are per session and allocated by each
 the origin session and snapshot ID for diagnostics, not as a global identity
 guarantee.
 
-## Persistence and durable identity (accepted design; not implemented)
+## Persistence and durable identity (implemented; Linux acceptance platform)
 
-> Status: design accepted in [ADR-0003](../adr/0003-durable-session-storage.md);
-> **not implemented**. The current tree has no storage layer, and snapshots live only
-> in memory or in explicit byte envelopes.
+> Status: implemented by `SnapshotRepository` in `chronofork-sessions` and
+> independently verified in two rounds (2026-11-15). Round 1 found one medium,
+> non-blocking CLI lock-scope finding (F1); the repair made the continue-and-save
+> workflow hold the writer lock across read-validate-publish, and round 2 re-verified
+> F1 closed with no regression. The authoritative contract, layout and limits are in
+> [ADR-0003](../adr/0003-durable-session-storage.md); the execution evidence is in the
+> [M2 acceptance plan](../quality/m2-durable-sessions-acceptance.md) and [quality
+> gates](../quality/quality-gates.md).
 
-The accepted durable contract treats a persisted checkpoint as the existing canonical
-`Snapshot::to_bytes()` envelope stored verbatim. Storage must not define a second
-snapshot serializer, reader or compatibility predicate: it hands bounded bytes to
+The durable contract treats a persisted checkpoint as the existing canonical
+`Snapshot::to_bytes()` envelope stored verbatim. Storage defines no second snapshot
+serializer, reader or compatibility predicate: it hands bounded bytes to
 `Snapshot::from_bytes` and lets the existing backend restore path validate
 compatibility.
 
-Durable storage needs an identity that outlives one process. Runtime `SessionId`
+Durable storage has an identity that outlives one process. Runtime `SessionId`
 remains manager-scoped, while `SnapshotId` remains session-scoped; neither is a global
-key, so the design adds durable storage keys minted under explicit locks. A rehydrated
-process maps those keys to fresh runtime handles and seeds the session and snapshot
-allocators; a snapshot's storage key is aligned with the envelope snapshot ID, while
-the envelope's origin-session ID stays diagnostic provenance. The storage identity,
-layout and allocation rules live in
-[ADR-0003](../adr/0003-durable-session-storage.md); this document does not restate
-them.
+key, so storage adds durable keys minted under explicit locks. A rehydrated process
+maps those keys to fresh runtime handles and seeds the session and snapshot allocators;
+a snapshot's storage key is aligned with the envelope snapshot ID, while the envelope's
+origin-session ID stays diagnostic provenance. The storage identity, layout and
+allocation rules live in [ADR-0003](../adr/0003-durable-session-storage.md); this
+document does not restate them.
 
-What would survive a restart:
+What survives a restart:
 
 - the canonical checkpoint envelope bytes;
 - the versioned session and snapshot metadata records;
 - durable lineage keys and the logical creation sequence;
 - the backend identity required to select a compatible backend.
 
-What would not survive as canonical state:
+What does not survive as canonical state:
 
 - the live mutable backend instance (it is reconstructed by restoring a checkpoint);
 - the in-process session registry and runtime identifiers;
@@ -93,64 +97,87 @@ What would not survive as canonical state:
 Rehydration is a validate-then-register operation: list only valid objects, restore a
 canonical checkpoint into a fresh backend, and register the session only after the
 restore succeeds. An incompatible or corrupt checkpoint returns a typed error and
-leaves no half-registered session. The seven isolation invariants below are unchanged
-by persistence; storage must not become a mutation channel between sessions.
+leaves no half-registered session. The isolation invariants below are unchanged by
+persistence; storage is not a mutation channel between sessions.
 
-Planned persistence invariants for Fase B (none is tested yet):
+Persistence invariants (verified on the Linux acceptance platform):
 
 1. Restoring a committed checkpoint after a restart yields the same tick and state
    hash as before the restart.
 2. Metadata names and host timestamps never change checkpoint bytes, the state hash
    or replay results.
-3. A crash never exposes a partially written snapshot as committed.
+3. A crash during publish never exposes a partially written snapshot as committed; a
+   post-rename parent-sync failure is reported as `DurabilityUnconfirmed`.
 4. An unsupported storage, metadata, outer-envelope or backend version is rejected
    before any restore.
 5. Deleting one snapshot never rewrites another session's checkpoint or lineage.
-6. Writer contention produces a typed error; storage never silently allows two
-   writers for one session.
+6. Writer contention produces a typed error; the supported read-modify-publish
+   workflow (`with_writer_lock` plus `save_snapshot_with_lock`, used by the CLI) holds
+   one writer lock across the read, validate and publish sequence.
 
-## Snapshot metadata (accepted design; not implemented)
+## Snapshot metadata (implemented)
 
-> Status: design accepted in [ADR-0003](../adr/0003-durable-session-storage.md); not
-> implemented.
+> Status: implemented and verified (M2-A2, M2-A11); evidence as above.
 
-The accepted metadata record design adds named, durable information without changing the
-canonical checkpoint. Its authoritative fields, encoding and validation order are in
+The metadata record adds named, durable information without changing the canonical
+checkpoint. Its authoritative fields, encoding and validation order are in
 [ADR-0003](../adr/0003-durable-session-storage.md); this document keeps only the
 session-level consequences. Durable metadata preserves the durable session/snapshot
 identity and lineage; runtime IDs are diagnostics, an optional name is a label rather
-than an identity authority, and host timestamps are advisory and excluded from
-hashing, equality, ordering and replay. The logical creation sequence, not host time,
-orders snapshots. Renaming or re-annotating a checkpoint rewrites only its metadata
-record; the checkpoint file remains immutable.
+than an identity authority, and host timestamps are advisory and excluded from hashing,
+equality, ordering and replay. The logical creation sequence, not host time, orders
+snapshots. Renaming or re-annotating a checkpoint rewrites only its metadata record;
+the checkpoint file remains immutable (verified).
 
-## Storage ownership and concurrency (accepted design; not implemented)
+## Storage ownership and concurrency (implemented; cooperative lock)
 
-> Status: design accepted in [ADR-0003](../adr/0003-durable-session-storage.md); not
-> implemented.
+> Status: implemented and verified (M2-A5, M2-A9); the round-1 CLI lock-scope finding
+> F1 is closed in round 2.
 
 The in-process rules in the Concurrency rules section remain in force. Across
-processes, a durable session has one writer at a time; the lock/lease protocol and
-its typed outcomes are specified only in
-[ADR-0003](../adr/0003-durable-session-storage.md). Readers rely on the immutable
-checkpoint and the atomic publication rule specified there, so they never observe a
-partially published checkpoint. Persistence must not become a mutation channel
-between sessions: it cannot relax the isolation invariants, and a session with an
-active writer must not be mutated through a second storage handle.
+processes, a durable session has one writer at a time; the lock/lease protocol and its
+typed outcomes are specified only in
+[ADR-0003](../adr/0003-durable-session-storage.md). `SnapshotRepository::with_writer_lock`
+provides the supported read-modify-publish workflow: the caller's closure runs while
+one lock is held and the lock is released on every success and error path;
+`save_snapshot_with_lock` rejects a released or foreign-store handle with a typed
+`NotLockOwner`. The `chronofork session save --session` CLI path uses that workflow and
+therefore fails at acquisition with a typed `WriterContended` before reading a stale
+base. The convenience `save_snapshot` still acquires its own lock only at publish time,
+so a third-party caller that reads a base before calling it can reproduce the older
+stale-base window; the CLI no longer does this. Readers take no writer lock and rely on
+the immutable checkpoint and the atomic publication rule, so they do not observe a
+partially published checkpoint. The tested lock-free-reader scope is sequential: a
+reader loads complete canonical bytes while a writer lock is held (no publish in
+progress), and independent readers are side-effect-free. A concurrent publish/read or
+delete/read interleaving is not separately tested and remains a **Partial**
+`NFR-CONC-003` clause resting on the immutable-object/atomic-rename argument.
+Persistence is not a mutation channel between sessions: it cannot relax the isolation
+invariants, and a session with an active writer must not be mutated through a second
+storage handle.
 
-## Storage limitations (accepted design; not implemented)
+## Storage limitations (remaining)
 
 The canonical storage limitations, filesystem scope, durability bounds, size limits,
 confidentiality and retention policy are in
-[ADR-0003](../adr/0003-durable-session-storage.md) and are not repeated here. For the
-session model the consequences are:
+[ADR-0003](../adr/0003-durable-session-storage.md). For the session model the
+consequences are:
 
-- a durable session can be blocked by a stale writer lock until explicit recovery;
+- a durable session can be blocked by a stale writer lock until explicit
+  owner/generation-checked recovery; the lock is cooperative metadata, not
+  authentication;
+- `save --session` holds the writer lock across rehydration and any in-memory
+  `--steps` advance, so a long advance lengthens contention for other writers (a
+  deliberate correctness trade-off);
 - a committed checkpoint is restorable only while its storage root, metadata record
   and a compatible backend are available;
 - deleting an origin checkpoint can leave child lineage dangling; the child cannot
   restore to that origin unless a future owner decision copies or pins it;
-- persistence adds no cross-session sharing, authentication or access control.
+- persistence adds no cross-session sharing, authentication or access control, and
+  there is no encryption, compression, deduplication, migration or automatic garbage
+  collection;
+- durability is verified only on local Linux filesystems; native Windows and network
+  filesystem durability is unverified (ADR-0003 §4).
 
 ## Isolation invariants
 
@@ -174,7 +201,7 @@ The bootstrap exposes mutations through `&mut SessionManager` and `&mut Session`
 There is no hidden global lock or background thread. This is a deliberate
 correctness choice.
 
-For future transports and durable storage:
+For transports and durable storage:
 
 - One session has one mutable owner at a time.
 - Concurrent reads may be allowed only if the backend guarantees side-effect-free
@@ -182,8 +209,10 @@ For future transports and durable storage:
 - A shared session must use an explicit synchronization policy (for example a
   per-session mutex) at the transport/service layer.
 - Silent races are forbidden. A lock timeout or contention must be a typed error.
-- Repository-level durable storage ownership is specified in
-  [ADR-0003](../adr/0003-durable-session-storage.md) and is not implemented.
+- Durable repository ownership is implemented as a cooperative per-session writer
+  lock in `chronofork-sessions`; readers are lock-free and never observe a torn
+  checkpoint. The protocol and its limits are in
+  [ADR-0003](../adr/0003-durable-session-storage.md).
 - Forking is the preferred way to run independent experiments; sharing one mutable
   session is not a substitute for isolation.
 
@@ -197,7 +226,12 @@ For future transports and durable storage:
 - backend halt;
 - identifier exhaustion;
 - malformed or incompatible serialized snapshot;
-- backend failure.
+- backend failure;
+- durable storage failure: uninitialized or foreign root, unsupported layout or
+  metadata version, corrupt metadata, metadata/identity mismatch, unknown durable
+  session/snapshot, non-empty session, invalid name, path escape, symlink or wrong
+  file type, file/list bounds, writer contention, not lock owner, corrupt lock,
+  unsupported lock primitive, durability unconfirmed and corrupt allocation counter.
 
 Operations validate before mutating. A failed restore must not leave a session
 half-restored; the backend contract requires atomic rejection of incompatible
@@ -208,14 +242,17 @@ backend is adopted.
 
 - No background execution, run loop, frame pacing or wall-clock scheduling.
 - No copy-on-write or memory-page sharing between forks.
-- No persistence layer: snapshots are in memory plus explicit byte envelopes.
-  Durable storage, named metadata and storage-level ownership are designed in
-  [ADR-0003](../adr/0003-durable-session-storage.md) but are not implemented.
-- No multi-process isolation.
-- No per-session access control; ownership metadata exists only as the accepted
-  ADR-0003 design.
+- Durable storage, named metadata, storage-backed rehydration and cooperative
+  per-session writer ownership are implemented and verified. Remaining limits: no
+  Windows/network-filesystem durability, no encryption or authentication, a
+  cooperative (not enforced) writer lock, manual retention without automatic GC, and
+  no format migration.
+- No parallel execution of one session across processes; durable ownership is
+  cooperative, not process isolation.
+- No per-session access control; the writer lock is cooperative metadata, not an
+  authorization boundary.
 - Session IDs reset per manager; they are not globally unique across processes. This
-  is why ADR-0003 proposes separate durable storage keys rather than treating a
+  is why ADR-0003 defines separate durable storage keys rather than treating a
   runtime `SessionId` as a durable identity.
 
 These are roadmap items, not hidden behavior.

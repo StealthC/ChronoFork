@@ -95,6 +95,45 @@ snapshot: VDP, scheduler and CPU state reproduced from the checkpoint
 chronofork megadrive demo: PASS
 ```
 
+## 2026-11-15 — M2 durable sessions, Fase B (round 2, post-F1 repair; current M2 claim)
+
+Authoritative gate run for the durable-session implementation, independently
+re-verified after the F1 repair. Tree: `3d840634ed21d305762d57513e1da9ff4e22479d`
+plus the uncommitted Fase B worktree. Raw evidence (ignored paths):
+`.research/m2-durable-sessions/fase-b/verification/round2/` (`SUMMARY.txt`,
+`MANIFEST.sha256`, `targets/`, demo and gate logs); round 1:
+`.research/m2-durable-sessions/fase-b/verification/` (`SUMMARY.txt`,
+`target-matrix.txt`, `MANIFEST.sha256`); F1 repair:
+`.research/m2-durable-sessions/fase-b-repair-f1/SUMMARY.txt`. The durable acceptance
+record is the [M2 durable-sessions acceptance plan](m2-durable-sessions-acceptance.md);
+exact test counts and per-target accounting stay in the evidence artifacts and are not
+copied here.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0, no failures (counts in the round-2 SUMMARY) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed" |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0, 3 runs, stderr empty, byte-identical to the t1 baseline |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0, 3 runs, stderr empty, byte-identical to the t1 baseline |
+| Whitespace | `git diff --check` | exit 0 |
+
+Round 1 executed M2-A1–A11 and the CLI contract and reported one medium, non-blocking
+finding: the CLI `save --session` read the latest snapshot before taking the writer
+lock (F1). The repair added `SnapshotRepository::with_writer_lock` and
+`save_snapshot_with_lock`, and the CLI now acquires the lock before the read and holds
+it through rehydrate/advance/capture/publish. Round 2 re-verified F1 closed: typed
+contention at acquisition, one winner in repeated real two-process races, no
+stale-base double publish and no regression. Residual limits remain stated in the
+[M2 acceptance plan §10](m2-durable-sessions-acceptance.md#10-out-of-scope-and-stated-limitations):
+Linux-local-filesystem durability only (Windows/network filesystems unverified), a
+cooperative writer lock, long lock holds with large `--steps`, explicit stale-lock
+recovery, manual retention, no encryption/authentication or migration, and the
+publish-only `save_snapshot` convenience caveat for third-party callers.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.
