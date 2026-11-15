@@ -127,3 +127,5 @@ desktop.ini
 # root is tracked; the installed payload below is disposable and restored with
 # `npx skills install --frozen-lockfile`.
 .agents/
+.agents/worktrees/
+.agents/notes/

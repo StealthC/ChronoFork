@@ -4,6 +4,11 @@ Authoritative instructions for coding agents working on ChronoFork. This file is
 harness-independent: it must remain useful with DeepSeek Harness, Codex, Claude
 Code, OpenCode, or any other coding agent. Read it before changing the repository.
 
+For any write task: establish the correct checkout first, coordinate file ownership,
+then plan, implement and verify. A task team normally shares one worktree; independent
+concurrent write tasks use separate worktrees. Publication and integration have separate
+authorization requirements (see [Git authorization](#git-authorization-and-integration)).
+
 ## Project purpose
 
 ChronoFork is an open-source, cross-platform emulation and reverse-engineering
@@ -38,7 +43,9 @@ backend as a complete emulator or claim game compatibility.
 | `docs/research/` | Evidence-backed upstream research |
 | `scripts/check.sh` | Local quality gate |
 | `skills-lock.json` | Pinned agent-skill lockfile; `.agents/skills/` is ignored and restored from it |
-| `.planning/` | Ignored operational planning memory |
+| `.planning/` | Ignored, worktree-local operational planning memory |
+| `.agents/notes/` | Ignored per-agent, per-task transient notes (when used) |
+| `.agents/worktrees/` | Preferred ignored location for task worktrees (when used) |
 | `.research/upstream/` | Ignored upstream clones; never commit |
 
 ## Technology stack
@@ -85,33 +92,191 @@ More detail: [architecture overview](docs/architecture/overview.md),
 
 ## Onboarding procedure
 
-1. Read this `AGENTS.md`.
-2. Read [docs/README.md](docs/README.md) and the relevant linked documents.
-3. Inspect `git status --short --branch` and the latest commits.
-4. Read relevant ADRs in [docs/adr/](docs/adr/README.md). ADR-0002 is accepted;
+1. Read this `AGENTS.md` and [docs/README.md](docs/README.md), then the relevant
+   architecture and quality documentation.
+2. Inspect `git status --short --branch`, recent commits and `git worktree list`.
+   Identify the actual repository root and branch; do not assume the workspace points
+   to the intended checkout.
+3. Read relevant ADRs in [docs/adr/](docs/adr/README.md). ADR-0002 is accepted;
    do not treat a still-`Proposed` decision as accepted.
-5. Recover active planning state if a planning skill is installed. For
-   `planning-with-files`, resolve the selected plan and read `task_plan.md`,
-   `findings.md` and `progress.md`. Do not invent a plan directory.
-6. Identify the current epic and your assigned task in
-   [docs/epics/](docs/epics/). EPIC-0002 tracks the Mega Drive slice.
-7. Read the task's acceptance criteria, dependencies and file ownership.
-8. Inspect the existing implementation before editing.
-9. Implement incrementally, with tests.
-10. Run the quality gates and record actual results. Update durable docs/ADRs where
-    appropriate; keep temporary notes in `.planning/` or another ignored path.
+4. Identify the task, acceptance criteria, dependencies, write scope and required
+   Git permissions. For an independent write task, create or reuse the task worktree
+   **before** loading operational planning state or starting teammates.
+5. Reconfirm repository root, branch, permissions and worktree after any directory
+   change. Then recover the selected planning state if the planning skill is installed;
+   do not invent a plan directory or silently reuse another task's plan.
+6. Identify the current epic in [docs/epics/](docs/epics/). EPIC-0002 tracks the
+   Mega Drive slice; check for newer accepted scope before making assumptions.
+7. Inspect the existing implementation and evidence before editing; follow the
+   anti-slop pre-flight below when the task affects behavior.
+8. Implement incrementally within the assigned paths, coordinating with the team.
+9. Run applicable gates, report actual results, and update canonical docs/ADRs.
+   Keep temporary notes in ignored worktree-local paths.
+
+## Concurrent work and Git worktrees
+
+### When and where to isolate
+
+- **One independent concurrent write task/team = one branch and one worktree.**
+  Teammates in one coordinated team normally share that worktree; do not create one
+  worktree per teammate by default. Read-only investigations and small sequential
+  tasks may operate without a new worktree when there is no overlap risk.
+- For a resumed task, reuse its existing worktree after checking that it is not owned
+  by another active session. Never reuse a branch/worktree merely because its name
+  looks similar. Check `git worktree list --porcelain`, its branch, status and owner.
+- Prefer `<repo>/.agents/worktrees/<task-id>-<slug>/` if the environment tolerates
+  nested checkouts. This directory **must** be ignored by the outer repository and
+  excluded from recursive source indexing, broad searches and file watchers when
+  possible. Use a sibling location outside the repository if nested worktrees cause
+  watcher, performance, tooling or sandbox problems; record the actual path.
+- Use the native Git CLI in the filesystem where the repo lives (Linux Git for WSL
+  checkouts, Windows Git for Windows checkouts). Do not depend on Forge, GitHub, a
+  particular harness or an external service to create local worktrees.
+- Base a new branch on the approved base ref/commit; do not assume `main` or copy
+  uncommitted changes from the parent checkout. If the parent has uncommitted work,
+  identify whether it matters to this task; do not accidentally omit needed changes
+  or disturb them. If the base ref or ownership is unclear, or a branch name is
+  occupied, resolve the ambiguity before proceeding. Never use `--force` to claim
+  a worktree.
+- For a task that needs a new worktree, this is a Git pattern (shown in POSIX shell syntax; adapt it for PowerShell)
+  after confirming the root, base ref, branch name and ignore rule (placeholders
+  are not literal commands to copy unchanged):
+
+  ```sh
+  git check-ignore -q .agents/worktrees/ || exit 1
+  git worktree add -b 'agent/<task-id>-<slug>' \
+    '.agents/worktrees/<task-id>-<slug>' '<approved-base-ref>'
+  git -C '.agents/worktrees/<task-id>-<slug>' rev-parse --show-toplevel
+  ```
+
+  If the path is not ignored, configure an appropriate ignore rule first; do not
+  create the nested worktree and hope Git will ignore it. A sibling-directory
+  worktree uses the same `git worktree add` operation with an external path.
+
+### Select and verify the effective checkout
+
+- The coordinating agent/Team Lead creates or selects the worktree **before** team
+  creation and planning initialization. When supported, change the session's
+  effective working directory via the harness's workspace/working-directory API.
+  `cd` in a one-off shell command does **not** necessarily change the session state.
+- After a change, verify the effective checkout in the actual execution environment:
+
+  ```sh
+  pwd
+  git rev-parse --show-toplevel
+  git branch --show-current
+  git status --short --branch
+  git worktree list --porcelain
+  ```
+
+  Commands and file edits must target that same checkout. For shell commands whose
+  working directory is not persistent, use explicit working-directory options or
+  `git -C <worktree>`; for file tools, supply the correct worktree path.
+- Changing a session working directory does not automatically grant new sandbox
+  permissions or retarget already-running agents and processes. Validate read/write
+  access with a harmless operation before implementation. If the harness cannot
+  reliably retarget its file tools or teammates, open a new session at the worktree
+  instead. Do not bypass security with `danger-full-access`, ACL rewriting, sudo or
+  elevated privileges to make a convenience feature work without explicit approval.
+- An agent operating in a task worktree must never edit, stage or run task-specific
+  tests from the parent checkout by accident. Verify the target before each
+  consequential Git action, and after context restoration or session resumption.
+
+### Multi-agent coordination and ownership
+
+- A **Team Lead** coordinates the team: chooses the checkout, assigns nonoverlapping
+  write scopes, owns shared planning and integration state, and serializes Git
+  mutations. A **teammate** implements, reviews or tests only the assigned work.
+- Agent Teams (where available) is the task/communication layer; its write scopes
+  are coordination conventions, **not enforced file locks**. When the harness has
+  no Agent Teams, apply the same ownership rules to cooperating agents.
+- Before creating teammates, the lead verifies that the worktree is selected and
+  communicates its absolute path, branch, task ID, write scopes and dependencies.
+  Each teammate verifies its own effective cwd/root on first use. If an agent
+  cannot prove it is in the intended checkout, it stops and reports the mismatch.
+- Teammates do not independently switch the team's worktree, create extra worktrees,
+  update shared manifests/ADRs/`AGENTS.md` or modify another teammate's files without
+  explicit coordination. Parallelize disjoint files; serialize shared files.
+- Keep `git add`, `git commit`, `git reset`, checkout, rebase and merge operations
+  under a single designated integrator/lead at a time. Avoid concurrent writes to
+  the Git index, task plan or generated outputs. Coordinate build artifacts,
+  container names, ports, databases and caches: Git worktrees isolate files, **not**
+  external services or machine-wide state.
+
+### Worktree lifecycle and handoff
+
+1. **Prepare:** identify the task and approved base; inspect existing worktrees and
+   current changes; create or reuse a uniquely named checkout if needed.
+2. **Bind:** verify effective cwd, Git root, branch and permissions before spawning
+   teammates or creating a plan.
+3. **Execute:** partition file ownership, implement, review and test in the task
+   checkout; save transient evidence and plan state locally.
+4. **Handoff:** lead reviews diffs and gates, consolidates durable findings to
+   versioned `docs/`, and reports commit/branch, pending work and integration status.
+5. **Integrate:** follow [Git authorization](#git-authorization-and-integration)
+   and repository review/CI policies. A finished implementation is not necessarily
+   published or merged.
+6. **Clean up:** only after checking active sessions, pending changes, ignored
+   planning/notes and integration status. Preserve or archive untracked evidence
+   deliberately; never `git worktree remove --force`, delete a branch or discard an
+   active plan automatically. Request approval if any data might be lost.
 
 ## Planning conventions
 
-- Use the installed planning skill if available; follow its actual `SKILL.md`.
-  Do not claim to use a skill you did not load.
-- If unavailable, use a short task list and keep durable decisions in `docs/`.
-- `.planning/` is working memory and is ignored. Promote durable findings to
-  `docs/` before finishing.
-- One plan owner per shared plan. Workers report through their own files or
-  messages; do not overwrite another agent's plan.
-- Disjoint file ownership is required for parallel agents. Shared architectural
-  files belong to the lead/integrator.
+- Use an installed planning skill only after loading its actual `SKILL.md`; do not
+  claim to use a skill you did not load. Otherwise use a concise task list and
+  promote durable decisions to `docs/`.
+- `.planning/` is ignored, **operational memory local to a worktree**, not the
+  source of truth for accepted architecture or capabilities. Never share/copy its
+  mutable state or `.attestation` between independent worktrees or sessions.
+- One designated plan owner per team (normally the lead) may modify the shared
+  `task_plan.md`, `findings.md`, `progress.md` and attestation state. Teammates
+  report through task-board messages or their own task-specific ignored notes,
+  e.g. `.agents/notes/<task-id>/<agent>.md` (if that path is ignored); they do not
+  reinitialize, overwrite, reset or reattest the central plan.
+- Keep daily execution details in `progress.md` and discoveries in `findings.md`;
+  update `task_plan.md` when scope, milestones, criteria or phase structure changes,
+  rather than on every task-status change. The task board tracks live assignment,
+  dependencies and completion; planning files preserve longer-lived context.
+- `PLAN TAMPERED` or any attestation mismatch is a **stop-and-investigate** event,
+  not a prompt to disable a guard. Check the actual selected plan, current hash,
+  changes and other active writers. Never delete `.mode`, clear the attestation or
+  blindly reattest to suppress the warning. After reviewing an intended plan change,
+  the authorized owner may reattest using the installed skill's documented process;
+  verify the result. No automatic self-approval of unexpected changes.
+- Resolve any `.active_plan`/named-plan selection **inside the active worktree**;
+  verify that the canonical target path belongs to the intended checkout before
+  reading or updating it. If selection is ambiguous or points elsewhere, stop.
+- Before deleting/archiving a plan or worktree, extract durable findings into
+  `docs/`, preserve any necessary evidence and verify no active session relies on it.
+
+## jev-cli as a second opinion
+
+The `jev-cli` skill wraps the `jev` command and returns a typed judgment about text you
+submit. Load its `SKILL.md` for the command forms instead of restating them here. Use it
+when the harness exposes it and the question is a judgment call about material we
+already wrote, not a fact lookup:
+
+- Claim honesty: does a doc or README sentence promise more than the evidence we have?
+  Put the claim and the evidence (gate results, deferred-scope list, accepted ADR) in
+  the same state; the evaluator cannot read the repository.
+- Triage: which crate owns a change, whether a change needs a new ADR or which M3
+  increment it belongs to, and how severe a review finding is. Prefer `choice` with
+  described options; keep `noul` for a coarse yes/no.
+- Commit and PR honesty: does the message claim something the diffstat does not show?
+
+Constraints:
+
+- Advisory only. Never in `./scripts/check.sh`, CI, acceptance plans or the anti-slop
+  evidence; a merge still rests on executed tests and review.
+- Not a hardware oracle. It follows rules placed in the state but cannot be trusted for
+  emulation facts, cycle counts or compatibility.
+- Treat empty state as a hard error before calling `jev`; an empty string or empty
+  `@file` returns a confident answer with exit 0.
+- Near the 0.5 boundary answers drift between runs, so require a margin or ask the
+  question both ways. Exit codes 2/3/4 are technical failures, never a "no".
+- The state leaves the machine: submit no secrets, credentials, ROM/BIOS bytes or
+  private paths.
 
 ## Code quality rules
 
@@ -205,15 +370,41 @@ run, state exactly why.
   secrets.
 - Prefer independently authored synthetic test programs.
 
+## Git authorization and integration
+
+- The Team Lead/integrator may prepare local task branches and worktrees for an
+  approved write task, subject to the workspace/sandbox rules above. This does not
+  authorize remote publication or merging.
+- **Local commits:** only when authorized by the task or an explicit standing
+  repository policy; the lead/integrator stages reviewed, task-scoped paths and
+  creates small logical commits. Teammates do not commit independently by default.
+- **Push / remote branch / pull request:** only with explicit task approval or a
+  previously documented standing policy naming the allowed remote and branches.
+  A local commit is not permission to publish. Do not assume GitHub: support a
+  configured Forgejo, GitLab or other remote without changing providers silently.
+- **Merge into `main` or any protected/integration branch:** separate explicit
+  authorization is required by default. Respect review, CI, branch protection and
+  license/security checks. Passing tests or a teammate's review does not itself
+  authorize merging. Prefer a reviewed change request where supported.
+- **Never by default:** force push, rewrite shared history, delete shared branches,
+  create/tag releases, change remotes, bypass CI/approvals, or auto-merge. These
+  require a separate, specific authorization and the applicable repository policy.
+- Before staging or committing, verify the active root/branch, inspect `git diff`
+  and `git status`, and stage only intended paths; do not `git add -A` blindly.
+  Serialized Git operations avoid races between teammates using the same checkout.
+- A handoff report distinguishes **implemented**, **tested**, **committed locally**,
+  **pushed**, **under review** and **merged**. Never describe an unmerged branch as
+  integrated or an unverified change as done.
+
 ## Git hygiene
 
-- Inspect `git status` before staging. Do not `git add -A` blindly.
 - `.research/upstream/` and `.planning/` must remain untracked/ignored.
 - `.agents/skills/` is ignored; commit `skills-lock.json`, not the installed payload.
+- Ensure `.agents/worktrees/` and any transient `.agents/notes/` directory are
+  ignored before using them. Do not assume an ignore rule exists; check with
+  `git check-ignore`. Worktree-local ignored files do not travel with commits.
 - Do not add submodules or copy upstream repositories into the tree.
-- Keep commits small and logically organized if commits are authorized.
-- Do not create a remote, push, tag or publish without explicit authorization.
-- Do not rewrite history or delete pre-existing user files.
+- Do not rewrite history, delete pre-existing user files or discard unknown changes.
 
 ## Security constraints
 
@@ -237,17 +428,24 @@ A task is done when:
 - No prohibited assets, secrets or reference clones are tracked.
 - Limitations and unverified claims are stated honestly.
 - The task's acceptance criteria are demonstrably met.
+- For a write task, the team worked in the intended checkout; there are no
+  unintended edits in the parent or another task's worktree.
+- The lead reports the exact Git delivery status and outstanding review, push or
+  merge approvals. A task can be implementation-complete but integration-pending.
+- Operational plans/notes needed for recovery are preserved until safe handoff;
+  durable decisions are consolidated in versioned documentation.
 
 ## Understanding current project state
 
 Use these sources, in order:
 
-1. `git status --short --branch` and recent commits.
+1. The effective checkout root, branch, `git status --short --branch`, linked
+   worktrees and recent commits (never infer state from a different checkout).
 2. [docs/README.md](docs/README.md) and the relevant architecture/ADR pages.
-3. The active planning files, if the skill is installed.
+3. The active **worktree-local** planning files, if a planning skill is installed.
 4. The current [epic](docs/epics/EPIC-0002-megadrive-slice.md) and
    [milestones](docs/roadmap/milestones.md).
-5. `cargo test --workspace` output, not assumptions.
+5. `cargo test --workspace` output from the intended checkout, not assumptions.
 
 If sources conflict, prefer code and executed tests for what *is*, and ADRs/docs
 for what *should be*. Report the conflict rather than silently choosing one.
