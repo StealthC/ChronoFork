@@ -67,15 +67,24 @@ restarts without state loss.
 
 ## Stage 3 — TAS and deterministic replay
 
-- Canonical movie format with versioning and metadata.
-- Record/playback, frame advance, rewind, seek via checkpoints.
-- Rerecording and branch editing.
-- Multi-controller input.
-- Replay verification and divergence reporting.
-- Import/export adapters, initially documented rather than implemented.
+First increment implemented and independently verified on 2026-11-15 for the
+deterministic synthetic backend (M3-T4 PASS); see
+[ADR-0004](../adr/0004-tas-movie-format.md) and the [M3 acceptance
+plan](../quality/m3-tas-replay-acceptance.md).
 
-**Exit:** a recorded input sequence reproduces a state/trace exactly, and branches
-can be compared.
+- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie`).
+- [x] Record/playback of a per-tick input sequence on the deterministic synthetic
+      backend.
+- [x] Replay verification with exact first-divergence reporting.
+- [ ] Frame advance, rewind and seek via checkpoints.
+- [ ] Rerecording and branch editing.
+- [ ] Multi-controller, ports, analog and keyboard input.
+- [ ] Import/export adapters, documented only, not implemented.
+
+**Exit (first increment met):** a recorded input sequence reproduces every recorded
+tick and state hash exactly and reports the first divergence exactly, on the
+deterministic synthetic backend. Full Stage 3 exit also requires branch comparison,
+which remains deferred.
 
 ## Stage 4 — Deep Mega Drive debugging
 

@@ -115,11 +115,51 @@ The checked M2 items rest on the executed M2-A criteria, not on that NFR clause.
 
 ## M3 — TAS and replay
 
-- [ ] Versioned movie format.
-- [ ] Record/playback and frame advance.
-- [ ] Rerecord and seek via checkpoints.
-- [ ] Replay verification with first-divergence reporting.
-- [ ] Multi-controller input.
+Status: the first increment is implemented and independently verified (M3-T4 PASS,
+2026-11-15): the canonical v1 `.cfmovie` format ([ADR-0004](../adr/0004-tas-movie-format.md)),
+record/playback of a per-tick input sequence, replay verification with first-divergence
+reporting, restart and M2-seeded replay, and the `chronofork tas record/play/verify`
+CLI. The checked subitems below are backed by the executed [M3 acceptance
+plan](../quality/m3-tas-replay-acceptance.md) (M3-A1–A12) and the dated [quality
+gates](../quality/quality-gates.md) result. M3 is **not complete**: frame advance,
+rewind, seek, rerecord, branch editing, multi-controller/ports/analog/keyboard input,
+real-hardware input TAS, import/export adapters, checkpoint-reference movies and
+HTTP/MCP/GUI/daemon remain deferred and unchecked.
+
+- [x] Versioned canonical movie format.
+  - [x] Single-file `.cfmovie` v1 with magic, format and input-schema versions,
+        metadata, an embedded canonical checkpoint, ordered per-step records and a
+        trailing SHA-256 (ADR-0004 §2–§4).
+  - [x] One reader and one writer in `chronofork_sessions::movie`, built on the shared
+        codec and `Snapshot::to_bytes`/`from_bytes` only.
+  - [x] Bounded decode with typed rejection for versions, checksum, truncation,
+        trailing bytes, limits, metadata, tick/count inconsistency and a corrupt or
+        incompatible embedded checkpoint; no allocation before validation.
+- [x] Record/playback of a per-tick input sequence on the deterministic synthetic
+      backend.
+  - [x] Input schema v1: one backend-defined `u32` mask per step with the outcome tick.
+  - [x] Recording captures the source checkpoint and executes a separate imported
+        session; the source is never advanced or mutated.
+  - [x] Playback imports the embedded checkpoint into a fresh session and recomputes
+        every tick and state hash.
+- [x] Replay verification with first-divergence reporting.
+  - [x] Per-step expected `(tick, state hash)` records at 44 bytes per step.
+  - [x] The first mismatch reports the exact tick, input index, expected hash and
+        observed hash; no resynchronization or later-mismatch substitution.
+- [x] Restart replay and M2-seeded record.
+  - [x] A second process verifies a movie file with no shared state and no storage
+        root.
+  - [x] A record seeded by an M2 committed checkpoint verifies without that root.
+- [x] Minimal `chronofork tas record|play|verify` CLI.
+  - [x] Stable `key=value` blocks, stdout data only, stderr diagnostics, exit 0/1.
+  - [x] Process-level record/play/verify and divergence tests.
+- [ ] Frame advance, rewind and seek via checkpoints — deferred, not in this
+      increment.
+- [ ] Rerecord and branch editing — deferred; v1 carries only passive parent-movie
+      metadata and the CLI exposes no branch editing.
+- [ ] Multi-controller, ports, analog and keyboard input — deferred; v1 is one `u32`
+      mask per step and a future input schema version is required.
+- [ ] Real-hardware input TAS — deferred; the Mega Drive `step` ignores input.
 
 ## M4 — Debugging depth
 
@@ -158,8 +198,17 @@ The checked M2 items rest on the executed M2-A criteria, not on that NFR clause.
 
 ## Current milestone
 
-**M1 and M2 are complete. M3 (TAS and replay) is the next milestone and has not
-started.** M1's differential item is ticked on the current PASS 3/3 evidence: three
+**M1 and M2 are complete. M3 (TAS and replay) is the current milestone: its first
+increment is implemented and independently verified (M3-T4 PASS, 2026-11-15), and M3
+is not complete.** The canonical v1 `.cfmovie` format, per-tick record/playback on the
+deterministic synthetic backend, exact first-divergence reporting, restart and
+M2-seeded replay from the embedded checkpoint, and the `chronofork tas
+record/play/verify` CLI are done and backed by the executed [M3 acceptance
+plan](../quality/m3-tas-replay-acceptance.md) and the dated [quality
+gates](../quality/quality-gates.md) result. Frame advance, rewind, seek, rerecord,
+branch editing, multi-controller/ports/analog/keyboard input, real-hardware input TAS,
+import/export adapters, checkpoint-reference movies and HTTP/MCP/GUI/daemon remain
+deferred. M1's differential item is ticked on the current PASS 3/3 evidence: three
 synthetic ROMs match the pinned oracle's projected address streams, selected final
 state and negative controls, and the masked-ROM control at the CLI default quantum 64
 crosses two HBlank boundaries with the SR mask at 7 and no handler entry (negative

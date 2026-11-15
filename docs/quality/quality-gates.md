@@ -134,6 +134,49 @@ cooperative writer lock, long lock holds with large `--steps`, explicit stale-lo
 recovery, manual retention, no encryption/authentication or migration, and the
 publish-only `save_snapshot` convenience caveat for third-party callers.
 
+## 2026-11-15 — M3 TAS/replay, first increment (M3-T4 independent verification)
+
+Independent verifier PASS for the uncommitted M3 implementation tree. Tree under
+test: `bcd6c6fae7edd8014aec27e89689933e182c246a` plus the M3 working-tree paths
+(`crates/chronofork-sessions/src/movie.rs`, `crates/chronofork-sessions/tests/movie.rs`,
+`crates/chronofork-cli/tests/tas.rs`, the CLI/sessions exports and the Fase A contract
+docs). No commit or push. Every Cargo command used `CARGO_HOME=/tmp/t7-cargo`.
+
+Authoritative raw evidence (ignored paths): `.research/m3-tas/verification/`
+(`SUMMARY.txt`, `target-matrix.txt`, `A1-*.txt`–`A12-*.txt`, `logs/`, `targets/`,
+`cli/`, `demos/`, `probes/`, `MANIFEST.sha256`); pre-change baseline:
+`.research/m3-tas/baseline/`. The acceptance rows are executed and passed in that
+evidence; the Fase A [M3 acceptance plan](m3-tas-replay-acceptance.md) still carries
+`planned` status until the staged documentation-promotion task updates it. M3 is **not**
+complete: frame advance, rewind, seek, rerecord, branch editing, multi-controller/ports/
+analog input, real-hardware input TAS and HTTP/MCP/GUI/daemon remain deferred.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 31 binaries, 342 passed, 0 failed, 0 ignored |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed" |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 runs, 0-byte stderr, byte-identical to the M3-T0 baseline |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 runs, 0-byte stderr, byte-identical to the M3-T0 baseline |
+| Whitespace | `git diff --check` | exit 0 |
+| M2 regression | the M2 target matrix plus `cargo test -p chronofork-cli --test session_storage` | every target exit 0; counts equal the M3-T0 baseline |
+| State probe | the M3-T0 `session save/load` probe on two independent roots | checkpoint SHA-256 `120e83d7…ca1e` and `tick=7`/`state_hash=4666a724…9ed5` identical to baseline |
+
+M3-A1–A12 executed with no failed criterion: movie round-trip/canonical bytes
+(T0-identical across time, roots and debug/release), bounded decode and the typed
+rejection matrix, every-tick record/replay, exact first divergence (tick, input index,
+expected, observed), restart and M2-seeded replay after deleting the root, source
+non-mutation/isolation, the `tas record|play|verify` process contract, no host time in
+canonical bytes, M2 regression/demo/gate equality, scope honesty, branch metadata and
+the single-codec/predicate/no-dependency structural audit. Non-blocking observations are
+recorded in the evidence SUMMARY (truncation taxonomy under checksum-first decode and the
+pending documentation promotion); no test, lint or assertion was weakened. Full details
+and hashes are in the ignored artifacts above; this dated block is a gate-result
+snapshot, and the per-target counts stay in the evidence.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.

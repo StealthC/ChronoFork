@@ -21,7 +21,9 @@ This is intentionally not a full controller model. Future versions need:
 - multiple ports and controller types;
 - analog axes and device-specific peripherals;
 - input scheduled by emulated time, not host arrival time;
-- a versioned input schema shared with TAS records.
+- a versioned input schema shared with TAS records. [ADR-0004](../adr/0004-tas-movie-format.md)
+  defines v1 movies as one backend-defined `u32` mask per step; multi-port, analog and
+  keyboard input remain future schema versions.
 
 ## State hashing
 
@@ -50,7 +52,10 @@ Current evidence (synthetic backend only):
   equal final hashes;
 - three forks from one checkpoint diverge under different inputs;
 - restoring a checkpoint and replaying the same inputs reproduces the branch hash;
-- a source session is unchanged by branch execution.
+- a source session is unchanged by branch execution;
+- a recorded v1 movie replays every recorded tick and state hash and reports the first
+  divergence exactly (M3-A3 and M3-A4), and identical recordings are byte-identical
+  across time, roots and debug/release (M3-A1 and M3-A8).
 
 These tests do **not** establish determinism for a real Mega Drive backend. That
 requires differential tests against a trusted reference, including floating-point
@@ -62,8 +67,28 @@ A replay is a checkpoint plus an ordered input sequence keyed by tick. The host
 does not store a parallel "expected state" as truth; it recomputes and compares
 state hashes. Divergence is reported at the first mismatching tick.
 
-No TAS movie format exists yet. The bootstrap proves the primitives a movie format
-will use, not the format itself.
+**Implemented v1 contract (deterministic synthetic backend, independently verified
+2026-11-15).** [ADR-0004](../adr/0004-tas-movie-format.md) fixes the canonical
+single-file `.cfmovie` format: the exact canonical `Snapshot::to_bytes()` bytes are
+embedded as the initial checkpoint, followed by the movie metadata and ordered per-step
+records of `(outcome tick, input mask, expected state hash)`. Replay imports the
+embedded checkpoint into a fresh session through the existing snapshot path, applies
+the recorded inputs, recomputes state, and reports the first divergence as the tick,
+input index, expected hash and observed hash. Recording captures the source checkpoint
+and executes a separate imported session; the source session is never advanced or
+mutated. Host timestamps are absent from canonical movie bytes.
+
+The v1 format, recorder, player, first-divergence report and `chronofork tas
+record/play/verify` CLI are implemented and independently verified for the
+deterministic synthetic backend (M3-A1–A12, M3-T4 PASS 2026-11-15; see the [M3
+acceptance plan](../quality/m3-tas-replay-acceptance.md)). The byte layout, limits,
+compatibility matrix and deferred list live in [ADR-0004](../adr/0004-tas-movie-format.md);
+this document does not restate them. A recording can also be seeded by an M2 committed
+checkpoint, and the resulting movie verifies after the storage root is removed.
+Deferred: checkpoint-reference movies, frame advance, rewind, seek, rerecord, branch
+editing, multi-controller/ports/analog/keyboard input, real-hardware input TAS (the
+Mega Drive `step` ignores input), import/export adapters, compression/encryption and
+HTTP/MCP/GUI/daemon.
 
 ## Snapshot format
 
@@ -113,6 +138,11 @@ best-effort parse.
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
   historical query or breakpoint surface.
+- TAS movie v1 is implemented and verified for the deterministic synthetic backend
+  only. Deferred: checkpoint-reference movies, frame advance, rewind, seek, rerecord,
+  branch editing, multi-controller/ports/analog/keyboard input, real-hardware input TAS
+  (the Mega Drive `step` ignores input), import/export adapters, compression/encryption,
+  resynchronization/partial replay and HTTP/MCP/GUI/daemon.
 - No frame pacing, rewind or seek.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive

@@ -44,6 +44,18 @@ owner-checked recovery; retention is manual; there is no encryption, authenticat
 format migration; and the public convenience `save_snapshot` remains publish-only for
 third-party callers while the CLI uses the lock-aware workflow.
 
+**M3's first increment (TAS and deterministic replay) is implemented and independently
+verified (M3-T4 PASS, 2026-11-15).** It adds the canonical single-file v1 `.cfmovie`
+format, record/playback of a per-tick input sequence on the deterministic synthetic
+backend, exact first-divergence reporting, restart and M2-seeded replay from the
+embedded checkpoint, and the `chronofork tas record/play/verify` CLI. M3 is **not
+complete**: frame advance, rewind, seek, rerecord, branch editing, multi-controller,
+ports, analog and keyboard input, real-hardware input TAS, import/export adapters,
+checkpoint-reference movies, HTTP/MCP/GUI and the daemon remain deferred. The executed
+[M3 acceptance plan](quality/m3-tas-replay-acceptance.md), [ADR-0004](adr/0004-tas-movie-format.md)
+and the dated [quality gates](quality/quality-gates.md) result record the contract,
+evidence and residual limits; M2 remains the previous completed milestone.
+
 ## Start here
 
 | Document | Purpose |
@@ -66,6 +78,7 @@ third-party callers while the CLI uses the lock-aware workflow.
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
 | [M2 durable-sessions acceptance](quality/m2-durable-sessions-acceptance.md) | Executed acceptance criteria, results and residual limits for durable sessions |
+| [M3 TAS/replay acceptance](quality/m3-tas-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for the v1 movie, record/replay, first divergence, restart and CLI |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -75,6 +88,7 @@ third-party callers while the CLI uses the lock-aware workflow.
 | [Environment](development/environment.md) | Verified toolchain and limitations |
 | [Getting started](development/getting-started.md) | Build, test and demo instructions |
 | [ADR-0003: durable session storage](adr/0003-durable-session-storage.md) | Accepted durable-storage, metadata and ownership design; implemented and verified in Fase B |
+| [ADR-0004: TAS movie format](adr/0004-tas-movie-format.md) | Accepted v1 canonical `.cfmovie`, embedded checkpoint, input schema and verification design; implemented and verified for the synthetic backend, deferred scope unchanged |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

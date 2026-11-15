@@ -18,6 +18,7 @@ documentation, not meeting notes.
 | [0001](0001-rust-workspace.md) | Rust workspace and crate boundaries | Accepted |
 | [0002](0002-backend-boundaries.md) | Backend strategy and boundaries | Accepted |
 | [0003](0003-durable-session-storage.md) | Durable session storage, ownership and metadata | Accepted |
+| [0004](0004-tas-movie-format.md) | TAS movie format and deterministic replay | Accepted; implemented and verified for the synthetic backend |
 
 ## Template
 
