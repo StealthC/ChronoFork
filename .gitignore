@@ -123,5 +123,7 @@ criterion/
 *.lnk
 desktop.ini
 
-# Harness/skill installation metadata (local only)
+# Agent skill installs (vercel-labs skills CLI). The lockfile at the repository
+# root is tracked; the installed payload below is disposable and restored with
+# `npx skills install --frozen-lockfile`.
 .agents/

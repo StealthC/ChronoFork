@@ -102,6 +102,7 @@ crates/
   chronofork-cli/          minimal demo CLI
 docs/                      official documentation
 scripts/check.sh           local quality gate
+skills-lock.json           pinned agent-skill lockfile (optional tooling)
 tests/                     reserved for cross-crate fixtures (none yet)
 ```
 
@@ -109,6 +110,8 @@ Ignored directories:
 
 - `.research/upstream/` — reference clones; never commit.
 - `.planning/` — operational planning memory; never commit.
+- `.agents/` — installed agent skills; never commit. Restore the payload from the
+  tracked `skills-lock.json` with `npx skills install --frozen-lockfile`.
 - `target/` — build output.
 
 ## What not to do

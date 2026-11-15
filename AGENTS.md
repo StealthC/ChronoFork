@@ -37,6 +37,7 @@ backend as a complete emulator or claim game compatibility.
 | `docs/epics/` | EPIC-0001 foundation and EPIC-0002 Mega Drive slice |
 | `docs/research/` | Evidence-backed upstream research |
 | `scripts/check.sh` | Local quality gate |
+| `skills-lock.json` | Pinned agent-skill lockfile; `.agents/skills/` is ignored and restored from it |
 | `.planning/` | Ignored operational planning memory |
 | `.research/upstream/` | Ignored upstream clones; never commit |
 
@@ -208,6 +209,7 @@ run, state exactly why.
 
 - Inspect `git status` before staging. Do not `git add -A` blindly.
 - `.research/upstream/` and `.planning/` must remain untracked/ignored.
+- `.agents/skills/` is ignored; commit `skills-lock.json`, not the installed payload.
 - Do not add submodules or copy upstream repositories into the tree.
 - Keep commits small and logically organized if commits are authorized.
 - Do not create a remote, push, tag or publish without explicit authorization.
