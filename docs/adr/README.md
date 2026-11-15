@@ -20,6 +20,7 @@ documentation, not meeting notes.
 | [0003](0003-durable-session-storage.md) | Durable session storage, ownership and metadata | Accepted |
 | [0004](0004-tas-movie-format.md) | TAS movie format and deterministic replay | Accepted; implemented and verified for the synthetic backend |
 | [0005](0005-partial-replay-and-branch-comparison.md) | Partial replay, seek and branch comparison | Accepted; implemented and independently verified for the synthetic backend |
+| [0006](0006-movie-format-v2-anchors-and-multi-device-input.md) | Movie format v2 — checkpoint anchors and multi-device input | Accepted (owner-approved 2026-11-15); implemented and independently verified for the synthetic backend (t7 PASS) |
 
 ## Template
 

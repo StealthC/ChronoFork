@@ -67,14 +67,20 @@ restarts without state loss.
 
 ## Stage 3 — TAS and deterministic replay
 
-First and second increments implemented and independently verified on 2026-11-15 for
-the deterministic synthetic backend (M3-T4 and M3-T5 PASS); see
-[ADR-0004](../adr/0004-tas-movie-format.md),
-[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md) and the [M3 acceptance
-plan](../quality/m3-tas-replay-acceptance.md) plus the [increment-2 acceptance
-plan](../quality/m3-partial-replay-acceptance.md).
+First, second and third increments implemented and independently verified on 2026-11-15
+for the deterministic synthetic backend (M3-T4, M3-T5 and the t7 format-v2 verification
+PASS); see [ADR-0004](../adr/0004-tas-movie-format.md),
+[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md),
+[ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) and the [M3
+acceptance plan](../quality/m3-tas-replay-acceptance.md), the [increment-2 acceptance
+plan](../quality/m3-partial-replay-acceptance.md) and the [format-v2 acceptance
+plan](../quality/m3-format-v2-acceptance.md). The v2 increment adds the `CFMOVIE2`
+checkpoint-anchor container, nearest-anchor seek and schema-2 multi-device input. M3 is
+not complete: rewind cache/interactive stepping, rerecord/branch editing and
+real-hardware input TAS remain deferred.
 
-- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie`).
+- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie` and v2
+      `CFMOVIE2`).
 - [x] Record/playback of a per-tick input sequence on the deterministic synthetic
       backend.
 - [x] Replay verification with exact first-divergence reporting.
@@ -83,19 +89,25 @@ plan](../quality/m3-partial-replay-acceptance.md).
       carried state).
 - [x] Branch comparison of recorded `(tick, state hash)` records with first-divergence,
       length and embedded-checkpoint identity reporting (no re-simulation).
-- [ ] Periodic anchors/checkpoints and seek via checkpoints (movie format v2).
+- [x] Periodic anchors/checkpoints and seek via checkpoints (movie format v2) —
+      implemented and independently verified (M3-A18–A21/A24; ADR-0006, t7 PASS).
 - [ ] In-process rewind buffer/state cache and interactive stepping.
 - [ ] Rerecording and branch editing.
-- [ ] Multi-controller, ports, analog and keyboard input.
+- [x] Multi-controller, ports, analog and keyboard input — schema-2 multi-device frames
+      (four digital ports, four analog axes and a keyboard bitmap) are implemented and
+      independently verified for the deterministic synthetic backend (M3-A22/A24; ADR-0006,
+      t7 PASS). Real-hardware controller input remains absent; the Mega Drive `step`
+      still ignores input.
 - [ ] Real-hardware input TAS (the Mega Drive `step` ignores input).
 - [ ] Import/export adapters, documented only, not implemented.
 
-**Exit (first and second increments met):** a recorded input sequence reproduces every
+**Exit (first three increments met):** a recorded input sequence reproduces every
 recorded tick and state hash exactly, reports the first divergence exactly, can be
-replayed/seeked over an exact tick window and compared against another recording, on the
-deterministic synthetic backend. Full Stage 3 exit also requires checkpoint-anchored
-seek/format v2, rerecord and branch editing, multi-controller and real-hardware input,
-which remain deferred.
+replayed/seeked over an exact tick window or from a checkpoint anchor and compared
+against another recording, on the deterministic synthetic backend. Full Stage 3 exit also
+requires rewind caching/interactive stepping, rerecord and branch editing, and
+real-hardware input TAS, which remain deferred. The schema-2 multi-device model is
+synthetic-backend only and does not satisfy real-hardware controller input.
 
 ## Stage 4 — Deep Mega Drive debugging
 

@@ -184,6 +184,44 @@ impl SyntheticBackend {
         Ok(value)
     }
 
+    /// Applies a schema-2 input frame to the accumulator and RAM.
+    ///
+    /// Port 0 is the v1 effect and always runs: its low byte is added to the
+    /// accumulator and the low byte of the result is stored at `ram[0x10]`.
+    /// Non-neutral ports 1 to 3 then add their low byte in ascending order and
+    /// store the low byte of the result at `ram[0x10 + port]`. Non-neutral axes
+    /// add their two's-complement 16-bit value in ascending order and store the
+    /// low byte of the result at `ram[0x14 + axis]`. A non-neutral keyboard
+    /// bitmap adds its eight bytes least-significant first and stores each byte
+    /// at `ram[0x18 + index]`.
+    ///
+    /// A neutral extra field neither adds to the accumulator nor writes RAM, so
+    /// a v1 frame executes exactly the pre-schema-2 path and keeps its state
+    /// hash. The work is constant and ordered, with no host time or randomness.
+    fn apply_input(&mut self, input: InputFrame) {
+        let ports = input.ports();
+        self.acc = self.acc.wrapping_add(u32::from((ports[0] & 0xff) as u8));
+        self.ram[0x10] = (self.acc & 0xff) as u8;
+        for (index, port) in ports.iter().enumerate().skip(1) {
+            if *port != 0 {
+                self.acc = self.acc.wrapping_add(u32::from((*port & 0xff) as u8));
+                self.ram[0x10 + index] = (self.acc & 0xff) as u8;
+            }
+        }
+        for (index, axis) in input.axes().iter().enumerate() {
+            if *axis != 0 {
+                self.acc = self.acc.wrapping_add(u32::from(*axis as u16));
+                self.ram[0x14 + index] = (self.acc & 0xff) as u8;
+            }
+        }
+        if input.keys() != 0 {
+            for (index, byte) in input.keys().to_le_bytes().iter().enumerate() {
+                self.acc = self.acc.wrapping_add(u32::from(*byte));
+                self.ram[0x18 + index] = *byte;
+            }
+        }
+    }
+
     fn apply_snapshot_payload(
         &mut self,
         payload: &[u8],
@@ -294,13 +332,7 @@ impl Backend for SyntheticBackend {
                 let high = self.fetch_u8()?;
                 self.pc = u16::from_le_bytes([low, high]);
             }
-            0x09 => {
-                // `buttons()` is a `u32` mask; `APPLY_INPUT` consumes its low
-                // byte, so the extraction is total and cannot fail.
-                let input_byte = (input.buttons() & 0xff).to_le_bytes()[0];
-                self.acc = self.acc.wrapping_add(u32::from(input_byte));
-                self.ram[0x10] = (self.acc & 0xff).to_le_bytes()[0];
-            }
+            0x09 => self.apply_input(input),
             0xff => {
                 self.halted = true;
             }
@@ -433,11 +465,20 @@ fn payload_error(error: CodecError) -> BackendError {
 #[cfg(test)]
 mod tests {
     use chronofork_backend_api::{BackendFactory, BackendSnapshot};
-    use chronofork_core::{InputFrame, Tick};
+    use chronofork_core::{InputFrame, Tick, hash_bytes};
 
     use super::{
         DEFAULT_PROGRAM, PAYLOAD_FORMAT_VERSION, SyntheticBackendFactory, SyntheticProgram,
     };
+
+    /// Program that executes one `APPLY_INPUT` and then halts.
+    const INPUT_ONLY_PROGRAM: &[u8] = &[0x09, 0xff];
+
+    fn input_only_factory() -> SyntheticBackendFactory {
+        SyntheticBackendFactory::new(
+            SyntheticProgram::new(INPUT_ONLY_PROGRAM.to_vec()).expect("input program"),
+        )
+    }
 
     #[test]
     fn identical_machines_converge_on_identical_inputs() {
@@ -489,6 +530,166 @@ mod tests {
             low.inspect().expect("inspect").state_hash,
             high.inspect().expect("inspect").state_hash
         );
+    }
+
+    #[test]
+    fn v1_frames_keep_the_pre_schema2_state_hash() {
+        // Golden value computed independently from the documented canonical
+        // state body before the schema-2 extension: pc=1, acc=2, tick=1,
+        // steps=1, halted=0, ram[0x10]=2, all other RAM bytes zero.
+        const GOLDEN: &str = "9daa3442b67f7770adf027fca2cc26b14182c985aa47db9b67b54ceb836791f3";
+        let factory = input_only_factory();
+        let mut v1 = factory.create().expect("v1 machine");
+        let mut schema2 = factory.create().expect("schema2 machine");
+        let v1_outcome = v1.step(InputFrame::new(2)).expect("v1 step");
+        let schema2_outcome = schema2
+            .step(InputFrame::with_devices([2, 0, 0, 0], [0; 4], 0))
+            .expect("schema2 step");
+        assert_eq!(v1_outcome, schema2_outcome);
+        assert_eq!(v1_outcome.state_hash.to_hex(), GOLDEN);
+        assert_eq!(
+            v1.snapshot().expect("v1 snapshot").payload(),
+            schema2.snapshot().expect("schema2 snapshot").payload()
+        );
+    }
+
+    #[test]
+    fn v1_mask_equivalence_holds_for_every_low_byte() {
+        let factory = input_only_factory();
+        for mask in 0..=u8::MAX {
+            let mut v1 = factory.create().expect("v1 machine");
+            let mut schema2 = factory.create().expect("schema2 machine");
+            let v1_outcome = v1.step(InputFrame::new(u32::from(mask))).expect("v1 step");
+            let schema2_outcome = schema2
+                .step(InputFrame::with_devices(
+                    [u32::from(mask), 0, 0, 0],
+                    [0; 4],
+                    0,
+                ))
+                .expect("schema2 step");
+            assert_eq!(v1_outcome, schema2_outcome, "mask {mask:#04x}");
+            assert_eq!(
+                v1.snapshot().expect("v1 snapshot").payload(),
+                schema2.snapshot().expect("schema2 snapshot").payload(),
+                "mask {mask:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema2_ports_are_consumed_in_ascending_order() {
+        let factory = input_only_factory();
+        let mut machine = factory.create().expect("machine");
+        let input = InputFrame::with_devices([0x12, 0x34, 0x56, 0x78], [0; 4], 0);
+        machine.step(input).expect("step");
+        assert_eq!(
+            machine.read_memory(0x10, 0x10).expect("memory"),
+            vec![0x12, 0x46, 0x9c, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,]
+        );
+        assert_eq!(machine.inspect().expect("inspect").registers["acc"], 0x114);
+    }
+
+    #[test]
+    fn schema2_axes_are_consumed_as_twos_complement_values() {
+        let factory = input_only_factory();
+        let mut machine = factory.create().expect("machine");
+        let input = InputFrame::with_devices([0; 4], [1, -1, i16::MIN, i16::MAX], 0);
+        machine.step(input).expect("step");
+        assert_eq!(
+            machine.read_memory(0x14, 4).expect("axes"),
+            vec![1, 0, 0, 0xff]
+        );
+        assert_eq!(
+            machine.inspect().expect("inspect").registers["acc"],
+            131_071
+        );
+    }
+
+    #[test]
+    fn schema2_keyboard_bytes_are_consumed_least_significant_first() {
+        let factory = input_only_factory();
+        let mut machine = factory.create().expect("machine");
+        let keys = 0x0807_0605_0403_0201_u64;
+        machine
+            .step(InputFrame::with_devices([0; 4], [0; 4], keys))
+            .expect("step");
+        assert_eq!(
+            machine.read_memory(0x18, 8).expect("keys"),
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(machine.inspect().expect("inspect").registers["acc"], 36);
+    }
+
+    #[test]
+    fn neutral_device_fields_have_no_state_effect() {
+        let factory = SyntheticBackendFactory::default();
+        let mut v1 = factory.create().expect("v1 machine");
+        let mut neutral_extras = factory.create().expect("neutral machine");
+        for mask in [0, 1, 3, 0x80] {
+            let v1_outcome = v1.step(InputFrame::new(mask)).expect("v1 step");
+            let neutral_outcome = neutral_extras
+                .step(InputFrame::with_devices([mask, 0, 0, 0], [0; 4], 0))
+                .expect("neutral step");
+            assert_eq!(v1_outcome, neutral_outcome);
+        }
+        assert_eq!(
+            v1.snapshot().expect("v1 snapshot").payload(),
+            neutral_extras
+                .snapshot()
+                .expect("neutral snapshot")
+                .payload()
+        );
+    }
+
+    #[test]
+    fn multi_device_sequences_replay_deterministically() {
+        let factory = SyntheticBackendFactory::default();
+        let mut left = factory.create().expect("left machine");
+        let mut right = factory.create().expect("right machine");
+        let frames = [
+            InputFrame::with_devices([1, 2, 3, 4], [1, -1, 2, -2], 0x0102_0304_0506_0708),
+            InputFrame::with_devices([0xff, 0, 0, 0x8000_0000], [i16::MIN, 0, 0, i16::MAX], 1),
+        ];
+        for _ in 0..8 {
+            for frame in frames {
+                let left_outcome = left.step(frame).expect("left step");
+                let right_outcome = right.step(frame).expect("right step");
+                assert_eq!(left_outcome, right_outcome);
+                assert_eq!(
+                    left.snapshot().expect("left snapshot").payload(),
+                    right.snapshot().expect("right snapshot").payload()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn schema2_consumption_keeps_the_canonical_payload_layout() {
+        // The state body stays exactly pc, acc, tick, steps, halted and ram.
+        const BODY_LEN: usize = 2 + 4 + 8 + 8 + 1 + 256;
+        let factory = SyntheticBackendFactory::default();
+        assert_eq!(PAYLOAD_FORMAT_VERSION, 1);
+        let mut v1 = factory.create().expect("v1 machine");
+        let mut multi = factory.create().expect("multi machine");
+        v1.step(InputFrame::new(2)).expect("v1 step");
+        multi
+            .step(InputFrame::with_devices([2, 3, 4, 5], [6, 7, 8, 9], 0x0a0b))
+            .expect("multi step");
+        for machine in [&v1, &multi] {
+            let snapshot = machine.snapshot().expect("snapshot");
+            let payload = snapshot.payload();
+            assert_eq!(payload.len(), super::PAYLOAD_MAGIC.len() + 2 + BODY_LEN);
+            assert_eq!(
+                &payload[..super::PAYLOAD_MAGIC.len()],
+                &super::PAYLOAD_MAGIC
+            );
+            let version = &payload[super::PAYLOAD_MAGIC.len()..super::PAYLOAD_MAGIC.len() + 2];
+            assert_eq!(
+                u16::from_le_bytes([version[0], version[1]]),
+                PAYLOAD_FORMAT_VERSION
+            );
+            assert_eq!(snapshot.config_hash(), hash_bytes(DEFAULT_PROGRAM));
+        }
     }
 
     #[test]

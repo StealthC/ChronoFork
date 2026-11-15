@@ -122,6 +122,8 @@ fn print_usage() {
     println!("  chronofork session list --root <DIR> [--session <KEY>]");
     println!("  chronofork session delete --root <DIR> --session <KEY> [--snapshot <KEY>]");
     println!("  chronofork tas record --movie <FILE> [--steps <N>] [--input <U32>]");
+    println!("                        [--ports <P1,P2,P3>] [--axes <A0,A1,A2,A3>]");
+    println!("                        [--keys <U64>] [--anchor-interval <N>]");
     println!("                        [--movie-id <U64>] [--name <NAME>]");
     println!("                        [--root <DIR> [--session <KEY> [--snapshot <KEY>]]]");
     println!("  chronofork tas play --movie <FILE> [--from <TICK>] [--until <TICK>]");
@@ -136,8 +138,10 @@ fn print_usage() {
     println!("to stderr.");
     println!();
     println!("TAS movies record one synthetic-backend input sequence and embed the canonical");
-    println!("checkpoint; `tas play/verify` replay an exact tick window from that checkpoint by");
-    println!("deterministic re-simulation and `tas compare` diffs two recorded branches.");
+    println!("checkpoint; `tas play/verify` replay an exact tick window from that checkpoint or");
+    println!("from the nearest embedded anchor by deterministic re-simulation, and `tas compare`");
+    println!("diffs two recorded branches. Multi-device schema-2 input and anchor intervals are");
+    println!("format v2, selected only by the v2 flags; plain records stay format v1.");
     println!("`chronofork tas --help` documents the flags, output blocks and the features that");
     println!("are deliberately not implemented.");
     println!();

@@ -16,14 +16,30 @@ The bootstrap advances one backend-defined quantum per `step`. `InputFrame` is a
 compact backend-defined button mask. The synthetic backend consumes it only on its
 `APPLY_INPUT` instruction, which makes input timing explicit and testable.
 
-This is intentionally not a full controller model. Future versions need:
+This is intentionally not a full controller model. The v1 model is one backend-defined
+mask per step; schema 2 adds ports, analog axes and a keyboard bitmap for the synthetic
+backend (below). Remaining future work:
 
-- multiple ports and controller types;
-- analog axes and device-specific peripherals;
-- input scheduled by emulated time, not host arrival time;
+- device-specific peripherals and real controller hardware;
+- input scheduled by emulated time or as per-step/scripted events, not host arrival time;
 - a versioned input schema shared with TAS records. [ADR-0004](../adr/0004-tas-movie-format.md)
-  defines v1 movies as one backend-defined `u32` mask per step; multi-port, analog and
-  keyboard input remain future schema versions.
+  defines v1 movies as one backend-defined `u32` mask per step; [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md)
+  defines the implemented schema 2 for the deterministic synthetic backend.
+
+**Implemented and verified schema 2 (t7 PASS, 2026-11-15).**
+[ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) adds a bounded
+`InputFrame` with four 32-bit digital ports (port 0 keeps the v1 mask), four signed 16-bit
+analog axes and a 64-bit keyboard bitmap, one frame per step. The v1 constructor
+`new`, `buttons()` accessor and neutral behavior are preserved; `with_devices`,
+`ports()`, `axes()` and `keys()` expose the multi-device fields. The synthetic backend
+consumes non-neutral fields only on its existing `APPLY_INPUT` instruction in fixed
+ascending order (ports, axes, keyboard bytes), so v1 frames keep their exact state hashes
+(a golden pre-schema-2 hash and 0..=255 mask equivalence are verified). The Mega Drive
+slice still ignores input and is not an input-TAS backend; schema 2 is a synthetic-backend
+input model, not real controller support. Evidence: M3-A22 in the [format-v2 acceptance
+plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
+`.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
+result.
 
 ## State hashing
 
@@ -55,7 +71,10 @@ Current evidence (synthetic backend only):
 - a source session is unchanged by branch execution;
 - a recorded v1 movie replays every recorded tick and state hash and reports the first
   divergence exactly (M3-A3 and M3-A4), and identical recordings are byte-identical
-  across time, roots and debug/release (M3-A1 and M3-A8).
+  across time, roots and debug/release (M3-A1 and M3-A8);
+- a v2 movie round-trips its metadata, embedded checkpoint, ordered anchors and schema-2
+  step records deterministically, and independent v2 recordings and anchored replays are
+  byte-identical across separate processes and debug/release (M3-A18, M3-A25).
 
 These tests do **not** establish determinism for a real Mega Drive backend. That
 requires differential tests against a trusted reference, including floating-point
@@ -108,11 +127,30 @@ artifacts under the ignored `.research/m3-tas-inc2/verification/` path, and the 
 [quality gates](../quality/quality-gates.md) result. [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)
 is the canonical contract.
 
-Deferred: checkpoint anchors/periodic checkpoints and seek via checkpoints (a future
-format v2), an in-process rewind buffer/state cache and interactive stepping,
-checkpoint-reference movies, rerecord and branch editing, multi-controller/ports/analog/
-keyboard input, real-hardware input TAS (the Mega Drive `step` ignores input),
-import/export adapters, compression/encryption and HTTP/MCP/GUI/daemon.
+Deferred: an in-process rewind buffer/state cache and interactive stepping,
+checkpoint-reference movies, rerecord and branch editing, real-hardware input TAS (the
+Mega Drive `step` ignores input), import/export adapters, compression/encryption and
+HTTP/MCP/GUI/daemon.
+
+**Implemented and verified v2 anchors and anchored seek (t7 PASS, 2026-11-15).**
+[ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) adds the
+`CFMOVIE2` container: the initial canonical checkpoint, an ordered table of canonical
+checkpoint anchors taken after recorded steps, 72-byte schema-2 step records and a
+trailing SHA-256. Each anchor is parsed only through `Snapshot::from_bytes` and bound at
+decode/construction to its recorded step's outcome tick and expected state hash. A ranged
+replay over a v2 movie selects the nearest anchor at or before the requested prefix end,
+imports that anchor through `SessionManager::create_session_from_snapshot_bytes`, and
+executes only the later steps up to `until`. It reports `anchored=1`, `anchor_step`,
+`anchor_tick` and `prefix_verified=0` when an anchor is used; movies without anchors (all
+v1 and anchor-less v2 movies) keep the linear path. The deliberate delta is that an
+anchored ranged replay does not re-execute or re-verify the pre-anchor prefix; full-range
+`verify` still executes every step and remains the complete verification path. The v2
+limits are 2,000,000 steps, 65,536 anchors and 48 MiB cumulative anchor snapshots inside
+the existing 256 MiB file bound. Evidence: M3-A18–A21 and M3-A24–A25 in the [format-v2
+acceptance plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
+`.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
+result. M3 remains incomplete: rewind cache/interactive stepping, rerecord/branch editing
+and real-hardware input TAS are still deferred.
 
 ## Snapshot format
 
@@ -162,21 +200,25 @@ best-effort parse.
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
   historical query or breakpoint surface.
-- TAS movie v1 is implemented and verified for the deterministic synthetic backend only.
+- TAS movie v1 and v2 are implemented and verified for the deterministic synthetic backend only.
   Ranged replay/seek, forward single-tick advance and rewind by deterministic linear
   re-simulation from the embedded checkpoint (O(n), typed range bounds) and branch
   comparison of recorded `(tick, state hash)` records (no re-simulation) are implemented
-  and verified (M3-A13–A17, t5 PASS 2026-11-15). Deferred: checkpoint anchors/periodic
-  checkpoints and seek via checkpoints (format v2), an in-process rewind buffer/state cache
-  and interactive stepping, checkpoint-reference movies, rerecord/branch editing,
-  multi-controller/ports/analog/keyboard input, real-hardware input TAS (the Mega Drive
-  `step` ignores input), import/export adapters, compression/encryption and
+  and verified (M3-A13–A17, t5 PASS 2026-11-15). Movie format v2 checkpoint anchors,
+  anchor-based seek and schema-2 multi-device input are implemented and independently
+  verified for the deterministic synthetic backend (M3-A18–A27, t7 PASS 2026-11-15;
+  [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
+  [format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md)). Deferred and
+  unimplemented: an in-process rewind buffer/state cache and interactive stepping,
+  checkpoint-reference movies, rerecord/branch editing, real-hardware input TAS (the Mega
+  Drive `step` ignores input), import/export adapters, compression/encryption and
   HTTP/MCP/GUI/daemon.
 - Branch comparison is a recorded-expectation diff, not a verification or determinism
   proof; it cannot detect a build whose emulation changed, and metadata is never an
   equality field.
-- No frame pacing; no in-process rewind/state cache and no O(1) or anchor-based seek (seek
-  is bounded re-simulation from the embedded checkpoint).
+- No frame pacing and no in-process rewind/state cache. Seek is bounded re-simulation from
+  the embedded checkpoint or, when a v2 anchor qualifies, from that anchor; no O(1)
+  random-access seek exists.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
   slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend

@@ -707,10 +707,23 @@ fn help_documents_tas_and_existing_commands_stay_intact() -> TestResult {
         "--root",
         "--from <TICK>",
         "--until <TICK>",
+        "--ports <P1,P2,P3>",
+        "--axes <A0,A1,A2,A3>",
+        "--keys <U64>",
+        "--anchor-interval <N>",
+        "format v2",
+        "prefix_verified=0",
+        "anchors=<count>",
+        "2000000",
+        "65536",
+        "rewind",
+        "rerecord",
+        "real-hardware input TAS",
+        "not implemented",
+        "not complete",
         "re-simulation",
         "record=comparison",
         "max 4194304",
-        "not implemented",
     ] {
         assert!(
             tas_help.contains(needle),
@@ -1499,5 +1512,777 @@ fn compare_argument_errors_are_typed() -> TestResult {
         ],
         "`--movie` was given more than once",
     )?;
+    Ok(())
+}
+
+#[test]
+fn multi_device_v2_round_trip() -> TestResult {
+    let dir = temp_dir("v2-multi-device")?;
+    let movie_path = dir.join("devices.cfmovie");
+    let record_stdout = ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "5",
+        "--input",
+        "1",
+        "--ports",
+        "2,3,4",
+        "--axes",
+        "-1,0,32767,-32768",
+        "--keys",
+        "18446744073709551615",
+        "--name",
+        "devices",
+    ])?;
+    let record = block(&record_stdout)?;
+    assert_eq!(field(&record, "record")?, "movie");
+    assert_eq!(field(&record, "movie_version")?, "2");
+    assert_eq!(field(&record, "input_schema")?, "2");
+    assert_eq!(field(&record, "name")?, "devices");
+    assert_eq!(field(&record, "steps")?, "5");
+    assert!(
+        !record.contains_key("anchors"),
+        "a v2 movie without anchors must not gain an anchors line: {record:?}"
+    );
+    assert!(
+        !record_stdout.contains(path_str(&dir)?),
+        "valid stdout must not contain host paths:\n{record_stdout}"
+    );
+
+    let bytes = std::fs::read(&movie_path)?;
+    assert!(
+        bytes.starts_with(b"CFMOVIE2"),
+        "a multi-device record must write the v2 magic"
+    );
+    assert_eq!(
+        field(&record, "movie_sha256")?,
+        hash_bytes(&bytes).to_string()
+    );
+    let movie = Movie::from_bytes(&bytes)?;
+    assert_eq!(movie.format_version(), 2);
+    assert_eq!(movie.input_schema_version(), 2);
+    assert!(movie.anchors().is_empty());
+    let first = movie
+        .steps()
+        .first()
+        .ok_or_else(|| "recorded movie must have steps".to_owned())?;
+    let frame = first.input();
+    assert_eq!(frame.ports(), [1, 2, 3, 4]);
+    assert_eq!(frame.axes(), [-1, 0, 32767, -32768]);
+    assert_eq!(frame.keys(), u64::MAX);
+
+    // Independent processes replay and verify the multi-device movie from its
+    // embedded checkpoint and reproduce the recorded final state hash.
+    let final_hash = field(&record, "final_state_hash")?.to_owned();
+    let play = block(&ok(&["tas", "play", "--movie", path_str(&movie_path)?])?)?;
+    assert_eq!(field(&play, "record")?, "playback");
+    assert_eq!(field(&play, "final_tick")?, "5");
+    assert_eq!(field(&play, "final_state_hash")?, final_hash);
+    let verify = block(&ok(&["tas", "verify", "--movie", path_str(&movie_path)?])?)?;
+    assert_eq!(field(&verify, "record")?, "verification");
+    assert_eq!(field(&verify, "verified")?, "1");
+    assert_eq!(field(&verify, "final_state_hash")?, final_hash);
+
+    // Read-only commands never modify the movie file.
+    assert_eq!(std::fs::read(&movie_path)?, bytes);
+    Ok(())
+}
+
+#[test]
+fn anchor_interval_and_anchored_replay_report() -> TestResult {
+    let dir = temp_dir("v2-anchors")?;
+    let movie_path = dir.join("anchors.cfmovie");
+    let record = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "9",
+        "--input",
+        "7",
+        "--anchor-interval",
+        "3",
+        "--name",
+        "anchors",
+    ])?)?;
+    assert_eq!(field(&record, "movie_version")?, "2");
+    assert_eq!(field(&record, "input_schema")?, "2");
+    assert_eq!(field(&record, "anchors")?, "3");
+    let bytes = std::fs::read(&movie_path)?;
+    assert!(bytes.starts_with(b"CFMOVIE2"));
+    let movie = Movie::from_bytes(&bytes)?;
+    let indices: Vec<usize> = movie
+        .anchors()
+        .iter()
+        .map(|anchor| anchor.step_index())
+        .collect();
+    assert_eq!(indices, vec![2, 5, 8]);
+    let ticks: Vec<u64> = movie
+        .anchors()
+        .iter()
+        .map(|anchor| anchor.tick().raw())
+        .collect();
+    assert_eq!(ticks, vec![3, 6, 9]);
+
+    // A full-range replay starts at the embedded checkpoint and prints no anchor
+    // field; the anchor table alone never changes the default block.
+    for (subcommand, record_name) in [("play", "playback"), ("verify", "verification")] {
+        let full = block(&ok(&[
+            "tas",
+            subcommand,
+            "--movie",
+            path_str(&movie_path)?,
+        ])?)?;
+        assert_eq!(field(&full, "record")?, record_name);
+        for key in ["anchored", "anchor_step", "anchor_tick", "prefix_verified"] {
+            assert!(
+                !full.contains_key(key),
+                "`tas {subcommand}` without a range must not print `{key}`: {full:?}"
+            );
+        }
+    }
+
+    // `--from` exactly on the first anchor step: steps 1-3 are the prefix and the
+    // anchor at step 2 covers indices 0-2, so only indices 3-8 execute.
+    let anchored = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "3",
+        "--until",
+        "9",
+    ])?)?;
+    assert_eq!(field(&anchored, "anchored")?, "1");
+    assert_eq!(field(&anchored, "anchor_step")?, "2");
+    assert_eq!(field(&anchored, "anchor_tick")?, "3");
+    assert_eq!(field(&anchored, "prefix_verified")?, "0");
+    assert_eq!(field(&anchored, "prefix_steps")?, "3");
+    assert_eq!(field(&anchored, "window_steps")?, "6");
+    assert_eq!(field(&anchored, "replayed_steps")?, "6");
+    assert_eq!(field(&anchored, "final_tick")?, "9");
+    assert_eq!(
+        field(&anchored, "final_state_hash")?,
+        field(&record, "final_state_hash")?
+    );
+
+    // Between two anchors the earlier one is selected, and `replayed_steps` is
+    // the executed suffix length, not prefix + window.
+    let between = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "4",
+        "--until",
+        "9",
+    ])?)?;
+    assert_eq!(field(&between, "anchor_step")?, "2");
+    assert_eq!(field(&between, "anchor_tick")?, "3");
+    assert_eq!(field(&between, "prefix_steps")?, "4");
+    assert_eq!(field(&between, "window_steps")?, "5");
+    assert_eq!(field(&between, "replayed_steps")?, "6");
+
+    // An anchor on the final step (tick 9) is a valid format value but cannot be
+    // selected by a non-empty range: `--from 6 --until 9` selects step 5.
+    let final_anchor = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "6",
+        "--until",
+        "9",
+    ])?)?;
+    assert_eq!(field(&final_anchor, "anchor_step")?, "5");
+    assert_eq!(field(&final_anchor, "anchor_tick")?, "6");
+    assert_eq!(field(&final_anchor, "replayed_steps")?, "3");
+
+    // `verify` accepts the same range, reports verified=1 and the anchor fields.
+    let anchored_verify = block(&ok(&[
+        "tas",
+        "verify",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "3",
+        "--until",
+        "9",
+    ])?)?;
+    assert_eq!(field(&anchored_verify, "verified")?, "1");
+    assert_eq!(field(&anchored_verify, "anchored")?, "1");
+    assert_eq!(field(&anchored_verify, "anchor_step")?, "2");
+    assert_eq!(field(&anchored_verify, "prefix_verified")?, "0");
+    assert_eq!(
+        field(&anchored_verify, "final_state_hash")?,
+        field(&record, "final_state_hash")?
+    );
+
+    // An empty prefix (`--from` equals the start tick) can never select an anchor.
+    let linear = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "0",
+        "--until",
+        "9",
+    ])?)?;
+    assert!(!linear.contains_key("anchored"));
+    assert_eq!(field(&linear, "prefix_steps")?, "0");
+    assert_eq!(field(&linear, "replayed_steps")?, "9");
+
+    // A divergence after the selected anchor reuses the existing divergence block
+    // and exit 1: the altered expectation at step 6 is reached from the anchor.
+    let altered_index = 6_usize;
+    let original_hash = movie
+        .steps()
+        .get(altered_index)
+        .ok_or_else(|| format!("recorded movie must have step {altered_index}"))?
+        .state_hash();
+    let altered = altered_hash(original_hash);
+    let mut steps = movie.steps().to_vec();
+    steps[altered_index] = MovieStep::new(
+        steps[altered_index].outcome_tick(),
+        steps[altered_index].input(),
+        altered,
+    );
+    let divergent = Movie::from_v2_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        movie.anchors().to_vec(),
+        steps,
+    )?;
+    let divergent_path = dir.join("divergent.cfmovie");
+    std::fs::write(&divergent_path, divergent.to_bytes()?)?;
+    let divergence = failure_block(
+        &[
+            "tas",
+            "play",
+            "--movie",
+            path_str(&divergent_path)?,
+            "--from",
+            "3",
+            "--until",
+            "9",
+        ],
+        "state divergence",
+    )?;
+    assert_eq!(field(&divergence, "diverged")?, "1");
+    assert_eq!(
+        field(&divergence, "input_index")?,
+        &altered_index.to_string()
+    );
+    assert_eq!(field(&divergence, "expected")?, &altered.to_string());
+    assert_eq!(field(&divergence, "observed")?, &original_hash.to_string());
+
+    // Read-only anchored replays leave the movie file unchanged.
+    assert_eq!(std::fs::read(&movie_path)?, bytes);
+    Ok(())
+}
+
+#[test]
+fn v1_default_blocks_and_selection_unchanged() -> TestResult {
+    let dir = temp_dir("v1-default")?;
+    let first_path = dir.join("first.cfmovie");
+    let second_path = dir.join("second.cfmovie");
+    let third_path = dir.join("third.cfmovie");
+    let record = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&first_path)?,
+        "--steps",
+        "4",
+        "--input",
+        "5",
+    ])?)?;
+    assert_eq!(field(&record, "movie_version")?, "1");
+    assert_eq!(field(&record, "input_schema")?, "1");
+    assert!(
+        !record.contains_key("anchors"),
+        "a v1 record must not print an anchors line: {record:?}"
+    );
+    let first_bytes = std::fs::read(&first_path)?;
+    assert!(first_bytes.starts_with(b"CFMOVIE1"));
+
+    // `--anchor-interval 0` alone is not a v2 request: same v1 bytes and block.
+    let zero_record = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&second_path)?,
+        "--steps",
+        "4",
+        "--input",
+        "5",
+        "--anchor-interval",
+        "0",
+    ])?)?;
+    assert_eq!(zero_record, record);
+    assert_eq!(std::fs::read(&second_path)?, first_bytes);
+
+    // A separate process reproduces the same v1 bytes.
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&third_path)?,
+        "--steps",
+        "4",
+        "--input",
+        "5",
+    ])?;
+    assert_eq!(std::fs::read(&third_path)?, first_bytes);
+
+    // Default play/verify blocks keep exactly the pre-v2 fields and values.
+    let final_hash = field(&record, "final_state_hash")?.to_owned();
+    let mut expected_play = Block::new();
+    expected_play.insert("record".to_owned(), "playback".to_owned());
+    expected_play.insert("start_tick".to_owned(), "0".to_owned());
+    expected_play.insert("end_tick".to_owned(), "4".to_owned());
+    expected_play.insert("steps".to_owned(), "4".to_owned());
+    expected_play.insert("final_tick".to_owned(), "4".to_owned());
+    expected_play.insert("final_state_hash".to_owned(), final_hash.clone());
+    let play = block(&ok(&["tas", "play", "--movie", path_str(&first_path)?])?)?;
+    assert_eq!(play, expected_play);
+
+    let mut expected_verify = expected_play.clone();
+    expected_verify.insert("record".to_owned(), "verification".to_owned());
+    expected_verify.insert("verified".to_owned(), "1".to_owned());
+    let verify = block(&ok(&["tas", "verify", "--movie", path_str(&first_path)?])?)?;
+    assert_eq!(verify, expected_verify);
+
+    // A ranged replay on a v1 movie adds only the range/work fields.
+    let ranged = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&first_path)?,
+        "--from",
+        "2",
+    ])?)?;
+    assert_eq!(field(&ranged, "range_from")?, "2");
+    assert_eq!(field(&ranged, "range_until")?, "4");
+    assert_eq!(field(&ranged, "prefix_steps")?, "2");
+    assert_eq!(field(&ranged, "window_steps")?, "2");
+    assert_eq!(field(&ranged, "replayed_steps")?, "4");
+    for key in ["anchored", "anchor_step", "anchor_tick", "prefix_verified"] {
+        assert!(
+            !ranged.contains_key(key),
+            "a v1 ranged replay must not print `{key}`: {ranged:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compare_accepts_v2_movies() -> TestResult {
+    let dir = temp_dir("compare-v2")?;
+    let anchored_path = dir.join("anchored.cfmovie");
+    let neutral_path = dir.join("neutral.cfmovie");
+    let v1_path = dir.join("v1.cfmovie");
+    let different_path = dir.join("different.cfmovie");
+    let anchored = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&anchored_path)?,
+        "--steps",
+        "6",
+        "--input",
+        "7",
+        "--anchor-interval",
+        "3",
+        "--name",
+        "anchored",
+    ])?)?;
+    // A different metadata set, a v2 request without anchors and neutral device
+    // fields never decide equality: the recorded expectations are identical.
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&neutral_path)?,
+        "--steps",
+        "6",
+        "--input",
+        "7",
+        "--ports",
+        "0,0,0",
+        "--axes",
+        "0,0,0,0",
+        "--keys",
+        "0",
+        "--movie-id",
+        "9",
+        "--name",
+        "neutral",
+    ])?;
+    let identical = block(&ok(&[
+        "tas",
+        "compare",
+        "--movie",
+        path_str(&anchored_path)?,
+        "--against",
+        path_str(&neutral_path)?,
+    ])?)?;
+    assert_eq!(field(&identical, "record")?, "comparison");
+    assert_eq!(field(&identical, "identical")?, "1");
+    assert_eq!(field(&identical, "start_tick")?, "0");
+    assert_eq!(field(&identical, "steps")?, "6");
+    assert_eq!(
+        field(&identical, "final_state_hash")?,
+        field(&anchored, "final_state_hash")?
+    );
+
+    // A v1 movie with the same checkpoint identity and expectations is identical
+    // to a v2 movie: format version, anchors and input schema are not equality
+    // fields.
+    let v1 = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&v1_path)?,
+        "--steps",
+        "6",
+        "--input",
+        "7",
+    ])?)?;
+    let cross_format = block(&ok(&[
+        "tas",
+        "compare",
+        "--movie",
+        path_str(&anchored_path)?,
+        "--against",
+        path_str(&v1_path)?,
+    ])?)?;
+    assert_eq!(field(&cross_format, "identical")?, "1");
+    assert_eq!(
+        field(&cross_format, "final_state_hash")?,
+        field(&v1, "final_state_hash")?
+    );
+
+    // A non-neutral device frame changes the recorded trajectory: the existing
+    // divergence block and exit 1.
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&different_path)?,
+        "--steps",
+        "6",
+        "--input",
+        "7",
+        "--ports",
+        "1,0,0",
+        "--axes",
+        "0,0,0,0",
+        "--keys",
+        "0",
+    ])?;
+    let divergent = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&anchored_path)?,
+            "--against",
+            path_str(&different_path)?,
+        ],
+        "recorded branch divergence",
+    )?;
+    assert_eq!(field(&divergent, "identical")?, "0");
+    assert_eq!(field(&divergent, "diverged")?, "1");
+    assert_eq!(field(&divergent, "steps_a")?, "6");
+    assert_eq!(field(&divergent, "steps_b")?, "6");
+
+    // A malformed v2 file still fails at decode before any comparison and keeps
+    // stdout empty.
+    let mut corrupt = std::fs::read(&different_path)?;
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 0xff;
+    let corrupt_path = write_fixture(&dir, "corrupt-v2.cfmovie", &corrupt)?;
+    expect_failure(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&anchored_path)?,
+            "--against",
+            path_str(&corrupt_path)?,
+        ],
+        "movie checksum mismatch",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn v2_flag_rejections_are_typed() -> TestResult {
+    let dir = temp_dir("v2-arguments")?;
+    let movie_path = dir.join("rejected.cfmovie");
+    let movie = path_str(&movie_path)?;
+
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["--ports", "1,2"],
+            "`--ports` expects exactly three comma-separated decimal u32 values",
+        ),
+        (
+            &["--ports", "1,2,3,4"],
+            "`--ports` expects exactly three comma-separated decimal u32 values",
+        ),
+        (
+            &["--ports", "1,,3"],
+            "`--ports` expects exactly three comma-separated decimal u32 values",
+        ),
+        (
+            &["--ports", "1,2,abc"],
+            "`--ports` expects exactly three comma-separated decimal u32 values",
+        ),
+        (
+            &["--ports", "1,2,4294967296"],
+            "`--ports` expects exactly three comma-separated decimal u32 values",
+        ),
+        (
+            &["--axes", "1,2,3"],
+            "`--axes` expects exactly four comma-separated decimal signed 16-bit values",
+        ),
+        (
+            &["--axes", "1,2,3,4,5"],
+            "`--axes` expects exactly four comma-separated decimal signed 16-bit values",
+        ),
+        (
+            &["--axes", "1,2,3,32768"],
+            "`--axes` expects exactly four comma-separated decimal signed 16-bit values",
+        ),
+        (
+            &["--axes", "1,2,3,-32769"],
+            "`--axes` expects exactly four comma-separated decimal signed 16-bit values",
+        ),
+        (&["--keys", "abc"], "`--keys` expects a decimal integer"),
+        (
+            &["--keys", "18446744073709551616"],
+            "`--keys` expects a decimal integer",
+        ),
+        (
+            &["--anchor-interval", "abc"],
+            "`--anchor-interval` expects a decimal integer",
+        ),
+        (
+            &["--anchor-interval", "18446744073709551616"],
+            "`--anchor-interval` expects a decimal integer",
+        ),
+    ];
+    for (flags, needle) in cases {
+        let mut args = vec!["tas", "record", "--movie", movie, "--steps", "3"];
+        args.extend_from_slice(flags);
+        expect_failure(&args, needle)?;
+    }
+
+    // Duplicate and missing-value flags are typed failures.
+    expect_failure(
+        &[
+            "tas", "record", "--movie", movie, "--steps", "3", "--ports", "1,2,3", "--ports",
+            "4,5,6",
+        ],
+        "`--ports` was given more than once",
+    )?;
+    expect_failure(
+        &[
+            "tas", "record", "--movie", movie, "--steps", "3", "--keys", "1", "--keys", "2",
+        ],
+        "`--keys` was given more than once",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "record",
+            "--movie",
+            movie,
+            "--steps",
+            "3",
+            "--anchor-interval",
+            "2",
+            "--anchor-interval",
+            "2",
+        ],
+        "`--anchor-interval` was given more than once",
+    )?;
+    expect_failure(
+        &["tas", "record", "--movie", movie, "--keys"],
+        "`--keys` requires a value",
+    )?;
+    expect_failure(
+        &["tas", "record", "--movie", movie, "--axes"],
+        "`--axes` requires a value",
+    )?;
+
+    // Incompatible v2 flag combinations fail before execution.
+    expect_failure(
+        &[
+            "tas",
+            "record",
+            "--movie",
+            movie,
+            "--steps",
+            "0",
+            "--anchor-interval",
+            "1",
+        ],
+        "requires at least one recorded step",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "record",
+            "--movie",
+            movie,
+            "--steps",
+            "3",
+            "--anchor-interval",
+            "4",
+        ],
+        "exceeds `--steps 3`",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "record",
+            "--movie",
+            movie,
+            "--steps",
+            "65537",
+            "--anchor-interval",
+            "1",
+        ],
+        "above the 65536-anchor limit",
+    )?;
+    expect_failure(
+        &[
+            "tas", "record", "--movie", movie, "--steps", "2000001", "--ports", "0,0,0",
+        ],
+        "the format v2 movie step limit",
+    )?;
+    expect_failure(
+        &[
+            "tas", "record", "--movie", movie, "--steps", "4194305", "--input", "1",
+        ],
+        "`--steps` must be at most 4194304",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "record",
+            "--movie",
+            movie,
+            "--steps",
+            "3",
+            "--anchor-interval",
+            "2",
+            "--session",
+            "1",
+        ],
+        "`--session` requires `--root <DIR>`",
+    )?;
+    assert!(
+        !movie_path.exists(),
+        "a rejected v2 record must not create a movie"
+    );
+    Ok(())
+}
+
+#[test]
+fn corrupt_v2_movies_are_rejected_with_typed_diagnostics() -> TestResult {
+    let dir = temp_dir("corrupt-v2")?;
+    let movie_path = dir.join("valid-v2.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "6",
+        "--input",
+        "4",
+        "--anchor-interval",
+        "3",
+        "--name",
+        "v2",
+    ])?;
+    let valid = std::fs::read(&movie_path)?;
+    assert!(valid.starts_with(b"CFMOVIE2"));
+    let movie = Movie::from_bytes(&valid)?;
+
+    let mut bad_magic = valid.clone();
+    bad_magic[0] ^= 0xff;
+    resign(&mut bad_magic);
+    let bad_magic = write_fixture(&dir, "bad-magic-v2.cfmovie", &bad_magic)?;
+    expect_movie_rejected(&bad_magic, "movie magic mismatch")?;
+
+    let mut bad_version = valid.clone();
+    bad_version[8..10].copy_from_slice(&3_u16.to_le_bytes());
+    resign(&mut bad_version);
+    let bad_version = write_fixture(&dir, "bad-version-v2.cfmovie", &bad_version)?;
+    expect_movie_rejected(&bad_version, "unsupported movie format version 3")?;
+
+    let mut bad_schema = valid.clone();
+    bad_schema[10..12].copy_from_slice(&1_u16.to_le_bytes());
+    resign(&mut bad_schema);
+    let bad_schema = write_fixture(&dir, "bad-schema-v2.cfmovie", &bad_schema)?;
+    expect_movie_rejected(&bad_schema, "unsupported movie input schema version 1")?;
+
+    let mut corruption = valid.clone();
+    let last = corruption.len() - 1;
+    corruption[last] ^= 0xff;
+    let corruption = write_fixture(&dir, "checksum-v2.cfmovie", &corruption)?;
+    expect_movie_rejected(&corruption, "movie checksum mismatch")?;
+
+    // Corrupt the first anchor's canonical snapshot and rebuild the trailing
+    // checksum so the anchor parser is the rejecting validator.
+    let name_len = movie.meta().name().map_or(0, str::len);
+    let anchor_offset = 70 + name_len + movie.snapshot_bytes().len();
+    let mut bad_anchor = valid.clone();
+    bad_anchor[anchor_offset + 10] ^= 0xff;
+    resign(&mut bad_anchor);
+    let bad_anchor = write_fixture(&dir, "bad-anchor-v2.cfmovie", &bad_anchor)?;
+    expect_movie_rejected(&bad_anchor, "invalid anchor 0 snapshot")?;
+    // `play` reports the same typed rejection and also keeps stdout empty.
+    expect_failure(
+        &["tas", "play", "--movie", path_str(&bad_anchor)?],
+        "invalid anchor 0 snapshot",
+    )?;
+
+    // A v2 file below the 94-byte v2 minimum but above the shared 86-byte
+    // minimum is rejected by the v2 branch after magic dispatch.
+    let mut short = valid[..58].to_vec();
+    short.extend_from_slice(&[0; 32]);
+    resign(&mut short);
+    let short = write_fixture(&dir, "short-v2.cfmovie", &short)?;
+    expect_movie_rejected(&short, "minimum is 94")?;
+
+    // A structurally truncated v2 body with a rebuilt checksum reaches the
+    // declared-count/remaining-bytes check before any allocation.
+    let mut truncated = valid[..valid.len() - 32 - 10].to_vec();
+    truncated.extend_from_slice(&[0; 32]);
+    resign(&mut truncated);
+    let truncated = write_fixture(&dir, "truncated-v2.cfmovie", &truncated)?;
+    expect_movie_rejected(&truncated, "movie is truncated")?;
+
+    // The intact v2 movie still verifies and still reports its anchors.
+    let verify = block(&ok(&["tas", "verify", "--movie", path_str(&movie_path)?])?)?;
+    assert_eq!(field(&verify, "verified")?, "1");
+    assert_eq!(
+        field(&verify, "final_state_hash")?,
+        movie.final_state_hash().to_string()
+    );
     Ok(())
 }

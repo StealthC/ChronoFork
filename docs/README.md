@@ -44,26 +44,36 @@ owner-checked recovery; retention is manual; there is no encryption, authenticat
 format migration; and the public convenience `save_snapshot` remains publish-only for
 third-party callers while the CLI uses the lock-aware workflow.
 
-**M3's first and second increments (TAS, deterministic replay, partial replay/seek and
-branch comparison) are implemented and independently verified (M3-T4 and M3-T5 PASS,
-2026-11-15).** The first increment adds the canonical single-file v1 `.cfmovie` format,
-record/playback of a per-tick input sequence on the deterministic synthetic backend,
-exact first-divergence reporting, restart and M2-seeded replay from the embedded
+**M3's first, second and third increments (TAS, deterministic replay, partial
+replay/seek, branch comparison, movie format v2 anchors and multi-device input) are
+implemented and independently verified (M3-T4, M3-T5 and the t7 format-v2 verification
+PASS, 2026-11-15).** The first increment adds the canonical single-file v1 `.cfmovie`
+format, record/playback of a per-tick input sequence on the deterministic synthetic
+backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
 checkpoint, and the `chronofork tas record/play/verify` CLI. The second increment adds
 ranged replay/seek over an exact `(from, until]` window with typed range bounds, forward
 single-tick advance and rewind by deterministic linear re-simulation from the embedded
 checkpoint, and branch comparison of recorded `(tick, state hash)` records with
 first-divergence, length and embedded-checkpoint identity reporting (no re-simulation).
-M3 is **not complete**: periodic anchors/checkpoints and seek via checkpoints (format
-v2), an in-process rewind buffer/state cache and interactive stepping, rerecord, branch
-editing, multi-controller, ports, analog and keyboard input, real-hardware input TAS,
-import/export adapters, checkpoint-reference movies, HTTP/MCP/GUI and the daemon remain
-deferred. The executed [M3 acceptance plan](quality/m3-tas-replay-acceptance.md), the
-[increment-2 acceptance plan](quality/m3-partial-replay-acceptance.md),
+The third increment adds the `CFMOVIE2` container with a canonical embedded checkpoint, an
+ordered table of canonical checkpoint anchors bound to recorded steps, nearest-anchor
+seek in the single ranged replay path, and schema-2 multi-device input (four digital
+ports, four analog axes and a keyboard bitmap) recorded/replayed with deterministic
+synthetic-backend consumption. Anchored ranged replay reports `anchored=1`,
+`anchor_step`, `anchor_tick` and `prefix_verified=0`: it deliberately does not re-execute
+the pre-anchor prefix, while full-range `verify` remains complete. The evidence is the
+executed [M3 acceptance plan](quality/m3-tas-replay-acceptance.md), the [increment-2
+acceptance plan](quality/m3-partial-replay-acceptance.md), the [format-v2 acceptance
+plan](quality/m3-format-v2-acceptance.md),
 [ADR-0004](adr/0004-tas-movie-format.md),
-[ADR-0005](adr/0005-partial-replay-and-branch-comparison.md) and the dated
-[quality gates](quality/quality-gates.md) results record the contracts, evidence and
-residual limits; M2 remains the previous completed milestone.
+[ADR-0005](adr/0005-partial-replay-and-branch-comparison.md),
+[ADR-0006](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) and the dated
+[quality gates](quality/quality-gates.md) results. M3 is **not complete**: in-process
+rewind/state cache and interactive stepping, rerecord and branch editing, real-hardware
+input TAS (the Mega Drive `step` ignores input), import/export adapters,
+checkpoint-reference movies, HTTP/MCP/GUI and the Stage 6 daemon remain deferred. The
+acceptance claim is the deterministic synthetic backend on Linux; no hardware input or
+cross-backend portability is claimed. M2 remains the previous completed milestone.
 
 ## Start here
 
@@ -89,6 +99,7 @@ residual limits; M2 remains the previous completed milestone.
 | [M2 durable-sessions acceptance](quality/m2-durable-sessions-acceptance.md) | Executed acceptance criteria, results and residual limits for durable sessions |
 | [M3 TAS/replay acceptance](quality/m3-tas-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for the v1 movie, record/replay, first divergence, restart and CLI |
 | [M3 partial-replay acceptance](quality/m3-partial-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for ranged replay/seek, single-tick advance, rewind and branch comparison |
+| [M3 format-v2 acceptance](quality/m3-format-v2-acceptance.md) | Executed acceptance criteria, results and residual limits for the v2 movie container, anchors, anchor-based seek and multi-device input (t7 PASS, 2026-11-15) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -100,6 +111,7 @@ residual limits; M2 remains the previous completed milestone.
 | [ADR-0003: durable session storage](adr/0003-durable-session-storage.md) | Accepted durable-storage, metadata and ownership design; implemented and verified in Fase B |
 | [ADR-0004: TAS movie format](adr/0004-tas-movie-format.md) | Accepted v1 canonical `.cfmovie`, embedded checkpoint, input schema and verification design; implemented and verified for the synthetic backend, deferred scope unchanged |
 | [ADR-0005: partial replay and branch comparison](adr/0005-partial-replay-and-branch-comparison.md) | Accepted typed-range partial replay/seek by re-simulation and recorded-expectation branch comparison; implemented and verified for the synthetic backend, deferred scope unchanged |
+| [ADR-0006: movie format v2](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) | Accepted (owner-approved 2026-11-15) v2 container, checkpoint anchors, anchor-based seek and schema-2 multi-device input; implemented and independently verified for the synthetic backend (t7 PASS) |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

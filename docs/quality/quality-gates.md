@@ -277,6 +277,71 @@ in the final SUMMARY: two §6 compare example blocks retain illustrative numeric
 and the M3-A15 row are unaffected. M3 is not complete and this block makes no claim about
 any deferred item.
 
+## 2026-11-15 — M3 format v2: checkpoint anchors and multi-device input, increment 3 (independent verification)
+
+Independent verifier PASS for the uncommitted increment-3 tree. Tree under test:
+`9643d74fd37097ebe487a398fe0a0259a3b3c7aa` (branch `agent/m3-complete`) plus the
+increment-3 working-tree paths; the exact SHA-256 set is in
+`.research/m3-v2/verification/tree/changed-paths.sha256.txt` and the implementation paths
+are `crates/chronofork-core/src/input.rs`,
+`crates/chronofork-test-backend/src/lib.rs`,
+`crates/chronofork-sessions/src/{lib,movie,replay}.rs`,
+`crates/chronofork-sessions/tests/{replay,movie_v2}.rs`,
+`crates/chronofork-cli/src/{main,tas}.rs`, `crates/chronofork-cli/tests/tas.rs`, with the
+increment-3 documentation paths. The verifier's only tracked edit is this dated block; no
+commit, push or tag was made. Every Cargo command used `CARGO_HOME=/tmp/t7-cargo`.
+
+Authoritative raw evidence (ignored paths): `.research/m3-v2/verification/`
+(`SUMMARY.txt`, `target-matrix.txt`, `rows/A18-*.txt`–`rows/A27-*.txt`,
+`rows/M3-A1-A17-regression.txt`, `audit/`, `targets/`, `cli/`, `demos/`, `probes/`,
+`gate/`, `tree/`, `MANIFEST.sha256`); pre-change baseline: `.research/m3-v2/baseline/`
+(captured at HEAD `9643d74` before any increment-3 edit). M3-A18–A27 were executed with no
+failed criterion. The Fase A [M3 format-v2 acceptance plan](m3-format-v2-acceptance.md) and
+ADR-0006 still carry their pre-verification status text (`planned - not yet executed` /
+`not implemented`) until the staged documentation-promotion task updates them; this block
+describes only what the artifacts prove. M3 is **not** complete: in-process rewind/state
+cache and interactive stepping, rerecord/branch editing and real-hardware input TAS (plus
+import/export adapters and HTTP/MCP/GUI/daemon) remain deferred and unchecked.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 33 targets, 422 passed, 0 failed, 0 ignored; no target below the 32-target baseline (counts in `target-matrix.txt`) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed" |
+| Whitespace | `git diff --check` | exit 0 |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the pre-change baseline |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the pre-change baseline |
+| M2/M3-A1–A17 regression | the M2 target matrix, the M3-A1–A17 targets and `cargo test -p chronofork-cli --test session_storage` | every target exit 0 at or above the baseline counts |
+| State probe | the baseline `session save/load` probe on two independent roots | `chronofork.store`, `session-keys` and `checkpoint.cfsnap` byte-identical to the baseline; `tick=7`, `state_hash=a4c253d2…c275` identical |
+| v1 non-regression | fresh v1 recordings plus replayed pre-change fixture movies and transcripts | 45/45 comparisons PASS; movie SHA-256 `bb8b619d…1254`, `d89459a2…e185`, `eec8d021…766e` identical to the baseline |
+| Determinism | two-process and debug/release v2 recordings and anchored replays | v2 bytes and replay blocks byte-identical; no host time in canonical bytes or reports |
+| Suppression/dependency | suppression, structural and dependency scans | no added `#[allow]`/`#[ignore]`/`unsafe`/`todo!`; `Cargo.toml`/`Cargo.lock` diff 0 bytes; `cargo tree -d` clean; Mega Drive and backend-api diff 0 bytes |
+
+M3-A18–A27 executed with no failed criterion: v2 container round-trip, exact canonical
+size accounting and deterministic anchors; bounded v2 decode with the typed rejection
+matrix (library plus 22 re-signed CLI mutations); anchor capture, ordering and
+tick/state-hash binding; nearest-anchor seek with boundary equality to linear replay,
+exact first divergence, the documented pre-anchor prefix delta proven by a negative
+control, and v1/anchor-less fallback; schema-2 multi-device input with the golden
+pre-schema-2 state hash, v1-mask equivalence and unchanged payload layout; v1
+non-regression with one reader/writer, one snapshot parser, one compatibility predicate
+and one replay loop; the CLI process contract, help and typed rejections; determinism and
+debug/release equality; the full gate, demos, M1/M2/v1 regression; and scope honesty
+(deferred items still unimplemented, no M3-complete claim).
+
+Non-blocking observations recorded in the evidence SUMMARY: (1) the format-v2 acceptance
+plan and ADR-0006 status text still reads `planned - not yet executed` / `not implemented`
+and must be promoted by a separate documentation task using this evidence — it understates
+the tree and makes no false capability claim; (2) anchored ranged replay intentionally does
+not re-execute the pre-anchor prefix and reports `prefix_verified=0` while full-range
+`verify` remains complete; (3) the decode taxonomy stays checksum-first as in v1, so a
+raw byte flip is reported as a checksum mismatch. Full details, commands, exit codes and
+hashes are in the ignored artifacts above; this dated block is a gate-result snapshot and
+the per-target counts stay in the evidence.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.
