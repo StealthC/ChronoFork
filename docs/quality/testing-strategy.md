@@ -13,10 +13,12 @@ At audit time the workspace declares six crates (`chronofork-core`,
 `chronofork-backend-api`, `chronofork-sessions`, `chronofork-test-backend`,
 `chronofork-megadrive`, `chronofork-cli`) and strict workspace lints. The lead's bootstrap implementation
 was present by the end of the audit: the workspace has 40 passing tests, including
-core-primitive, test-backend, snapshot, session-acceptance and CLI tests. There is
-still no CI workflow, no dependency-policy configuration, no fixture manifest and
-no property/fuzz target. The gates below are the target contract; §2.3 maps what
-already exists to it and lists the remaining gaps.
+core-primitive, test-backend, snapshot, session-acceptance and CLI tests. A GitHub
+Actions workflow now runs the gates on every pushed commit (see
+[quality gates](quality-gates.md#ci-github-actions)); dependency-policy
+configuration, a fixture manifest and fuzz targets remain absent. The gates below
+are the target contract; §2.3 maps what already exists to it and lists the
+remaining gaps.
 
 ## 1. Principles
 
@@ -173,9 +175,9 @@ Mapping of the existing tests to the invariant set in §6:
 
 **Remaining gaps, in priority order:**
 
-1. **CI invocation and reporting.** `scripts/check.sh` exists, but no workflow runs it
-   and no JUnit/artifact reporting exists. This is the highest-value gap because it
-   makes every other gate automatic.
+1. **CI invocation and reporting.** `.github/workflows/ci.yml` runs the same gates as
+   `scripts/check.sh` on every push and uploads the test log and demo outputs. JUnit
+   XML reporting, per-suite timeouts and the nightly extended job are still missing.
 2. **Canonical snapshot stability (INV-06).** Add a golden snapshot byte/hash fixture
    and a deliberate format-version bump test. Round-trip alone does not catch silent
    canonicalization changes.
@@ -536,6 +538,11 @@ reproducibility can be a later goal).
 | `msrv-release` | main/tags | G6 |
 | `extended` | nightly/schedule | G7 |
 
+Implementation status: `.github/workflows/ci.yml` covers `fmt-lint`, `test`, `docs`,
+`acceptance` (inside `cargo test`), `msrv` and the demo/release checks, running on
+every push instead of only `main`/tags. JUnit XML reporting, the `extended` nightly
+job, and runtime tests on Windows/macOS are not wired yet.
+
 Reporting requirements:
 
 - JUnit XML artifacts for test jobs (the BizHawk `test_output/*.coverage.xml` pattern is
@@ -561,7 +568,7 @@ Status at 2026-11-13 (the implementation may advance after this audit):
 | 6 | Fixture policy implemented: manifest, F1–F8 checks, no prohibited files | **Missing** | No fixtures and no manifest/check yet |
 | 7 | `cargo deny` (or equivalent) configured with allow/deny list and run in CI | **Missing** | No `deny.toml`; one direct dependency today |
 | 8 | `THIRD_PARTY_NOTICES.md` matches the licensing assessment; no Q4-blocked code copied | **Pass** | `THIRD_PARTY_NOTICES.md`, `LICENSE`, `docs/licensing/provenance.md` present; no upstream code copied |
-| 9 | A CI workflow runs the gates and publishes JUnit artifacts | **Missing** | No workflow file; `scripts/check.sh` is local-only |
+| 9 | A CI workflow runs the gates and publishes JUnit artifacts | **Partial** | `.github/workflows/ci.yml` runs fmt, check, Clippy, tests, rustdoc, demos, release and MSRV gates and uploads test/demo artifacts; no JUnit XML yet |
 | 10 | Docs build with `-D warnings`; every public item has a doc comment | **Partial** | `RUSTDOCFLAGS="-D warnings" cargo doc` passes; `missing_docs` is not enabled and markdown link checking is not wired |
 
 The bootstrap's test/quality work is complete when all ten are **Pass**. The most
@@ -579,7 +586,7 @@ change rather than adding one more scenario.
 | TQ4 | Determinism scope: Linux only at first, or Linux/macOS/Windows from day one? | Determines whether D7 is a bootstrap gate or a release gate |
 | TQ5 | Snapshot format stability promise: internal-only until v1, or stable from the first commit? | Determines golden-state churn and migration-test obligations |
 | TQ6 | Is fuzzing required at bootstrap or deferred to nightly? | Affects T8 timing and CI budget |
-| TQ7 | Which CI provider and runner sizes? | Affects job topology, timeouts and caching; no workflow exists at audit time |
+| TQ7 | Which CI provider and runner sizes? | Resolved 2026-11-15: GitHub Actions, `ubuntu-latest` for the gates and `windows-latest`/`macos-latest` for compile checks; topology, caching and timeouts are in `.github/workflows/ci.yml` |
 | TQ8 | Coverage target (line/branch) or invariant coverage only? | Prefer invariant coverage; a naive line target can reward trivial tests |
 | TQ9 | May test-only dependencies include `proptest`/`criterion`/`cargo-fuzz` under the same license policy? | They are dev-dependencies; confirm the allowlist before adopting |
 | TQ10 | Is the deterministic test backend expected to model errors/halting/overflow for contract testing, or only happy paths? | The contract suite needs a backend that can deliberately fail in controlled ways |

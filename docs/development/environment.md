@@ -1,6 +1,7 @@
 # Development Environment
 
-Verified on 2026-11-13. Update this document when the environment changes.
+Verified on 2026-11-13; GitHub Actions CI added 2026-11-15. Update this document when
+the environment changes.
 
 ## Host and WSL
 
@@ -78,17 +79,20 @@ approved the user-local rustup installation.
    and its final two-ROM differential evidence are recorded in
    [Oracle differential evidence](../research/oracle-differential-evidence.md). Its
    upstream equivalence claim was not reproduced.
-3. **No CI provider is configured.** The local gate is authoritative for this
-   bootstrap; provider-specific integration needs approval.
+3. **CI is Linux-first.** GitHub Actions (`.github/workflows/ci.yml`) runs the
+   quality gates on every pushed commit and pull request. Linux is the only
+   runtime-tested platform; Windows and macOS are compile-checked only, and native
+   Windows filesystem durability remains unverified.
 4. **No GPU/audio device was exercised.** The bootstrap is headless and synthetic.
 5. **BizHawk submodules were not cloned**, so their licenses/code were not audited.
 
 ## Approval-required environment work
 
-The following are known future needs but were **not** performed:
+The following are known future needs and require approval:
 
 - Installing Node.js for future web/transport tooling.
-- Enabling a CI provider or creating a remote repository.
+- Adding CI secrets, changing the CI provider, or adding platform runners beyond the
+  GitHub-hosted Linux/Windows/macOS jobs in `.github/workflows/ci.yml`.
 
 The Ninja/clang and expat/zlib/libpng/libjpeg packages were installed later for the
 pinned Exodus oracle build under E2-12; they are not needed for the default Rust

@@ -167,21 +167,34 @@ passed without a command and an exit code recorded there or in your own run.
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Planned (no concurrent execution yet) |
 | Serialization compatibility | Implemented for v1/v2 rejection (payload version tests) plus round-trip property tests |
-| Cross-platform CI | Planned |
+| Cross-platform CI | Partial: Windows/macOS compile check; runtime tests are Linux-only |
 
-## CI recommendation (provider not selected)
+## CI (GitHub Actions)
 
-Do not add a provider-specific workflow until the project owner selects a provider.
-The recommended design is:
+`.github/workflows/ci.yml` runs on every pushed commit (all branches) and on pull
+requests. It mirrors the local gates and adds:
 
-- Linux: `cargo fmt --check`, check, Clippy, tests.
-- Windows: build and test natively; do not rely on WSL as Windows evidence.
-- macOS: build/test where runners are available.
-- Cache Cargo registry/build artifacts with a lockfile-derived key.
-- Upload test logs and the demo output as artifacts.
-- Run a license/provenance check when a dependency or incorporated file changes.
+- `fmt`: `cargo fmt --all -- --check`.
+- `check-clippy`: `cargo check --workspace` and Clippy with `-D warnings`.
+- `test`: `cargo test --workspace --locked --no-fail-fast`, then the determinism
+  suite single-threaded; the test log is uploaded as an artifact.
+- `docs`: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+- `demos`: both CLI demos run three times; stderr must be empty and stdout must be
+  byte-identical across runs; outputs are uploaded as artifacts.
+- `release`: release build and release-mode tests.
+- `msrv`: `cargo check --workspace --all-targets --locked` with the declared MSRV
+  1.85.0.
+- `portability`: `cargo check --workspace --all-targets --locked` on Windows and
+  macOS. These are build checks only; runtime tests and filesystem durability on
+  those platforms remain unverified.
 
-No remote repository or push is authorized by this bootstrap.
+Actions are pinned to commit SHAs, the workflow requests only `contents: read`, and
+it sets no concurrency cancellation, so every pushed commit runs the full workflow.
+
+Not yet wired: JUnit XML reporting, `cargo deny`, fixture-manifest checks and
+runtime tests on Windows/macOS. The recommended follow-ups remain a license/
+provenance check when a dependency or incorporated file changes, and nightly
+extended runs.
 
 ## Release gate (future)
 

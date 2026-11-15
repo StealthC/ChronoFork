@@ -74,10 +74,10 @@ marketing claims; each has a verification path.
 
 | ID | Requirement | Verification |
 |---|---|---|
-| NFR-PORT-001 | Core and sessions must build on Linux and native Windows. | Linux verified; Windows CI pending |
+| NFR-PORT-001 | Core and sessions must build on Linux and native Windows. | Linux runtime verified; Windows/macOS compile-checked in CI; native Windows runtime pending |
 | NFR-PORT-002 | Avoid platform-specific path/process assumptions in generic crates. | Code review; `std`-only generic APIs |
-| NFR-PORT-003 | Do not claim WSL success proves native Windows support. | Documentation + planned CI |
-| NFR-PORT-004 | Support macOS where feasible. | Planned CI |
+| NFR-PORT-003 | Do not claim WSL success proves native Windows support. | Documentation; Windows compile check only (no runtime evidence) |
+| NFR-PORT-004 | Support macOS where feasible. | macOS compile check in CI; runtime pending |
 
 ## Quality and maintainability
 

@@ -1,0 +1,291 @@
+# ChronoFork continuous integration.
+#
+# Triggered by every pushed commit (all branches) and by pull requests. The
+# Rust commands mirror scripts/check.sh; keep both in sync. Extra jobs cover
+# release mode, the deterministic demo contract, the declared MSRV and a
+# cross-platform compile check. Third-party actions are pinned to commit SHAs;
+# bump the SHA together with the version comment. There is deliberately no
+# concurrency cancellation: every pushed commit must run the full workflow.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  check-clippy:
+    name: Check and Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+      - name: cargo check --workspace
+        run: cargo check --workspace --locked
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+      - name: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ci-artifacts
+          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci-artifacts/test.log
+      - name: Determinism suite, single-threaded
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p chronofork-sessions --test determinism --locked -- --test-threads=1 2>&1 | tee -a ci-artifacts/test.log
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-log-linux
+          path: ci-artifacts/test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  docs:
+    name: Rustdoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+      - name: cargo doc with denied warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+  demos:
+    name: Deterministic demos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+      - name: Build the CLI
+        run: cargo build -p chronofork-cli --locked
+      - name: Run each demo three times and compare bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-artifacts/demos
+          binary=target/debug/chronofork
+
+          run_demo() {
+            local slug="$1"
+            local marker="$2"
+            shift 2
+            local run
+            for run in 1 2 3; do
+              "$binary" "$@" \
+                >"ci-artifacts/demos/${slug}-run${run}.stdout" \
+                2>"ci-artifacts/demos/${slug}-run${run}.stderr"
+              if [ -s "ci-artifacts/demos/${slug}-run${run}.stderr" ]; then
+                echo "::error::${slug} run ${run} wrote to stderr"
+                cat "ci-artifacts/demos/${slug}-run${run}.stderr"
+                exit 1
+              fi
+            done
+            cmp "ci-artifacts/demos/${slug}-run1.stdout" "ci-artifacts/demos/${slug}-run2.stdout"
+            cmp "ci-artifacts/demos/${slug}-run1.stdout" "ci-artifacts/demos/${slug}-run3.stdout"
+            grep -Fq "$marker" "ci-artifacts/demos/${slug}-run1.stdout"
+          }
+
+          run_demo demo "chronofork demo: PASS" demo
+          run_demo megadrive-demo "chronofork megadrive demo: PASS" megadrive demo
+      - name: Upload demo outputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-outputs
+          path: ci-artifacts/demos/
+          if-no-files-found: warn
+          retention-days: 7
+
+  release:
+    name: Release build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+      - name: cargo build --workspace --release
+        run: cargo build --workspace --release --locked
+      - name: cargo test --workspace --release
+        run: cargo test --workspace --release --locked --no-fail-fast
+
+  msrv:
+    name: MSRV 1.85.0 build check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.85.0
+        run: rustup toolchain install 1.85.0 --profile minimal --no-self-update
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-
+      - name: cargo check with the declared MSRV
+        env:
+          RUSTUP_TOOLCHAIN: "1.85.0"
+        run: cargo check --workspace --all-targets --locked
+
+  portability:
+    name: Build check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-
+      - name: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
