@@ -44,9 +44,10 @@ owner-checked recovery; retention is manual; there is no encryption, authenticat
 format migration; and the public convenience `save_snapshot` remains publish-only for
 third-party callers while the CLI uses the lock-aware workflow.
 
-**M3's first, second and third increments (TAS, deterministic replay, partial
-replay/seek, branch comparison, movie format v2 anchors and multi-device input) are
-implemented and independently verified (M3-T4, M3-T5 and the t7 format-v2 verification
+**M3's first, second, third and fourth increments (TAS, deterministic replay, partial
+replay/seek, branch comparison, movie format v2 anchors and multi-device input, and the
+in-process rewind state cache with interactive stepping) are implemented and independently
+verified (M3-T4, M3-T5, the t7 format-v2 verification PASS and the t5 rewind verification
 PASS, 2026-11-15).** The first increment adds the canonical single-file v1 `.cfmovie`
 format, record/playback of a per-tick input sequence on the deterministic synthetic
 backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
@@ -68,12 +69,17 @@ plan](quality/m3-format-v2-acceptance.md),
 [ADR-0004](adr/0004-tas-movie-format.md),
 [ADR-0005](adr/0005-partial-replay-and-branch-comparison.md),
 [ADR-0006](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) and the dated
-[quality gates](quality/quality-gates.md) results. M3 is **not complete**: in-process
-rewind/state cache and interactive stepping, rerecord and branch editing, real-hardware
-input TAS (the Mega Drive `step` ignores input), import/export adapters,
-checkpoint-reference movies, HTTP/MCP/GUI and the Stage 6 daemon remain deferred. The
-acceptance claim is the deterministic synthetic backend on Linux; no hardware input or
-cross-backend portability is claimed. M2 remains the previous completed milestone.
+[quality gates](quality/quality-gates.md) results. A fourth increment — a bounded in-process
+rewind state cache, deterministic rewind by restoring the nearest verified state and
+replaying recorded inputs, and the interactive `chronofork tas studio` stepping surface —
+is implemented and independently verified for the deterministic synthetic backend
+([ADR-0007](adr/0007-in-process-rewind-and-interactive-stepping.md), M3-A28–A34, t5 PASS
+2026-11-15; [M3 rewind acceptance plan](quality/m3-rewind-acceptance.md)). M3 is **not
+complete**: rerecord and branch editing, real-hardware input TAS (the Mega Drive `step`
+ignores input), import/export adapters, checkpoint-reference movies, HTTP/MCP/GUI and the
+Stage 6 daemon remain deferred. The acceptance claim is the deterministic synthetic backend
+on Linux; no hardware input, cross-backend portability, O(1) seek or persistent cache is
+claimed. M2 remains the previous completed milestone.
 
 ## Start here
 
@@ -100,6 +106,7 @@ cross-backend portability is claimed. M2 remains the previous completed mileston
 | [M3 TAS/replay acceptance](quality/m3-tas-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for the v1 movie, record/replay, first divergence, restart and CLI |
 | [M3 partial-replay acceptance](quality/m3-partial-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for ranged replay/seek, single-tick advance, rewind and branch comparison |
 | [M3 format-v2 acceptance](quality/m3-format-v2-acceptance.md) | Executed acceptance criteria, results and residual limits for the v2 movie container, anchors, anchor-based seek and multi-device input (t7 PASS, 2026-11-15) |
+| [M3 rewind acceptance](quality/m3-rewind-acceptance.md) | Executed acceptance criteria, results and residual limits for the in-process rewind state cache and interactive `tas studio` stepping (t5 PASS, 2026-11-15) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -112,6 +119,7 @@ cross-backend portability is claimed. M2 remains the previous completed mileston
 | [ADR-0004: TAS movie format](adr/0004-tas-movie-format.md) | Accepted v1 canonical `.cfmovie`, embedded checkpoint, input schema and verification design; implemented and verified for the synthetic backend, deferred scope unchanged |
 | [ADR-0005: partial replay and branch comparison](adr/0005-partial-replay-and-branch-comparison.md) | Accepted typed-range partial replay/seek by re-simulation and recorded-expectation branch comparison; implemented and verified for the synthetic backend, deferred scope unchanged |
 | [ADR-0006: movie format v2](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) | Accepted (owner-approved 2026-11-15) v2 container, checkpoint anchors, anchor-based seek and schema-2 multi-device input; implemented and independently verified for the synthetic backend (t7 PASS) |
+| [ADR-0007: in-process rewind and interactive stepping](adr/0007-in-process-rewind-and-interactive-stepping.md) | Accepted (owner-approved 2026-11-15) bounded session-layer state cache, deterministic rewind and `tas studio` stdin surface; implemented and independently verified for the synthetic backend (t5 PASS) |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

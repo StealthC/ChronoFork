@@ -74,7 +74,11 @@ Current evidence (synthetic backend only):
   across time, roots and debug/release (M3-A1 and M3-A8);
 - a v2 movie round-trips its metadata, embedded checkpoint, ordered anchors and schema-2
   step records deterministically, and independent v2 recordings and anchored replays are
-  byte-identical across separate processes and debug/release (M3-A18, M3-A25).
+  byte-identical across separate processes and debug/release (M3-A18, M3-A25);
+- an in-process rewind through the bounded state cache reproduces the recorded tick and
+  state hash at every recorded tick, equal to fresh `Movie::verify`/`ReplayRange` replay,
+  and the `tas studio` blocks (including `cache_entries`/`cache_bytes`/`cache_evictions`)
+  are byte-identical across separate processes and debug/release (M3-A29, M3-A31).
 
 These tests do **not** establish determinism for a real Mega Drive backend. That
 requires differential tests against a trusted reference, including floating-point
@@ -114,9 +118,9 @@ from the embedded checkpoint in a fresh session — O(n) in the `until` boundary
 bounded by the v1 step limit — and verifies the whole prefix as well as the window;
 `chronofork tas play|verify --from/--until` prints the summary block plus `range_from`,
 `range_until`, `prefix_steps`, `window_steps` and `replayed_steps` (no per-step blocks).
-Forward single-tick advance and rewind are new invocations, not carried state: each
-re-simulates from the embedded checkpoint and reports the same outcome as a first-ever
-invocation at the same range. Branch comparison (`chronofork tas compare
+In the ranged-replay surface, forward single-tick advance and rewind are new invocations,
+not carried state: each re-simulates from the embedded checkpoint and reports the same
+outcome as a first-ever invocation at the same range. Branch comparison (`chronofork tas compare
 --movie/--against`) reads the recorded `(outcome tick, state hash)` records by index and
 never re-simulates; it reports the first divergent index, tick and hash, and reports
 step-count and embedded-checkpoint (start tick/state hash) mismatches separately, with
@@ -127,10 +131,11 @@ artifacts under the ignored `.research/m3-tas-inc2/verification/` path, and the 
 [quality gates](../quality/quality-gates.md) result. [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)
 is the canonical contract.
 
-Deferred: an in-process rewind buffer/state cache and interactive stepping,
-checkpoint-reference movies, rerecord and branch editing, real-hardware input TAS (the
-Mega Drive `step` ignores input), import/export adapters, compression/encryption and
-HTTP/MCP/GUI/daemon.
+Deferred: checkpoint-reference movies, rerecord and branch editing, real-hardware input
+TAS (the Mega Drive `step` ignores input), import/export adapters, compression/encryption
+and HTTP/MCP/GUI/daemon. The in-process rewind state cache and interactive stepping
+contract is implemented and verified below
+([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md)).
 
 **Implemented and verified v2 anchors and anchored seek (t7 PASS, 2026-11-15).**
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) adds the
@@ -149,8 +154,31 @@ limits are 2,000,000 steps, 65,536 anchors and 48 MiB cumulative anchor snapshot
 the existing 256 MiB file bound. Evidence: M3-A18–A21 and M3-A24–A25 in the [format-v2
 acceptance plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
 `.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
-result. M3 remains incomplete: rewind cache/interactive stepping, rerecord/branch editing
-and real-hardware input TAS are still deferred.
+result. M3 remains incomplete: rerecord/branch editing and real-hardware input TAS are
+still deferred.
+
+**Implemented and verified in-process rewind state cache and interactive stepping (t5 PASS,
+2026-11-15).** [ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) adds a
+bounded, session-layer cache of canonical states captured after verified recorded steps,
+keyed by recorded step index and held only for the process lifetime. Rewinding to an exact
+recorded tick restores the greatest verified cached state at or before the target — or the
+embedded checkpoint when the target precedes the earliest cached state, including after
+eviction or with caching disabled — and replays the recorded inputs forward through the
+target, verifying every recorded expectation and reporting the exact first divergence. The
+cost is proportional to the distance from the chosen start state: there is no O(1),
+random-access or reverse-execution seek, no interpolation, and no state carried across
+invocations. The interactive surface is a stdin-driven `chronofork tas studio --movie
+<FILE>` process that owns exactly one explicit in-process player, verifies expectations on
+every forward step, prints stable `key=value` blocks and writes no storage root, cache or
+file. The cache uses a crate-private session capture/restore path that allocates no snapshot
+identity and does not grow the session checkpoint map; v2 anchors are not used as cache
+seeds. Defaults are a one-step capture interval, 256 entries and 16 MiB, with maxima of
+4,194,304 interval, 65,536 entries and 64 MiB. Evidence: M3-A28–A31 and M3-A33 in the
+[M3 rewind acceptance plan](../quality/m3-rewind-acceptance.md) (t5 PASS, 2026-11-15), raw
+artifacts under the ignored `.research/m3-rewind/verification/` path and the dated
+[quality gates](../quality/quality-gates.md) result. The acceptance claim is the
+deterministic synthetic backend on Linux; no persistent or cross-process cache, hardware
+rewind or O(1) seek is claimed.
 
 ## Snapshot format
 
@@ -209,16 +237,19 @@ best-effort parse.
   verified for the deterministic synthetic backend (M3-A18–A27, t7 PASS 2026-11-15;
   [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
   [format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md)). Deferred and
-  unimplemented: an in-process rewind buffer/state cache and interactive stepping,
-  checkpoint-reference movies, rerecord/branch editing, real-hardware input TAS (the Mega
-  Drive `step` ignores input), import/export adapters, compression/encryption and
-  HTTP/MCP/GUI/daemon.
+  unimplemented: checkpoint-reference movies, rerecord/branch editing, real-hardware input
+  TAS (the Mega Drive `step` ignores input), import/export adapters,
+  compression/encryption and HTTP/MCP/GUI/daemon.
 - Branch comparison is a recorded-expectation diff, not a verification or determinism
   proof; it cannot detect a build whose emulation changed, and metadata is never an
   equality field.
-- No frame pacing and no in-process rewind/state cache. Seek is bounded re-simulation from
-  the embedded checkpoint or, when a v2 anchor qualifies, from that anchor; no O(1)
-  random-access seek exists.
+- No frame pacing or host-time run loop. The in-process rewind state cache and
+  `chronofork tas studio` stepping surface are implemented and verified
+  ([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md); M3-A28–A34), but
+  rewind is restore-plus-replay from a verified cached state or the embedded checkpoint
+  (bounded re-simulation; no O(1)/random-access or reverse-execution seek), the cache is
+  process-local and per-player (no persistent, shared or cross-process cache), and the
+  claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
   slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend

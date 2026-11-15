@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use chronofork_backend_api::{BackendDescriptor, BackendFactory, StepOutcome};
+use chronofork_backend_api::{BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
 
 use crate::error::SessionError;
@@ -244,6 +244,57 @@ impl SessionManager {
     /// Restores a session's creation state.
     pub fn reset(&mut self, session: SessionId) -> Result<(), SessionError> {
         self.session_mut(session)?.reset()
+    }
+
+    /// Captures a session's canonical backend state without creating a checkpoint.
+    ///
+    /// This is the crate-internal capture path of the in-process rewind cache
+    /// (ADR-0007 §2.5). It allocates no [`SnapshotId`], inserts nothing into the
+    /// session's snapshot map and does not advance its allocator; the returned
+    /// value is a transient canonical state, not a user-visible checkpoint. The
+    /// only caller is the rewind player.
+    pub(crate) fn capture_session_state(
+        &mut self,
+        session: SessionId,
+    ) -> Result<BackendSnapshot, SessionError> {
+        self.session_mut(session)?.capture_state()
+    }
+
+    /// Restores a canonical state captured by [`Self::capture_session_state`].
+    ///
+    /// The restore goes through the same backend method and the same
+    /// compatibility mapping as [`Self::restore`], so `validate_envelope`
+    /// remains the single compatibility predicate.
+    pub(crate) fn restore_session_state(
+        &mut self,
+        session: SessionId,
+        state: &BackendSnapshot,
+    ) -> Result<(), SessionError> {
+        self.session_mut(session)?.restore_state(state)
+    }
+
+    /// Drops a session's stored checkpoint records while retaining its creation
+    /// state.
+    ///
+    /// The in-process player owns a private imported session that exposes no
+    /// checkpoint identity; this keeps its snapshot map empty (M3-A28.2)
+    /// instead of retaining a duplicate of the canonical floor state. This is
+    /// not a public session operation.
+    pub(crate) fn discard_session_checkpoints(
+        &mut self,
+        session: SessionId,
+    ) -> Result<(), SessionError> {
+        self.session_mut(session)?.discard_snapshot_records();
+        Ok(())
+    }
+
+    /// Returns a session's checkpoint-record count and next allocator value.
+    #[cfg(test)]
+    pub(crate) fn session_snapshot_identity(
+        &self,
+        session: SessionId,
+    ) -> Result<(usize, u64), SessionError> {
+        self.session(session).map(Session::snapshot_identity)
     }
 
     /// Advances a session by one backend-defined quantum.

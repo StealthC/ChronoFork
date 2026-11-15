@@ -10,6 +10,7 @@ pub mod error;
 pub mod lineage;
 pub mod manager;
 pub mod movie;
+pub mod player;
 pub mod replay;
 pub mod session;
 pub mod snapshot;
@@ -23,6 +24,11 @@ pub use movie::{
     MAX_EMBEDDED_SNAPSHOT_BYTES, MAX_MOVIE_BYTES, MAX_STEPS, MAX_V2_STEPS, MOVIE_FORMAT_VERSION,
     MOVIE_INPUT_SCHEMA_VERSION, Movie, MovieAnchor, MovieError, MovieMeta, MovieStep, ReplayReport,
     V2_FIXED_OVERHEAD, V2_MOVIE_FORMAT_VERSION, V2_MOVIE_INPUT_SCHEMA_VERSION, V2_STEP_RECORD_LEN,
+};
+pub use player::{
+    CacheOptions, CacheStats, DEFAULT_CACHE_BYTE_LIMIT, DEFAULT_CACHE_CAPACITY,
+    DEFAULT_CACHE_INTERVAL_STEPS, MAX_CACHE_BYTE_LIMIT, MAX_CACHE_CAPACITY, Player, PlayerError,
+    PlayerState, STATE_CACHE_ENTRY_OVERHEAD, SeekProgress, SeekReport, StartKind,
 };
 pub use replay::{ComparisonReport, ComparisonVerdict, ReplayOutcome, ReplayRange, compare_movies};
 pub use session::{Session, SessionInspection, SessionState};

@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 use chronofork_sessions::{
-    ComparisonReport, ComparisonVerdict, LoadedSnapshot, MAX_ANCHORS, MAX_MOVIE_BYTES,
-    MAX_NAME_BYTES, MAX_STEPS, MAX_V2_STEPS, Movie, MovieError, MovieMeta, ReplayOutcome,
-    ReplayRange, SnapshotRepository, compare_movies,
+    ComparisonReport, ComparisonVerdict, DEFAULT_CACHE_BYTE_LIMIT, DEFAULT_CACHE_CAPACITY,
+    DEFAULT_CACHE_INTERVAL_STEPS, LoadedSnapshot, MAX_ANCHORS, MAX_CACHE_BYTE_LIMIT,
+    MAX_CACHE_CAPACITY, MAX_MOVIE_BYTES, MAX_NAME_BYTES, MAX_STEPS, MAX_V2_STEPS, Movie,
+    MovieError, MovieMeta, ReplayOutcome, ReplayRange, SnapshotRepository, compare_movies,
 };
 
 use crate::{
@@ -40,17 +41,18 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some("play") => tas_play(&args[1..]),
         Some("verify") => tas_verify(&args[1..]),
         Some("compare") => tas_compare(&args[1..]),
+        Some("studio") => crate::studio::run(&args[1..]),
         Some("--help" | "-h") => {
             ensure(args.len() == 1, "`tas --help` takes no other arguments")?;
             print_help();
             Ok(())
         }
         None => Err(CliError(
-            "`tas` requires a subcommand: record, play, verify or compare".to_owned(),
+            "`tas` requires a subcommand: record, play, verify, compare or studio".to_owned(),
         )
         .into()),
         Some(other) => Err(CliError(format!(
-            "unknown `tas` subcommand `{other}`; expected record, play, verify or compare"
+            "unknown `tas` subcommand `{other}`; expected record, play, verify, compare or studio"
         ))
         .into()),
     }
@@ -692,7 +694,7 @@ fn tas_compare(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 /// Reads one movie file with an explicit size bound applied before decoding.
-fn read_movie_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+pub(crate) fn read_movie_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
     let file = File::open(path).map_err(|error| {
         CliError(format!(
             "failed to open movie `{}`: {error}",
@@ -907,8 +909,8 @@ fn write_divergence_block(
     let _ = writeln!(output, "observed={observed}");
 }
 
-fn print_help() {
-    println!("chronofork {VERSION} — tas record|play|verify|compare");
+pub(crate) fn print_help() {
+    println!("chronofork {VERSION} — tas record|play|verify|compare|studio");
     println!();
     println!("Records, replays, verifies and compares canonical `.cfmovie` input sequences on");
     println!("the deterministic synthetic test backend. A movie embeds its canonical");
@@ -927,11 +929,13 @@ fn print_help() {
     println!("`verify` imports the embedded checkpoint and still verifies every step. v1 files");
     println!("stay readable and there is no migration.");
     println!();
-    println!("These are not implemented: an in-process rewind/state cache and interactive");
-    println!("stepping, rerecord and branch editing, real-hardware input TAS (the Mega Drive");
-    println!("slice ignores input), TAS import/export adapters (such as BizHawk BK2) and");
-    println!("HTTP/MCP/GUI/daemon. The acceptance backend is the deterministic synthetic");
-    println!("fixture; this is one increment of M3, which is not complete.");
+    println!("These are not implemented: rerecord and branch editing, real-hardware input TAS");
+    println!("(the Mega Drive slice ignores input), TAS import/export adapters (such as BizHawk");
+    println!("BK2) and HTTP/MCP/GUI/daemon. No persistent/on-disk rewind cache, shared cache");
+    println!("or O(1)/random-access seek exists. `tas studio` is an in-process rewind and");
+    println!("interactive-stepping surface implemented under ADR-0007 but not independently");
+    println!("verified; the acceptance backend is the deterministic synthetic fixture, and");
+    println!("this is one increment of M3, which is not complete.");
     println!();
     println!("Usage:");
     println!("  chronofork tas record --movie <FILE> [--steps <N>] [--input <U32>]");
@@ -942,6 +946,8 @@ fn print_help() {
     println!("  chronofork tas play --movie <FILE> [--from <TICK>] [--until <TICK>]");
     println!("  chronofork tas verify --movie <FILE> [--from <TICK>] [--until <TICK>]");
     println!("  chronofork tas compare --movie <FILE> --against <FILE>");
+    println!("  chronofork tas studio --movie <FILE> [--cache-interval <N>]");
+    println!("                        [--cache-capacity <N>] [--cache-bytes <N>]");
     println!();
     println!("record:");
     println!("  --movie <FILE>     Required output movie file, published atomically on success");
@@ -1011,4 +1017,43 @@ fn print_help() {
     println!("`common_steps`), always with both step counts, and exits 1. Comparison reads");
     println!("recorded expectations only and never re-simulates; movie metadata, format");
     println!("version, anchors and input masks never decide equality.");
+    println!();
+    println!("studio:");
+    println!("  --movie <FILE>       Required movie file, opened read-only and never rewritten");
+    println!("  --cache-interval <N> Capture a verified state every N recorded steps (default");
+    println!(
+        "                       {DEFAULT_CACHE_INTERVAL_STEPS}; 0 disables capture; max {MAX_STEPS})"
+    );
+    println!("  --cache-capacity <N> Maximum cached states, excluding the floor (default");
+    println!("                       {DEFAULT_CACHE_CAPACITY}, max {MAX_CACHE_CAPACITY})");
+    println!("  --cache-bytes <N>    Byte budget for the deterministic payload + 256 metric");
+    println!(
+        "                       (default {DEFAULT_CACHE_BYTE_LIMIT}, max {MAX_CACHE_BYTE_LIMIT})"
+    );
+    println!("  Reads one command per stdin line, separated by ASCII whitespace and");
+    println!("  case-sensitive: next, back, goto <TICK>, state, help, quit. Blank lines");
+    println!("  print nothing; EOF behaves exactly like quit. Every command prints exactly");
+    println!("  one key=value block, separated from the previous block by one blank line:");
+    println!("    record=seek: tick, applied_steps, target_tick, start (floor|cache),");
+    println!("      start_tick, start_step (only when start=cache), replayed_steps,");
+    println!("      state_hash, cache_entries, cache_bytes, cache_evictions");
+    println!("    record=state: tick, applied_steps, state_hash, movie_version, input_schema,");
+    println!("      start_tick, end_tick, steps, cache_interval, cache_capacity,");
+    println!("      cache_byte_limit, cache_entries, cache_bytes, cache_evictions");
+    println!("    record=help: one `command=` line for each command");
+    println!("    record=quit: reason (command|eof), tick, applied_steps");
+    println!("    record=divergence: diverged=1, tick, step, expected, observed, start,");
+    println!("      start_tick, replayed_steps, cache_entries, cache_bytes");
+    println!("  A seek restores the nearest verified cached state at or before the target,");
+    println!("  or the movie's embedded checkpoint, and replays the recorded inputs forward,");
+    println!("  verifying every recorded tick and state hash. Rewind is not O(1) and not");
+    println!("  random access: its cost is proportional to the distance from the start");
+    println!("  state, and disabling capture (interval 0) or eviction increases that");
+    println!("  distance. A state-hash divergence prints the divergence block and exits 1;");
+    println!("  every other typed failure (invalid flag or command, malformed or out-of-range");
+    println!("  target, next at the end, back at the start, tick mismatch, replay failure)");
+    println!("  exits 1 with a stderr diagnostic and no block for that line. Studio writes");
+    println!("  no movie, cache, checkpoint, storage root or metadata file; nothing persists.");
+    println!("  The acceptance backend is the deterministic synthetic fixture, and this is");
+    println!("  one increment of M3, which is not complete.");
 }

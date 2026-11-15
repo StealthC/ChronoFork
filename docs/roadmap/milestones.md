@@ -115,9 +115,9 @@ The checked M2 items rest on the executed M2-A criteria, not on that NFR clause.
 
 ## M3 — TAS and replay
 
-Status: the first, second and third increments are implemented and independently
-verified for the deterministic synthetic backend (M3-T4, M3-T5 and the t7 format-v2
-verification PASS, 2026-11-15). The first increment delivered the canonical v1 `.cfmovie`
+Status: the first, second, third and fourth increments are implemented and independently
+verified for the deterministic synthetic backend (M3-T4, M3-T5, the t7 format-v2
+verification PASS and the t5 rewind verification PASS, 2026-11-15). The first increment delivered the canonical v1 `.cfmovie`
 format ([ADR-0004](../adr/0004-tas-movie-format.md)), record/playback of a per-tick input
 sequence, replay verification with first-divergence reporting, restart and M2-seeded
 replay, and the `chronofork tas record/play/verify` CLI. The second increment delivered
@@ -130,11 +130,11 @@ multi-device input ([ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-dev
 The checked subitems below are backed by the executed [M3 acceptance
 plan](../quality/m3-tas-replay-acceptance.md) (M3-A1–A12), the executed [increment-2
 acceptance plan](../quality/m3-partial-replay-acceptance.md) (M3-A13–A17), the executed
-[format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md) (M3-A18–A27) and the
-dated [quality gates](../quality/quality-gates.md) results. M3 is **not complete**: an
-in-process rewind buffer/state cache and interactive stepping, rerecord, branch editing,
-real-hardware input TAS, import/export adapters, checkpoint-reference movies and
-HTTP/MCP/GUI/daemon remain deferred and unchecked.
+[format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md) (M3-A18–A27), the
+executed [M3 rewind acceptance plan](../quality/m3-rewind-acceptance.md) (M3-A28–A34) and
+the dated [quality gates](../quality/quality-gates.md) results. M3 is **not complete**:
+rerecord, branch editing, real-hardware input TAS, import/export adapters,
+checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred and unchecked.
 
 **Increment 3 implemented and independently verified (t7 PASS, 2026-11-15).**
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) is accepted,
@@ -144,9 +144,21 @@ validated against the recorded step tick and state hash, nearest-anchor seek in 
 ranged replay path (reporting `anchored=1`, `anchor_step`, `anchor_tick` and
 `prefix_verified=0`), and schema-2 multi-device input (four digital ports, four analog
 axes and a keyboard bitmap) consumed deterministically by the synthetic backend. The
-checked v2 subitems below are backed by M3-A18–A27; in-process rewind/state cache and
-interactive stepping, rerecord/branch editing and real-hardware input TAS remain deferred
-and unchecked. M3 is not complete.
+checked v2 subitems below are backed by M3-A18–A27; rerecord/branch editing and
+real-hardware input TAS remain deferred and unchecked. M3 is not complete.
+
+**Increment 4 implemented and independently verified (t5 PASS, 2026-11-15).**
+[ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) is accepted,
+implemented and verified for the deterministic synthetic backend. The verified scope is a
+bounded session-layer `Player`/`StateCache` with a private one-session manager,
+deterministic rewind by restoring the nearest verified cached state (or the embedded
+checkpoint) and replaying recorded inputs with exact first-divergence reporting, and the
+stdin-driven `chronofork tas studio` stepping surface with fixed `key=value` blocks; the
+cache uses a crate-private capture path that allocates no snapshot identity, is bounded by
+count and the deterministic `payload+256` metric, and evicts lowest-step-first. The
+rewind subitem below is checked on the executed [M3-A28–A34
+rows](../quality/m3-rewind-acceptance.md) (t5 PASS, 2026-11-15); rerecord/branch editing
+and real-hardware input TAS remain deferred and unchecked. M3 is not complete.
 
 - [x] Versioned canonical movie format.
   - [x] Single-file `.cfmovie` v1 with magic, format and input-schema versions,
@@ -205,8 +217,12 @@ and unchecked. M3 is not complete.
   - [x] Nearest-anchor-at-or-before-prefix seek in the single ranged replay path,
         reporting anchored fields and `prefix_verified=0`; full-range `verify` remains
         complete and v1/anchor-less fallback is unchanged (M3-A21, M3-A24).
-- [ ] In-process rewind buffer/state cache and interactive stepping — deferred;
-      session-layer decision, not implemented and not part of the v2 design.
+- [x] In-process rewind buffer/state cache and interactive stepping — implemented as the
+      session-layer `Player`/`StateCache` and `chronofork tas studio`, and independently
+      verified for the deterministic synthetic backend ([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md);
+      [M3 rewind acceptance plan](../quality/m3-rewind-acceptance.md) rows M3-A28–A34,
+      t5 PASS 2026-11-15). The cache is process-local; no persistent/shared cache or
+      O(1) seek is claimed.
 - [ ] Rerecord and branch editing — deferred; v1/v2 carry only passive parent-movie
       metadata and the CLI exposes no branch editing.
 - [x] Multi-controller, ports, analog and keyboard input — implemented as schema-2
@@ -265,11 +281,13 @@ input are done and backed by the executed [M3 acceptance
 plan](../quality/m3-tas-replay-acceptance.md), the executed [increment-2 acceptance
 plan](../quality/m3-partial-replay-acceptance.md), the executed [format-v2 acceptance
 plan](../quality/m3-format-v2-acceptance.md) and the dated [quality
-gates](../quality/quality-gates.md) results. An in-process rewind buffer/state cache and
-interactive stepping, rerecord, branch editing, real-hardware input TAS, import/export
-adapters, checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred. The v2
-increment is implemented and verified for the deterministic synthetic backend only; it
-does not complete M3. M1's differential
+gates](../quality/quality-gates.md) results. A fourth increment covering the in-process
+rewind state cache, deterministic rewind and the interactive `chronofork tas studio`
+stepping is implemented and independently verified (M3-A28–A34, t5 PASS 2026-11-15).
+Rerecord, branch editing, real-hardware input TAS, import/export adapters,
+checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred. The increments are
+verified for the deterministic synthetic backend only; they do not complete M3. M1's
+differential
 item is ticked on the current PASS 3/3 evidence: three synthetic ROMs match the pinned
 oracle's projected address streams, selected final
 state and negative controls, and the masked-ROM control at the CLI default quantum 64

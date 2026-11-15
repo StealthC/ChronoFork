@@ -151,27 +151,16 @@ fn validate_range(movie: &Movie, from: Tick, until: Tick) -> Result<ReplayRange<
     if from > until {
         return Err(MovieError::RangeInverted { from, until });
     }
-    if from != start_tick && !is_recorded_tick(movie, from) {
+    if from != start_tick && movie.recorded_step_index(from).is_none() {
         return Err(MovieError::RangeFromUnaligned { tick: from });
     }
-    if until != start_tick && until != end_tick && !is_recorded_tick(movie, until) {
+    if until != start_tick && until != end_tick && movie.recorded_step_index(until).is_none() {
         return Err(MovieError::RangeUntilUnaligned { tick: until });
     }
     if from == until && movie.step_count() != 0 {
         return Err(MovieError::RangeEmpty { from, until });
     }
     Ok(ReplayRange { movie, from, until })
-}
-
-/// Returns whether `tick` is one of the movie's recorded outcome ticks.
-///
-/// Recorded ticks are strictly increasing (already validated by the reader and
-/// the validating constructor), so a binary search is exact and allocation-free.
-fn is_recorded_tick(movie: &Movie, tick: Tick) -> bool {
-    movie
-        .steps()
-        .binary_search_by_key(&tick.raw(), |step| step.outcome_tick().raw())
-        .is_ok()
 }
 
 /// Executes one validated window against a fresh imported session.

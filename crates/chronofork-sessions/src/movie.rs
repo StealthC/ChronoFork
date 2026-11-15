@@ -737,6 +737,21 @@ impl Movie {
         &self.anchors
     }
 
+    /// Returns the zero-based recorded step whose outcome tick equals `tick`.
+    ///
+    /// Recorded ticks are strictly increasing, already validated by both the
+    /// reader and the validating constructors, so this single binary search is
+    /// the aligned-tick rule shared by ranged replay and the rewind player. It
+    /// performs no allocation, executes no step and returns `None` when `tick`
+    /// is not one of the recorded outcome ticks; the movie start tick is not a
+    /// recorded step.
+    #[must_use]
+    pub(crate) fn recorded_step_index(&self, tick: Tick) -> Option<usize> {
+        self.steps
+            .binary_search_by_key(&tick.raw(), |step| step.outcome_tick().raw())
+            .ok()
+    }
+
     /// Returns the nearest anchor whose recorded step tick is at or before `tick`.
     ///
     /// This is the read-only selection a replay uses to start from the greatest
@@ -3580,5 +3595,37 @@ mod tests {
                 if found == crate::movie::V2_MOVIE_INPUT_SCHEMA_VERSION
                     && supported == MOVIE_INPUT_SCHEMA_VERSION
         ));
+    }
+
+    #[test]
+    fn recorded_step_index_is_the_single_alignment_lookup() {
+        let movie = movie();
+        assert_eq!(movie.recorded_step_index(Tick::from_raw(1)), Some(0));
+        assert_eq!(movie.recorded_step_index(Tick::from_raw(3)), Some(2));
+        assert_eq!(movie.recorded_step_index(Tick::from_raw(4)), Some(3));
+        // The movie start tick is not a recorded step.
+        assert_eq!(movie.recorded_step_index(Tick::from_raw(0)), None);
+        assert_eq!(movie.recorded_step_index(Tick::from_raw(5)), None);
+
+        let gapped = Movie::from_parts(
+            meta(),
+            checkpoint_bytes(),
+            vec![
+                MovieStep::new(
+                    Tick::from_raw(10),
+                    InputFrame::new(0),
+                    StateHash::from_bytes([1; 32]),
+                ),
+                MovieStep::new(
+                    Tick::from_raw(20),
+                    InputFrame::new(1),
+                    StateHash::from_bytes([2; 32]),
+                ),
+            ],
+        )
+        .expect("gapped movie");
+        assert_eq!(gapped.recorded_step_index(Tick::from_raw(10)), Some(0));
+        assert_eq!(gapped.recorded_step_index(Tick::from_raw(20)), Some(1));
+        assert_eq!(gapped.recorded_step_index(Tick::from_raw(15)), None);
     }
 }

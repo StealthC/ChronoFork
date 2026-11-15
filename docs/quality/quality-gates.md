@@ -342,6 +342,77 @@ raw byte flip is reported as a checksum mismatch. Full details, commands, exit c
 hashes are in the ignored artifacts above; this dated block is a gate-result snapshot and
 the per-target counts stay in the evidence.
 
+## 2026-11-15 — M3 rewind state cache and interactive stepping, increment 4 (independent verification)
+
+Independent verifier PASS for the uncommitted increment-4 tree. Tree under test:
+`b8b0f935e40e08854c2155f1b5208f6fc91424d8` (branch `agent/m3-complete`) plus the
+increment-4 working-tree paths; the exact SHA-256 set and diff hash are in
+`.research/m3-rewind/verification/tree/` (`changed-files.sha256.txt`,
+`working-tree.diff`, `state-comparison.txt`). The implementation paths are
+`crates/chronofork-sessions/src/{lib,manager,movie,replay,session}.rs`,
+`crates/chronofork-sessions/src/player.rs`, `crates/chronofork-sessions/src/player/cache.rs`,
+`crates/chronofork-sessions/tests/player.rs`,
+`crates/chronofork-cli/src/{main,tas,studio}.rs`,
+`crates/chronofork-cli/tests/studio.rs`, with the increment-4 documentation paths. The
+verifier's only tracked edit is this dated block; no commit, push or tag was made. Every
+Cargo command used `CARGO_HOME=/tmp/t7-cargo`.
+
+Authoritative raw evidence (ignored paths): `.research/m3-rewind/verification/`
+(`SUMMARY.txt`, `target-matrix.txt`, `rows/A28-*.txt`–`rows/A34-*.txt`,
+`rows/M3-A1-A27-regression.txt`, `audit/`, `targets/`, `cli/`, `studio/`, `demos/`,
+`probes/`, `gate/`, `tree/`, `MANIFEST.sha256`); pre-change baseline:
+`.research/m3-rewind/baseline/` (captured at the same HEAD with a clean tree). M3-A28–A34
+were executed with no failed criterion (206/206 studio-transcript assertions PASS). The
+durable docs and the CLI help still carry pre-verification wording (`planned - not yet
+executed` / `not implemented` / "not independently verified") until the staged
+documentation-promotion task updates them; this block describes only what the artifacts
+prove. M3 is **not** complete: rerecord/branch editing and real-hardware input TAS remain
+deferred and unchecked.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 35 targets, 458 passed, 0 failed, 0 ignored; no target below the 33-target/422-passed baseline (counts in `target-matrix.txt`) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed"; same 35/458/0/0 |
+| Whitespace | `git diff --check` | exit 0 |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 runs + 3 direct-binary runs, 0-byte program stderr, byte-identical to the pre-change baseline (986 B, `9b4dd564…4652`) |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 runs + 3 direct-binary runs, 0-byte program stderr, byte-identical to the baseline (1582 B, `912a5bb6…8996`) |
+| M3-A28–A34 | `cargo test -p chronofork-sessions --test player`, `--lib`, `--release --test player`; `cargo test -p chronofork-cli --test studio`, `--release --test studio`; scripted `tas studio` transcripts | every target and row exit 0/passed; 74 sessions-lib, 16 player, 11 studio, 16 release-player, 11 release-studio passed |
+| Isolation/determinism | two-process and debug/release studio scripts; external-manager and two-player library tests | byte-identical blocks, equal cache metrics, no pre-existing session mutation, no writes |
+| M2/M3-A1–A27 regression | the M2 target matrix, M3-A1–A17/A18–A27 targets, CLI session/storage transcripts | every target at or above the baseline counts; 32/32 transcripts and 8/8 movie fixtures byte-identical |
+| State probe | the baseline `session save/load` probe on two independent roots | `chronofork.store`, `session-keys` and `checkpoint.cfsnap` byte-identical to the baseline and across roots; `tick=7`, `state_hash=a4c253d2…c275` identical |
+| M1 oracle differential | `python3 scripts/oracle-diff.py --skip-build` | exit 0; traces 3/3, final states 3/3, negative controls 3/3, scheduler/mask-gating controls 3/3 |
+| Suppression/dependency | suppression, structural and dependency scans | no added `#[allow]`/`#[ignore]`/`unsafe`/`todo!`; no removed assertion; `Cargo.toml`/`Cargo.lock` diff 0 bytes; `cargo tree -d` clean; Mega Drive/core/backend-api/test-backend diff 0 bytes |
+
+M3-A28–A34 executed with no failed criterion: cache capture keyed to verified steps with
+no `SnapshotId` allocation or snapshot-map growth; cadence `N-1, 2N-1, …`; count/byte bounds,
+deterministic evict-lowest-first and the exact `payload+256` metric; deterministic rewind
+equal to fresh `Movie::verify`/`ReplayRange` replay at all 12 recorded ticks and at every
+target class (cached, cached+replay, floor fallback, after eviction, caching disabled,
+zero-step, current position); exact first-divergence attribution from floor and cache;
+the fail-closed `tas studio` process contract, five block types, EOF/quit, read-only
+non-mutation, 95 runs with only exit codes 0/1; isolation, cross-process and debug/release
+equality; one player/cache implementation, one alignment rule, one codec/predicate/import
+path, private cache and `pub(crate)` capture accessors; full gate, demos, v1/v2/M1/M2
+regression; and scope honesty.
+
+Non-blocking observations recorded in the evidence SUMMARY: (1) the acceptance plan,
+ADR-0007 and the architecture/requirements/roadmap docs still say the increment is
+planned/not implemented (and `tas --help` says "not independently verified"); these
+understate the verified tree but make no false capability claim and must be promoted by the
+separate documentation task using this evidence; (2) the top-level `chronofork help` output
+adds two usage lines and three descriptive lines for `tas studio`; this additive help-only
+change documents the new surface but is not enumerated in M3-A33's declared-exception list
+and should be recorded as a declared addition (or the row amended) by that task; (3) the
+recorded cache-path transcript shows deterministic evict-lowest-before-insert behaviour
+(`goto 12` floor/replay 12, evictions 8; `goto 8` cache start step 1 because repeated
+captures evict lower indices) — intended, documented and asserted. Full details, commands,
+exit codes and hashes are in the ignored artifacts above; this dated block is a gate-result
+snapshot and the per-target counts stay in the evidence.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.

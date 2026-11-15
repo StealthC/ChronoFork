@@ -195,6 +195,39 @@ The acceptance suite in `crates/chronofork-sessions/tests/acceptance.rs` covers
 invariants 1–6 directly. Snapshot corruption and version rejection are covered by
 unit tests in `crates/chronofork-sessions/src/snapshot.rs`.
 
+## In-process rewind state cache and player (implemented; ADR-0007)
+
+> Status: **implemented and independently verified** for the deterministic synthetic
+> backend (M3-A28–M3-A34, t5 PASS, 2026-11-15). The contract is
+> [ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) (**Accepted**,
+> owner-approved 2026-11-15); the executed rows and residual limits are in the
+> [M3 rewind acceptance plan](../quality/m3-rewind-acceptance.md). Raw evidence is under
+> the ignored `.research/m3-rewind/verification/` path.
+
+The implemented session-layer consequences are:
+
+- A `Player` in `chronofork_sessions::player` owns a **private** `SessionManager` with
+  exactly one imported session, the decoded movie, the current verified position and one
+  bounded state cache. The one-session rule is structural: the player cannot address a
+  session from a caller's manager, and the verifier confirmed an external manager and
+  session are untouched by player creation, seeks and report generation.
+- A cache entry is a canonical backend state captured after a verified recorded step,
+  keyed by that step's index. Capture uses crate-private
+  `SessionManager::capture_session_state`/`restore_session_state` accessors (plus a
+  `discard_session_checkpoints` helper used at open) that allocate no `SnapshotId`,
+  insert nothing into `Session::snapshots` and leave the snapshot-id allocator unchanged;
+  the session checkpoint map and its identity contract are unchanged. Entries are bounded
+  by count and by the deterministic `payload + 256` byte metric (defaults 256 entries /
+  16 MiB; maxima 65,536 / 64 MiB), evicted lowest recorded step first, and the embedded
+  checkpoint is retained as the outside-cache floor.
+- No global state, no backend-trait change, no capability bit and no storage or file
+  write are introduced. The cache is transient process memory; dropping the player drops
+  it. Nothing about durable checkpoints, snapshot identity, lineage or locking changes.
+- A seek restores the greatest verified cached state at or before the target (or the
+  floor) and replays recorded inputs forward, verifying every step; isolation,
+  first-divergence attribution and cross-process/debug-release determinism are verified by
+  M3-A29–A31.
+
 ## Concurrency rules
 
 The bootstrap exposes mutations through `&mut SessionManager` and `&mut Session`.
@@ -241,6 +274,11 @@ backend is adopted.
 ## Limitations
 
 - No background execution, run loop, frame pacing or wall-clock scheduling.
+- The in-process rewind state cache, player and `chronofork tas studio` stepping surface
+  are implemented and verified ([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md);
+  M3-A28–A34). Remaining limits: the cache is process-local and per-player (no persistent,
+  shared or cross-process cache), rewind is restore-plus-replay (no O(1)/random-access or
+  reverse-execution seek), and it covers only the deterministic synthetic backend on Linux.
 - No copy-on-write or memory-page sharing between forks.
 - Durable storage, named metadata, storage-backed rehydration and cooperative
   per-session writer ownership are implemented and verified. Remaining limits: no

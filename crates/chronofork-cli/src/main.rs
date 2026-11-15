@@ -24,6 +24,7 @@ use chronofork_sessions::{
 };
 use chronofork_test_backend::SyntheticBackendFactory;
 
+mod studio;
 mod tas;
 
 /// Crate version used by the help and version output.
@@ -129,6 +130,8 @@ fn print_usage() {
     println!("  chronofork tas play --movie <FILE> [--from <TICK>] [--until <TICK>]");
     println!("  chronofork tas verify --movie <FILE> [--from <TICK>] [--until <TICK>]");
     println!("  chronofork tas compare --movie <FILE> --against <FILE>");
+    println!("  chronofork tas studio --movie <FILE> [--cache-interval <N>]");
+    println!("                        [--cache-capacity <N>] [--cache-bytes <N>]");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
     println!();
@@ -142,6 +145,9 @@ fn print_usage() {
     println!("from the nearest embedded anchor by deterministic re-simulation, and `tas compare`");
     println!("diffs two recorded branches. Multi-device schema-2 input and anchor intervals are");
     println!("format v2, selected only by the v2 flags; plain records stay format v1.");
+    println!("`tas studio` reads stepping commands from stdin and keeps one in-process player");
+    println!("with a bounded state cache; rewind restores a verified state (or the embedded");
+    println!("checkpoint) and replays forward, so it is not O(1) random access.");
     println!("`chronofork tas --help` documents the flags, output blocks and the features that");
     println!("are deliberately not implemented.");
     println!();
