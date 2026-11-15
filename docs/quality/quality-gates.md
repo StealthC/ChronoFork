@@ -177,6 +177,106 @@ pending documentation promotion); no test, lint or assertion was weakened. Full 
 and hashes are in the ignored artifacts above; this dated block is a gate-result
 snapshot, and the per-target counts stay in the evidence.
 
+## 2026-11-15 — M3 partial replay/seek and branch comparison, second increment (independent verification)
+
+Independent verifier PASS for the uncommitted M3 increment-2 tree. Tree under test:
+`c6c502de54932459a1d3bc0cd0ada10ceba97043` plus the increment-2 working-tree paths
+(`crates/chronofork-sessions/src/replay.rs`, `crates/chronofork-sessions/src/{lib,movie}.rs`,
+`crates/chronofork-sessions/tests/replay.rs`, `crates/chronofork-cli/src/{main,tas}.rs`,
+`crates/chronofork-cli/tests/tas.rs`) and the owner-approved Fase A contract docs. The
+pre-existing top-level `README.md` working-tree change (owner-authorized, sha256
+`838398caac5547406f4f42078b9f66976bc985254e77c46ad61dfd6729a9d33b`) is excluded from
+increment scope. No commit or push. Every Cargo command used `CARGO_HOME=/tmp/t7-cargo`.
+
+Authoritative raw evidence (ignored paths): `.research/m3-tas-inc2/verification/`
+(`SUMMARY.txt`, `target-matrix.txt`, `A13-*.txt`–`A17-*.txt`,
+`A13-A17-execution-record.txt`, `logs/`, `targets/`, `cli/`, `demos/`, `probes/`,
+`MANIFEST.sha256`); pre-change baseline: `.research/m3-tas-inc2/baseline/`. The
+acceptance rows are executed and passed in that evidence; the Fase A
+[M3 partial-replay acceptance plan](m3-partial-replay-acceptance.md) remains `planned -
+not yet executed` until the staged documentation-promotion task updates it. M3 is **not**
+complete: checkpoint anchors and format v2, an in-process rewind buffer or state cache,
+interactive stepping, rerecord/branch editing, multi-controller/ports/analog/keyboard
+input, real-hardware input TAS, import/export adapters and HTTP/MCP/GUI/daemon remain
+deferred.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 0 failed, 0 ignored; no target below the increment baseline (counts in `target-matrix.txt`) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed" |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the increment baseline |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the increment baseline |
+| Whitespace | `git diff --check` | exit 0 |
+| M2 regression | the M2 target matrix plus `cargo test -p chronofork-cli --test session_storage` | every target exit 0; counts equal the increment baseline |
+| State probe | the baseline `session save/load` probe on two independent roots | checkpoint SHA-256 `120e83d7…ca1e` and `tick=7`/`state_hash=4666a724…9ed5` identical to baseline |
+| M3 v1 regression | increment-1 movies replayed with default and ranged paths; fresh recording byte-compared | v1 bytes and default CLI blocks identical to baseline; `MOVIE_FORMAT_VERSION`/`MOVIE_INPUT_SCHEMA_VERSION` still 1 |
+
+M3-A13–A17 executed with no failed criterion: prefix-always-verified `(from, until]`
+window replays equal to the recorded boundary hashes; seek, one-step forward advance and
+rewind as separate invocations with no carried state; typed range rejection (before-start,
+after-end, inverted, unaligned, empty and `u64::MAX` boundaries) before checkpoint import
+with no session or step; recorded-expectation comparison with separate checkpoint,
+exact-first-divergence and length verdicts where metadata and input masks never decide
+equality and nothing re-simulates; non-mutation of source sessions and movie bytes;
+v1/M2 non-regression; the CLI `play`/`verify --from/--until` and
+`tas compare --movie/--against` process contract, help and corruption handling.
+Non-blocking observations are recorded in the evidence SUMMARY (process-level message
+spelling refinements and the pending documentation promotion); no test, lint or assertion
+was weakened. Full details and hashes are in the ignored artifacts above; this dated block
+is a gate-result snapshot, and the per-target counts stay in the evidence.
+
+## 2026-11-15 — M3 increment 2 final verification after documentation promotion (t7)
+
+Final independent verifier PASS for the increment-2 tree and its promoted documentation.
+Tree under test: `c6c502de54932459a1d3bc0cd0ada10ceba97043` (branch `main`, equal to
+`origin/main`; `git ls-remote origin refs/heads/main` reports the same commit) plus the
+increment-2 working-tree implementation/test paths (sessions `replay.rs`, `lib.rs`,
+`movie.rs`, `tests/replay.rs`; CLI `main.rs`, `tas.rs`, `tests/tas.rs`) and the promoted
+docs. The pre-existing owner-authorized top-level `README.md` change (sha256
+`838398caac5547406f4f42078b9f66976bc985254e77c46ad61dfd6729a9d33b`) remains excluded
+from increment scope. No commit, push or tag was made. Every Cargo command used
+`CARGO_HOME=/tmp/t7-cargo`.
+
+Source/implementation drift check: all 70 tracked build/test input paths (`crates/`,
+`tests/`, `scripts/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`,
+`.github/`) are byte-identical to the t5 verification snapshot; only documentation files
+were promoted after t5. The t5 evidence manifest re-verifies (665/665). Promoted claims
+were checked against the executed M3-A13–A17 rows and t5 artifacts: every acceptance row
+is still `executed - passed`, no capability is claimed beyond the deterministic synthetic
+backend, and M3 remains explicitly **not complete** with the deferred scope unchanged
+(checkpoint anchors/format v2, in-process rewind buffer/state cache and interactive
+stepping, rerecord/branch editing, multi-controller/ports/analog/keyboard input,
+real-hardware input TAS, import/export adapters, checkpoint-reference movies and
+HTTP/MCP/GUI/daemon). Markdown links, anchors and 30 evidence-artifact references in the
+promoted docs all resolve.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 0 failed, 0 ignored; no target below the increment baseline (counts in `target-matrix.txt`) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0, ends "all quality gates passed" |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the increment baseline |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 runs, 0-byte program stderr, byte-identical to the increment baseline |
+| Whitespace | `git diff --check` | exit 0 |
+| Source drift | build/test path SHA-256 set vs t5 evidence | identical; no drift (70/70 paths) |
+| Repository hygiene | tracked-path audit; `git diff --cached`; `git ls-remote` | no `.research/`, `.planning/`, `.agent-teams/` or skill payload tracked; nothing staged; no commit/push |
+
+Evidence (ignored paths): `.research/m3-tas-inc2/final/` (`SUMMARY.txt`,
+`target-matrix.txt`, `docs-claim-audit.txt`, `logs/`, `demos/`, `tree-audit.txt`,
+`MANIFEST.sha256`); prior t5 evidence `.research/m3-tas-inc2/verification/`; baseline
+`.research/m3-tas-inc2/baseline/`. One non-blocking documentation observation is recorded
+in the final SUMMARY: two §6 compare example blocks retain illustrative numeric values
+(they are labelled as observed shapes with exact values in `cli/`); the capability claim
+and the M3-A15 row are unaffected. M3 is not complete and this block makes no claim about
+any deferred item.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.

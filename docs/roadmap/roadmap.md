@@ -67,24 +67,35 @@ restarts without state loss.
 
 ## Stage 3 — TAS and deterministic replay
 
-First increment implemented and independently verified on 2026-11-15 for the
-deterministic synthetic backend (M3-T4 PASS); see
-[ADR-0004](../adr/0004-tas-movie-format.md) and the [M3 acceptance
-plan](../quality/m3-tas-replay-acceptance.md).
+First and second increments implemented and independently verified on 2026-11-15 for
+the deterministic synthetic backend (M3-T4 and M3-T5 PASS); see
+[ADR-0004](../adr/0004-tas-movie-format.md),
+[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md) and the [M3 acceptance
+plan](../quality/m3-tas-replay-acceptance.md) plus the [increment-2 acceptance
+plan](../quality/m3-partial-replay-acceptance.md).
 
 - [x] Canonical movie format with versioning and metadata (v1 `.cfmovie`).
 - [x] Record/playback of a per-tick input sequence on the deterministic synthetic
       backend.
 - [x] Replay verification with exact first-divergence reporting.
-- [ ] Frame advance, rewind and seek via checkpoints.
+- [x] Ranged replay/seek, forward single-tick advance and rewind by deterministic
+      linear re-simulation from the embedded checkpoint (typed range bounds; no
+      carried state).
+- [x] Branch comparison of recorded `(tick, state hash)` records with first-divergence,
+      length and embedded-checkpoint identity reporting (no re-simulation).
+- [ ] Periodic anchors/checkpoints and seek via checkpoints (movie format v2).
+- [ ] In-process rewind buffer/state cache and interactive stepping.
 - [ ] Rerecording and branch editing.
 - [ ] Multi-controller, ports, analog and keyboard input.
+- [ ] Real-hardware input TAS (the Mega Drive `step` ignores input).
 - [ ] Import/export adapters, documented only, not implemented.
 
-**Exit (first increment met):** a recorded input sequence reproduces every recorded
-tick and state hash exactly and reports the first divergence exactly, on the
-deterministic synthetic backend. Full Stage 3 exit also requires branch comparison,
-which remains deferred.
+**Exit (first and second increments met):** a recorded input sequence reproduces every
+recorded tick and state hash exactly, reports the first divergence exactly, can be
+replayed/seeked over an exact tick window and compared against another recording, on the
+deterministic synthetic backend. Full Stage 3 exit also requires checkpoint-anchored
+seek/format v2, rerecord and branch editing, multi-controller and real-hardware input,
+which remain deferred.
 
 ## Stage 4 — Deep Mega Drive debugging
 

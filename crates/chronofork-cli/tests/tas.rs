@@ -699,10 +699,16 @@ fn help_documents_tas_and_existing_commands_stay_intact() -> TestResult {
         "tas record",
         "tas play",
         "tas verify",
+        "tas compare",
         "--movie",
+        "--against",
         "--steps",
         "--movie-id",
         "--root",
+        "--from <TICK>",
+        "--until <TICK>",
+        "re-simulation",
+        "record=comparison",
         "max 4194304",
         "not implemented",
     ] {
@@ -714,13 +720,17 @@ fn help_documents_tas_and_existing_commands_stay_intact() -> TestResult {
     assert_eq!(ok(&["tas", "record", "--help"])?, tas_help);
     assert_eq!(ok(&["tas", "play", "--help"])?, tas_help);
     assert_eq!(ok(&["tas", "verify", "--help"])?, tas_help);
+    assert_eq!(ok(&["tas", "compare", "--help"])?, tas_help);
 
     let top_help = ok(&["help"])?;
     for needle in [
         "chronofork tas record",
         "chronofork tas play",
         "chronofork tas verify",
+        "chronofork tas compare",
         "chronofork tas --help",
+        "--from <TICK>",
+        "--until <TICK>",
     ] {
         assert!(
             top_help.contains(needle),
@@ -731,5 +741,763 @@ fn help_documents_tas_and_existing_commands_stay_intact() -> TestResult {
     // Pre-existing surface remains wired and unchanged.
     assert!(ok(&["demo"])?.contains("chronofork demo: PASS"));
     assert!(ok(&["backend", "describe"])?.contains("backend: chronofork.test.synthetic"));
+    Ok(())
+}
+
+/// Runs a command expecting exit 1 with a `chronofork:` diagnostic, returning
+/// the single data-only block printed on stdout (used for compare mismatches).
+fn failure_block(args: &[&str], needle: &str) -> Result<Block, Box<dyn Error>> {
+    let output = run(args)?;
+    let (stdout, stderr) = streams(&output)?;
+    if output.status.code() != Some(1) {
+        return Err(format!(
+            "expected exit 1 for {args:?}, got {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            output.status.code()
+        )
+        .into());
+    }
+    if !stderr.starts_with("chronofork: ") {
+        return Err(
+            format!("stderr must carry a `chronofork:` diagnostic: {args:?}\n{stderr}").into(),
+        );
+    }
+    if !stderr.contains(needle) {
+        return Err(
+            format!("expected `{needle}` in the diagnostic for {args:?}, got:\n{stderr}").into(),
+        );
+    }
+    block(&stdout)
+}
+
+fn write_movie(dir: &Path, name: &str, movie: &Movie) -> Result<PathBuf, Box<dyn Error>> {
+    let path = dir.join(name);
+    std::fs::write(&path, movie.to_bytes()?)?;
+    Ok(path)
+}
+
+#[test]
+fn ranged_play_and_verify_report_exact_windows() -> TestResult {
+    let dir = temp_dir("ranged")?;
+    let movie_path = dir.join("baseline.cfmovie");
+    let record = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "9",
+        "--input",
+        "7",
+    ])?)?;
+    let final_hash = field(&record, "final_state_hash")?.to_owned();
+    let movie = Movie::from_bytes(&std::fs::read(&movie_path)?)?;
+    let hash_at = |index: usize| -> Result<String, Box<dyn Error>> {
+        Ok(movie
+            .steps()
+            .get(index)
+            .ok_or_else(|| format!("expected recorded step {index}"))?
+            .state_hash()
+            .to_string())
+    };
+    let bytes_before = std::fs::read(&movie_path)?;
+
+    // No flags keep the exact pre-existing single summary block.
+    let default = block(&ok(&["tas", "play", "--movie", path_str(&movie_path)?])?)?;
+    assert_eq!(field(&default, "record")?, "playback");
+    assert_eq!(field(&default, "start_tick")?, "0");
+    assert_eq!(field(&default, "end_tick")?, "9");
+    assert_eq!(field(&default, "steps")?, "9");
+    assert_eq!(field(&default, "final_tick")?, "9");
+    assert_eq!(field(&default, "final_state_hash")?, final_hash);
+    for range_field in [
+        "range_from",
+        "range_until",
+        "prefix_steps",
+        "window_steps",
+        "replayed_steps",
+    ] {
+        assert!(
+            !default.contains_key(range_field),
+            "default playback output must not grow `{range_field}`: {default:?}"
+        );
+    }
+
+    // Explicit window (2, 6]: ticks 3..=6, with ticks 1 and 2 as the prefix.
+    let ranged = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "2",
+        "--until",
+        "6",
+    ])?)?;
+    assert_eq!(field(&ranged, "record")?, "playback");
+    assert_eq!(field(&ranged, "start_tick")?, "0");
+    assert_eq!(field(&ranged, "end_tick")?, "9");
+    assert_eq!(field(&ranged, "steps")?, "9");
+    assert_eq!(field(&ranged, "final_tick")?, "6");
+    assert_eq!(field(&ranged, "final_state_hash")?, hash_at(5)?);
+    assert_eq!(field(&ranged, "range_from")?, "2");
+    assert_eq!(field(&ranged, "range_until")?, "6");
+    assert_eq!(field(&ranged, "prefix_steps")?, "2");
+    assert_eq!(field(&ranged, "window_steps")?, "4");
+    assert_eq!(field(&ranged, "replayed_steps")?, "6");
+
+    // `verify` accepts the same range and reports the same window.
+    let ranged_verify = block(&ok(&[
+        "tas",
+        "verify",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "2",
+        "--until",
+        "6",
+    ])?)?;
+    assert_eq!(field(&ranged_verify, "record")?, "verification");
+    assert_eq!(field(&ranged_verify, "verified")?, "1");
+    assert_eq!(field(&ranged_verify, "range_from")?, "2");
+    assert_eq!(field(&ranged_verify, "range_until")?, "6");
+    assert_eq!(field(&ranged_verify, "prefix_steps")?, "2");
+    assert_eq!(field(&ranged_verify, "window_steps")?, "4");
+    assert_eq!(field(&ranged_verify, "replayed_steps")?, "6");
+    assert_eq!(field(&ranged_verify, "final_tick")?, "6");
+    assert_eq!(field(&ranged_verify, "final_state_hash")?, hash_at(5)?);
+
+    // An explicit full range prints the range fields without changing meaning.
+    let explicit_full = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "0",
+        "--until",
+        "9",
+    ])?)?;
+    assert_eq!(field(&explicit_full, "range_from")?, "0");
+    assert_eq!(field(&explicit_full, "range_until")?, "9");
+    assert_eq!(field(&explicit_full, "prefix_steps")?, "0");
+    assert_eq!(field(&explicit_full, "window_steps")?, "9");
+    assert_eq!(field(&explicit_full, "replayed_steps")?, "9");
+    assert_eq!(field(&explicit_full, "final_tick")?, "9");
+    assert_eq!(field(&explicit_full, "final_state_hash")?, final_hash);
+
+    // One supplied boundary defaults the other to the movie start/end tick.
+    let from_only = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "6",
+    ])?)?;
+    assert_eq!(field(&from_only, "range_from")?, "6");
+    assert_eq!(field(&from_only, "range_until")?, "9");
+    assert_eq!(field(&from_only, "prefix_steps")?, "6");
+    assert_eq!(field(&from_only, "window_steps")?, "3");
+    assert_eq!(field(&from_only, "replayed_steps")?, "9");
+    assert_eq!(field(&from_only, "final_tick")?, "9");
+    assert_eq!(field(&from_only, "final_state_hash")?, final_hash);
+
+    let until_only = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--until",
+        "4",
+    ])?)?;
+    assert_eq!(field(&until_only, "range_from")?, "0");
+    assert_eq!(field(&until_only, "range_until")?, "4");
+    assert_eq!(field(&until_only, "prefix_steps")?, "0");
+    assert_eq!(field(&until_only, "window_steps")?, "4");
+    assert_eq!(field(&until_only, "replayed_steps")?, "4");
+    assert_eq!(field(&until_only, "final_tick")?, "4");
+    assert_eq!(field(&until_only, "final_state_hash")?, hash_at(3)?);
+
+    // Frame advance is a one-step window: (4, 5].
+    let advance = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--from",
+        "4",
+        "--until",
+        "5",
+    ])?)?;
+    assert_eq!(field(&advance, "window_steps")?, "1");
+    assert_eq!(field(&advance, "prefix_steps")?, "4");
+    assert_eq!(field(&advance, "replayed_steps")?, "5");
+    assert_eq!(field(&advance, "final_tick")?, "5");
+    assert_eq!(field(&advance, "final_state_hash")?, hash_at(4)?);
+
+    // Seek to an earlier boundary.
+    let seek = block(&ok(&[
+        "tas",
+        "play",
+        "--movie",
+        path_str(&movie_path)?,
+        "--until",
+        "3",
+    ])?)?;
+    assert_eq!(field(&seek, "final_tick")?, "3");
+    assert_eq!(field(&seek, "final_state_hash")?, hash_at(2)?);
+
+    // Read-only commands never modify the movie file.
+    assert_eq!(std::fs::read(&movie_path)?, bytes_before);
+    Ok(())
+}
+
+#[test]
+fn ranged_replay_is_independent_across_processes() -> TestResult {
+    let dir = temp_dir("ranged-independent")?;
+    let movie_path = dir.join("baseline.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "8",
+        "--input",
+        "3",
+    ])?;
+    let movie = path_str(&movie_path)?;
+
+    // A late replay followed by an earlier one in separate processes, then the
+    // earlier one again: a rewind is a new invocation and carries no state.
+    let late_first = ok(&["tas", "play", "--movie", movie, "--from", "6"])?;
+    let early_first = ok(&["tas", "play", "--movie", movie, "--until", "3"])?;
+    let late_again = ok(&["tas", "play", "--movie", movie, "--from", "6"])?;
+    let early_after_late = ok(&["tas", "play", "--movie", movie, "--until", "3"])?;
+    assert_eq!(late_first, late_again);
+    assert_eq!(early_first, early_after_late);
+    assert_ne!(
+        late_first, early_first,
+        "different windows must report different results"
+    );
+    Ok(())
+}
+
+#[test]
+fn invalid_ranges_exit_one_without_output() -> TestResult {
+    let dir = temp_dir("ranged-invalid")?;
+    let movie_path = dir.join("baseline.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "9",
+        "--input",
+        "1",
+    ])?;
+    let movie = path_str(&movie_path)?;
+
+    expect_failure(
+        &["tas", "play", "--movie", movie, "--until", "10"],
+        "is after the movie end tick 9",
+    )?;
+    expect_failure(
+        &[
+            "tas", "play", "--movie", movie, "--from", "6", "--until", "2",
+        ],
+        "is inverted",
+    )?;
+    expect_failure(
+        &[
+            "tas", "play", "--movie", movie, "--from", "4", "--until", "4",
+        ],
+        "contains no recorded step",
+    )?;
+    // until == start_tick on a stepped movie is the typed empty-range rejection.
+    expect_failure(
+        &["tas", "verify", "--movie", movie, "--until", "0"],
+        "contains no recorded step",
+    )?;
+    expect_failure(
+        &["tas", "verify", "--movie", movie, "--from", "10"],
+        "is inverted",
+    )?;
+    expect_failure(
+        &["tas", "play", "--movie", movie, "--from", "abc"],
+        "`--from` expects a decimal integer",
+    )?;
+    expect_failure(
+        &[
+            "tas", "play", "--movie", movie, "--from", "1", "--from", "2",
+        ],
+        "`--from` was given more than once",
+    )?;
+    expect_failure(
+        &["tas", "verify", "--movie", movie, "--until"],
+        "`--until` requires a value",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn compare_identical_including_metadata_only_difference() -> TestResult {
+    let dir = temp_dir("compare-identical")?;
+    let first_path = dir.join("first.cfmovie");
+    let second_path = dir.join("second.cfmovie");
+    let first = block(&ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&first_path)?,
+        "--steps",
+        "9",
+        "--input",
+        "7",
+        "--movie-id",
+        "1",
+        "--name",
+        "branch-a",
+    ])?)?;
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&second_path)?,
+        "--steps",
+        "9",
+        "--input",
+        "7",
+        "--movie-id",
+        "5",
+        "--name",
+        "branch-b",
+    ])?;
+
+    // Metadata differs (and so do the file bytes), but the recorded execution is
+    // identical, so comparison exits 0 with the identical block.
+    let identical = block(&ok(&[
+        "tas",
+        "compare",
+        "--movie",
+        path_str(&first_path)?,
+        "--against",
+        path_str(&second_path)?,
+    ])?)?;
+    assert_eq!(field(&identical, "record")?, "comparison");
+    assert_eq!(field(&identical, "identical")?, "1");
+    assert_eq!(field(&identical, "start_tick")?, "0");
+    assert_eq!(field(&identical, "steps")?, "9");
+    assert_eq!(
+        field(&identical, "final_state_hash")?,
+        field(&first, "final_state_hash")?
+    );
+
+    // The same file may be compared with itself.
+    let self_compare = block(&ok(&[
+        "tas",
+        "compare",
+        "--movie",
+        path_str(&first_path)?,
+        "--against",
+        path_str(&first_path)?,
+    ])?)?;
+    assert_eq!(field(&self_compare, "identical")?, "1");
+    Ok(())
+}
+
+#[test]
+fn compare_reports_the_exact_first_divergence() -> TestResult {
+    let dir = temp_dir("compare-divergence")?;
+    let movie_path = dir.join("baseline.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&movie_path)?,
+        "--steps",
+        "8",
+        "--input",
+        "1",
+    ])?;
+    let movie = Movie::from_bytes(&std::fs::read(&movie_path)?)?;
+    let step_index = 3_usize;
+    let original_hash = movie
+        .steps()
+        .get(step_index)
+        .ok_or_else(|| "recorded movie must have steps".to_owned())?
+        .state_hash();
+    let altered = altered_hash(original_hash);
+    let mut steps = movie.steps().to_vec();
+    let recorded = steps[step_index];
+    steps[step_index] = MovieStep::new(recorded.outcome_tick(), recorded.input(), altered);
+    let divergent =
+        Movie::from_parts(movie.meta().clone(), movie.snapshot_bytes().to_vec(), steps)?;
+    let divergent_path = write_movie(&dir, "divergent.cfmovie", &divergent)?;
+
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&movie_path)?,
+            "--against",
+            path_str(&divergent_path)?,
+        ],
+        "recorded branch divergence",
+    )?;
+    assert_eq!(field(&block, "record")?, "comparison");
+    assert_eq!(field(&block, "identical")?, "0");
+    assert_eq!(field(&block, "diverged")?, "1");
+    assert_eq!(field(&block, "divergence_index")?, "3");
+    assert_eq!(field(&block, "tick_a")?, "4");
+    assert_eq!(field(&block, "tick_b")?, "4");
+    assert_eq!(field(&block, "state_hash_a")?, original_hash.to_string());
+    assert_eq!(field(&block, "state_hash_b")?, altered.to_string());
+    assert_eq!(field(&block, "steps_a")?, "8");
+    assert_eq!(field(&block, "steps_b")?, "8");
+
+    // Several altered indices report the earliest one.
+    let mut several = divergent.steps().to_vec();
+    several[5] = MovieStep::new(
+        several[5].outcome_tick(),
+        several[5].input(),
+        altered_hash(several[5].state_hash()),
+    );
+    let several = Movie::from_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        several,
+    )?;
+    let several_path = write_movie(&dir, "several.cfmovie", &several)?;
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&movie_path)?,
+            "--against",
+            path_str(&several_path)?,
+        ],
+        "recorded branch divergence",
+    )?;
+    assert_eq!(field(&block, "divergence_index")?, "3");
+
+    // A tick-only alteration reports both ticks and equal recorded hashes.
+    let last = movie
+        .steps()
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| "recorded movie must have steps".to_owned())?;
+    let original_tick = movie.steps()[last].outcome_tick();
+    let moved_tick = Tick::from_raw(original_tick.raw() + 5);
+    let mut tick_steps = movie.steps().to_vec();
+    tick_steps[last] = MovieStep::new(
+        moved_tick,
+        tick_steps[last].input(),
+        tick_steps[last].state_hash(),
+    );
+    let tick_movie = Movie::from_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        tick_steps,
+    )?;
+    let tick_path = write_movie(&dir, "tick.cfmovie", &tick_movie)?;
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&movie_path)?,
+            "--against",
+            path_str(&tick_path)?,
+        ],
+        "recorded branch divergence",
+    )?;
+    assert_eq!(field(&block, "divergence_index")?, &last.to_string());
+    assert_eq!(field(&block, "tick_a")?, original_tick.raw().to_string());
+    assert_eq!(field(&block, "tick_b")?, moved_tick.raw().to_string());
+    assert_eq!(
+        field(&block, "state_hash_a")?,
+        field(&block, "state_hash_b")?
+    );
+
+    // A divergence in the common prefix has precedence over the length mismatch
+    // and both step counts stay visible.
+    let short_path = dir.join("short.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&short_path)?,
+        "--steps",
+        "5",
+        "--input",
+        "1",
+    ])?;
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&divergent_path)?,
+            "--against",
+            path_str(&short_path)?,
+        ],
+        "recorded branch divergence",
+    )?;
+    assert_eq!(field(&block, "divergence_index")?, "3");
+    assert_eq!(field(&block, "steps_a")?, "8");
+    assert_eq!(field(&block, "steps_b")?, "5");
+    Ok(())
+}
+
+#[test]
+fn compare_reports_length_and_start_mismatches() -> TestResult {
+    let dir = temp_dir("compare-mismatch")?;
+    let long_path = dir.join("long.cfmovie");
+    let short_path = dir.join("short.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&long_path)?,
+        "--steps",
+        "8",
+        "--input",
+        "2",
+    ])?;
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&short_path)?,
+        "--steps",
+        "5",
+        "--input",
+        "2",
+    ])?;
+
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&long_path)?,
+            "--against",
+            path_str(&short_path)?,
+        ],
+        "recorded branch length mismatch",
+    )?;
+    assert_eq!(field(&block, "identical")?, "0");
+    assert_eq!(field(&block, "length_mismatch")?, "1");
+    assert_eq!(field(&block, "common_steps")?, "5");
+    assert_eq!(field(&block, "steps_a")?, "8");
+    assert_eq!(field(&block, "steps_b")?, "5");
+
+    // A movie recorded from a later durable checkpoint has a different embedded
+    // checkpoint start tick, which is reported separately from step records.
+    let root = dir.join("root");
+    ok(&[
+        "session",
+        "save",
+        "--root",
+        path_str(&root)?,
+        "--steps",
+        "6",
+        "--input",
+        "3",
+    ])?;
+    let seeded_path = dir.join("seeded.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--root",
+        path_str(&root)?,
+        "--movie",
+        path_str(&seeded_path)?,
+        "--steps",
+        "3",
+        "--input",
+        "9",
+    ])?;
+    let fresh_path = dir.join("fresh.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--movie",
+        path_str(&fresh_path)?,
+        "--steps",
+        "3",
+        "--input",
+        "9",
+    ])?;
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&fresh_path)?,
+            "--against",
+            path_str(&seeded_path)?,
+        ],
+        "recorded branch start mismatch",
+    )?;
+    assert_eq!(field(&block, "identical")?, "0");
+    assert_eq!(field(&block, "checkpoint_mismatch")?, "1");
+    assert_eq!(field(&block, "start_tick_a")?, "0");
+    assert_eq!(field(&block, "start_tick_b")?, "6");
+    assert_ne!(
+        field(&block, "checkpoint_state_hash_a")?,
+        field(&block, "checkpoint_state_hash_b")?
+    );
+    assert_eq!(field(&block, "steps_a")?, "3");
+    assert_eq!(field(&block, "steps_b")?, "3");
+
+    // Same start tick but different embedded checkpoint state is also a start
+    // mismatch, not a step divergence.
+    let first_root = dir.join("first-root");
+    let second_root = dir.join("second-root");
+    ok(&[
+        "session",
+        "save",
+        "--root",
+        path_str(&first_root)?,
+        "--steps",
+        "6",
+        "--input",
+        "1",
+    ])?;
+    ok(&[
+        "session",
+        "save",
+        "--root",
+        path_str(&second_root)?,
+        "--steps",
+        "6",
+        "--input",
+        "2",
+    ])?;
+    let first_seeded = dir.join("first-seeded.cfmovie");
+    let second_seeded = dir.join("second-seeded.cfmovie");
+    ok(&[
+        "tas",
+        "record",
+        "--root",
+        path_str(&first_root)?,
+        "--movie",
+        path_str(&first_seeded)?,
+        "--steps",
+        "2",
+        "--input",
+        "0",
+    ])?;
+    ok(&[
+        "tas",
+        "record",
+        "--root",
+        path_str(&second_root)?,
+        "--movie",
+        path_str(&second_seeded)?,
+        "--steps",
+        "2",
+        "--input",
+        "0",
+    ])?;
+    let block = failure_block(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&first_seeded)?,
+            "--against",
+            path_str(&second_seeded)?,
+        ],
+        "recorded branch start mismatch",
+    )?;
+    assert_eq!(field(&block, "start_tick_a")?, "6");
+    assert_eq!(field(&block, "start_tick_b")?, "6");
+    assert_ne!(
+        field(&block, "checkpoint_state_hash_a")?,
+        field(&block, "checkpoint_state_hash_b")?
+    );
+    assert_eq!(field(&block, "steps_a")?, "2");
+    assert_eq!(field(&block, "steps_b")?, "2");
+
+    // Corruption and a missing file stay typed, exit 1 and print no block.
+    let mut corrupt = std::fs::read(&long_path)?;
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 0xff;
+    let corrupt_path = write_fixture(&dir, "corrupt.cfmovie", &corrupt)?;
+    expect_failure(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&long_path)?,
+            "--against",
+            path_str(&corrupt_path)?,
+        ],
+        "movie checksum mismatch",
+    )?;
+    let missing = dir.join("missing.cfmovie");
+    expect_failure(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            path_str(&missing)?,
+            "--against",
+            path_str(&long_path)?,
+        ],
+        "failed to open movie",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn compare_argument_errors_are_typed() -> TestResult {
+    let dir = temp_dir("compare-arguments")?;
+    let movie_path = dir.join("unused.cfmovie");
+    let movie = path_str(&movie_path)?;
+    expect_failure(
+        &["tas", "compare"],
+        "`tas compare` requires `--movie <FILE>`",
+    )?;
+    expect_failure(
+        &["tas", "compare", "--movie", movie],
+        "`tas compare` requires `--against <FILE>`",
+    )?;
+    expect_failure(
+        &["tas", "compare", "--movie", movie, "--against"],
+        "`--against` requires a value",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            movie,
+            "--against",
+            movie,
+            "--from",
+            "1",
+        ],
+        "unknown `tas compare` option `--from`",
+    )?;
+    expect_failure(
+        &[
+            "tas",
+            "compare",
+            "--movie",
+            movie,
+            "--movie",
+            movie,
+            "--against",
+            movie,
+        ],
+        "`--movie` was given more than once",
+    )?;
     Ok(())
 }

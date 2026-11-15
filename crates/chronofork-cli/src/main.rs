@@ -4,29 +4,30 @@
 //! stubs for HTTP, MCP, GUI or a real Mega Drive backend.
 
 use std::error::Error;
-use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use chronofork_backend_api::{Backend, BackendFactory};
-use chronofork_core::{InputFrame, SessionId, StateHash, hash_bytes};
+use chronofork_core::{InputFrame, SessionId, StateHash};
 use chronofork_megadrive::{
     DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveFactory, RAM_BASE,
     RAM_SIZE, SchedulerConfig, VideoStandard, demo_rom, interrupt_rom,
 };
 use chronofork_sessions::{
-    DurableLineage, LoadedSnapshot, MAX_MOVIE_BYTES, MAX_NAME_BYTES, MAX_STEPS,
-    MOVIE_FORMAT_VERSION, MOVIE_INPUT_SCHEMA_VERSION, Movie, MovieError, MovieMeta, ReplayReport,
-    SessionEntry, SessionError, SessionManager, Snapshot, SnapshotEntry, SnapshotRepository,
+    DurableLineage, LoadedSnapshot, SessionEntry, SessionError, SessionManager, Snapshot,
+    SnapshotEntry, SnapshotRepository,
 };
 use chronofork_test_backend::SyntheticBackendFactory;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+mod tas;
+
+/// Crate version used by the help and version output.
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Default instruction budget for `megadrive trace`.
 const DEFAULT_TRACE_INSTRUCTIONS: u64 = 1_000;
 /// Default cap for the trace ring when it is sized from the instruction budget.
@@ -66,7 +67,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         Some("megadrive") => run_megadrive(&args[1..]),
         Some("session") => run_session(&args[1..]),
-        Some("tas") => run_tas(&args[1..]),
+        Some("tas") => tas::run(&args[1..]),
         Some("backend") => match args.get(1).map(String::as_str) {
             Some("describe") => {
                 ensure(args.len() == 2, "`backend describe` takes no arguments")?;
@@ -123,8 +124,9 @@ fn print_usage() {
     println!("  chronofork tas record --movie <FILE> [--steps <N>] [--input <U32>]");
     println!("                        [--movie-id <U64>] [--name <NAME>]");
     println!("                        [--root <DIR> [--session <KEY> [--snapshot <KEY>]]]");
-    println!("  chronofork tas play --movie <FILE>");
-    println!("  chronofork tas verify --movie <FILE>");
+    println!("  chronofork tas play --movie <FILE> [--from <TICK>] [--until <TICK>]");
+    println!("  chronofork tas verify --movie <FILE> [--from <TICK>] [--until <TICK>]");
+    println!("  chronofork tas compare --movie <FILE> --against <FILE>");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
     println!();
@@ -134,8 +136,10 @@ fn print_usage() {
     println!("to stderr.");
     println!();
     println!("TAS movies record one synthetic-backend input sequence and embed the canonical");
-    println!("checkpoint; `chronofork tas --help` documents the flags, output blocks and the");
-    println!("features that are deliberately not implemented.");
+    println!("checkpoint; `tas play/verify` replay an exact tick window from that checkpoint by");
+    println!("deterministic re-simulation and `tas compare` diffs two recorded branches.");
+    println!("`chronofork tas --help` documents the flags, output blocks and the features that");
+    println!("are deliberately not implemented.");
     println!();
     println!("For trace file formats and options run:");
     println!("  chronofork megadrive trace --help");
@@ -278,7 +282,7 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
     }))
 }
 
-fn option_value<'a>(
+pub(crate) fn option_value<'a>(
     args: &'a [String],
     index: &mut usize,
     flag: &str,
@@ -289,7 +293,7 @@ fn option_value<'a>(
         .ok_or_else(|| CliError(format!("`{flag}` requires a value")))
 }
 
-fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), CliError> {
+pub(crate) fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), CliError> {
     if slot.is_some() {
         return Err(CliError(format!("`{flag}` was given more than once")));
     }
@@ -297,13 +301,13 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), CliErro
     Ok(())
 }
 
-fn parse_u64(value: &str, flag: &str) -> Result<u64, CliError> {
+pub(crate) fn parse_u64(value: &str, flag: &str) -> Result<u64, CliError> {
     value
         .parse()
         .map_err(|_| CliError(format!("`{flag}` expects a decimal integer, got `{value}`")))
 }
 
-fn parse_u32(value: &str, flag: &str) -> Result<u32, CliError> {
+pub(crate) fn parse_u32(value: &str, flag: &str) -> Result<u32, CliError> {
     value
         .parse()
         .map_err(|_| CliError(format!("`{flag}` expects a decimal integer, got `{value}`")))
@@ -1043,7 +1047,7 @@ fn parse_session_args(
 }
 
 /// Parses a canonical durable key: positive decimal without leading zeroes.
-fn parse_key(value: &str, flag: &str) -> Result<u64, CliError> {
+pub(crate) fn parse_key(value: &str, flag: &str) -> Result<u64, CliError> {
     let canonical = !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
         && !value.starts_with('0');
@@ -1232,12 +1236,12 @@ fn session_delete(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 /// A manager over the deterministic synthetic test backend.
-fn synthetic_session_manager() -> SessionManager {
+pub(crate) fn synthetic_session_manager() -> SessionManager {
     SessionManager::new(Arc::new(SyntheticBackendFactory::default()))
 }
 
 /// `--input` selection, defaulting to neutral input.
-fn input_frame(buttons: Option<u32>) -> InputFrame {
+pub(crate) fn input_frame(buttons: Option<u32>) -> InputFrame {
     buttons.map_or(InputFrame::NEUTRAL, InputFrame::new)
 }
 
@@ -1268,7 +1272,7 @@ struct SnapshotReport<'a> {
 }
 
 /// Starts one output record, separating it from a previous block by one blank line.
-fn begin_record(output: &mut String, record: &str) {
+pub(crate) fn begin_record(output: &mut String, record: &str) {
     if !output.is_empty() {
         output.push('\n');
     }
@@ -1331,7 +1335,7 @@ fn optional_key(key: Option<u64>) -> String {
     }
 }
 
-fn ensure(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
+pub(crate) fn ensure(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
     if condition {
         Ok(())
     } else {
@@ -1339,488 +1343,8 @@ fn ensure(condition: bool, message: &str) -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Runs one `chronofork tas` subcommand.
-///
-/// The TAS commands are a thin, line-oriented process boundary over
-/// [`chronofork_sessions::Movie`]: they parse flags, read or write one movie file
-/// with an explicit size bound, and print `key=value` blocks. Encoding, decoding,
-/// checkpoint import, replay comparison and first-divergence reporting stay in
-/// `chronofork-sessions`; this code never re-implements them.
-fn run_tas(args: &[String]) -> Result<(), Box<dyn Error>> {
-    match args.first().map(String::as_str) {
-        Some("record") => tas_record(&args[1..]),
-        Some("play") => tas_play(&args[1..]),
-        Some("verify") => tas_verify(&args[1..]),
-        Some("--help" | "-h") => {
-            ensure(args.len() == 1, "`tas --help` takes no other arguments")?;
-            print_tas_help();
-            Ok(())
-        }
-        None => {
-            Err(CliError("`tas` requires a subcommand: record, play or verify".to_owned()).into())
-        }
-        Some(other) => Err(CliError(format!(
-            "unknown `tas` subcommand `{other}`; expected record, play or verify"
-        ))
-        .into()),
-    }
-}
-
-/// Returns whether the arguments request subcommand help.
-///
-/// Help is accepted only as the sole argument, matching the existing CLI shape.
-fn help_requested(args: &[String], command: &str) -> Result<bool, CliError> {
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        if args.len() != 1 {
-            return Err(CliError(format!(
-                "`{command} --help` takes no other arguments"
-            )));
-        }
-        return Ok(true);
-    }
-    Ok(false)
-}
-
-/// Parsed `tas record` flags, before required-flag and combination validation.
-#[derive(Debug, Default)]
-struct RecordOptions {
-    movie: Option<PathBuf>,
-    movie_id: Option<u64>,
-    name: Option<String>,
-    steps: Option<u64>,
-    input: Option<u32>,
-    root: Option<PathBuf>,
-    session: Option<u64>,
-    snapshot: Option<u64>,
-}
-
-fn parse_record_options(args: &[String]) -> Result<RecordOptions, CliError> {
-    let mut parsed = RecordOptions::default();
-    let mut index = 0;
-    while index < args.len() {
-        let flag = args[index].clone();
-        match flag.as_str() {
-            "--movie" => set_once(
-                &mut parsed.movie,
-                PathBuf::from(option_value(args, &mut index, &flag)?),
-                &flag,
-            )?,
-            "--movie-id" => set_once(
-                &mut parsed.movie_id,
-                parse_u64(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            "--name" => set_once(
-                &mut parsed.name,
-                option_value(args, &mut index, &flag)?.to_owned(),
-                &flag,
-            )?,
-            "--steps" => set_once(
-                &mut parsed.steps,
-                parse_u64(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            "--input" => set_once(
-                &mut parsed.input,
-                parse_u32(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            "--root" => set_once(
-                &mut parsed.root,
-                PathBuf::from(option_value(args, &mut index, &flag)?),
-                &flag,
-            )?,
-            "--session" => set_once(
-                &mut parsed.session,
-                parse_key(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            "--snapshot" => set_once(
-                &mut parsed.snapshot,
-                parse_key(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            other => {
-                return Err(CliError(format!(
-                    "unknown `tas record` option `{other}`; expected --movie <FILE> \
-                     --steps <N> --input <U32> --movie-id <U64> --name <NAME> \
-                     --root <DIR> --session <KEY> --snapshot <KEY>"
-                )));
-            }
-        }
-        index += 1;
-    }
-    Ok(parsed)
-}
-
-fn tas_record(args: &[String]) -> Result<(), Box<dyn Error>> {
-    if help_requested(args, "tas record")? {
-        print_tas_help();
-        return Ok(());
-    }
-    let options = parse_record_options(args)?;
-    let movie_path = options
-        .movie
-        .ok_or_else(|| CliError("`tas record` requires `--movie <FILE>`".to_owned()))?;
-    if options.session.is_some() && options.root.is_none() {
-        return Err(
-            CliError("`--session` requires `--root <DIR>` in `tas record`".to_owned()).into(),
-        );
-    }
-    if options.snapshot.is_some() && options.session.is_none() {
-        return Err(
-            CliError("`--snapshot` requires `--session <KEY>` in `tas record`".to_owned()).into(),
-        );
-    }
-    let steps = options.steps.unwrap_or(0);
-    if steps > MAX_STEPS as u64 {
-        return Err(CliError(format!(
-            "`--steps` must be at most {MAX_STEPS} (the movie step limit), got {steps}"
-        ))
-        .into());
-    }
-    let steps = usize::try_from(steps)
-        .map_err(|_| CliError(format!("`--steps` is too large for this platform: {steps}")))?;
-    // Validate metadata before doing any execution so an invalid movie id or name
-    // fails without recording and without touching the output path.
-    let meta = MovieMeta::new(options.movie_id.unwrap_or(1), options.name, None)?;
-    let inputs = vec![input_frame(options.input); steps];
-
-    let mut manager = synthetic_session_manager();
-    let source = match options.root {
-        Some(root) => {
-            // A record never initializes or writes storage: open an existing root,
-            // load the selected committed checkpoint and replay in memory only.
-            let repository = SnapshotRepository::open(root)?;
-            let loaded = select_checkpoint(&repository, options.session, options.snapshot)?;
-            manager
-                .create_session_from_stored_snapshot(loaded.snapshot, loaded.entry.session_key)?
-        }
-        None => manager.create_session()?,
-    };
-    let movie = Movie::record(&mut manager, source, meta, &inputs)?;
-    let bytes = movie.to_bytes()?;
-    write_movie_file(&movie_path, &bytes)?;
-
-    let mut output = String::new();
-    write_movie_block(&mut output, &movie, &bytes);
-    print!("{output}");
-    Ok(())
-}
-
-fn tas_play(args: &[String]) -> Result<(), Box<dyn Error>> {
-    if help_requested(args, "tas play")? {
-        print_tas_help();
-        return Ok(());
-    }
-    let movie_path = parse_movie_path("play", args)?;
-    replay_movie("playback", false, &movie_path)
-}
-
-fn tas_verify(args: &[String]) -> Result<(), Box<dyn Error>> {
-    if help_requested(args, "tas verify")? {
-        print_tas_help();
-        return Ok(());
-    }
-    let movie_path = parse_movie_path("verify", args)?;
-    replay_movie("verification", true, &movie_path)
-}
-
-/// Parses the `play`/`verify` argument shape: exactly one `--movie` flag.
-fn parse_movie_path(subcommand: &str, args: &[String]) -> Result<PathBuf, Box<dyn Error>> {
-    let mut movie: Option<PathBuf> = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = args[index].clone();
-        match flag.as_str() {
-            "--movie" => set_once(
-                &mut movie,
-                PathBuf::from(option_value(args, &mut index, &flag)?),
-                &flag,
-            )?,
-            other => {
-                return Err(CliError(format!(
-                    "unknown `tas {subcommand}` option `{other}`; expected --movie <FILE>"
-                ))
-                .into());
-            }
-        }
-        index += 1;
-    }
-    match movie {
-        Some(movie) => Ok(movie),
-        None => Err(CliError(format!("`tas {subcommand}` requires `--movie <FILE>`")).into()),
-    }
-}
-
-/// Selects the checkpoint a `record --root` reads.
-///
-/// With `--session`, the selected snapshot or that session's latest committed
-/// snapshot is used. Without `--session`, the checkpoint with the greatest
-/// `(creation_sequence, snapshot_key, session_key)` across all durable sessions is
-/// used; the tie-break keeps the choice deterministic. Nothing is written.
-fn select_checkpoint(
-    repository: &SnapshotRepository,
-    session: Option<u64>,
-    snapshot: Option<u64>,
-) -> Result<LoadedSnapshot, Box<dyn Error>> {
-    let (session_key, snapshot_key) = match session {
-        Some(session_key) => {
-            let snapshot_key = match snapshot {
-                Some(snapshot_key) => snapshot_key,
-                None => {
-                    repository
-                        .latest_snapshot(session_key)?
-                        .ok_or_else(|| {
-                            CliError(format!(
-                                "durable session {session_key} has no committed snapshot"
-                            ))
-                        })?
-                        .snapshot_key
-                }
-            };
-            (session_key, snapshot_key)
-        }
-        None => latest_committed_checkpoint(repository)?,
-    };
-    Ok(repository.load_snapshot(session_key, snapshot_key)?)
-}
-
-fn latest_committed_checkpoint(
-    repository: &SnapshotRepository,
-) -> Result<(u64, u64), Box<dyn Error>> {
-    let sessions = repository.list_sessions()?;
-    let mut best: Option<(u64, u64, u64)> = None;
-    for session in &sessions.entries {
-        let Some(snapshot) = repository.latest_snapshot(session.session_key)? else {
-            continue;
-        };
-        let candidate = (
-            snapshot.creation_sequence,
-            snapshot.snapshot_key,
-            session.session_key,
-        );
-        if best.is_none_or(|current| candidate > current) {
-            best = Some(candidate);
-        }
-    }
-    match best {
-        Some((_, snapshot_key, session_key)) => Ok((session_key, snapshot_key)),
-        None => Err(CliError(
-            "storage root has no committed checkpoint; save one with `chronofork session save`"
-                .to_owned(),
-        )
-        .into()),
-    }
-}
-
-/// Replays and verifies one movie, printing the shared output block.
-///
-/// `play` and `verify` share this single replay/compare implementation; only the
-/// record name and the `verified=1` field differ. A state-hash divergence prints
-/// the record block plus the exact divergence fields and then exits 1. A tick
-/// mismatch remains a stderr-only diagnostic with no divergence block.
-fn replay_movie(record: &str, verified: bool, path: &Path) -> Result<(), Box<dyn Error>> {
-    let bytes = read_movie_file(path)?;
-    let movie = Movie::from_bytes(&bytes)?;
-    let mut manager = synthetic_session_manager();
-    match movie.verify(&mut manager) {
-        Ok(report) => {
-            let mut output = String::new();
-            write_replay_block(&mut output, record, verified, &report);
-            print!("{output}");
-            Ok(())
-        }
-        Err(MovieError::Divergence {
-            tick,
-            input_index,
-            expected,
-            observed,
-        }) => {
-            let mut output = String::new();
-            write_divergence_block(
-                &mut output,
-                record,
-                tick.raw(),
-                input_index,
-                expected,
-                observed,
-            );
-            print!("{output}");
-            Err(CliError(format!(
-                "state divergence at tick {} (input index {input_index}): \
-                 expected {expected}, observed {observed}",
-                tick.raw()
-            ))
-            .into())
-        }
-        Err(other) => Err(other.into()),
-    }
-}
-
-/// Reads one movie file with an explicit size bound applied before decoding.
-fn read_movie_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
-    let file = File::open(path).map_err(|error| {
-        CliError(format!(
-            "failed to open movie `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    let metadata = file.metadata().map_err(|error| {
-        CliError(format!(
-            "failed to inspect movie `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    if !metadata.is_file() {
-        return Err(CliError(format!(
-            "movie path `{}` is not a regular file",
-            path.display()
-        ))
-        .into());
-    }
-    let limit = MAX_MOVIE_BYTES as u64;
-    let mut bytes = Vec::new();
-    file.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CliError(format!(
-                "failed to read movie `{}`: {error}",
-                path.display()
-            ))
-        })?;
-    if bytes.len() > MAX_MOVIE_BYTES {
-        return Err(CliError(format!(
-            "movie `{}` exceeds the {MAX_MOVIE_BYTES}-byte limit",
-            path.display()
-        ))
-        .into());
-    }
-    Ok(bytes)
-}
-
-/// Publishes movie bytes through a sibling temporary file renamed on success.
-///
-/// The complete movie is written before the rename, so a failed record never
-/// replaces an existing movie file. The temporary file name contains only the
-/// process id; no host timestamp enters the movie bytes or stdout.
-fn write_movie_file(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-    let file_name = path.file_name().ok_or_else(|| {
-        CliError(format!(
-            "`--movie` must name a file, not a directory: `{}`",
-            path.display()
-        ))
-    })?;
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let mut temporary_name = OsString::from(".");
-    temporary_name.push(file_name);
-    temporary_name.push(format!(".tmp-{}", std::process::id()));
-    let temporary = parent.join(temporary_name);
-    std::fs::write(&temporary, bytes).map_err(|error| {
-        CliError(format!(
-            "failed to write movie `{}`: {error}",
-            temporary.display()
-        ))
-    })?;
-    if let Err(error) = std::fs::rename(&temporary, path) {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(CliError(format!(
-            "failed to publish movie `{}`: {error}",
-            path.display()
-        ))
-        .into());
-    }
-    Ok(())
-}
-
-fn write_movie_block(output: &mut String, movie: &Movie, bytes: &[u8]) {
-    begin_record(output, "movie");
-    let _ = writeln!(output, "movie_version={MOVIE_FORMAT_VERSION}");
-    let _ = writeln!(output, "input_schema={MOVIE_INPUT_SCHEMA_VERSION}");
-    let _ = writeln!(output, "movie_id={}", movie.meta().movie_id());
-    let _ = writeln!(output, "name={}", movie.meta().name().unwrap_or(""));
-    let _ = writeln!(output, "start_tick={}", movie.start_tick().raw());
-    let _ = writeln!(output, "end_tick={}", movie.end_tick().raw());
-    let _ = writeln!(output, "steps={}", movie.step_count());
-    let _ = writeln!(output, "final_state_hash={}", movie.final_state_hash());
-    let _ = writeln!(output, "movie_sha256={}", hash_bytes(bytes));
-}
-
-fn write_replay_block(output: &mut String, record: &str, verified: bool, report: &ReplayReport) {
-    begin_record(output, record);
-    if verified {
-        let _ = writeln!(output, "verified=1");
-    }
-    let _ = writeln!(output, "start_tick={}", report.start_tick.raw());
-    let _ = writeln!(output, "end_tick={}", report.end_tick.raw());
-    let _ = writeln!(output, "steps={}", report.steps);
-    let _ = writeln!(output, "final_tick={}", report.final_tick.raw());
-    let _ = writeln!(output, "final_state_hash={}", report.final_state_hash);
-}
-
-fn write_divergence_block(
-    output: &mut String,
-    record: &str,
-    tick: u64,
-    input_index: usize,
-    expected: StateHash,
-    observed: StateHash,
-) {
-    begin_record(output, record);
-    let _ = writeln!(output, "diverged=1");
-    let _ = writeln!(output, "tick={tick}");
-    let _ = writeln!(output, "input_index={input_index}");
-    let _ = writeln!(output, "expected={expected}");
-    let _ = writeln!(output, "observed={observed}");
-}
-
-fn print_tas_help() {
-    println!("chronofork {VERSION} — tas record|play|verify");
-    println!();
-    println!("Records, replays and verifies one canonical `.cfmovie` input sequence on the");
-    println!("deterministic synthetic test backend. The movie embeds its canonical checkpoint,");
-    println!("so replay needs only the movie file. Multi-controller/ports/analog input, frame");
-    println!("advance, rewind, seek, rerecord, branch editing and real-hardware input TAS are");
-    println!("not implemented.");
-    println!();
-    println!("Usage:");
-    println!("  chronofork tas record --movie <FILE> [--steps <N>] [--input <U32>]");
-    println!("                        [--movie-id <U64>] [--name <NAME>]");
-    println!("                        [--root <DIR> [--session <KEY> [--snapshot <KEY>]]]");
-    println!("  chronofork tas play --movie <FILE>");
-    println!("  chronofork tas verify --movie <FILE>");
-    println!();
-    println!("record:");
-    println!("  --movie <FILE>     Required output movie file, published atomically on success");
-    println!("  --steps <N>        Inputs to record, decimal (default 0, max {MAX_STEPS})");
-    println!("  --input <U32>      Fixed backend input mask applied every step (default 0)");
-    println!("  --movie-id <U64>   Non-zero logical movie id (default 1)");
-    println!(
-        "  --name <NAME>      Optional label, at most {MAX_NAME_BYTES} UTF-8 bytes, no control characters"
-    );
-    println!(
-        "  --root <DIR>       Seed from an existing M2 storage root (never initialized or written)"
-    );
-    println!(
-        "  --session <KEY>    Durable session to seed from (default: latest committed checkpoint)"
-    );
-    println!("  --snapshot <KEY>   Durable snapshot to seed from (requires --session)");
-    println!();
-    println!("play/verify:");
-    println!("  --movie <FILE>     Required input movie file");
-    println!();
-    println!("Output is one `key=value` block on stdout; diagnostics go to stderr as");
-    println!("`chronofork: <error>`. Exit code is 0 on success and 1 on any typed failure.");
-    println!("On a state-hash divergence, play/verify print the matching record block plus");
-    println!("`diverged=1`, `tick`, `input_index`, `expected` and `observed`, then exit 1.");
-    println!("A recorded-tick mismatch is reported on stderr without a divergence block.");
-}
-
 #[derive(Debug)]
-struct CliError(String);
+pub(crate) struct CliError(pub(crate) String);
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

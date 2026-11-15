@@ -19,9 +19,16 @@
 //! mismatch, reporting its exact recorded tick, input index, expected hash and
 //! observed hash.
 //!
+//! This module keeps the single v1 codec, recorder and validating constructor.
+//! Ranged replay over a validated tick window and comparison of two movies'
+//! recorded expectations are owned by [`crate::replay`]; [`Movie::verify`] is the
+//! full range of that same replay path, so the checkpoint import and the
+//! stepping/verification loop exist exactly once.
+//!
 //! Deferred (not implemented and not claimed): multi-controller/ports/analog
-//! input, frame advance, rewind, seek, rerecord, branch editing, checkpoint-
-//! reference movies, import/export adapters and real-hardware input TAS.
+//! input, checkpoint anchors and a movie format v2, an in-process rewind/state
+//! cache, interactive stepping, rerecord, branch editing, checkpoint-reference
+//! movies, import/export adapters and real-hardware input TAS.
 
 use std::error::Error;
 use std::fmt;
@@ -31,6 +38,7 @@ use chronofork_core::{InputFrame, SessionId, StateHash, Tick, hash_bytes};
 
 use crate::error::SessionError;
 use crate::manager::SessionManager;
+use crate::replay::ReplayRange;
 use crate::snapshot::Snapshot;
 
 /// Version of the canonical movie container.
@@ -278,7 +286,9 @@ impl Movie {
 
     /// Replays the movie in a fresh imported session and verifies every step.
     ///
-    /// The embedded checkpoint is imported through the existing
+    /// This is the full range `[start_tick, end_tick]` of the single ranged
+    /// replay path in [`crate::replay`]: the embedded checkpoint is imported
+    /// through the existing
     /// [`SessionManager::create_session_from_snapshot_bytes`] path, so backend,
     /// payload and configuration compatibility stay owned by the existing
     /// compatibility predicate. The first mismatching step is reported as
@@ -287,43 +297,13 @@ impl Movie {
     /// resynchronizes and never reports a later mismatch instead. A pre-existing
     /// session in `manager` is never touched.
     pub fn verify(&self, manager: &mut SessionManager) -> Result<ReplayReport, MovieError> {
-        let session = manager
-            .create_session_from_snapshot_bytes(&self.snapshot_bytes)
-            .map_err(MovieError::SnapshotImport)?;
-        let mut final_tick = self.start_tick;
-        let mut final_state_hash = self.start_state_hash;
-        for (input_index, step) in self.steps.iter().enumerate() {
-            let outcome =
-                manager
-                    .step(session, step.input)
-                    .map_err(|source| MovieError::ReplayFailed {
-                        input_index,
-                        source,
-                    })?;
-            final_tick = outcome.tick;
-            final_state_hash = outcome.state_hash;
-            if outcome.tick != step.outcome_tick {
-                return Err(MovieError::TickMismatch {
-                    input_index,
-                    expected: step.outcome_tick,
-                    observed: outcome.tick,
-                });
-            }
-            if outcome.state_hash != step.state_hash {
-                return Err(MovieError::Divergence {
-                    tick: step.outcome_tick,
-                    input_index,
-                    expected: step.state_hash,
-                    observed: outcome.state_hash,
-                });
-            }
-        }
+        let outcome = ReplayRange::full(self).replay(manager)?;
         Ok(ReplayReport {
-            start_tick: self.start_tick,
-            end_tick: self.end_tick(),
-            steps: self.steps.len(),
-            final_tick,
-            final_state_hash,
+            start_tick: outcome.start_tick,
+            end_tick: outcome.end_tick,
+            steps: outcome.window_steps,
+            final_tick: outcome.final_tick,
+            final_state_hash: outcome.final_state_hash,
         })
     }
 
@@ -506,6 +486,16 @@ impl Movie {
         self.start_tick
     }
 
+    /// Returns the state digest recorded by the embedded checkpoint.
+    ///
+    /// This is the state every replay starts from; it is decoded once by
+    /// [`Movie::from_parts`]/[`Movie::from_bytes`] and exposed read-only so
+    /// ranged replay and comparison never decode the embedded checkpoint again.
+    #[must_use]
+    pub const fn checkpoint_state_hash(&self) -> StateHash {
+        self.start_state_hash
+    }
+
     /// Returns the last recorded outcome tick, or the start tick for a zero-step
     /// movie.
     #[must_use]
@@ -629,6 +619,45 @@ pub enum MovieError {
         /// Tick found in the file.
         found: Tick,
     },
+    /// The requested replay start is before the embedded checkpoint tick.
+    RangeBeforeStart {
+        /// Requested start boundary.
+        from: Tick,
+        /// Tick of the embedded checkpoint.
+        start_tick: Tick,
+    },
+    /// The requested replay end is after the movie's last recorded outcome tick.
+    RangeAfterEnd {
+        /// Requested end boundary.
+        until: Tick,
+        /// Last recorded outcome tick (`start_tick` for a zero-step movie).
+        end_tick: Tick,
+    },
+    /// The requested replay start is after the requested end.
+    RangeInverted {
+        /// Requested start boundary.
+        from: Tick,
+        /// Requested end boundary.
+        until: Tick,
+    },
+    /// The requested replay start is not the start tick or a recorded outcome tick.
+    RangeFromUnaligned {
+        /// Boundary that is not aligned with the decoded movie.
+        tick: Tick,
+    },
+    /// The requested replay end is not the start tick, end tick or a recorded
+    /// outcome tick.
+    RangeUntilUnaligned {
+        /// Boundary that is not aligned with the decoded movie.
+        tick: Tick,
+    },
+    /// The requested replay window contains no recorded step.
+    RangeEmpty {
+        /// Requested (equal) start boundary.
+        from: Tick,
+        /// Requested (equal) end boundary.
+        until: Tick,
+    },
     /// The embedded checkpoint is malformed, truncated or has a bad checksum.
     InvalidEmbeddedSnapshot(SessionError),
     /// Capturing or serializing the recording checkpoint failed.
@@ -718,6 +747,29 @@ impl fmt::Display for MovieError {
                 "movie tick sequence breaks at input index {input_index}: \
                  tick {found} does not follow {previous}"
             ),
+            Self::RangeBeforeStart { from, start_tick } => write!(
+                f,
+                "replay range start {from} is before the embedded checkpoint tick {start_tick}"
+            ),
+            Self::RangeAfterEnd { until, end_tick } => write!(
+                f,
+                "replay range end {until} is after the movie end tick {end_tick}"
+            ),
+            Self::RangeInverted { from, until } => write!(
+                f,
+                "replay range is inverted: start {from} is after end {until}"
+            ),
+            Self::RangeFromUnaligned { tick } => write!(
+                f,
+                "replay range start tick {tick} is not the movie start tick or a recorded outcome tick"
+            ),
+            Self::RangeUntilUnaligned { tick } => write!(
+                f,
+                "replay range end tick {tick} is not the movie start tick, end tick or a recorded outcome tick"
+            ),
+            Self::RangeEmpty { from, until } => {
+                write!(f, "replay range {from}..={until} contains no recorded step")
+            }
             Self::InvalidEmbeddedSnapshot(error) => {
                 write!(f, "invalid embedded checkpoint: {error}")
             }

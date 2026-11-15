@@ -10,6 +10,7 @@ pub mod error;
 pub mod lineage;
 pub mod manager;
 pub mod movie;
+pub mod replay;
 pub mod session;
 pub mod snapshot;
 pub mod storage;
@@ -21,6 +22,7 @@ pub use movie::{
     MAX_MOVIE_BYTES, MAX_STEPS, MOVIE_FORMAT_VERSION, MOVIE_INPUT_SCHEMA_VERSION, Movie,
     MovieError, MovieMeta, MovieStep, ReplayReport,
 };
+pub use replay::{ComparisonReport, ComparisonVerdict, ReplayOutcome, ReplayRange, compare_movies};
 pub use session::{Session, SessionInspection, SessionState};
 pub use snapshot::{SNAPSHOT_FORMAT_VERSION, Snapshot};
 pub use storage::{

@@ -47,7 +47,7 @@ bootstrap).
 | FR-EXEC-002 | Inject input deterministically at defined execution points. | Implemented | `InputFrame`; synthetic `APPLY_INPUT` tests |
 | FR-EXEC-003 | Produce a canonical state digest after each step. | Implemented | `StepOutcome::state_hash` |
 | FR-EXEC-004 | Restore and replay identical inputs to the same digest. | Implemented | Restore/replay acceptance test |
-| FR-EXEC-005 | Detect divergence at the first differing tick. | Implemented | `Movie::verify` reports the first mismatching step as the recorded tick, input index, expected hash and observed hash; the library and CLI paths are verified by M3-A4 in the [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md) and the dated [quality gates](../quality/quality-gates.md) result. Replay stops at the first mismatch; there is no resynchronization. |
+| FR-EXEC-005 | Detect divergence at the first differing tick. | Implemented | `Movie::verify` reports the first mismatching step as the recorded tick, input index, expected hash and observed hash; the library and CLI paths are verified by M3-A4 in the [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md) and the dated [quality gates](../quality/quality-gates.md) result. Replay stops at the first mismatch; there is no resynchronization. Branch comparison additionally reports the first differing recorded index, tick and state hash between two movies without re-simulating (M3-A15, t5 PASS 2026-11-15); a compare PASS is a record diff, not a verification. |
 | FR-EXEC-006 | Guarantee cross-platform determinism for a real backend. | Planned | Requires differential tests |
 | FR-EXEC-007 | Frame pacing, run loop and rewind. | Planned | Not in bootstrap |
 
@@ -95,7 +95,7 @@ This is deterministic but **not** cycle-accurate hardware timing.
 | FR-DEBUG-004 | Event breakpoints, logpoints, interrupt monitoring | Partial | Pending interrupt/vector inspection; no breakpoints or logpoints |
 | FR-TRACE-001 | Structured instruction/bus/device traces with emulated timestamps | Partial | Narrow debug-only `index`/`pc`/`opcode` ring and TSV export; no timestamps, bus/device events or general structured format |
 | FR-TRACE-002 | Trace comparison and historical queries | Partial | Executed-address projection, first-divergence report, opcode/ROM-byte audit and negative control against the pinned oracle; no historical queries or general trace tooling |
-| FR-TAS-001 | Movie record/playback, frame advance, rerecord, seek | Partial | Implemented and verified for the deterministic synthetic backend: record/playback of a per-tick input sequence, replay verification with exact first divergence, restart and M2-seeded replay, and the `chronofork tas record/play/verify` CLI (M3-A3, M3-A4, M3-A5, M3-A6 and M3-A7 in the [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md); M3-T4 PASS, 2026-11-15). Frame advance, rewind, seek, rerecord, branch editing and multi-controller/ports/analog/keyboard input remain deferred, and there is no real-hardware input TAS. See [ADR-0004](../adr/0004-tas-movie-format.md) and [quality gates](../quality/quality-gates.md). |
+| FR-TAS-001 | Movie record/playback, frame advance, rerecord, seek | Partial | Implemented and independently verified for the deterministic synthetic backend: v1 record/playback of a per-tick input sequence, replay verification with exact first divergence, restart and M2-seeded replay, and the `chronofork tas record/play/verify` CLI (M3-A3–A7, [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md); M3-T4 PASS 2026-11-15). Increment 2 adds ranged replay/seek over an explicit `(from, until]` window with typed range bounds, forward single-tick advance and rewind by deterministic linear re-simulation from the embedded checkpoint (O(n); no carried state), and branch comparison of recorded `(tick, state hash)` records that reports the first divergence plus separate length and checkpoint-identity mismatches without re-simulating (M3-A13–A17, [increment-2 acceptance plan](../quality/m3-partial-replay-acceptance.md); t5 PASS 2026-11-15). Still deferred: rerecord and branch editing, checkpoint anchors/periodic checkpoints and seek via checkpoints (format v2), an in-process rewind buffer/state cache, multi-controller/ports/analog/keyboard input, and real-hardware input TAS. See [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md), [ADR-0004](../adr/0004-tas-movie-format.md) and [quality gates](../quality/quality-gates.md). |
 | FR-TAS-002 | Versioned canonical movie format with branch metadata | Implemented | The canonical v1 `.cfmovie` container in `chronofork_sessions::movie` embeds the verbatim canonical checkpoint and per-step expected outcomes, carries optional name/parent metadata, applies the 256 MiB / 4,194,304-step / 256-byte limits and rejects incompatible input with no migration. Verified by M3-A1, M3-A2, M3-A8, M3-A11 and M3-A12 (M3-T4 PASS, 2026-11-15); see [ADR-0004](../adr/0004-tas-movie-format.md), the [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md) and [quality gates](../quality/quality-gates.md). |
 | FR-API-001 | Minimal CLI for implemented features only | Implemented | Existing `demo`, `megadrive`, `backend`, `session` and `tas record/play/verify` surfaces; the `tas` surface is verified by M3-A7. No HTTP, MCP or GUI surface is exposed. |
 | FR-API-002 | HTTP API over the same application services | Planned | Not implemented |
@@ -104,12 +104,15 @@ This is deterministic but **not** cycle-accurate hardware timing.
 | FR-SCRIPT-001 | Sandboxed scripting with explicit limits | Planned | Not implemented |
 | FR-GUI-001 | Optional GUI that does not own canonical state | Planned | Not implemented |
 
-FR-TAS-001 is **Partial**: v1 input-sequence record/playback and replay verification
-are implemented and verified on the deterministic synthetic backend, while frame
-advance, rewind, seek, rerecord, branch editing and multi-controller/ports/analog/
-keyboard input remain deferred. FR-TAS-002 and FR-EXEC-005 are **Implemented** for the
-same verified scope. M3 is **not complete**; see the [M3 acceptance
-plan](../quality/m3-tas-replay-acceptance.md) and the dated [quality
+FR-TAS-001 is **Partial**: v1 input-sequence record/playback, replay verification, and
+the increment-2 ranged replay/seek, forward single-tick advance, rewind by re-simulation
+and branch comparison are implemented and independently verified on the deterministic
+synthetic backend, while rerecord and branch editing, checkpoint-anchored seek (format
+v2), an in-process rewind buffer, multi-controller/ports/analog/keyboard input and
+real-hardware input TAS remain deferred. FR-TAS-002 and FR-EXEC-005 are **Implemented**
+for the same verified scope. M3 is **not complete**; see the [M3
+acceptance plan](../quality/m3-tas-replay-acceptance.md), the [increment-2 acceptance
+plan](../quality/m3-partial-replay-acceptance.md) and the dated [quality
 gates](../quality/quality-gates.md) result.
 
 ## Licensing and provenance

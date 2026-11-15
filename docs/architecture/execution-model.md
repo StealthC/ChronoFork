@@ -85,10 +85,34 @@ acceptance plan](../quality/m3-tas-replay-acceptance.md)). The byte layout, limi
 compatibility matrix and deferred list live in [ADR-0004](../adr/0004-tas-movie-format.md);
 this document does not restate them. A recording can also be seeded by an M2 committed
 checkpoint, and the resulting movie verifies after the storage root is removed.
-Deferred: checkpoint-reference movies, frame advance, rewind, seek, rerecord, branch
-editing, multi-controller/ports/analog/keyboard input, real-hardware input TAS (the
-Mega Drive `step` ignores input), import/export adapters, compression/encryption and
-HTTP/MCP/GUI/daemon.
+
+**Implemented ranged replay, seek and branch comparison (t5 PASS, 2026-11-15).** The same
+v1 movie can be replayed over an explicit `(from, until]` tick window whose boundaries are
+the start tick, the end tick or an existing recorded outcome tick; a boundary that is
+before the start, after the end, inverted, unaligned or empty is a typed rejection before
+any checkpoint import, session creation or step. Every ranged replay re-simulates linearly
+from the embedded checkpoint in a fresh session — O(n) in the `until` boundary index,
+bounded by the v1 step limit — and verifies the whole prefix as well as the window;
+`chronofork tas play|verify --from/--until` prints the summary block plus `range_from`,
+`range_until`, `prefix_steps`, `window_steps` and `replayed_steps` (no per-step blocks).
+Forward single-tick advance and rewind are new invocations, not carried state: each
+re-simulates from the embedded checkpoint and reports the same outcome as a first-ever
+invocation at the same range. Branch comparison (`chronofork tas compare
+--movie/--against`) reads the recorded `(outcome tick, state hash)` records by index and
+never re-simulates; it reports the first divergent index, tick and hash, and reports
+step-count and embedded-checkpoint (start tick/state hash) mismatches separately, with
+metadata and input masks never deciding equality. A compare PASS is not a verification;
+`verify` remains the re-simulation path. Evidence: M3-A13–A17 in the [increment-2
+acceptance plan](../quality/m3-partial-replay-acceptance.md) (t5 PASS, 2026-11-15), raw
+artifacts under the ignored `.research/m3-tas-inc2/verification/` path, and the dated
+[quality gates](../quality/quality-gates.md) result. [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)
+is the canonical contract.
+
+Deferred: checkpoint anchors/periodic checkpoints and seek via checkpoints (a future
+format v2), an in-process rewind buffer/state cache and interactive stepping,
+checkpoint-reference movies, rerecord and branch editing, multi-controller/ports/analog/
+keyboard input, real-hardware input TAS (the Mega Drive `step` ignores input),
+import/export adapters, compression/encryption and HTTP/MCP/GUI/daemon.
 
 ## Snapshot format
 
@@ -138,12 +162,21 @@ best-effort parse.
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
   historical query or breakpoint surface.
-- TAS movie v1 is implemented and verified for the deterministic synthetic backend
-  only. Deferred: checkpoint-reference movies, frame advance, rewind, seek, rerecord,
-  branch editing, multi-controller/ports/analog/keyboard input, real-hardware input TAS
-  (the Mega Drive `step` ignores input), import/export adapters, compression/encryption,
-  resynchronization/partial replay and HTTP/MCP/GUI/daemon.
-- No frame pacing, rewind or seek.
+- TAS movie v1 is implemented and verified for the deterministic synthetic backend only.
+  Ranged replay/seek, forward single-tick advance and rewind by deterministic linear
+  re-simulation from the embedded checkpoint (O(n), typed range bounds) and branch
+  comparison of recorded `(tick, state hash)` records (no re-simulation) are implemented
+  and verified (M3-A13–A17, t5 PASS 2026-11-15). Deferred: checkpoint anchors/periodic
+  checkpoints and seek via checkpoints (format v2), an in-process rewind buffer/state cache
+  and interactive stepping, checkpoint-reference movies, rerecord/branch editing,
+  multi-controller/ports/analog/keyboard input, real-hardware input TAS (the Mega Drive
+  `step` ignores input), import/export adapters, compression/encryption and
+  HTTP/MCP/GUI/daemon.
+- Branch comparison is a recorded-expectation diff, not a verification or determinism
+  proof; it cannot detect a build whose emulation changed, and metadata is never an
+  equality field.
+- No frame pacing; no in-process rewind/state cache and no O(1) or anchor-based seek (seek
+  is bounded re-simulation from the embedded checkpoint).
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
   slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend
