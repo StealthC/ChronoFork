@@ -9,6 +9,7 @@
 pub mod error;
 pub mod lineage;
 pub mod manager;
+pub mod movie;
 pub mod session;
 pub mod snapshot;
 pub mod storage;
@@ -16,6 +17,10 @@ pub mod storage;
 pub use error::SessionError;
 pub use lineage::Lineage;
 pub use manager::{SessionComparison, SessionManager, SessionSummary};
+pub use movie::{
+    MAX_MOVIE_BYTES, MAX_STEPS, MOVIE_FORMAT_VERSION, MOVIE_INPUT_SCHEMA_VERSION, Movie,
+    MovieError, MovieMeta, MovieStep, ReplayReport,
+};
 pub use session::{Session, SessionInspection, SessionState};
 pub use snapshot::{SNAPSHOT_FORMAT_VERSION, Snapshot};
 pub use storage::{
