@@ -123,7 +123,8 @@ interrupt scheduler:
 
 - 68000 reset vectors, a documented instruction subset, big-endian ROM/RAM bus.
 - VDP status/control ports and a 64 KiB VRAM window at `0xC00000..=0xC0000F`, with
-  typed errors for PSG/Z80/controller and other unmapped windows.
+  typed errors for PSG/Z80, controller writes and controller-window addresses other
+  than the two mapped data-register reads, and other unmapped windows.
 - An instruction-quantum VBlank/HBlank interrupt scheduler whose pending requests
   are delivered through the 68000 interrupt-entry API only when the SR mask admits
   them (level 7 always; every other level strictly above the interrupt-priority
@@ -136,7 +137,8 @@ interrupt scheduler:
 - MIT-licensed original code; no upstream source incorporated.
 
 It does **not** yet satisfy a production Mega Drive backend: rendering, DMA, audio,
-Z80, controllers, mapper/SRAM and cycle accuracy remain absent. `RTE`, SR-mask
+Z80, the controller protocol beyond the TH-high 3-button data-register reads,
+mapper/SRAM and cycle accuracy remain absent. `RTE`, SR-mask
 interrupt gating and VDP VINT-pending/acknowledge status are implemented for the
 modelled slice, with the remaining limits documented in
 [Mega Drive 68000 slice](megadrive-slice.md): privilege is not enforced; only

@@ -89,7 +89,10 @@ The accepted and independently verified baseline this design must extend is:
   mask with `InputFrame::new`, `buttons()` and `NEUTRAL`. The synthetic backend consumes
   only the low byte of that mask in `APPLY_INPUT` and advances exactly one tick per step.
   The Mega Drive slice ignores input (`fn step(&mut self, _input: InputFrame)`), so it is
-  not an input-TAS backend.
+  not an input-TAS backend. **2026-11-16 status note:** that v1 input path was superseded
+  by the M3 hardware increment under [ADR-0009](0009-real-hardware-input-tas.md) (per-step
+  TH-high 3-button controller data-register reads for TAS); the v1 input-model decision
+  itself is unchanged.
 - **Checkpoint bounds.** The durable storage default bound is 64 MiB per checkpoint
   (`StorageLimits::max_checkpoint_bytes`), and ADR-0004 §2 sized the v1 movie limit so a
   64 MiB checkpoint fits. A v2 anchor is another checkpoint-shaped object, so this ADR
@@ -97,7 +100,11 @@ The accepted and independently verified baseline this design must extend is:
 - **Deferred items this ADR addresses.** ADR-0004 §12 deferred multi-controller, ports,
   analog axes and keyboard input and a future input schema version. ADR-0004 §12 and
   ADR-0005 §8 deferred periodic anchors/checkpoints and seek via checkpoints (a future
-  format v2). The current milestone keeps both items unchecked.
+  format v2). The current milestone keeps both items unchecked. **2026-11-16 status
+  note:** anchors/seek and schema-2 multi-device input were delivered by the M3 v2
+  increment; the real-hardware 3-button subset was delivered by
+  [ADR-0009](0009-real-hardware-input-tas.md); the remaining controller, analog and
+  keyboard hardware is tracked as H4. The deferred-scope decision above is unchanged.
 - **Research context.** [TAS and debugging](../research/tas-and-debugging.md) records
   that emulator TAS tooling seeks by loading the nearest cached state and replaying
   forward; seek cost is proportional to the distance from that state, and O(1)

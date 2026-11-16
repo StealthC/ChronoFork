@@ -6,9 +6,11 @@ it is never a substitute for these documents.
 
 ## Status
 
-Bootstrap foundation complete, with a partial real-hardware slice implemented. The
-repository builds and tests a deterministic synthetic backend, the generic session
-layer, and a minimal 68000 + ROM/RAM Mega Drive backend with a VDP
+Bootstrap foundation and milestones M0–M4 complete and merged to `main` (M4 merged
+at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`). The repository
+builds and tests a
+deterministic synthetic backend, the generic session layer, and a minimal 68000 +
+ROM/RAM Mega Drive backend with a VDP
 status/control/VRAM port window and a deterministic instruction-quantum interrupt
 scheduler, including 68000 SR-mask interrupt gating (level 7 always admitted; other
 levels only when strictly above the mask), `RTE` handler return and VDP VINT
@@ -32,7 +34,8 @@ complete for the documented deterministic minimal-slice scope**; ADR-0002 is acc
 Claims below distinguish implemented facts from proposals and upstream research claims.
 
 **M4 (debugging depth) is complete and independently verified for the documented
-deterministic minimal-slice scope on Linux.** The contract
+deterministic minimal-slice scope on Linux; it was verified on
+`agent/m4-debugging-depth` at `6d30243` and is merged to `main` at `4c595a2`.** The contract
 [ADR-0010](adr/0010-debugging-depth.md) is implemented: optional bounded non-canonical
 debug observation (`DebugAccess` event log and byte-granular watchpoints), the
 `chronofork-debug` host layer (PC/range/conditional breakpoints, read/write watchpoints,
@@ -111,20 +114,27 @@ backend selection on `tas record/play/verify/studio/edit` (`compare` stays
 backend-agnostic), verified end to end with the synthetic `controller_rom()`. The
 [M3 hardware acceptance plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 are
 `executed - passed` (t5 PASS 2026-11-16), and the M3 completion audit passed. **M3 is
-complete for the documented deterministic minimal-slice scope** (t6 promotion; t7
-promotion audit pending). Import/export adapters remain documented-only, and
-checkpoint-reference movie support, HTTP/MCP/GUI and the Stage 6 daemon remain deferred;
+complete for the documented deterministic minimal-slice scope** (t6 promotion; the t7
+promotion audit PASSed on 2026-11-16, recorded in the ignored
+`.research/m3-hardware/final-verification/` evidence). Import/export adapters remain
+documented-only, and checkpoint-reference movie support, HTTP/MCP/GUI and the Stage 6
+daemon remain deferred;
 none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities or
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
-controller timing. M2, M3 and M4 are the completed milestones.
+controller timing. M0–M4 are complete and merged to `main` (M4 at `4c595a2`); M5
+(tracing and scripting) is next, and the
+parallel hardware-depth tracks H1–H5 (CPU/instructions; video/VDP/DMA; audio/Z80;
+cartridge/controllers/timers; accuracy/evidence) remain partial or planned. The
+[milestone status table](roadmap/milestones.md) is the canonical record of milestone
+status and integration state.
 
 ## Start here
 
 | Document | Purpose |
 |---|---|
 | [Product vision](vision/product-vision.md) | Why ChronoFork exists and what it must become |
-| [Scope](vision/scope.md) | What is in the current and next milestones |
+| [Scope](vision/scope.md) | Delivered scope, next capability scope and the hardware-depth tracks |
 | [Non-goals](vision/non-goals.md) | Explicit boundaries and anti-goals |
 | [Architecture overview](architecture/overview.md) | Layers, crates and dependency rules |
 | [Backend model](architecture/backend-model.md) | Capability contract and snapshot compatibility |
@@ -134,10 +144,10 @@ controller timing. M2, M3 and M4 are the completed milestones.
 | [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice and debug trace |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
-| [Roadmap](roadmap/roadmap.md) | Long-term stages |
-| [Milestones](roadmap/milestones.md) | Deliverable checkpoints |
+| [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
+| [Milestones](roadmap/milestones.md) | Canonical milestone status and integration state (M0–M8) plus the hardware-depth checkpoints H1–H5 |
 | [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
-| [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic |
+| [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic, its delivered increments and the hardware-depth follow-ups |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
 | [M2 durable-sessions acceptance](quality/m2-durable-sessions-acceptance.md) | Executed acceptance criteria, results and residual limits for durable sessions |
@@ -162,7 +172,7 @@ controller timing. M2, M3 and M4 are the completed milestones.
 | [ADR-0006: movie format v2](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) | Accepted (owner-approved 2026-11-15) v2 container, checkpoint anchors, anchor-based seek and schema-2 multi-device input; implemented and independently verified for the synthetic backend (t7 PASS) |
 | [ADR-0007: in-process rewind and interactive stepping](adr/0007-in-process-rewind-and-interactive-stepping.md) | Accepted (owner-approved 2026-11-15) bounded session-layer state cache, deterministic rewind and `tas studio` stdin surface; implemented and independently verified for the synthetic backend (t5 PASS) |
 | [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
-| [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 audit pending |
+| [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 promotion audit PASS 2026-11-16 |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

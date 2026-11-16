@@ -3,7 +3,8 @@
 ## Status
 
 **Accepted 2026-11-13.** The project owner approved Option E (staged hybrid) and
-[ADR-0002](../adr/0002-backend-boundaries.md). Stage 1 has produced its first slice: a minimal 68000 + ROM/RAM backend under
+[ADR-0002](../adr/0002-backend-boundaries.md). Stage 1 (milestone M1) is complete and
+produced its first slice: a minimal 68000 + ROM/RAM backend under
 `crates/chronofork-megadrive`. The Exodus oracle path is now instantiated as an
 external harness: the pinned headless oracle was built under ignored `.research/`
 and the final differential evidence passes all three synthetic ROMs (projected
@@ -170,7 +171,11 @@ headless server is explicitly single-system and lacks a state-transfer surface.
 - BizHawk is not a reuse candidate for production because its license explicitly
   warns of incompatible GPL combinations and unclear third-party provenance.
 
-## Decision requested
+## Decision recorded
 
-Approve, reject or amend Option E before any real backend implementation. See
-[ADR-0002](../adr/0002-backend-boundaries.md).
+Option E was approved on 2026-11-13 and recorded as
+[ADR-0002](../adr/0002-backend-boundaries.md); the Status section above is
+authoritative. This document keeps the comparison and the rationale for that
+decision, including the option-by-option tradeoffs and the evidence gaps that
+remain open. No further approval is pending, and any later change of strategy
+requires a new or amended ADR rather than a new request here.

@@ -3,10 +3,16 @@
 - **Status:** In progress (68000 + ROM/RAM + VDP port + interrupt-scheduler slices
   implemented; E2-13 absolute-long `MOVE` decoding repair landed; E2-15 SR-mask
   gating, `RTE` and VDP VINT pending/acknowledge implemented with backend, CLI and
-  snapshot tests; three-ROM oracle differential evidence passes 3/3 including a
-  default-quantum masked-ROM negative gating control. Broader instruction/addressing
-  coverage, E2-11 ROM identity and the remaining hardware are still open)
-- **Milestone:** M1
+  snapshot tests; the TH-high 3-button controller reads on ports 1–2 were added by
+  the M3 real-hardware input TAS increment; three-ROM oracle differential evidence
+  passes 3/3 including a default-quantum masked-ROM negative gating control. Broader
+  instruction/addressing coverage, E2-11 ROM identity and the remaining hardware are
+  still open, tracked in H1–H5 below)
+- **Milestone:** M1 (core slice, complete and merged); M3 delivered the controller
+  input TAS extension and M4 added the debugging surface (merged to `main` at
+  `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`). The epic's open
+  hardware work is tracked in the parallel hardware-depth tracks H1–H5, not in a new
+  milestone.
 - **Owner:** Lead architect
 - **Created:** 2026-11-14
 - **Depends on:** [EPIC-0001](EPIC-0001-foundation.md), accepted
@@ -42,13 +48,15 @@ the contract validator.
 - Full 68000 instruction set, prefetch or cycle accuracy.
 - VDP rendering, DMA, CRAM/VSRAM, raster timing or audio.
 - YM2612, PSG or audio.
-- Z80, timer interrupts, controllers, mapper/SRAM, other 68000 exception groups and
-  privilege enforcement.
+- Z80, timer interrupts, the controller protocol beyond the delivered TH-high
+  3-button reads, mapper/SRAM, other 68000 exception groups and privilege
+  enforcement.
 - ROM header/region detection or a commercial ROM loader.
 - Cycle/timing equivalence, interrupt-timing or interrupt-delivery equivalence
   beyond the implemented mask-gating tests and the masked-ROM negative control,
   game compatibility and full-hardware emulation.
-- GUI, HTTP, MCP or TAS.
+- GUI, HTTP or MCP. TAS movies were delivered by M3 on this slice; this epic does
+  not own TAS UI, transports or import/export adapters.
 
 ## Workstreams and tasks
 
@@ -69,6 +77,28 @@ the contract validator.
 | E2-13 | Expand instruction/addressing coverage with tests | In progress — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests; broader instruction/addressing coverage remains future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
 | E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` (privilege not enforced here) writes the raw SR for mask control; VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; CLI demo and masked default-quantum differential control pass. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
+
+## Hardware-depth mapping (H1–H5)
+
+The epic remains open after M1 because the machine model is deliberately narrow. The
+remaining work is tracked in the parallel hardware-depth tracks defined in the
+[milestones](../roadmap/milestones.md), not as an open milestone item, so no verified
+milestone has to be reopened:
+
+| Open work | Track |
+|---|---|
+| E2-13 broader instruction/addressing coverage; the remaining 68000 exception groups; privilege enforcement and separate user/supervisor stacks | H1 |
+| VDP rendering, planes, sprites and scrolling; CRAM/VSRAM; DMA; raster and H/V timing; VDP interrupt-enable/acknowledge and FIFO behaviour | H2 |
+| YM2612, PSG, the Z80 and bus arbitration | H3 |
+| E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
+| Broader differential corpus, positive interrupt-delivery evidence, cycle accuracy and cross-platform determinism | H5 |
+
+Delivered and not part of that open set: the modelled 68000 subset, ROM/RAM, the VDP
+port window and VRAM, the interrupt scheduler with SR-mask gating/`RTE`/VINT
+pending-acknowledge, the bounded debug trace, the three-ROM differential harness and
+the TH-high 3-button controller reads (M3). M4 later added the optional
+non-canonical debugging surface; it was verified on `agent/m4-debugging-depth` at
+`6d30243` and is merged to `main` at `4c595a2`.
 
 ## Differential method and controlled conditions
 
@@ -179,10 +209,17 @@ game-compatibility equivalence.
     at mask 7 and no handler execution, while the earlier explicit-1,000,000-quantum
     two-ROM evidence remains preserved as controlled-condition history.
 
+Two later increments extend the delivered slice without rewriting these criteria.
+M3 mapped the controller data registers `0x00A10003`/`0x00A10005` for reads (TH-high
+3-button subset, ports 1–2), so criterion 9's "controller windows remain explicit
+errors" now applies to every other controller access. M4 added optional
+non-canonical debug observation ([ADR-0010](../adr/0010-debugging-depth.md)). Neither
+is part of this epic's exit criteria.
+
 Criteria 1–18 pass for the implemented slice; the epic remains open for E2-11, E2-13's
 broader instruction/addressing coverage and the remaining hardware/evidence gaps
-(rendering and frame timing, VDP data reads, DMA, audio, Z80, timers, controllers,
-other exception groups, privilege enforcement).
+(rendering and frame timing, VDP data reads, DMA, audio, Z80, timers, the remaining
+controller protocol, other exception groups, privilege enforcement).
 E2-12's two-ROM differential run is done and E2-15 extends it to PASS 3/3 including
 the masked-ROM default-quantum negative gating control; the M1 differential-evidence
 milestone item is ticked on that evidence. E2-15's mask-gating, `RTE`, VINT

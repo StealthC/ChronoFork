@@ -11,10 +11,10 @@ branches and replayed exactly.
 The project is written in Rust and designed so that people, scripts and AI
 agents use the same services, not three different worlds.
 
-> **Project status:** the foundation is complete and the first real-hardware
-> slice is running, but ChronoFork is **not a finished Mega Drive emulator** and
-> does not run commercial games. See [what works today](#what-works-today) and
-> [what comes next](#what-comes-next) for the honest picture.
+> **Project status:** the foundation is complete; milestones M0–M4 are complete and
+> merged to `main` (M4 merged at `4c595a2`), but ChronoFork is **not a finished Mega
+> Drive emulator** and does not run commercial games. See [what works today](#what-works-today)
+> and [what comes next](#what-comes-next) for the honest picture.
 
 ## Why ChronoFork exists
 
@@ -73,11 +73,23 @@ is in [milestones](docs/roadmap/milestones.md).
 | M1 — First hardware | 68000, ROM/RAM, VDP port window and interrupt scheduler | Complete for the modelled slice |
 | M2 — Durable sessions | Checkpoints on disk, names, ownership and safe reloads | Complete; verified on local Linux filesystems |
 | M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
-| M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete for the modelled slice; independently verified (t5 PASS 2026-11-16) |
-| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Planned |
+| M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
+| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Next — not started |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Planned |
 | M7 — GUI | Presentation that never owns canonical state | Planned |
 | M8 — More systems | A second backend behind the same contract | Planned |
+
+M0–M4 are merged to `main`; M4 was merged at `4c595a2` after being verified on
+`agent/m4-debugging-depth` at `6d30243`, so a current `main` checkout exposes the
+`chronofork debug` surface. The
+[milestone status table](docs/roadmap/milestones.md) is the canonical record of
+milestone status and integration state.
+
+Hardware completeness is tracked in parallel tracks rather than stages: **H1**
+CPU and instruction coverage, **H2** video/VDP/DMA, **H3** audio/Z80, **H4**
+cartridge/controllers/timers and **H5** accuracy and evidence. A milestone can be
+complete while a hardware track is partial, so starting M5 does not claim a
+complete Mega Drive.
 
 ## What works today
 
@@ -111,41 +123,63 @@ comparison harness checks three synthetic programs against a pinned Exodus
 reference: executed instruction addresses and selected final state match, and
 deliberately broken controls are caught.
 
+**Controller input on the real slice.** The Mega Drive slice maps the controller
+data registers `0x00A10003`/`0x00A10005` (ports 1–2) to the per-step input frame,
+so a movie can be recorded, played and verified on the real core with `--rom`.
+The implemented protocol is the TH-high 3-button subset
+(Up/Down/Left/Right/B/C, active-low).
+
+**Debugging depth.** A host debugging layer adds PC/range/conditional breakpoints,
+byte-granular read/write watchpoints, event breakpoints and logpoints, bounded
+register/memory/disassembly views, and Mega Drive CPU/VDP/interrupt/bus inspectors,
+exposed by `chronofork debug run|inspect|memory|disasm|vdp|interrupts|bus`. Stops
+are instruction-granular and debugger state is process-local. This surface was
+verified on `agent/m4-debugging-depth` at `6d30243` and is merged to `main` at
+`4c595a2`.
+
 **Quality gates.** `./scripts/check.sh` runs formatting, compilation, Clippy, the
 workspace tests and rustdoc as one local gate, and CI runs on every push and pull
 request.
 
 **Honest limits.** The Mega Drive slice is deliberately narrow. Rendering, DMA,
-audio (YM2612/PSG), the Z80, controllers, timers, privilege enforcement and most
-68000 instructions are still missing, and time moves in instruction-sized steps
-rather than real clock cycles. The synthetic backend is a test fixture, not
-hardware emulation. TAS recording currently targets the synthetic backend; the
-Mega Drive slice does not consume input yet. Durable storage is verified on local
-Linux filesystems only: the writer lock is cooperative, retention is manual, and
-encryption, authentication and format migration are not implemented. No
-commercial ROMs, BIOS or firmware are included or required.
+audio (YM2612/PSG), the Z80, timer interrupts, ROM header/region detection and
+cartridge mapping, privilege enforcement, most 68000 instructions and the other
+68000 exception groups are still missing. Controller input covers only the TH-high
+3-button subset on ports 1–2: A and Start, the TH/6-button multiplexing, controller
+timing, port 3 and analog or keyboard hardware are absent. Time moves in
+instruction-sized steps rather than real clock cycles. The synthetic backend is a
+test fixture, not hardware emulation. TAS recording runs on the synthetic backend by
+default and on the minimal Mega Drive slice with `--rom`; neither path implies game
+compatibility.
+
+Debugging stops at instruction boundaries: there is no reverse execution, no
+code/data analysis or symbol mapping, and no DMA, audio or mapper inspection.
+Durable storage is verified on local Linux filesystems only: the writer lock is
+cooperative, retention is manual, and encryption, authentication and format
+migration are not implemented. No commercial ROMs, BIOS or firmware are included
+or required.
 
 ## What comes next
 
-The current milestone is M3, which is about TAS and deterministic replay. Its
-first increment is done, and the remaining work sits alongside the stages that
-follow:
+M0–M4 are merged to `main` (M4 at `4c595a2`); M5, tracing and scripting, is the
+next milestone. Hardware depth runs in parallel, so the stage sequence does not
+wait for a complete machine model:
 
-- **Complete the replay toolkit.** Frame advance, rewind and seek, rerecording
-  and branch editing, more input types (multi-controller, ports, analog,
-  keyboard), real-hardware TAS and import/export adapters.
-- **Deepen the Mega Drive slice.** Broader 68000 instruction and addressing
-  coverage, ROM identity and a cartridge loader, then rendering, DMA, audio, the
-  Z80, controllers, timers, privilege and eventually cycle accuracy.
-- **Add serious debugging.** Breakpoints and watchpoints, register, memory and
-  disassembly views, and bus/device event inspection.
-- **Make traces and scripts first-class.** Structured trace formats with
-  comparison and export, followed by a sandboxed scripting runtime.
-- **Open up to agents.** HTTP and MCP interfaces over the same services, with a
-  typed tool surface and permissions rather than a pile of loose endpoints.
-- **Build the GUI.** Video, audio and debugger panels that attach to and detach
-  from sessions without changing results.
-- **Grow beyond one system.** A second backend behind the same contract, with
+- **Make traces and scripts first-class (M5).** Structured trace formats with
+  comparison and export, triggered and circular tracing, followed by a sandboxed
+  scripting runtime.
+- **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
+  rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
+  complete controller and timer behaviour, and stronger accuracy evidence.
+- **Close the replay follow-ups.** Import/export adapters (for example BK2),
+  checkpoint-reference movies and in-place/timeline editing are documented
+  follow-ups, not delivered features; 6-button and analog controller hardware
+  belongs to H4.
+- **Open up to agents (M6).** HTTP and MCP interfaces over the same services, with
+  a typed tool surface and permissions rather than a pile of loose endpoints.
+- **Build the GUI (M7).** Video, audio, frame pacing and debugger panels that
+  attach to and detach from sessions without changing results.
+- **Grow beyond one system (M8).** A second backend behind the same contract, with
   capability differences reported honestly.
 
 ## Try it

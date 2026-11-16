@@ -3,7 +3,8 @@
 - **Status:** **Executed; every row M3-A45–M3-A53 is `executed - passed`** (independent
   t5 verification PASS, 2026-11-16). The hardware-TAS increment and the M3 completion audit
   passed for the documented deterministic minimal-slice scope; M3 is complete per the t6
-  promotion, subject to the t7 promotion audit.
+  promotion, and the t7 promotion audit returned PASS on 2026-11-16 (ignored
+  `.research/m3-hardware/final-verification/SUMMARY.txt`).
 - **Date:** design 2026-11-15; execution record 2026-11-16
 - **Companion contract:** [ADR-0009: real-hardware input TAS](../adr/0009-real-hardware-input-tas.md)
   — **Accepted** (owner-approved 2026-11-15T23:38:06-03:00) and **implemented and
@@ -39,7 +40,8 @@
 > `.research/m3-hardware/baseline/` was verified before and after the run. The verifier's
 > only tracked edit is the dated quality-gates block; no commit, push, tag or merge was
 > made. The t6 promotion records these statuses and the M3 completion; the t7 promotion
-> audit is the final check.
+> audit returned PASS on 2026-11-16 (ignored
+> `.research/m3-hardware/final-verification/SUMMARY.txt`).
 
 ## 1. Status rules
 
@@ -78,7 +80,7 @@
    rendering, audio, Z80, DMA or cycle accuracy is in scope.
 10. M3 completion required the separate audit in §9 and ADR-0009 §10. That audit was
     executed by t5 and passed; this plan's execution record and the t6 promotion are the
-    durable record, subject to the t7 promotion audit.
+    durable record, and the t7 promotion audit returned PASS on 2026-11-16.
 
 ## 2. Scope, definitions and evidence
 
@@ -548,7 +550,7 @@ Executed result (t5): `oracle-diff.py --skip-build` exited 0 with `status=pass`;
    as implemented.
 3. ADR-0009 status matches its evidence: **Accepted** (owner-approved 2026-11-15),
    **implemented and independently verified** (t5 PASS 2026-11-16), with M3 completion
-   recorded by the t6 promotion and subject to the t7 promotion audit.
+   recorded by the t6 promotion; the t7 promotion audit returned PASS on 2026-11-16.
 4. No ROM, BIOS, commercial asset or secret is tracked or embedded; the acceptance ROM is
    independently authored synthetic code generated in code.
 5. The evidence manifest binds the tree under test; no commit, push, tag or merge is
@@ -657,8 +659,8 @@ all A45–A53 rows are `executed - passed` against a bound tree and manifest; th
 demos, fixtures, M2/M3 evidence and canonical bytes are unchanged; the full gate is green;
 and the deferred list above is still honestly unimplemented. The t5 completion audit covered
 the five remaining M3 milestone items and passed (`SUMMARY.txt` §9). **M3 is complete for
-the documented deterministic minimal-slice scope**, recorded by t6 and subject to the t7
-promotion audit.
+the documented deterministic minimal-slice scope**, recorded by t6; the t7 promotion audit
+returned PASS on 2026-11-16.
 
 ## 10. Execution record (2026-11-16)
 
@@ -688,8 +690,8 @@ completion audit on HEAD `85af5238fabf204bbb885df3823c604212edd948` (branch
 - **M3 completion audit:** anchors/seek, rewind/interactive stepping, rerecord/branch
   editing, multi-device input and real-hardware input TAS all have executed evidence
   (`SUMMARY.txt` §9); import/export adapters remain documented-only. M3 is complete for the
-  documented deterministic minimal-slice scope, recorded by t6 and subject to the t7
-  promotion audit.
+  documented deterministic minimal-slice scope, recorded by t6; the t7 promotion audit
+  returned PASS on 2026-11-16.
 - **Evidence binding:** `.research/m3-hardware/verification/` has 1057 artifacts;
   `MANIFEST.sha256` (1057 entries) verifies with `sha256sum -c` exit 0; the verifier's only
   tracked edit is the dated [quality gates](quality-gates.md) block. No commit, push, tag

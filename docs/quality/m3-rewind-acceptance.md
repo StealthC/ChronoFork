@@ -566,7 +566,10 @@ is implemented and what is not:
    input TAS still absent). `FR-EXEC-007` is **Partial** after the t5 PASS (rewind and
    interactive stepping done; frame pacing and a host-time run loop remain absent) and is
    never promoted to **Implemented** on rewind alone; `FR-EXEC-008` records the verified
-   cache/stepping capability. `FR-MD-010` remains **Planned**.
+   cache/stepping capability. `FR-MD-010` was **Planned** at this increment; it was
+   delivered by the later final increment under
+   [ADR-0009](../adr/0009-real-hardware-input-tas.md) (M3-A45–A53 in the [M3 hardware
+   acceptance plan](m3-hardware-acceptance.md)).
 6. **No migration or persistence claim.** The docs state that the cache is transient,
    in-memory and per-process, that it writes nothing, and that movie formats, anchors and
    storage are unchanged with no migration.
@@ -730,9 +733,12 @@ This increment does not implement or claim:
 
 - **Rerecord and branch editing.** No in-place movie edit, rerecord counter, branch switch
   inside the player or parent resolution; `parent_movie_id` remains passive metadata.
-- **Real-hardware input TAS.** The Mega Drive `step` ignores input; the studio replays
-  whatever `MovieStep::input()` carries and invents no device interaction. `FR-MD-010`
-  remains Planned.
+- **Real-hardware input TAS at the increment-4 boundary.** At this increment the Mega
+  Drive `step` ignored input; the studio replays whatever `MovieStep::input()` carries
+  and invents no device interaction, and `FR-MD-010` was Planned. It was delivered by
+  the later final increment under [ADR-0009](../adr/0009-real-hardware-input-tas.md)
+  (M3-A45–A53 in the [M3 hardware acceptance plan](m3-hardware-acceptance.md)); the
+  increment-4 scope above is unchanged.
 - **O(1)/random-access seek, reverse execution and any performance target.** Rewind is
   restore-plus-replay, proportional to the distance from the start state; with caching
   disabled or after eviction it approaches a full replay.

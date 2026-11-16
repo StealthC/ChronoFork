@@ -1,6 +1,8 @@
 # Scope
 
-## Current bootstrap scope (implemented)
+## Delivered scope (M0–M4)
+
+Bootstrap foundation (M0) delivered:
 
 - Rust 2024 workspace with a small, explicit crate graph.
 - Generic IDs, virtual ticks, input frames and SHA-256 state digests.
@@ -13,18 +15,63 @@
 - Minimal CLI with `demo` and `backend describe`.
 - Official documentation, licensing policy, roadmap and EPIC-0001.
 
-## Next scope (not yet implemented)
+Delivered after the bootstrap:
 
-- Approval and implementation of a real Mega Drive backend strategy.
-- CPU/VDP/audio device contracts and a bus model for the selected backend.
-- Trace records with emulated timestamps and structured export.
-- Breakpoints, watchpoints and conditional events.
-- TAS movie format, rerecording checkpoints and deterministic seek.
-- HTTP API and MCP adapters over the same application services.
-- Scripting runtime evaluation and sandboxing.
-- GUI/video/audio presentation independent of canonical state.
+- **Minimal hardware core (M1).** A documented 68000 subset, ROM and work RAM, a
+  VDP status/control/VRAM port window, a deterministic instruction-quantum
+  VBlank/HBlank scheduler with SR-mask gating, `RTE` and VINT
+  pending/acknowledge, a bounded debug trace and three-ROM oracle differential
+  evidence.
+- **Durable sessions (M2).** Versioned on-disk checkpoints, named metadata, a
+  cooperative writer lock, storage-backed rehydration and the
+  `chronofork session save/load/list/delete` CLI.
+- **TAS and deterministic replay (M3).** Canonical v1/v2 movie formats,
+  record/play/verify with exact first divergence, ranged replay and anchors,
+  branch comparison, rewind and `tas studio`, rerecord/branch editing, and
+  real-hardware input TAS with the TH-high 3-button controller subset on ports
+  1–2 (`--rom`).
+- **Debugging depth (M4).** PC/range/conditional breakpoints, byte-granular
+  watchpoints, event breakpoints and logpoints, bounded register/memory/
+  disassembly views and Mega Drive CPU/VDP/interrupt/bus inspectors behind
+  `chronofork debug`. M4 was verified on `agent/m4-debugging-depth` at `6d30243`
+  and is merged to `main` at `4c595a2`.
 
-## Explicitly outside the bootstrap
+Milestone status and integration state are recorded once in the
+[milestone status table](../roadmap/milestones.md); this page does not duplicate
+them.
+
+## Next capability scope (not yet implemented)
+
+- **Tracing and scripting (M5).** Structured instruction/bus/device traces with
+  emulated timestamps, triggered/circular tracing, trace comparison and export,
+  and a sandboxed scripting runtime with memory and time limits.
+- **Agent-native interfaces (M6).** HTTP and MCP over the same application
+  services, with a typed tool surface, ownership and permissions.
+- **Human-facing GUI (M7).** Video, audio, frame pacing and debugger/TAS panels
+  that attach to and detach from sessions without owning canonical state.
+- **Multi-backend expansion (M8).** A second backend behind the same capability
+  model, with honest capability differences and cross-backend differential tests.
+
+## Hardware-depth tracks (parallel, not stages)
+
+Hardware completeness is tracked outside the capability stages, so a milestone
+can be complete while the machine model is still narrow. Details and checkpoints
+live in the [milestones](../roadmap/milestones.md) document.
+
+- **H1 — CPU/instruction completeness.** Broader 68000 instruction and addressing
+  coverage, privilege enforcement, separate user/supervisor stacks and the
+  remaining exception groups.
+- **H2 — Video/VDP/DMA.** Rendering and planes, CRAM/VSRAM, DMA, raster and H/V
+  timing, VDP interrupt-enable/acknowledge logic and FIFO behaviour.
+- **H3 — Audio/Z80.** YM2612, PSG, the Z80 and bus arbitration.
+- **H4 — Cartridge/controllers/timers.** ROM header/region/TMSS/checksum, mapper
+  and SRAM, the full controller protocol (A/Start, TH latch, 6-button, port 3,
+  analog/keyboard) and timer interrupts.
+- **H5 — Accuracy/evidence.** A broader differential corpus, positive
+  interrupt-delivery and timing evidence, cycle accuracy, cross-platform
+  determinism and performance work after correctness.
+
+## Explicitly outside the current scope
 
 - A complete Mega Drive emulator.
 - Cycle-accurate CPU/VDP/audio claims without tests.
