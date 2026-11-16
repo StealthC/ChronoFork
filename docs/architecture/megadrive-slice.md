@@ -4,7 +4,11 @@
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, with passing
   three-ROM oracle differential evidence including a default-quantum masked-ROM
-  control); not a complete emulator.
+  control); not a complete emulator. Controller-port data-register reads for real-hardware
+  input TAS are implemented and independently verified for the TH-high 3-button subset on
+  ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
+  the canonical state, demos and M1 evidence unchanged. A/Start, TH/6-button/Start
+  multiplexing, controller timing, analog/keyboard hardware and port 3 remain absent.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -29,14 +33,17 @@ fixtures are independently authored synthetic data.
 | Cartridge ROM | `0x000000..0x3FFFFF` | Immutable, big-endian; only the provided image length is valid |
 | Work RAM | `0xFF0000..0xFFFFFF` | 64 KiB, big-endian, mirrored by address bits 15–0 |
 | VDP ports | `0xC00000..0xC0000F` | Data port `0x00..0x03`, control/status port `0x04..0x07`, HV counter `0x08..0x0F` |
+| Controller data registers | `0x00A10003`, `0x00A10005` | Byte reads only, driven by the current step's `InputFrame` ports 0/1; see below |
 | Everything else | — | Explicit `UnmappedRead` / `UnmappedWrite` error |
 
 - Word and long accesses require even addresses.
 - ROM writes are rejected.
 - Multi-byte and debugger writes validate the entire range before mutating RAM, so
   a failed write cannot leave partial state.
-- PSG (`0xC00011` and above), Z80 (`0xA00000`) and controller (`0xA10000`) windows
-  are deliberately unmapped and return explicit errors; they are not open bus.
+- PSG (`0xC00011` and above), Z80 (`0xA00000`) and the rest of the controller
+  (`0xA10000..0xA1001F`) window are deliberately unmapped and return explicit errors; they
+  are not open bus. Only byte reads of the two controller data registers are mapped, for
+  execution only; all controller writes and debugger reads remain typed errors.
 - VDP mirrors beyond `0xC0000F` and the physical byte-swapped/interleaved VRAM
   layout are not modelled.
 - Bus reads take `&mut self` because a VDP port read can advance the VDP address.
@@ -332,6 +339,12 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 - session fork/restore with VDP and pending-interrupt state, including forking a
   masked request and delivering it after the mask is lowered, plus source isolation;
 - device-level determinism across two independent machines;
+- controller data-register reads: the exact `0xA10003`/`0x00A10005` byte map, active-low
+  TH-high bit values, two independent ports, neutral `0x7F`, A/Start/high-bit inertness,
+  typed writes and debugger rejection, step-scoped clearing on success and failure, no
+  controller field in the snapshot payload/state/config hashes, checkpoint replay with the
+  next supplied frame, and `controller_rom()` observed work-RAM values (6 integration tests
+  in `tests/controller.rs`, plus in-crate unit/property tests in `snapshot_properties.rs`);
 - bounded trace semantics: zero-capacity rejection, eviction/dropped/index
   reporting, clear/take, illegal-opcode recording, `MOVE.W #imm,SR`/`RTE`
   recording, and byte-identical snapshots, state hashes and payload versions with
@@ -342,8 +355,37 @@ CLI integration tests cover deterministic trace and state files across two runs,
 text, the default scheduler quantum staying 64 and never being hidden, explicit
 quantum recording, and deterministic `megadrive demo` output including masked
 HBlank/VBlank retention, VINT status, mask lowering, handler IPM, `RTE` restoration
-and no nested HBlank handler. `cargo test --workspace` is the source of truth for
-the current count.
+and no nested HBlank handler. The `tas_hardware.rs` CLI process target (13 tests) covers
+hardware record/play/verify/edit/studio with `--rom`, two-controller v2 input, the
+synthetic-default regression and the typed ROM/backend errors. `cargo test --workspace`
+is the source of truth for the current count.
+
+## Implemented: controller-port input for TAS
+
+[ADR-0009](../adr/0009-real-hardware-input-tas.md) is accepted, implemented and
+independently verified for real-hardware input TAS (t5 PASS, 2026-11-16; M3-A45–A53), on
+the deterministic minimal-slice scope and with the canonical Mega Drive state unchanged.
+
+- Byte reads of `0xA10003` (controller 1) and `0xA10005` (controller 2) are driven by
+  the current step's `InputFrame` ports 0 and 1. Only the TH-high phase of a 3-button
+  pad is represented: bits 0–5 are Up/Down/Left/Right/B/C active-low, bit 6 is the
+  TH-high level (1) and bit 7 is 0; a neutral port reads `0x7F`. A and Start require
+  the TH-low phase and are **not** readable; the A/Start bits in the frame are inert.
+- The input is transient and per-step: it is not serialized into the snapshot, not
+  part of the state body, state hash or configuration hash, and cleared after every
+  step. A restored machine uses the next step's input. No canonical Mega Drive byte
+  changes; the differential payload/envelope/meta probe, the golden snapshot/state
+  assertions, the demos, the oracle/state probes and all existing M2/M3 movie fixtures are
+  byte-identical to the pre-change baseline.
+- Every other controller-window access, including all writes and the version,
+  control, port-3 and TX/RX addresses, stays a typed `UnmappedRead`/`UnmappedWrite`;
+  the side-effect-free debugger path does not map step-scoped input.
+- The CLI exposes `--rom` on `tas record`/`play`/`verify`/`studio`/`edit` and keeps
+  `compare` backend-agnostic. The synthetic default path and its bytes are unchanged.
+- Acceptance evidence is the [M3 hardware acceptance
+  plan](../quality/m3-hardware-acceptance.md) rows M3-A45–A53, `executed - passed`
+  (t5, 2026-11-16), and the ignored `.research/m3-hardware/verification/` artifacts. No
+  controller, TH/6-button/Start, timing, commercial-ROM or accuracy claim is made.
 
 ## Not implemented
 
@@ -351,7 +393,10 @@ the current count.
 - YM2612, PSG or audio.
 - Z80, bus arbitration, timer/other interrupt sources, controller-port interrupt
   acknowledge, other 68000 exception groups and privilege enforcement.
-- Controller input or I/O ports.
+- Controller input beyond the TH-high 3-button subset: A and Start, the TH latch/direction
+  register and TH-low phase, 6-button pad (X/Y/Z/Mode), controller timing/interrupts, port 3,
+  and analog/keyboard hardware. The implemented data-register reads are described above and
+  in [ADR-0009](../adr/0009-real-hardware-input-tas.md).
 - Cartridge mapper/SSF2, SRAM, region/TMSS behavior.
 - 68000 prefetch, bus-cycle timing, separate user/supervisor stacks, most
   addressing modes and most instructions.
@@ -359,8 +404,9 @@ the current count.
   slice; the scheduler maps instruction quanta to scanlines with configurable
   constants. This is deterministic but not hardware timing.
 - ROM header validation, checksum, region detection or ROM database.
-- Loading a user ROM through the CLI. The demo uses an independently authored
-  synthetic ROM.
+- ROM header validation, checksum, region detection or a ROM database. The
+  `megadrive trace` and TAS `--rom` commands accept an explicitly supplied image; the demo
+  uses an independently authored synthetic ROM.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
@@ -431,5 +477,7 @@ configured quantum, describing the instruction-quantum model and SR-mask gating.
 4. Privilege enforcement and separate user/supervisor stacks; additional interrupt
    sources (a wired level-7 source, timers, VDP interrupt-enable registers) if the
    slice grows to model them.
-5. Controller input schema (multi-port) before claiming input support.
+5. Deeper controller protocol (TH latch/TH-low phase, A/Start, 6-button pad, port 3) only
+   if the slice grows to model it; the TH-high 3-button reads and `--rom` hardware TAS are
+   implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).
 6. Rendering/DMA only after the non-rendering state model is stable.

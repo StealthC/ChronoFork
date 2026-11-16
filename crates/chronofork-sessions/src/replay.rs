@@ -1,31 +1,42 @@
-//! Deterministic ranged replay and branch comparison over decoded v1 movies.
+//! Deterministic ranged replay, anchor seek and branch comparison.
 //!
 //! This module implements the increment-2 contract of
-//! [ADR-0005](../../../docs/adr/0005-partial-replay-and-branch-comparison.md),
-//! which extends the accepted v1 movie format of
-//! [ADR-0004](../../../docs/adr/0004-tas-movie-format.md) without changing a
-//! byte of it. [`crate::movie`] remains the single `.cfmovie` reader/writer,
-//! recorder and validating constructor; this module owns the tick range, its
-//! validation, the single deterministic replay path and the recorded-expectation
-//! comparison.
+//! [ADR-0005](../../../docs/adr/0005-partial-replay-and-branch-comparison.md) on
+//! the accepted v1 movie format of
+//! [ADR-0004](../../../docs/adr/0004-tas-movie-format.md), plus the checkpoint
+//! anchor seek of
+//! [ADR-0006](../../../docs/adr/0006-movie-format-v2-anchors-and-multi-device-input.md)
+//! on the v2 container. [`crate::movie`] remains the single `.cfmovie`
+//! reader/writer, recorder and validating constructor; this module owns the tick
+//! range, its validation, the single deterministic replay path and the
+//! recorded-expectation comparison.
 //!
-//! A replay always imports the movie's embedded checkpoint into a fresh session
-//! through the existing [`SessionManager::create_session_from_snapshot_bytes`]
-//! path, so backend identity, payload version and configuration compatibility
-//! stay decided by the existing snapshot envelope predicate. Execution then
-//! starts at the embedded checkpoint and applies recorded inputs in order; no
-//! state is carried between invocations, nothing is cached across calls and a
-//! pre-existing session is never touched. Seek is therefore deterministic
-//! re-simulation from the only anchor v1 stores, never random access.
+//! A replay imports exactly one checkpoint into a fresh session through the
+//! existing [`SessionManager::create_session_from_snapshot_bytes`] path, so
+//! backend identity, payload version and configuration compatibility stay decided
+//! by the existing snapshot envelope predicate. A v1 movie or an anchor-less v2
+//! movie starts at its embedded checkpoint and applies recorded inputs in order.
+//! A v2 movie with anchors starts at the nearest anchor whose recorded step tick
+//! is at or before the requested prefix end, and executes only the steps after
+//! that anchor up to `until`. Anchor selection is a start-index parameter of the
+//! same single replay loop, not a second loop. No state is carried between
+//! invocations, nothing is cached across calls and a pre-existing session is
+//! never touched.
+//!
+//! An anchored ranged replay deliberately does **not** re-execute the pre-anchor
+//! prefix: the anchor boundary is validated structurally by the movie (its
+//! snapshot tick and state digest equal the recorded expectation of its step) and
+//! every executed step after it is verified exactly. Full-range
+//! [`Movie::verify`] always starts at the embedded checkpoint and remains the
+//! complete verification path.
 //!
 //! A [`ReplayRange`] is the pair `(from, until]`: the window contains the
 //! recorded steps with `from < outcome_tick <= until`, while the prefix contains
-//! the steps with `outcome_tick <= from`. Prefix steps are executed and
-//! verified exactly like full-range replay, so a range narrows what is reported
-//! and bounds how far execution runs; it never weakens verification. Boundaries
-//! must be the movie start tick, its end tick or a recorded outcome tick;
-//! anything else is rejected with a typed [`MovieError`] before a session is
-//! imported.
+//! the steps with `outcome_tick <= from`. Without an anchor, prefix steps are
+//! executed and verified exactly like full-range replay, so a range narrows what
+//! is reported and bounds how far execution runs. Boundaries must be the movie
+//! start tick, its end tick or a recorded outcome tick; anything else is rejected
+//! with a typed [`MovieError`] before a session is imported.
 //!
 //! [`compare_movies`] is a pure value operation over two already-decoded movies:
 //! it imports no checkpoint, executes no step and never re-simulates. It reports
@@ -34,10 +45,10 @@
 //! never decide equality. Comparison is not verification; [`Movie::verify`] and
 //! [`ReplayRange::replay`] remain the re-simulation paths.
 //!
-//! Deferred and not implemented here: checkpoint anchors inside the container, a
-//! format v2, an in-process rewind/state cache, interactive stepping, rerecord
-//! and branch editing, multi-controller/ports/analog/keyboard input,
-//! real-hardware input TAS and any TAS import/export adapter.
+//! Deferred and not implemented here: an in-process rewind/state cache,
+//! interactive stepping, rerecord and branch editing, real-hardware input TAS,
+//! TAS import/export adapters, O(1)/random-access seek and any cross-invocation
+//! anchor cache.
 
 use chronofork_core::{StateHash, Tick};
 
@@ -97,16 +108,26 @@ impl<'a> ReplayRange<'a> {
         }
     }
 
-    /// Replays the validated window from the movie's embedded checkpoint.
+    /// Replays the validated window from its single starting checkpoint.
     ///
-    /// The embedded checkpoint is imported into exactly one fresh session; the
-    /// recorded inputs are applied in order up to the step whose recorded
-    /// outcome tick is the `until` boundary, and every executed step is compared
-    /// with its recorded `(outcome tick, state hash)` exactly as a full replay
-    /// does. The first mismatch is reported as [`MovieError::TickMismatch`] or
-    /// [`MovieError::Divergence`] with its exact recorded tick and input index;
-    /// replay stops there and never resynchronizes. Steps at or before `from`
-    /// are counted as the verified prefix, later steps as the window.
+    /// A movie with anchors starts at the nearest anchor whose recorded step tick
+    /// is at or before `from`; its canonical snapshot is imported through the same
+    /// checkpoint import path and only the recorded steps after that anchor up to
+    /// the `until` boundary are executed. A movie without anchors (every v1 movie
+    /// and an anchor-less v2 movie) starts at the embedded checkpoint and executes
+    /// every recorded step up to `until`, exactly as before. A range with an empty
+    /// prefix (`from == start_tick`) can never select an anchor and falls back to
+    /// the embedded checkpoint.
+    ///
+    /// In both cases exactly one fresh session is imported; every executed step is
+    /// compared with its recorded `(outcome tick, state hash)` and the first
+    /// mismatch is reported as [`MovieError::TickMismatch`] or
+    /// [`MovieError::Divergence`] with its exact recorded tick and input index.
+    /// An anchor import failure is [`MovieError::AnchorImport`] with the anchor
+    /// step preserved. Replay stops at the first mismatch, never resynchronizes
+    /// and never touches a pre-existing session. Steps at or before `from` are
+    /// counted as the prefix and later steps as the window; an anchored replay
+    /// does not re-execute the steps at or before its anchor.
     pub fn replay(&self, manager: &mut SessionManager) -> Result<ReplayOutcome, MovieError> {
         replay_validated(self.movie, manager, self.from, self.until)
     }
@@ -130,10 +151,10 @@ fn validate_range(movie: &Movie, from: Tick, until: Tick) -> Result<ReplayRange<
     if from > until {
         return Err(MovieError::RangeInverted { from, until });
     }
-    if from != start_tick && !is_recorded_tick(movie, from) {
+    if from != start_tick && movie.recorded_step_index(from).is_none() {
         return Err(MovieError::RangeFromUnaligned { tick: from });
     }
-    if until != start_tick && until != end_tick && !is_recorded_tick(movie, until) {
+    if until != start_tick && until != end_tick && movie.recorded_step_index(until).is_none() {
         return Err(MovieError::RangeUntilUnaligned { tick: until });
     }
     if from == until && movie.step_count() != 0 {
@@ -142,34 +163,60 @@ fn validate_range(movie: &Movie, from: Tick, until: Tick) -> Result<ReplayRange<
     Ok(ReplayRange { movie, from, until })
 }
 
-/// Returns whether `tick` is one of the movie's recorded outcome ticks.
-///
-/// Recorded ticks are strictly increasing (already validated by the reader and
-/// the validating constructor), so a binary search is exact and allocation-free.
-fn is_recorded_tick(movie: &Movie, tick: Tick) -> bool {
-    movie
-        .steps()
-        .binary_search_by_key(&tick.raw(), |step| step.outcome_tick().raw())
-        .is_ok()
-}
-
 /// Executes one validated window against a fresh imported session.
+///
+/// Anchor selection happens before the single import: the nearest anchor whose
+/// recorded step tick is at or before `from`, or the embedded checkpoint when the
+/// movie has no qualifying anchor. The imported session is then the only start
+/// state, and the single loop below skips the steps the anchor already covers.
 fn replay_validated(
     movie: &Movie,
     manager: &mut SessionManager,
     from: Tick,
     until: Tick,
 ) -> Result<ReplayOutcome, MovieError> {
+    let anchor = movie.anchor_at_or_before(from);
+    let (start_bytes, initial_tick, initial_state_hash, start_index) = match anchor {
+        Some(anchor) => (
+            anchor.snapshot_bytes(),
+            anchor.tick(),
+            anchor.state_hash(),
+            Some(anchor.step_index()),
+        ),
+        None => (
+            movie.snapshot_bytes(),
+            movie.start_tick(),
+            movie.checkpoint_state_hash(),
+            None,
+        ),
+    };
     let session = manager
-        .create_session_from_snapshot_bytes(movie.snapshot_bytes())
-        .map_err(MovieError::SnapshotImport)?;
-    let mut final_tick = movie.start_tick();
-    let mut final_state_hash = movie.checkpoint_state_hash();
+        .create_session_from_snapshot_bytes(start_bytes)
+        .map_err(|source| match anchor {
+            Some(anchor) => MovieError::AnchorImport {
+                anchor_step: anchor.step_index(),
+                source,
+            },
+            None => MovieError::SnapshotImport(source),
+        })?;
+    let mut final_tick = initial_tick;
+    let mut final_state_hash = initial_state_hash;
     let mut prefix_steps = 0_usize;
     let mut window_steps = 0_usize;
+    let mut replayed_steps = 0_usize;
     for (input_index, step) in movie.steps().iter().enumerate() {
         if step.outcome_tick() > until {
             break;
+        }
+        if step.outcome_tick() <= from {
+            prefix_steps += 1;
+        } else {
+            window_steps += 1;
+        }
+        // Steps at or before the selected anchor were restored by the imported
+        // checkpoint, so they are counted but not executed again.
+        if start_index.is_some_and(|start| input_index <= start) {
+            continue;
         }
         let outcome =
             manager
@@ -193,13 +240,9 @@ fn replay_validated(
                 observed: outcome.state_hash,
             });
         }
+        replayed_steps += 1;
         final_tick = outcome.tick;
         final_state_hash = outcome.state_hash;
-        if step.outcome_tick() <= from {
-            prefix_steps += 1;
-        } else {
-            window_steps += 1;
-        }
     }
     Ok(ReplayOutcome {
         start_tick: movie.start_tick(),
@@ -209,7 +252,10 @@ fn replay_validated(
         range_until: until,
         prefix_steps,
         window_steps,
-        replayed_steps: prefix_steps + window_steps,
+        replayed_steps,
+        anchored: anchor.is_some(),
+        anchor_step: anchor.map(|anchor| anchor.step_index()),
+        anchor_tick: anchor.map(|anchor| anchor.tick()),
         final_tick,
         final_state_hash,
     })
@@ -221,6 +267,12 @@ fn replay_validated(
 /// verified, never an interpolation. For a clean replay `final_tick` equals
 /// `range_until` and `final_state_hash` equals the recorded hash of the step at
 /// that boundary; for a zero-step movie both describe the embedded checkpoint.
+///
+/// `anchored == anchor_step.is_some() == anchor_tick.is_some()` always holds.
+/// `prefix_steps` and `window_steps` describe the requested movie range and are
+/// independent of the execution strategy; `replayed_steps` is the number of
+/// steps actually executed, so an anchored replay omits the steps its anchor
+/// checkpoint already covers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplayOutcome {
     /// Tick of the embedded checkpoint (movie-level fact).
@@ -233,12 +285,22 @@ pub struct ReplayOutcome {
     pub range_from: Tick,
     /// Validated window end boundary.
     pub range_until: Tick,
-    /// Steps executed before the window (`outcome_tick <= range_from`).
+    /// Steps in the requested range with `outcome_tick <= range_from`.
     pub prefix_steps: usize,
     /// Steps in the window (`range_from < outcome_tick <= range_until`).
     pub window_steps: usize,
-    /// Steps actually executed and verified (`prefix_steps + window_steps`).
+    /// Steps actually executed and verified.
+    ///
+    /// Without an anchor this is `prefix_steps + window_steps`; an anchored
+    /// replay executes only the suffix after its anchor, so it is smaller by the
+    /// number of steps the anchor covers.
     pub replayed_steps: usize,
+    /// Whether this replay started from an anchor checkpoint.
+    pub anchored: bool,
+    /// Zero-based recorded step of the selected anchor, when anchored.
+    pub anchor_step: Option<usize>,
+    /// Recorded outcome tick of the selected anchor step, when anchored.
+    pub anchor_tick: Option<Tick>,
     /// Observed tick at `range_until`.
     pub final_tick: Tick,
     /// Observed state digest at `range_until`.

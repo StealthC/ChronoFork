@@ -2,10 +2,12 @@
 //!
 //! It is a minimal 68000 + ROM/RAM + VDP-port machine with a deterministic
 //! instruction-quantum interrupt scheduler, **not** a complete Mega Drive.
-//! Rendering, audio, Z80, controllers, DMA, cartridge mappers and cycle-accurate
-//! timing are not implemented. The backend advertises only what it actually
-//! provides and uses an independently authored synthetic ROM in tests and the
-//! demo.
+//! Rendering, audio, Z80, DMA, cartridge mappers, TH-latched/6-button controller
+//! protocols and cycle-accurate timing are not implemented. Controller port
+//! reads are limited to the TH-high 3-button subset of the two data registers
+//! (see [`controller_rom`] and the controller model below). The backend
+//! advertises only what it actually provides and uses an independently authored
+//! synthetic ROM in tests and the demo.
 //!
 //! # Interrupt policy
 //!
@@ -68,6 +70,21 @@
 //! payload version is unchanged, and restore does not rewind trace contents. The
 //! generic [`Backend`] interface exposes no trace method, so the backend
 //! capability `tracing` stays `false`; use the concrete type.
+//!
+//! # Controller input
+//!
+//! [`Backend::step`] makes its `InputFrame` visible to the two controller data
+//! registers only while that step executes: `0xA10003` (port 1) is driven by
+//! `ports()[0]` and `0xA10005` (port 2) by `ports()[1]`. Each read returns the
+//! TH-high 3-button subset — Up, Down, Left, Right, B and C, active-low, with TH
+//! high in bit 6 and bit 7 zero — so a neutral port reads `0x7F`. A and Start are
+//! not readable, and every other controller-window access, including all writes,
+//! stays a typed unmapped error.
+//!
+//! The input is transient: the backend sets it at step entry and clears it on
+//! every exit path, so it cannot leak into a later step, a snapshot, a restored
+//! machine or inspection. It is not serialized and not hashed; a restored machine
+//! uses the next caller-supplied frame. See ADR-0009.
 //!
 //! Differential runs that must remain interrupt-free can rely on the reset mask
 //! 7 (a program that never writes `SR` takes no VDP interrupt), or construct
@@ -394,14 +411,13 @@ impl MegadriveBackend {
         self.sync_vdp_vint_pending();
         Ok(())
     }
-}
 
-impl Backend for MegadriveBackend {
-    fn descriptor(&self) -> &BackendDescriptor {
-        &self.descriptor
-    }
-
-    fn step(&mut self, _input: InputFrame) -> Result<StepOutcome, BackendError> {
+    /// Executes one instruction with the step's controller input already set on
+    /// the bus.
+    ///
+    /// The caller ([`Backend::step`]) owns the transient set/clear pair; this
+    /// helper must never be called on its own.
+    fn step_with_current_input(&mut self) -> Result<StepOutcome, BackendError> {
         // Take at most one interrupt at the instruction boundary, then execute
         // one instruction. This models the 68000 taking one request between
         // instructions instead of nesting several handlers in a single tick.
@@ -415,6 +431,24 @@ impl Backend for MegadriveBackend {
             state_hash: self.state_hash(),
             halted: self.cpu.halted(),
         })
+    }
+}
+
+impl Backend for MegadriveBackend {
+    fn descriptor(&self) -> &BackendDescriptor {
+        &self.descriptor
+    }
+
+    fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
+        // Make the step's controller input visible to execution byte reads, then
+        // clear it on every exit path so no input outlives the step. The clear is
+        // unconditional: an interrupt-delivery, CPU, scheduler or tick failure
+        // must not leave a stale controller value behind.
+        let ports = input.ports();
+        self.bus.set_step_input([ports[0], ports[1]]);
+        let outcome = self.step_with_current_input();
+        self.bus.clear_step_input();
+        outcome
     }
 
     fn snapshot(&self) -> Result<BackendSnapshot, BackendError> {
@@ -463,6 +497,10 @@ impl Backend for MegadriveBackend {
         // Validate and build the replacement state before committing it, so a
         // rejected restore leaves the machine untouched.
         let mut bus = self.bus.clone();
+        // Controller input is step-scoped, never serialized. Reset the cloned
+        // bus explicitly so a restored machine starts from the neutral idle byte
+        // and uses the next step's frame.
+        bus.clear_step_input();
         bus.restore_ram(parsed.ram.to_vec())
             .map_err(|error| BackendError::InvalidSnapshot(error.to_string()))?;
         bus.vdp_mut().restore_bytes(parsed.vdp).map_err(|error| {
@@ -934,6 +972,61 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
     rom
 }
 
+/// Builds an independently authored synthetic ROM that observes both controller
+/// data registers and records what it read in work RAM.
+///
+/// The program at `0x200` clears `D0`-`D3`, then loops:
+///
+/// 1. reads controller port 1 (`0x00A10003`) with `MOVE.B` into `D2`;
+/// 2. accumulates that byte into `D0` with `ADD.B` and stores `D0` at
+///    `0x00FF0000`;
+/// 3. stores the last observed port-1 byte at `0x00FF0002`;
+/// 4. reads controller port 2 (`0x00A10005`) into `D3`;
+/// 5. accumulates that byte into `D1` with `ADD.B` and stores `D1` at
+///    `0x00FF0001`;
+/// 6. stores the last observed port-2 byte at `0x00FF0003`;
+/// 7. branches back with `BRA.S`.
+///
+/// The observed controller values therefore become canonical work RAM (and hence
+/// state hash) bytes: a non-neutral port changes the machine state at the first
+/// loop read, and neutral input accumulates the neutral data byte `0x7F` in both
+/// accumulators. The program never writes `SR`, a VDP register or a controller
+/// register and sets no interrupt handler, so at the reset interrupt-priority
+/// mask 7 the VDP requests stay masked and the loop is interrupt-free. It uses
+/// only instruction forms already implemented and tested by this slice and is
+/// not a real-hardware read routine: it does not toggle TH and cannot observe A
+/// or Start. The ROM contains no copyrighted data and is not a game.
+#[must_use]
+pub fn controller_rom() -> Vec<u8> {
+    let mut rom = vec![0_u8; 0x400];
+    for word in rom.chunks_exact_mut(2) {
+        word.copy_from_slice(&[0x4E, 0x71]); // NOP fill
+    }
+    rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+    rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+
+    let main = vec![
+        0x70, 0x00, // MOVEQ #0,D0 (port-1 accumulator)
+        0x72, 0x00, // MOVEQ #0,D1 (port-2 accumulator)
+        0x74, 0x00, // MOVEQ #0,D2 (last port-1 observation)
+        0x76, 0x00, // MOVEQ #0,D3 (last port-2 observation)
+        // loop: read, accumulate and record both controller ports.
+        0x14, 0x39, 0x00, 0xA1, 0x00, 0x03, // MOVE.B (0x00A10003).L,D2
+        0xD0, 0x02, // ADD.B D2,D0
+        0x13, 0xC0, 0x00, 0xFF, 0x00, 0x00, // MOVE.B D0,(0x00FF0000).L
+        0x13, 0xC2, 0x00, 0xFF, 0x00, 0x02, // MOVE.B D2,(0x00FF0002).L
+        0x16, 0x39, 0x00, 0xA1, 0x00, 0x05, // MOVE.B (0x00A10005).L,D3
+        0xD2, 0x03, // ADD.B D3,D1
+        0x13, 0xC1, 0x00, 0xFF, 0x00, 0x01, // MOVE.B D1,(0x00FF0001).L
+        0x13, 0xC3, 0x00, 0xFF, 0x00, 0x03, // MOVE.B D3,(0x00FF0003).L
+        // BRA.S back to the port-1 read at 0x208. The displacement is measured
+        // from the following instruction (0x232), so it is -42 (0xD6).
+        0x60, 0xD6,
+    ];
+    rom[0x200..0x200 + main.len()].copy_from_slice(&main);
+    rom
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -944,9 +1037,12 @@ mod tests {
 
     use super::{
         HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-        VBLANK_VECTOR_ADDRESS, demo_rom, interrupt_rom,
+        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
     };
-    use crate::bus::{BusError, RAM_BASE, RAM_END, RAM_SIZE, ROM_END};
+    use crate::bus::{
+        BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, RAM_BASE, RAM_END,
+        RAM_SIZE, ROM_END,
+    };
     use crate::interrupts::{InterruptLevel, InterruptScheduler, SchedulerConfig, VideoStandard};
     use crate::vdp::{
         SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING, VdpError,
@@ -972,6 +1068,32 @@ mod tests {
         interrupt_factory(mask)
             .create_machine()
             .expect("interrupt machine")
+    }
+
+    /// Factory for the controller-observing synthetic ROM.
+    fn controller_factory() -> MegadriveFactory {
+        MegadriveFactory::new(controller_rom()).expect("valid controller ROM")
+    }
+
+    /// Builds a ROM whose first instruction is the unimplemented `ILLEGAL`
+    /// opcode, so a step fails after the transient input has been set.
+    fn illegal_rom() -> Vec<u8> {
+        let mut rom = [0x4E_u8, 0x71].repeat(0x200); // 0x400 bytes of NOP fill
+        rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x200..0x202].copy_from_slice(&[0x4A, 0xFC]);
+        rom
+    }
+
+    /// Steps a controller machine with the same frame and returns the observed
+    /// work-RAM bytes after `steps` steps.
+    fn controller_run(steps: usize, input: InputFrame) -> [u8; 4] {
+        let mut machine = controller_factory().create_machine().expect("machine");
+        for _ in 0..steps {
+            machine.step(input).expect("controller step");
+        }
+        let memory = machine.inspect().expect("inspect").memory;
+        [memory[0], memory[1], memory[2], memory[3]]
     }
 
     /// Steps until the scheduler tick reaches `tick`.
@@ -1076,6 +1198,276 @@ mod tests {
         // The mask parameter is encoded as SR = 0x2000 | mask << 8.
         assert_eq!(&interrupt_rom(7)[0x210..0x214], &[0x46, 0xFC, 0x27, 0x00]);
         assert_eq!(&interrupt_rom(0)[0x210..0x214], &[0x46, 0xFC, 0x20, 0x00]);
+    }
+
+    #[test]
+    fn controller_rom_layout_is_independent_and_matches_its_documentation() {
+        let rom = controller_rom();
+        assert_eq!(rom.len(), 0x400);
+        assert_eq!(&rom[0..4], &0x0100_0000_u32.to_be_bytes());
+        assert_eq!(&rom[4..8], &0x0000_0200_u32.to_be_bytes());
+
+        // Four accumulators/observation registers cleared, then the loop body.
+        assert_eq!(
+            &rom[0x200..0x208],
+            &[0x70, 0x00, 0x72, 0x00, 0x74, 0x00, 0x76, 0x00]
+        );
+        assert_eq!(
+            &rom[0x208..0x20E],
+            &[0x14, 0x39, 0x00, 0xA1, 0x00, 0x03], // MOVE.B (0x00A10003).L,D2
+        );
+        assert_eq!(&rom[0x20E..0x210], &[0xD0, 0x02]); // ADD.B D2,D0
+        assert_eq!(
+            &rom[0x210..0x216],
+            &[0x13, 0xC0, 0x00, 0xFF, 0x00, 0x00], // MOVE.B D0,(0x00FF0000).L
+        );
+        assert_eq!(
+            &rom[0x216..0x21C],
+            &[0x13, 0xC2, 0x00, 0xFF, 0x00, 0x02], // MOVE.B D2,(0x00FF0002).L
+        );
+        assert_eq!(
+            &rom[0x21C..0x222],
+            &[0x16, 0x39, 0x00, 0xA1, 0x00, 0x05], // MOVE.B (0x00A10005).L,D3
+        );
+        assert_eq!(&rom[0x222..0x224], &[0xD2, 0x03]); // ADD.B D3,D1
+        assert_eq!(
+            &rom[0x224..0x22A],
+            &[0x13, 0xC1, 0x00, 0xFF, 0x00, 0x01], // MOVE.B D1,(0x00FF0001).L
+        );
+        assert_eq!(
+            &rom[0x22A..0x230],
+            &[0x13, 0xC3, 0x00, 0xFF, 0x00, 0x03], // MOVE.B D3,(0x00FF0003).L
+        );
+        assert_eq!(&rom[0x230..0x232], &[0x60, 0xD6]); // BRA.S back to 0x208
+
+        // The loop body is a fixed 42 bytes, so the branch displacement lands on
+        // its first instruction.
+        assert_eq!(0x232 - 42, 0x208);
+    }
+
+    #[test]
+    fn controller_rom_records_each_button_bit_and_neutral_input() {
+        let cases = [
+            (0x00, CONTROLLER_NEUTRAL), // neutral reads 0x7F
+            (0x01, 0x7E),               // Up
+            (0x02, 0x7D),               // Down
+            (0x04, 0x7B),               // Left
+            (0x08, 0x77),               // Right
+            (0x10, 0x6F),               // B
+            (0x20, 0x5F),               // C
+        ];
+        for (mask, expected) in cases {
+            // Eight steps: four clear instructions, the port-1 read, the add and
+            // the two stores. Port 2 has not been read yet.
+            let ram = controller_run(8, InputFrame::new(mask));
+            assert_eq!(
+                ram,
+                [expected, 0, expected, 0],
+                "port 1 mask 0x{mask:02X} must be observed in RAM"
+            );
+        }
+
+        // Neutral input matches the documented baseline: the neutral data byte is
+        // accumulated and recorded for both ports.
+        assert_eq!(
+            controller_run(12, InputFrame::NEUTRAL),
+            [
+                CONTROLLER_NEUTRAL,
+                CONTROLLER_NEUTRAL,
+                CONTROLLER_NEUTRAL,
+                CONTROLLER_NEUTRAL
+            ]
+        );
+        // A non-neutral frame after the loop's first iteration accumulates a
+        // second observed byte, so RAM is a function of every step's frame.
+        let pressed = InputFrame::with_devices([0x01, 0x20, 0, 0], [0; 4], 0);
+        let two_iterations = 4 + 2 * 9 - 1;
+        let ram = controller_run(two_iterations, pressed);
+        assert_eq!(ram[2], 0x7E, "last port-1 byte");
+        assert_eq!(ram[3], 0x5F, "last port-2 byte");
+        assert_eq!(ram[0], 0xFC, "port-1 accumulator after two observations");
+        assert_eq!(ram[1], 0xBE, "port-2 accumulator after two observations");
+    }
+
+    #[test]
+    fn controller_rom_maps_two_ports_and_ignores_unrepresented_fields() {
+        let first = InputFrame::with_devices([0x01, 0x20, 0, 0], [0; 4], 0);
+        let second = InputFrame::with_devices([0x20, 0x01, 0, 0], [0; 4], 0);
+        let steps = 12;
+        assert_eq!(
+            controller_run(steps, first),
+            [0x7E, 0x5F, 0x7E, 0x5F],
+            "port 1 and port 2 are independent"
+        );
+        assert_eq!(
+            controller_run(steps, second),
+            [0x5F, 0x7E, 0x5F, 0x7E],
+            "swapping the masks swaps the observed ports"
+        );
+
+        // Ports 2/3, axes and keys are recorded by movies but have no emulated
+        // effect here, and must never be reinterpreted as buttons or hardware.
+        let inert = InputFrame::with_devices(
+            [0x01, 0x20, u32::MAX, u32::MAX],
+            [i16::MIN, -1, 1, i16::MAX],
+            u64::MAX,
+        );
+        assert_eq!(controller_run(steps, inert), controller_run(steps, first));
+    }
+
+    #[test]
+    fn controller_input_is_step_scoped_cleared_and_affects_canonical_state() {
+        let mut pressed = controller_factory().create_machine().expect("machine");
+        let mut neutral = controller_factory().create_machine().expect("machine");
+        let mut button_only = controller_factory().create_machine().expect("machine");
+        let frame = InputFrame::new(0x01);
+        for step in 1..=8 {
+            let pressed_outcome = pressed.step(frame).expect("pressed step");
+            let neutral_outcome = neutral.step(InputFrame::NEUTRAL).expect("neutral step");
+            let button_outcome = button_only
+                .step(InputFrame::new(0x40)) // A is not in the TH-high subset
+                .expect("button-only step");
+
+            // The transient input never survives the step, even on success.
+            assert_eq!(
+                pressed.bus.read8(CONTROLLER_PORT_1),
+                Ok(CONTROLLER_NEUTRAL),
+                "step {step} must clear the transient input"
+            );
+            assert_eq!(pressed.bus.read8(CONTROLLER_PORT_2), Ok(CONTROLLER_NEUTRAL));
+
+            if step < 5 {
+                assert_eq!(pressed_outcome.state_hash, neutral_outcome.state_hash);
+            } else {
+                assert_ne!(
+                    pressed_outcome.state_hash, neutral_outcome.state_hash,
+                    "the controller read at step {step} must change canonical state"
+                );
+            }
+            assert_eq!(
+                button_outcome.state_hash, neutral_outcome.state_hash,
+                "A/Start and high bits are inert"
+            );
+        }
+
+        // Input is not part of the canonical snapshot: before the first
+        // controller read the pressed and neutral machine serialize identically.
+        let mut early_pressed = controller_factory().create_machine().expect("machine");
+        let mut early_neutral = controller_factory().create_machine().expect("machine");
+        for _ in 0..4 {
+            early_pressed.step(frame).expect("pressed step");
+            early_neutral
+                .step(InputFrame::NEUTRAL)
+                .expect("neutral step");
+        }
+        assert_eq!(
+            early_pressed.snapshot().expect("snapshot").payload(),
+            early_neutral.snapshot().expect("snapshot").payload()
+        );
+    }
+
+    #[test]
+    fn controller_input_is_cleared_on_a_failed_step() {
+        let factory = MegadriveFactory::new(illegal_rom()).expect("valid ROM");
+        let mut machine = factory.create_machine().expect("machine");
+        assert!(matches!(
+            machine.step(InputFrame::new(0x3F)),
+            Err(BackendError::Execution(_))
+        ));
+        assert_eq!(machine.bus.read8(CONTROLLER_PORT_1), Ok(CONTROLLER_NEUTRAL));
+        assert_eq!(machine.bus.read8(CONTROLLER_PORT_2), Ok(CONTROLLER_NEUTRAL));
+
+        // The failed step may have advanced the fetch, but its canonical state is
+        // identical to the same failure with neutral input: no input leaks in.
+        let mut neutral = factory.create_machine().expect("machine");
+        assert!(matches!(
+            neutral.step(InputFrame::NEUTRAL),
+            Err(BackendError::Execution(_))
+        ));
+        assert_eq!(
+            machine.snapshot().expect("snapshot").state_hash(),
+            neutral.snapshot().expect("snapshot").state_hash()
+        );
+        assert_eq!(
+            machine.snapshot().expect("snapshot").payload(),
+            neutral.snapshot().expect("snapshot").payload()
+        );
+    }
+
+    #[test]
+    fn debugger_reads_of_the_controller_window_are_typed_errors() {
+        let mut machine = controller_factory().create_machine().expect("machine");
+        machine.step(InputFrame::new(0x01)).expect("step");
+        let before = machine.snapshot().expect("snapshot");
+        for address in [CONTROLLER_PORT_1, CONTROLLER_PORT_2] {
+            assert!(
+                matches!(
+                    machine.read_memory(u64::from(address), 1),
+                    Err(BackendError::Execution(_))
+                ),
+                "debugger read at 0x{address:06X} must stay unmapped"
+            );
+        }
+        assert_eq!(
+            machine.snapshot().expect("snapshot").state_hash(),
+            before.state_hash(),
+            "a rejected debugger read must not change state"
+        );
+    }
+
+    #[test]
+    fn restored_controller_machine_uses_the_next_step_input() {
+        let frame = InputFrame::with_devices([0x01, 0x20, 0, 0], [0; 4], 0);
+        // Four steps only clear registers, so the checkpoint is input-independent.
+        let mut uninterrupted = controller_factory().create_machine().expect("machine");
+        for _ in 0..4 {
+            uninterrupted.step(frame).expect("clear step");
+        }
+        let checkpoint = uninterrupted.snapshot().expect("snapshot");
+
+        let mut expected = Vec::new();
+        for _ in 0..10 {
+            let outcome = uninterrupted.step(frame).expect("step");
+            expected.push((outcome.tick, outcome.state_hash));
+        }
+        assert_eq!(
+            &uninterrupted.inspect().expect("inspect").memory[0..4],
+            &[0x7E, 0x5F, 0x7E, 0x5F]
+        );
+
+        // The restored machine replays the same frames and matches every tick and
+        // state hash; no input was carried in the checkpoint.
+        let mut restored = controller_factory().create_machine().expect("machine");
+        for _ in 0..4 {
+            restored.step(InputFrame::NEUTRAL).expect("neutral step");
+        }
+        restored.restore(&checkpoint).expect("restore");
+        assert_eq!(
+            restored.bus.read8(CONTROLLER_PORT_1),
+            Ok(CONTROLLER_NEUTRAL)
+        );
+        for (index, (tick, state_hash)) in expected.iter().enumerate() {
+            let outcome = restored.step(frame).expect("restored step");
+            assert_eq!(outcome.tick, *tick, "tick at step {index}");
+            assert_eq!(outcome.state_hash, *state_hash, "hash at step {index}");
+        }
+        assert_eq!(
+            restored.snapshot().expect("snapshot").payload(),
+            uninterrupted.snapshot().expect("snapshot").payload()
+        );
+
+        // Restoring the same checkpoint and stepping neutral diverges at the
+        // first controller read: the machine uses the next supplied frame, not a
+        // serialized latch.
+        let mut neutral = controller_factory().create_machine().expect("machine");
+        for _ in 0..4 {
+            neutral.step(InputFrame::NEUTRAL).expect("neutral step");
+        }
+        neutral.restore(&checkpoint).expect("restore");
+        assert_ne!(
+            neutral.step(InputFrame::NEUTRAL).expect("step").state_hash,
+            expected[0].1
+        );
     }
 
     #[test]

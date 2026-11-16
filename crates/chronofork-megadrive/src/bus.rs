@@ -1,14 +1,20 @@
 //! Big-endian Mega Drive memory bus for the real-hardware slice.
 //!
 //! The cartridge ROM window, the 64 KiB work RAM window and the VDP port window
-//! at `0xC00000..=0xC0000F` are mapped. PSG, Z80, controller and mapper windows
-//! remain deliberately absent from this slice; accessing them is an explicit
-//! error rather than silent open-bus behavior.
+//! at `0xC00000..=0xC0000F` are mapped. The two controller data registers at
+//! `0xA10003` (port 1) and `0xA10005` (port 2) are mapped for **execution byte
+//! reads only**, and only while a step is executing: they return a TH-high
+//! 3-button subset derived from the current step's `InputFrame`. Every other
+//! controller/IO-window access, every controller write, and every debugger read of
+//! the window is an explicit typed error rather than silent open-bus behavior.
+//! PSG, Z80 and mapper windows remain deliberately absent from this slice.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
 //! [`MegadriveBus::read_memory`], which is side-effect free and therefore rejects
-//! the side-effecting VDP window instead of silently changing device state.
+//! the side-effecting VDP window instead of silently changing device state. The
+//! controller value is step-scoped rather than machine state, so the debugger path
+//! rejects it too.
 
 use std::error::Error;
 use std::fmt;
@@ -32,6 +38,19 @@ pub const VDP_BASE: u32 = 0x00C0_0000;
 pub const VDP_WINDOW_SIZE: u32 = 0x0010;
 /// Exclusive end of the VDP port window.
 pub const VDP_END: u32 = VDP_BASE + VDP_WINDOW_SIZE;
+/// First address of the Mega Drive controller/IO window.
+pub const CONTROLLER_WINDOW_BASE: u32 = 0x00A1_0000;
+/// Exclusive end of the controller/IO window.
+pub const CONTROLLER_WINDOW_END: u32 = 0x00A1_0020;
+/// Controller port 1 data register.
+pub const CONTROLLER_PORT_1: u32 = 0x00A1_0003;
+/// Controller port 2 data register.
+pub const CONTROLLER_PORT_2: u32 = 0x00A1_0005;
+/// Data-register byte read when no button is pressed and TH is high.
+///
+/// Bit 6 is the TH-high level and bit 7 is the slice's constant zero; the six
+/// active-low button bits are all released.
+pub const CONTROLLER_NEUTRAL: u8 = 0x7F;
 
 /// A bus access that the current slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,6 +135,14 @@ pub struct MegadriveBus {
     rom: Arc<[u8]>,
     ram: Vec<u8>,
     vdp: Vdp,
+    /// Data-register bytes for controller ports 1 and 2 during the instruction
+    /// currently executing.
+    ///
+    /// This is transient, step-scoped input, not canonical machine state: it is
+    /// not serialized, hashed or inspected, and it is neutral whenever no step is
+    /// executing. [`MegadriveBackend::step`](crate::MegadriveBackend) sets it at
+    /// step entry and clears it on every exit path.
+    controller_ports: [u8; 2],
 }
 
 impl MegadriveBus {
@@ -129,7 +156,27 @@ impl MegadriveBus {
             rom,
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
+            controller_ports: [CONTROLLER_NEUTRAL; 2],
         }
+    }
+
+    /// Makes one step's controller port masks visible to execution byte reads.
+    ///
+    /// `ports[0]` drives controller port 1 and `ports[1]` port 2. Each mask uses
+    /// the TH-high 3-button layout: bits 0-5 are Up, Down, Left, Right, B and C
+    /// (set = pressed, active-low in the data register); A (bit 6), Start (bit 7)
+    /// and every higher bit are inert. The derived bytes are cleared by
+    /// [`MegadriveBus::clear_step_input`] when the step ends.
+    pub(crate) fn set_step_input(&mut self, ports: [u32; 2]) {
+        self.controller_ports = ports.map(controller_data_byte);
+    }
+
+    /// Returns the controller data registers to their neutral idle bytes.
+    ///
+    /// The backend calls this on every `step` exit path, so a direct bus read
+    /// outside a step never observes the previous step's input.
+    pub(crate) fn clear_step_input(&mut self) {
+        self.controller_ports = [CONTROLLER_NEUTRAL; 2];
     }
 
     /// Returns the cartridge image.
@@ -155,10 +202,14 @@ impl MegadriveBus {
         &mut self.vdp
     }
 
-    /// Reads one byte through the bus, including side-effecting VDP ports.
+    /// Reads one byte through the bus, including side-effecting VDP ports and the
+    /// step-scoped controller data registers.
     pub fn read8(&mut self, address: u32) -> Result<u8, BusError> {
         if let Some(offset) = vdp_offset(address) {
             return self.vdp.read8(offset).map_err(BusError::Vdp);
+        }
+        if let Some(port) = controller_port(address) {
+            return Ok(self.controller_ports[port]);
         }
         self.peek8(address)
     }
@@ -441,6 +492,29 @@ fn vdp_offset(address: u32) -> Option<u8> {
     }
 }
 
+/// Returns the controller port index addressed by `address`, if any.
+///
+/// Only the two data-register bytes are mapped; the version, control, TX/RX and
+/// port-3 addresses are not.
+fn controller_port(address: u32) -> Option<usize> {
+    match address {
+        CONTROLLER_PORT_1 => Some(0),
+        CONTROLLER_PORT_2 => Some(1),
+        _ => None,
+    }
+}
+
+/// Derives one TH-high 3-button data-register byte from a port mask.
+///
+/// Bits 0-5 are Up, Down, Left, Right, B and C, active-low in the data register.
+/// Bit 6 reads as the TH-high level, bit 7 as the slice's constant zero. Bits 6
+/// and above of the input mask (A, Start and anything else) have no effect.
+fn controller_data_byte(port: u32) -> u8 {
+    // The low six bits are the whole mapped subset, so the mask fits `u8`.
+    let pressed = (port & 0x3F) as u8;
+    0x40 | (!pressed & 0x3F)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -492,6 +566,142 @@ mod tests {
             Err(BusError::UnmappedRead { .. })
         ));
         assert!(bus.read8(0x00FF_FFFF).is_ok());
+    }
+
+    #[test]
+    fn controller_ports_read_the_th_high_three_button_subset() {
+        let mut bus = bus();
+        // Neutral, each documented button bit, and the all-pressed combination.
+        let cases = [
+            (0x00, 0x7F), // released
+            (0x01, 0x7E), // Up
+            (0x02, 0x7D), // Down
+            (0x04, 0x7B), // Left
+            (0x08, 0x77), // Right
+            (0x10, 0x6F), // B
+            (0x20, 0x5F), // C
+            (0x11, 0x6E), // Up + B
+            (0x3F, 0x40), // every mapped button pressed
+        ];
+        for (mask, expected) in cases {
+            bus.set_step_input([mask, mask]);
+            assert_eq!(
+                bus.read8(super::CONTROLLER_PORT_1),
+                Ok(expected),
+                "port 1 mask 0x{mask:02X}"
+            );
+            assert_eq!(
+                bus.read8(super::CONTROLLER_PORT_2),
+                Ok(expected),
+                "port 2 mask 0x{mask:02X}"
+            );
+        }
+
+        // Frame bits 6 (A), 7 (Start) and every higher bit have no effect.
+        bus.set_step_input([0x4000_0001, 0x8000_0020]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7E));
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_2), Ok(0x5F));
+        bus.set_step_input([u32::MAX, u32::MAX]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x40));
+        bus.set_step_input([0xFFFF_FFC0, 0xFFFF_FFC0]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7F));
+    }
+
+    #[test]
+    fn controller_ports_are_independent_and_clear_to_neutral() {
+        let mut bus = bus();
+        bus.set_step_input([0x01, 0x20]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7E));
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_2), Ok(0x5F));
+
+        bus.set_step_input([0x20, 0x01]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x5F));
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_2), Ok(0x7E));
+
+        bus.set_step_input([0x3F, 0x3F]);
+        bus.clear_step_input();
+        assert_eq!(
+            bus.read8(super::CONTROLLER_PORT_1),
+            Ok(super::CONTROLLER_NEUTRAL)
+        );
+        assert_eq!(
+            bus.read8(super::CONTROLLER_PORT_2),
+            Ok(super::CONTROLLER_NEUTRAL)
+        );
+        // Clearing an already-neutral bus is idempotent.
+        bus.clear_step_input();
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7F));
+    }
+
+    #[test]
+    fn controller_window_maps_only_two_execution_byte_reads() {
+        let mut bus = bus();
+        bus.set_step_input([0x01, 0x02]);
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7E));
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_2), Ok(0x7D));
+
+        // Every other address in the controller/IO window, and every write,
+        // is a typed error rather than a silent skip.
+        for address in super::CONTROLLER_WINDOW_BASE..super::CONTROLLER_WINDOW_END {
+            if address == super::CONTROLLER_PORT_1 || address == super::CONTROLLER_PORT_2 {
+                continue;
+            }
+            assert_eq!(
+                bus.read8(address),
+                Err(BusError::UnmappedRead { address }),
+                "read at 0x{address:06X}"
+            );
+            assert_eq!(
+                bus.write8(address, 0),
+                Err(BusError::UnmappedWrite { address }),
+                "write at 0x{address:06X}"
+            );
+        }
+        for address in [super::CONTROLLER_PORT_1, super::CONTROLLER_PORT_2] {
+            assert_eq!(
+                bus.write8(address, super::CONTROLLER_NEUTRAL),
+                Err(BusError::UnmappedWrite { address })
+            );
+        }
+
+        // The debugger path stays unmapped: a step-scoped value is not a machine
+        // register and must not be presented as one.
+        for address in [super::CONTROLLER_PORT_1, super::CONTROLLER_PORT_2] {
+            assert_eq!(bus.peek8(address), Err(BusError::UnmappedRead { address }));
+            assert_eq!(
+                bus.read_memory(u64::from(address), 1),
+                Err(BusError::UnmappedRead { address })
+            );
+        }
+
+        // A word or long access that touches the window is a typed error, not a
+        // partial success: the high byte of the data register is not mapped.
+        assert_eq!(
+            bus.read16(0x00A1_0002),
+            Err(BusError::UnmappedRead {
+                address: 0x00A1_0002
+            })
+        );
+        assert_eq!(
+            bus.read32(0x00A1_0000),
+            Err(BusError::UnmappedRead {
+                address: 0x00A1_0000
+            })
+        );
+        assert_eq!(
+            bus.write16(0x00A1_0002, 0),
+            Err(BusError::UnmappedWrite {
+                address: 0x00A1_0003
+            })
+        );
+        // An odd-address word access at the data register is rejected before the
+        // read, as everywhere else on the 68000 bus.
+        assert_eq!(
+            bus.read16(super::CONTROLLER_PORT_1),
+            Err(BusError::OddAddress {
+                address: super::CONTROLLER_PORT_1
+            })
+        );
     }
 
     #[test]

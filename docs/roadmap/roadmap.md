@@ -67,14 +67,37 @@ restarts without state loss.
 
 ## Stage 3 — TAS and deterministic replay
 
-First and second increments implemented and independently verified on 2026-11-15 for
-the deterministic synthetic backend (M3-T4 and M3-T5 PASS); see
-[ADR-0004](../adr/0004-tas-movie-format.md),
-[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md) and the [M3 acceptance
-plan](../quality/m3-tas-replay-acceptance.md) plus the [increment-2 acceptance
-plan](../quality/m3-partial-replay-acceptance.md).
+First through sixth increments implemented and independently verified: the first five for
+the deterministic synthetic backend (M3-T4, M3-T5, the t7 format-v2 verification PASS, the
+t5 rewind verification PASS and the t10 repair-round-2 PASS, 2026-11-15/2026-11-16) and the
+sixth for real-hardware input TAS on the minimal Mega Drive slice (t5 PASS, 2026-11-16).
+See [ADR-0004](../adr/0004-tas-movie-format.md),
+[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md),
+[ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
+[ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md),
+[ADR-0008](../adr/0008-rerecord-and-branch-editing.md),
+[ADR-0009](../adr/0009-real-hardware-input-tas.md) and the [M3 acceptance
+plan](../quality/m3-tas-replay-acceptance.md), the [increment-2 acceptance
+plan](../quality/m3-partial-replay-acceptance.md), the [format-v2 acceptance
+plan](../quality/m3-format-v2-acceptance.md), the [M3 rewind acceptance
+plan](../quality/m3-rewind-acceptance.md), the [M3 rerecord acceptance
+plan](../quality/m3-rerecord-acceptance.md) and the [M3 hardware acceptance
+plan](../quality/m3-hardware-acceptance.md). The v2 increment adds the `CFMOVIE2`
+checkpoint-anchor container, nearest-anchor seek and schema-2 multi-device input. The
+fourth increment adds a bounded in-process rewind state cache, deterministic rewind by
+restore plus verified forward replay and the interactive `chronofork tas studio` stepping
+surface. The fifth increment adds deterministic input editing/truncation with suffix
+re-simulation, branch artifact identity/isolation, anchor retention/drop/rebuild and the
+`chronofork tas edit` surface. The sixth increment adds `--rom` backend selection and
+stateless per-step Mega Drive controller reads (TH-high 3-button subset, ports 1–2) with
+the canonical snapshot/state-hash/demo/M1 evidence unchanged. **M3 is complete** for the
+documented deterministic minimal-slice scope after the t5 completion audit and this t6
+promotion (t7 promotion audit pending). Import/export adapters remain documented-only,
+checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred, and none of the
+deferred in-place/timeline editing, persisted counter or mixed-anchor modes is claimed.
 
-- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie`).
+- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie` and v2
+      `CFMOVIE2`).
 - [x] Record/playback of a per-tick input sequence on the deterministic synthetic
       backend.
 - [x] Replay verification with exact first-divergence reporting.
@@ -83,19 +106,47 @@ plan](../quality/m3-partial-replay-acceptance.md).
       carried state).
 - [x] Branch comparison of recorded `(tick, state hash)` records with first-divergence,
       length and embedded-checkpoint identity reporting (no re-simulation).
-- [ ] Periodic anchors/checkpoints and seek via checkpoints (movie format v2).
-- [ ] In-process rewind buffer/state cache and interactive stepping.
-- [ ] Rerecording and branch editing.
-- [ ] Multi-controller, ports, analog and keyboard input.
-- [ ] Real-hardware input TAS (the Mega Drive `step` ignores input).
+- [x] Periodic anchors/checkpoints and seek via checkpoints (movie format v2) —
+      implemented and independently verified (M3-A18–A21/A24; ADR-0006, t7 PASS).
+- [x] In-process rewind buffer/state cache and interactive stepping — implemented as the
+      session-layer `Player`/`StateCache` and `chronofork tas studio`, and independently
+      verified for the deterministic synthetic backend (M3-A28–A34; ADR-0007, t5 PASS,
+      2026-11-15). The cache is process-local; no persistent/shared cache or O(1) seek is
+      claimed.
+- [x] Rerecording and branch editing — implemented as the session-layer
+      `chronofork_sessions::edit` and the `chronofork tas edit` surface, and independently
+      verified for the deterministic synthetic backend (M3-A35–A44; ADR-0008, t10
+      repair-round-2 PASS, 2026-11-16). No in-place/timeline editing, persisted counter,
+      format v3 or mixed-anchor mode is claimed; real-hardware input TAS is the separate
+      sixth increment below.
+- [x] Multi-controller, ports, analog and keyboard input — schema-2 multi-device frames
+      (four digital ports, four analog axes and a keyboard bitmap) are implemented and
+      independently verified for the deterministic synthetic backend (M3-A22/A24; ADR-0006,
+      t7 PASS), and the Mega Drive controller ports 1–2 are mapped for the TH-high 3-button
+      subset (M3-A45–A53; ADR-0009, t5 PASS 2026-11-16). Real-hardware analog/keyboard/port-3
+      hardware is not modelled.
+- [x] Real-hardware input TAS — implemented and independently verified for the documented
+      deterministic minimal-slice scope ([ADR-0009](../adr/0009-real-hardware-input-tas.md);
+      [M3 hardware acceptance plan](../quality/m3-hardware-acceptance.md) M3-A45–A53
+      `executed - passed`, t5 PASS 2026-11-16): stateless per-step controller reads of
+      `0x00A10003`/`0x00A10005` (TH-high 3-button subset; A/Start, TH/6-button and
+      controller timing deferred), no canonical snapshot/state-hash/demo/M1 change, and
+      `--rom` on `tas record/play/verify/studio/edit` (`compare` stays backend-agnostic).
+      The claim is the synthetic `controller_rom()` and 3-button subset, not commercial
+      ROMs, controller timing or cycle accuracy.
 - [ ] Import/export adapters, documented only, not implemented.
 
-**Exit (first and second increments met):** a recorded input sequence reproduces every
-recorded tick and state hash exactly, reports the first divergence exactly, can be
-replayed/seeked over an exact tick window and compared against another recording, on the
-deterministic synthetic backend. Full Stage 3 exit also requires checkpoint-anchored
-seek/format v2, rerecord and branch editing, multi-controller and real-hardware input,
-which remain deferred.
+**Exit (six increments met):** a recorded input sequence reproduces every recorded tick
+and state hash exactly, reports the first divergence exactly, can be replayed/seeked over
+an exact tick window or from a checkpoint anchor and compared against another recording,
+can be rewound and stepped interactively through a bounded in-process state cache, can be
+edited/truncated into a new verified branch artifact with anchor handling on the
+deterministic synthetic backend, and can be recorded/played/verified/edited/stepped on the
+minimal Mega Drive slice with per-step controller input and `--rom` backend selection.
+**M3 is complete for the documented deterministic minimal-slice scope** (t5 PASS
+2026-11-16; t6 promotion; t7 audit pending). Import/export adapters remain documented-only,
+and the hardware claim is the synthetic `controller_rom()` and 3-button subset, not real
+commercial ROMs, controller timing or cycle accuracy.
 
 ## Stage 4 — Deep Mega Drive debugging
 

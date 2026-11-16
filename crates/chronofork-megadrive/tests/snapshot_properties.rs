@@ -7,8 +7,10 @@
 //! either be rejected with the parser's typed error or accepted as a canonical
 //! snapshot that re-encodes to the same bytes; no input may panic.
 
+use chronofork_backend_api::Backend;
+use chronofork_core::InputFrame;
 use chronofork_megadrive::vdp::{SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, SNAPSHOT_MAGIC as VDP_MAGIC};
-use chronofork_megadrive::{InterruptScheduler, SchedulerConfig, Vdp};
+use chronofork_megadrive::{InterruptScheduler, MegadriveFactory, SchedulerConfig, Vdp, demo_rom};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::Index;
@@ -147,4 +149,45 @@ proptest! {
         let mut vdp = Vdp::new();
         prop_assert!(vdp.restore_bytes(&bytes).is_err());
     }
+}
+
+/// A step's `InputFrame` is not canonical state: a program that never reads the
+/// controller serializes identically for every frame it is given, including
+/// non-neutral ports, axes and keys.
+#[test]
+fn controller_input_never_enters_the_canonical_snapshot() {
+    let factory = MegadriveFactory::new(demo_rom()).expect("valid demo ROM");
+    let mut neutral = factory.create_machine().expect("machine");
+    let mut non_neutral = factory.create_machine().expect("machine");
+    let extreme = InputFrame::with_devices([u32::MAX; 4], [i16::MAX; 4], u64::MAX);
+    // The demo ROM exercises the ALU, work RAM and the VDP port window; it never
+    // reads the controller window.
+    for _ in 0..23 {
+        neutral.step(InputFrame::NEUTRAL).expect("neutral step");
+        non_neutral.step(extreme).expect("input step");
+    }
+
+    let neutral_snapshot = neutral.snapshot().expect("neutral snapshot");
+    let non_neutral_snapshot = non_neutral.snapshot().expect("input snapshot");
+    assert_eq!(
+        non_neutral_snapshot.payload(),
+        neutral_snapshot.payload(),
+        "input must not be serialized"
+    );
+    assert_eq!(
+        non_neutral_snapshot.payload().len(),
+        neutral_snapshot.payload().len()
+    );
+    assert_eq!(
+        non_neutral_snapshot.state_hash(),
+        neutral_snapshot.state_hash()
+    );
+    assert_eq!(
+        non_neutral_snapshot.config_hash(),
+        neutral_snapshot.config_hash()
+    );
+    assert_eq!(
+        non_neutral.inspect().expect("inspect").memory,
+        neutral.inspect().expect("inspect").memory
+    );
 }

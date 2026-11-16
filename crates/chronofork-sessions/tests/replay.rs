@@ -11,11 +11,12 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use chronofork_core::{InputFrame, SessionId, StateHash, Tick, hash_bytes};
+use chronofork_backend_api::{BackendId, BackendSnapshot};
+use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick, hash_bytes};
 use chronofork_sessions::{
-    ComparisonVerdict, MOVIE_FORMAT_VERSION, MOVIE_INPUT_SCHEMA_VERSION, Movie, MovieError,
-    MovieMeta, MovieStep, ReplayOutcome, ReplayRange, SessionError, SessionManager, Snapshot,
-    compare_movies,
+    ComparisonVerdict, MOVIE_FORMAT_VERSION, MOVIE_INPUT_SCHEMA_VERSION, Movie, MovieAnchor,
+    MovieError, MovieMeta, MovieStep, ReplayOutcome, ReplayRange, SessionError, SessionManager,
+    Snapshot, compare_movies,
 };
 use chronofork_test_backend::{SyntheticBackendFactory, SyntheticProgram};
 
@@ -95,6 +96,94 @@ fn gapped_movie(base: &Movie, ticks: [u64; 3]) -> Result<Movie, MovieError> {
         })
         .collect();
     movie_with_steps(base, steps)
+}
+
+fn v2_meta() -> Result<MovieMeta, MovieError> {
+    MovieMeta::new(1, Some("anchors".to_owned()), None)
+}
+
+/// Records a v2 movie from a fresh session whose checkpoint tick is `source_steps`.
+fn record_v2_from(
+    source_steps: usize,
+    inputs: &[InputFrame],
+    anchor_interval: usize,
+) -> Result<Movie, Box<dyn Error>> {
+    let mut manager = new_manager();
+    let source = manager.create_session()?;
+    step_many(&mut manager, source, 3, source_steps)?;
+    Ok(Movie::record_v2(
+        &mut manager,
+        source,
+        v2_meta()?,
+        inputs,
+        anchor_interval,
+    )?)
+}
+
+/// A v2 movie with `step_count` steps and anchors every `interval` steps.
+fn v2_movie(step_count: usize, interval: usize) -> Result<Movie, Box<dyn Error>> {
+    let inputs = vec![InputFrame::new(3); step_count];
+    record_v2_from(0, &inputs, interval)
+}
+
+/// Rebuilds an anchored v2 movie with different recorded step expectations.
+fn reanchored(movie: &Movie, steps: Vec<MovieStep>) -> Result<Movie, MovieError> {
+    Movie::from_v2_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        movie.anchors().to_vec(),
+        steps,
+    )
+}
+
+/// The same checkpoint and steps without the anchor table, for fallback checks.
+fn linear_twin(movie: &Movie) -> Result<Movie, MovieError> {
+    Movie::from_v2_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        Vec::new(),
+        movie.steps().to_vec(),
+    )
+}
+
+/// A snapshot that is structurally valid and binds to `step`, but comes from a
+/// foreign backend/configuration that this build rejects at import.
+fn foreign_anchor(step: &MovieStep) -> Result<MovieAnchor, Box<dyn Error>> {
+    let backend = BackendSnapshot::new(
+        BackendId::new("chronofork.foreign"),
+        "0.1.0",
+        1,
+        step.outcome_tick(),
+        StateHash::from_bytes([0x55; 32]),
+        step.state_hash(),
+        vec![1, 2, 3, 4],
+    );
+    let snapshot = Snapshot::new(SnapshotId::from_raw(999), SessionId::from_raw(999), backend);
+    Ok(MovieAnchor::new(1, snapshot.to_bytes()?)?)
+}
+
+fn resign(bytes: &mut [u8]) {
+    let body_len = bytes.len() - 32;
+    let checksum = hash_bytes(&bytes[..body_len]);
+    bytes[body_len..].copy_from_slice(checksum.as_bytes());
+}
+
+fn assert_unanchored(outcome: &ReplayOutcome) {
+    assert!(!outcome.anchored);
+    assert_eq!(outcome.anchor_step, None);
+    assert_eq!(outcome.anchor_tick, None);
+}
+
+fn assert_anchored_at(outcome: &ReplayOutcome, movie: &Movie, anchor_step: usize) {
+    let anchor_tick = movie.steps()[anchor_step].outcome_tick();
+    assert!(outcome.anchored);
+    assert_eq!(outcome.anchor_step, Some(anchor_step));
+    assert_eq!(outcome.anchor_tick, Some(anchor_tick));
+    assert_eq!(
+        outcome.anchored,
+        outcome.anchor_step.is_some() && outcome.anchor_tick.is_some()
+    );
+    assert_eq!(outcome.final_tick, outcome.range_until);
 }
 
 #[test]
@@ -871,5 +960,470 @@ fn ranged_replay_never_touches_the_recording_source() -> TestResult {
     assert_eq!(outcome.final_tick, movie.end_tick());
     assert_eq!(machine(&manager, source)?, source_before);
     assert_eq!(manager.len(), sessions_before + 1);
+    Ok(())
+}
+
+#[test]
+fn nearest_anchor_at_or_before_the_prefix_end_is_selected() -> TestResult {
+    let movie = v2_movie(9, 2)?; // anchors after steps 1, 3, 5 and 7
+    let steps = movie.steps();
+    let indices: Vec<usize> = movie
+        .anchors()
+        .iter()
+        .map(MovieAnchor::step_index)
+        .collect();
+    assert_eq!(indices, vec![1, 3, 5, 7]);
+
+    let replay = |from: Option<Tick>, until: Option<Tick>| -> Result<ReplayOutcome, MovieError> {
+        ReplayRange::new(&movie, from, until)?.replay(&mut new_manager())
+    };
+
+    // Empty prefix at the embedded checkpoint: no anchor can qualify.
+    assert_unanchored(&replay(None, None)?);
+    // An anchor after `from` is never selected.
+    assert_unanchored(&replay(Some(steps[0].outcome_tick()), None)?);
+    // An anchor exactly at `from` is selected.
+    assert_anchored_at(&replay(Some(steps[1].outcome_tick()), None)?, &movie, 1);
+    // Between two anchors the earlier one is selected.
+    assert_anchored_at(&replay(Some(steps[2].outcome_tick()), None)?, &movie, 1);
+    assert_anchored_at(&replay(Some(steps[3].outcome_tick()), None)?, &movie, 3);
+    assert_anchored_at(&replay(Some(steps[6].outcome_tick()), None)?, &movie, 5);
+
+    // An anchor at `until` is after `from` and is never selected.
+    let window = ReplayRange::new(
+        &movie,
+        Some(steps[2].outcome_tick()),
+        Some(steps[3].outcome_tick()),
+    )?
+    .replay(&mut new_manager())?;
+    assert_anchored_at(&window, &movie, 1);
+    assert_eq!(window.window_steps, 1);
+
+    // The reported boundary is the observed value at `until`; only the suffix is
+    // executed, so `replayed_steps` is `(index at until) - anchor_step`.
+    let outcome = replay(Some(steps[3].outcome_tick()), None)?;
+    assert_anchored_at(&outcome, &movie, 3);
+    assert_eq!(outcome.prefix_steps, 4);
+    assert_eq!(outcome.window_steps, 5);
+    assert_eq!(outcome.replayed_steps, 5);
+    assert_eq!(outcome.replayed_steps, 8 - 3);
+    assert!(outcome.replayed_steps < outcome.prefix_steps + outcome.window_steps);
+    assert_eq!(outcome.final_tick, steps[8].outcome_tick());
+    assert_eq!(outcome.final_state_hash, steps[8].state_hash());
+
+    // An anchor on the first recorded step is usable when the prefix contains it.
+    let every_step = v2_movie(5, 1)?;
+    assert_eq!(
+        every_step
+            .anchors()
+            .iter()
+            .map(MovieAnchor::step_index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4]
+    );
+    let first_step = every_step.steps()[0].outcome_tick();
+    let outcome =
+        ReplayRange::new(&every_step, Some(first_step), None)?.replay(&mut new_manager())?;
+    assert_anchored_at(&outcome, &every_step, 0);
+    assert_eq!(outcome.prefix_steps, 1);
+    assert_eq!(outcome.window_steps, 4);
+    assert_eq!(outcome.replayed_steps, 4);
+
+    // An anchor on the final recorded step is a valid format value but cannot be
+    // selected by a valid non-empty range, because `from < until <= end_tick`.
+    let final_anchor = v2_movie(8, 2)?; // anchors after steps 1, 3, 5 and 7
+    let final_steps = final_anchor.steps();
+    let until = final_anchor.end_tick();
+    assert_eq!(
+        final_anchor.anchors().last().map(MovieAnchor::step_index),
+        Some(7)
+    );
+    let selected = ReplayRange::new(
+        &final_anchor,
+        Some(final_steps[6].outcome_tick()),
+        Some(until),
+    )?
+    .replay(&mut new_manager())?;
+    assert_anchored_at(&selected, &final_anchor, 5);
+    assert_eq!(
+        final_anchor
+            .anchor_at_or_before(until)
+            .map(MovieAnchor::step_index),
+        Some(7),
+        "the selector sees the final anchor"
+    );
+    assert!(matches!(
+        ReplayRange::new(&final_anchor, Some(until), None),
+        Err(MovieError::RangeEmpty { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn anchored_boundaries_equal_the_linear_range_and_full_replay() -> TestResult {
+    let movie = v2_movie(9, 2)?;
+    let twin = linear_twin(&movie)?;
+    let steps = movie.steps();
+    let report = movie.verify(&mut new_manager())?;
+
+    for (from_index, until_index) in [(1_usize, 8_usize), (3, 8), (3, 6), (5, 7), (6, 8)] {
+        let from = steps[from_index].outcome_tick();
+        let until = steps[until_index].outcome_tick();
+        let anchored =
+            ReplayRange::new(&movie, Some(from), Some(until))?.replay(&mut new_manager())?;
+        let linear = ReplayRange::new(&twin, Some(from), Some(until))?.replay(&mut new_manager())?;
+        let anchor_step = movie
+            .anchor_at_or_before(from)
+            .map(MovieAnchor::step_index)
+            .ok_or_else(|| "expected a qualifying anchor".to_owned())?;
+        assert_anchored_at(&anchored, &movie, anchor_step);
+        assert_unanchored(&linear);
+
+        // Range facts and final observed values are independent of strategy.
+        assert_eq!(anchored.range_from, linear.range_from);
+        assert_eq!(anchored.range_until, linear.range_until);
+        assert_eq!(anchored.prefix_steps, linear.prefix_steps);
+        assert_eq!(anchored.window_steps, linear.window_steps);
+        assert_eq!(anchored.final_tick, linear.final_tick);
+        assert_eq!(anchored.final_state_hash, linear.final_state_hash);
+        assert_eq!(anchored.final_tick, until);
+        assert_eq!(anchored.final_state_hash, steps[until_index].state_hash());
+
+        // Only the suffix after the anchor is executed.
+        assert_eq!(
+            anchored.replayed_steps,
+            linear.replayed_steps - (anchor_step + 1)
+        );
+        assert_eq!(anchored.replayed_steps, until_index - anchor_step);
+    }
+
+    // Full verify starts at the embedded checkpoint and remains complete.
+    let full = ReplayRange::full(&movie).replay(&mut new_manager())?;
+    assert_unanchored(&full);
+    assert_eq!(full.final_tick, report.final_tick);
+    assert_eq!(full.final_state_hash, report.final_state_hash);
+
+    // An anchored replay to the end reaches the same boundary as verify.
+    let anchored_end =
+        ReplayRange::new(&movie, Some(steps[3].outcome_tick()), None)?.replay(&mut new_manager())?;
+    assert_anchored_at(&anchored_end, &movie, 3);
+    assert_eq!(anchored_end.final_tick, report.final_tick);
+    assert_eq!(anchored_end.final_state_hash, report.final_state_hash);
+    Ok(())
+}
+
+#[test]
+fn v1_and_anchor_less_v2_movies_keep_linear_replay() -> TestResult {
+    let v1 = record_from(3, &recorded_inputs())?;
+    let outcome = ReplayRange::new(&v1, Some(v1.steps()[4].outcome_tick()), None)?
+        .replay(&mut new_manager())?;
+    assert_unanchored(&outcome);
+    assert_eq!(
+        outcome.replayed_steps,
+        outcome.prefix_steps + outcome.window_steps
+    );
+    let full = ReplayRange::full(&v1).replay(&mut new_manager())?;
+    assert_unanchored(&full);
+    assert_eq!(full.final_tick, v1.end_tick());
+    assert_eq!(full.final_state_hash, v1.final_state_hash());
+
+    let v2 = record_v2_from(2, &recorded_inputs(), 0)?;
+    assert!(v2.anchors().is_empty());
+    let outcome = ReplayRange::new(&v2, Some(v2.steps()[5].outcome_tick()), None)?
+        .replay(&mut new_manager())?;
+    assert_unanchored(&outcome);
+    assert_eq!(
+        outcome.replayed_steps,
+        outcome.prefix_steps + outcome.window_steps
+    );
+    assert_eq!(outcome.final_tick, v2.end_tick());
+    assert_eq!(outcome.final_state_hash, v2.final_state_hash());
+
+    // A v2 movie with anchors still falls back when the prefix is empty.
+    let anchored = v2_movie(9, 2)?;
+    let outcome = ReplayRange::new(&anchored, Some(anchored.start_tick()), None)?
+        .replay(&mut new_manager())?;
+    assert_unanchored(&outcome);
+    assert_eq!(outcome.replayed_steps, anchored.step_count());
+    Ok(())
+}
+
+#[test]
+fn anchored_first_divergence_matches_the_full_replay() -> TestResult {
+    let movie = v2_movie(9, 2)?;
+    let anchored_from = movie.steps()[3].outcome_tick();
+
+    for bad_index in [4_usize, 6] {
+        let mut steps = movie.steps().to_vec();
+        let original_hash = steps[bad_index].state_hash();
+        let altered_hash = flip_hash(original_hash);
+        steps[bad_index] = MovieStep::new(
+            steps[bad_index].outcome_tick(),
+            steps[bad_index].input(),
+            altered_hash,
+        );
+        let divergent = reanchored(&movie, steps)?;
+
+        let full_error = match ReplayRange::full(&divergent).replay(&mut new_manager()) {
+            Ok(_) => {
+                return Err("a divergent movie must not replay cleanly"
+                    .to_owned()
+                    .into());
+            }
+            Err(error) => error,
+        };
+        match full_error {
+            MovieError::Divergence {
+                tick,
+                input_index,
+                expected,
+                observed,
+            } => {
+                assert_eq!(input_index, bad_index);
+                assert_eq!(tick, movie.steps()[bad_index].outcome_tick());
+                assert_eq!(expected, altered_hash);
+                assert_eq!(observed, original_hash);
+            }
+            other => {
+                return Err(format!("expected a full divergence, got {other}").into());
+            }
+        }
+
+        let anchored_error = match ReplayRange::new(&divergent, Some(anchored_from), None)?
+            .replay(&mut new_manager())
+        {
+            Ok(_) => {
+                return Err("an anchored divergent movie must not replay cleanly"
+                    .to_owned()
+                    .into());
+            }
+            Err(error) => error,
+        };
+        match anchored_error {
+            MovieError::Divergence {
+                tick,
+                input_index,
+                expected,
+                observed,
+            } => {
+                assert_eq!(input_index, bad_index);
+                assert_eq!(tick, movie.steps()[bad_index].outcome_tick());
+                assert_eq!(expected, altered_hash);
+                assert_eq!(observed, original_hash);
+            }
+            other => {
+                return Err(format!("expected an anchored divergence, got {other}").into());
+            }
+        }
+    }
+
+    // A recorded-tick mismatch remains the existing typed tick mismatch.
+    let mut steps = movie.steps().to_vec();
+    let original_tick = steps[8].outcome_tick();
+    let altered_tick = Tick::from_raw(original_tick.raw() + 5);
+    steps[8] = MovieStep::new(altered_tick, steps[8].input(), steps[8].state_hash());
+    let divergent = reanchored(&movie, steps)?;
+    match ReplayRange::full(&divergent).replay(&mut new_manager()) {
+        Err(MovieError::TickMismatch {
+            input_index,
+            expected,
+            observed,
+        }) => {
+            assert_eq!(input_index, 8);
+            assert_eq!(expected, altered_tick);
+            assert_eq!(observed, original_tick);
+        }
+        other => {
+            return Err(format!("expected a full tick mismatch, got {other:?}").into());
+        }
+    }
+    match ReplayRange::new(&divergent, Some(anchored_from), None)?.replay(&mut new_manager()) {
+        Err(MovieError::TickMismatch {
+            input_index,
+            expected,
+            observed,
+        }) => {
+            assert_eq!(input_index, 8);
+            assert_eq!(expected, altered_tick);
+            assert_eq!(observed, original_tick);
+        }
+        other => {
+            return Err(format!("expected an anchored tick mismatch, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anchored_replay_skips_the_pre_anchor_prefix_by_contract() -> TestResult {
+    // A step before the selected anchor is altered. This is the documented
+    // limitation: an anchored ranged replay does not re-execute the prefix, while
+    // full-range verify remains complete.
+    let movie = v2_movie(9, 2)?;
+    let mut steps = movie.steps().to_vec();
+    steps[0] = MovieStep::new(
+        steps[0].outcome_tick(),
+        steps[0].input(),
+        flip_hash(steps[0].state_hash()),
+    );
+    let tampered = reanchored(&movie, steps)?;
+
+    match tampered.verify(&mut new_manager()) {
+        Err(MovieError::Divergence { input_index: 0, .. }) => {}
+        other => {
+            return Err(format!("full verify must catch the altered prefix, got {other:?}").into());
+        }
+    }
+
+    let outcome = ReplayRange::new(&tampered, Some(movie.steps()[2].outcome_tick()), None)?
+        .replay(&mut new_manager())?;
+    assert_anchored_at(&outcome, &tampered, 1);
+    assert_eq!(outcome.replayed_steps, 7);
+    assert_eq!(outcome.prefix_steps, 3);
+    assert_eq!(outcome.window_steps, 6);
+    assert_eq!(outcome.prefix_steps + outcome.window_steps, 9);
+    assert_eq!(outcome.final_tick, movie.end_tick());
+    assert_eq!(outcome.final_state_hash, movie.final_state_hash());
+
+    // Without a selected anchor the same altered prefix is executed and caught.
+    match ReplayRange::new(&tampered, None, None)?.replay(&mut new_manager()) {
+        Err(MovieError::Divergence { input_index: 0, .. }) => {}
+        other => {
+            return Err(format!("the fallback must execute the prefix, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anchor_import_failures_are_typed_and_leave_sessions_untouched() -> TestResult {
+    let movie = v2_movie(9, 2)?;
+    let mut anchors = movie.anchors().to_vec();
+    anchors[0] = foreign_anchor(&movie.steps()[1])?;
+    let foreign = Movie::from_v2_parts(
+        movie.meta().clone(),
+        movie.snapshot_bytes().to_vec(),
+        anchors,
+        movie.steps().to_vec(),
+    )?;
+    let steps = foreign.steps();
+
+    let mut manager = new_manager();
+    let bystander = manager.create_session()?;
+    step_many(&mut manager, bystander, 9, 2)?;
+    let bystander_before = machine(&manager, bystander)?;
+    let summaries_before = manager.summaries()?;
+    let error = match ReplayRange::new(&foreign, Some(steps[1].outcome_tick()), None)?
+        .replay(&mut manager)
+    {
+        Ok(_) => {
+            return Err("an import-incompatible anchor must not replay"
+                .to_owned()
+                .into());
+        }
+        Err(error) => error,
+    };
+    let display = error.to_string();
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "the session error is preserved as the source"
+    );
+    assert!(
+        display.contains("recorded step 1"),
+        "the anchor step is preserved, got {display}"
+    );
+    match error {
+        MovieError::AnchorImport {
+            anchor_step,
+            source,
+        } => {
+            assert_eq!(anchor_step, 1);
+            assert!(matches!(source, SessionError::IncompatibleSnapshot(_)));
+        }
+        other => {
+            return Err(format!("expected AnchorImport, got {other}").into());
+        }
+    }
+    assert_eq!(manager.len(), 1);
+    assert_eq!(machine(&manager, bystander)?, bystander_before);
+    assert_eq!(manager.summaries()?, summaries_before);
+
+    // Range validation still comes first: an invalid window never imports.
+    let mut manager = new_manager();
+    let bystander = manager.create_session()?;
+    let bystander_before = machine(&manager, bystander)?;
+    let summaries_before = manager.summaries()?;
+    assert!(matches!(
+        ReplayRange::new(
+            &foreign,
+            Some(steps[5].outcome_tick()),
+            Some(steps[2].outcome_tick())
+        ),
+        Err(MovieError::RangeInverted { .. })
+    ));
+    assert_eq!(manager.len(), 1);
+    assert_eq!(manager.summaries()?, summaries_before);
+    assert_eq!(machine(&manager, bystander)?, bystander_before);
+
+    // An unselected incompatible anchor does not block the embedded checkpoint.
+    let fallback = ReplayRange::new(&foreign, None, None)?.replay(&mut new_manager())?;
+    assert_unanchored(&fallback);
+    assert_eq!(fallback.final_tick, foreign.end_tick());
+    assert_eq!(fallback.final_state_hash, foreign.final_state_hash());
+    let before_first_anchor = ReplayRange::new(&foreign, Some(steps[0].outcome_tick()), None)?
+        .replay(&mut new_manager())?;
+    assert_unanchored(&before_first_anchor);
+    Ok(())
+}
+
+#[test]
+fn corrupt_anchor_snapshot_is_rejected_at_decode_before_replay() -> TestResult {
+    let movie = v2_movie(4, 2)?; // anchors after steps 1 and 3
+    assert_eq!(Movie::from_bytes(&movie.to_bytes()?)?, movie);
+
+    let mut bytes = movie.to_bytes()?;
+    let name_len = movie.meta().name().map_or(0, str::len);
+    let anchor_count_offset = 46 + name_len + movie.snapshot_bytes().len();
+    let first_anchor_snapshot = anchor_count_offset + 8 + 16;
+    let snapshot_len = movie.anchors()[0].snapshot_bytes().len();
+    bytes[first_anchor_snapshot + snapshot_len - 1] ^= 0xff;
+    resign(&mut bytes);
+
+    match Movie::from_bytes(&bytes) {
+        Err(MovieError::InvalidAnchorSnapshot {
+            anchor_ordinal: 0,
+            source: SessionError::InvalidSnapshot(_),
+        }) => {}
+        Ok(_) => {
+            return Err("a corrupt anchor snapshot must not decode"
+                .to_owned()
+                .into());
+        }
+        Err(other) => {
+            return Err(format!("expected InvalidAnchorSnapshot, got {other}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anchored_reports_are_deterministic_and_isolated() -> TestResult {
+    let movie = v2_movie(9, 2)?;
+    let range = ReplayRange::new(&movie, Some(movie.steps()[3].outcome_tick()), None)?;
+    let first = range.replay(&mut new_manager())?;
+    let second = range.replay(&mut new_manager())?;
+    assert_eq!(first, second);
+    assert_anchored_at(&first, &movie, 3);
+
+    // Replaying in a manager with a pre-existing session registers exactly one
+    // fresh imported session per invocation and leaves the bystander alone.
+    let mut manager = new_manager();
+    let bystander = manager.create_session()?;
+    step_many(&mut manager, bystander, 9, 2)?;
+    let bystander_before = machine(&manager, bystander)?;
+    let third = range.replay(&mut manager)?;
+    assert_eq!(third, first);
+    assert_eq!(manager.len(), 2);
+    assert_eq!(machine(&manager, bystander)?, bystander_before);
     Ok(())
 }

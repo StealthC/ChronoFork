@@ -193,6 +193,46 @@ impl Session {
         Ok(())
     }
 
+    /// Captures the canonical backend state without creating a checkpoint.
+    ///
+    /// This is the crate-internal capture path of the in-process rewind cache
+    /// (ADR-0007 §2.5). It allocates no [`SnapshotId`], inserts nothing into the
+    /// session's snapshot map and does not advance the allocator: the returned
+    /// [`BackendSnapshot`] is a transient canonical state, not a user-visible
+    /// checkpoint. Restore it with [`Self::restore_state`].
+    pub(crate) fn capture_state(&mut self) -> Result<BackendSnapshot, SessionError> {
+        self.ensure_open()?;
+        Ok(self.backend.snapshot()?)
+    }
+
+    /// Restores a canonical state captured by [`Self::capture_state`].
+    ///
+    /// Compatibility is decided by the same backend restore path and the same
+    /// `validate_envelope` predicate as [`Self::restore`].
+    pub(crate) fn restore_state(&mut self, state: &BackendSnapshot) -> Result<(), SessionError> {
+        self.ensure_open()?;
+        self.backend
+            .restore(state)
+            .map_err(map_backend_compatibility)
+    }
+
+    /// Drops stored checkpoint records while retaining the creation state.
+    ///
+    /// The in-process player owns a private imported session that exposes no
+    /// checkpoint identity. Discarding the import record keeps that session's
+    /// snapshot map empty (ADR-0007 §2.5, M3-A28.2) and avoids retaining a
+    /// second copy of the canonical floor state, which already lives in
+    /// [`Self::initial_state`].
+    pub(crate) fn discard_snapshot_records(&mut self) {
+        self.snapshots.clear();
+    }
+
+    /// Returns the number of stored checkpoint records and the next allocator.
+    #[cfg(test)]
+    pub(crate) fn snapshot_identity(&self) -> (usize, u64) {
+        (self.snapshots.len(), self.next_snapshot_id)
+    }
+
     /// Pauses execution. Pausing an already paused session is a no-op.
     pub fn pause(&mut self) -> Result<(), SessionError> {
         self.ensure_open()?;
