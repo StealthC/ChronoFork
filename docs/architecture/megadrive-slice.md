@@ -465,6 +465,19 @@ never changed implicitly; the CLI records the effective quantum in the state fil
 and prints a note on stderr when the requested instruction window exceeds the
 configured quantum, describing the instruction-quantum model and SR-mask gating.
 
+## Debugging depth (M4, implementation in progress)
+
+[ADR-0010](../adr/0010-debugging-depth.md) and the [M4 acceptance
+plan](../quality/m4-debugging-depth-acceptance.md) add a debug-only observation layer to
+this slice: an optional bounded `DebugAccess` event ring (watchpoint hits, RAM writes,
+VDP port and controller reads, interrupt request/delivery/acknowledgement), pure
+CPU/VDP/interrupt/bus view types, a bounded 68000-subset disassembler whose instruction
+lengths are cross-checked against execution, and the `chronofork debug` CLI surface.
+Debug state is absent from the canonical payload, state hash and configuration hash.
+Stops are at instruction boundaries; no mid-instruction, cycle-exact or reverse execution
+is claimed. **No M4 row is executed yet**; the section becomes implemented only after the
+independent verifier promotes every M4-A row.
+
 ## Next increments
 
 1. ROM header/region/config identity and a cartridge loader (EPIC-0002 E2-11).

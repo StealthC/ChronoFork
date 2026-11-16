@@ -148,6 +148,22 @@ minimal Mega Drive slice with per-step controller input and `--rom` backend sele
 and the hardware claim is the synthetic `controller_rom()` and 3-button subset, not real
 commercial ROMs, controller timing or cycle accuracy.
 
+## Stage 3.5 — Debugging depth
+
+Design accepted (2026-11-16) and implementation in progress; no acceptance row is
+executed yet. [ADR-0010](../adr/0010-debugging-depth.md) and the [M4 acceptance
+plan](../quality/m4-debugging-depth-acceptance.md) define PC/range/conditional
+breakpoints, read/write watchpoints, event breakpoints and logpoints, bounded
+register/memory/disassembly views, interrupt/bus/device event observation and
+CPU/VDP/interrupt/bus inspectors for the minimal Mega Drive slice. Stops are at
+instruction boundaries; no mid-instruction, cycle-exact or reverse execution is claimed.
+
+- [ ] PC, range and conditional breakpoints.
+- [ ] Read/write memory watchpoints and typed bus/device/interrupt events.
+- [ ] Event breakpoints and logpoints.
+- [ ] Register, memory and disassembly views.
+- [ ] Mega Drive CPU/VDP/interrupt/bus inspectors.
+
 ## Stage 4 — Deep Mega Drive debugging
 
 - CPU registers, flags, disassembly and instruction stepping.

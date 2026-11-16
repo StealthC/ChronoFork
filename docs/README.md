@@ -31,6 +31,15 @@ plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 `executed - passed`. 
 complete for the documented deterministic minimal-slice scope**; ADR-0002 is accepted.
 Claims below distinguish implemented facts from proposals and upstream research claims.
 
+**M4 (debugging depth) is the current milestone: its design is accepted and
+implementation is in progress, with every acceptance row still pending.** The contract
+[ADR-0010](adr/0010-debugging-depth.md) and the [M4 acceptance
+plan](quality/m4-debugging-depth-acceptance.md) define bounded, non-canonical debug
+observation (event log and watchpoints), host breakpoints/logpoints, register/memory/
+disassembly views and Mega Drive CPU/VDP/interrupt/bus inspectors. No M4 feature may be
+described as implemented until the independent verifier records the rows
+`executed - passed`.
+
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
 and provides named metadata, deterministic listing, explicit non-cascading delete with

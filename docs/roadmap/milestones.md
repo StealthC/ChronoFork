@@ -294,6 +294,15 @@ promotion and subject to the t7 promotion audit.
 
 ## M4 — Debugging depth
 
+Status: **design accepted; implementation in progress; no M4 row is verified yet.** The
+[ADR-0010](../adr/0010-debugging-depth.md) contract (owner-approved 2026-11-16 by the
+explicit M4 implementation directive) and the [M4 acceptance
+plan](../quality/m4-debugging-depth-acceptance.md) define PC/range/conditional
+breakpoints, read/write watchpoints, event breakpoints and logpoints, bounded
+register/memory/disassembly views, interrupt/bus/device event observation and the CPU/VDP/
+interrupt/bus inspectors for the minimal Mega Drive slice. The boxes below stay unchecked
+until the independent verifier records every M4-A row `executed - passed`.
+
 - [ ] Breakpoints and watchpoints.
 - [ ] Register/memory/disassembly views.
 - [ ] Interrupt/bus/device event observation.
@@ -329,7 +338,9 @@ promotion and subject to the t7 promotion audit.
 
 ## Current milestone
 
-**M1, M2 and M3 are complete. M4 (Debugging depth) is the next milestone.** M3's first
+**M1, M2 and M3 are complete. M4 (Debugging depth) is the current milestone; its design
+is accepted and implementation is in progress, with every M4 acceptance row still
+pending.** M3's first
 through fifth increments are implemented and independently verified (M3-T4, M3-T5, the t7
 format-v2 verification PASS, the t5 rewind verification PASS and the t10 repair-round-2
 PASS, 2026-11-15/2026-11-16), and the sixth and final real-hardware input TAS increment is

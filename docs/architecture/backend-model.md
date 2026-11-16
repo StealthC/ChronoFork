@@ -21,8 +21,9 @@ no session, storage, transport or GUI types.
 | `memory_write` | Debugger memory writes |
 | `register_inspection` | CPU/device register inspection |
 | `instruction_stepping` | Can advance by a documented quantum |
-| `breakpoints` | Conditional code breakpoints |
+| `breakpoints` | Conditional code breakpoints (backend capability; host debuggers implement them over `inspect`) |
 | `watchpoints` | Memory watchpoints |
+| `debug_events` | Bounded typed bus/device/interrupt event observation through `DebugAccess` |
 | `tracing` | Structured execution tracing |
 | `state_cloning` | Snapshot can seed a fresh independent instance |
 | `deterministic_replay` | Identical inputs from identical states converge |
@@ -49,8 +50,16 @@ pub trait Backend: Send {
     fn inspect(&self) -> Result<MachineInspection, BackendError>;
     fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BackendError>;
     fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), BackendError>;
+    fn debug_access(&mut self) -> Option<&mut dyn DebugAccess> { None }
 }
 ```
+
+`debug_access` is optional and defaulted. A backend that can observe its own bus
+implements [`DebugAccess`] with a bounded event ring and matching watchpoint specs;
+a backend that cannot returns `None` and must not advertise `watchpoints` or
+`debug_events`. Debugger observation is non-canonical: it never enters snapshots,
+state hashes or configuration hashes, and restore does not rewind it. See
+[ADR-0010](../adr/0010-debugging-depth.md).
 
 `BackendFactory` creates fresh, independent instances. A factory must never return
 two handles to the same mutable machine.

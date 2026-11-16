@@ -63,6 +63,7 @@ bootstrap).
 | FR-BACKEND-005 | Provide debugger memory writes distinct from bus writes. | Implemented | `write_memory`; isolation test |
 | FR-BACKEND-006 | Support multiple independent backend instances per manager. | Implemented | 3-way fork test |
 | FR-BACKEND-007 | Select and integrate a real Mega Drive backend. | Partial | ADR-0002 accepted; minimal 68000 + ROM/RAM slice implemented |
+| FR-BACKEND-008 | Optional bounded debug observation (watchpoints and typed bus/device/interrupt events) without changing canonical state. | Planned | [ADR-0010](../adr/0010-debugging-depth.md) is accepted: `Backend::debug_access`, `DebugAccess`/`DebugEvent`/`DebugEventLog`, `DebugConfig`, `Capabilities::debug_events`, a default `None` for unsupported backends and typed errors. M4-A4/M4-A5/M4-A9/M4-A10/M4-A12 are pending. |
 
 ## Mega Drive minimal slice
 
@@ -90,10 +91,13 @@ This is deterministic but **not** cycle-accurate hardware timing.
 
 | ID | Requirement | Status | Evidence / scope |
 |---|---|---|---|
-| FR-DEBUG-001 | Register inspection | Implemented (synthetic + minimal 68000) | `Backend::inspect`; backend tests |
-| FR-DEBUG-002 | Conditional breakpoints | Planned | Not implemented |
-| FR-DEBUG-003 | Memory watchpoints | Planned | Not implemented |
-| FR-DEBUG-004 | Event breakpoints, logpoints, interrupt monitoring | Partial | Pending interrupt/vector inspection; no breakpoints or logpoints |
+| FR-DEBUG-001 | Register inspection | Implemented (synthetic + minimal 68000) | `Backend::inspect`; backend tests. M4 extends this with decoded CPU/SR, VDP, interrupt and bus views (FR-DEBUG-005/006). |
+| FR-DEBUG-002 | Conditional breakpoints | Planned | Not implemented. [ADR-0010](../adr/0010-debugging-depth.md) is accepted and the [M4 acceptance plan](../quality/m4-debugging-depth-acceptance.md) rows M4-A1–M4-A3 are the execution contract; no row is executed. |
+| FR-DEBUG-003 | Memory watchpoints | Planned | Not implemented. [ADR-0010](../adr/0010-debugging-depth.md) is accepted: backend bus observation (`DebugAccess`) plus host stop evaluation, never a memory-diff approximation; M4-A4/M4-A5 are pending. |
+| FR-DEBUG-004 | Event breakpoints, logpoints, interrupt monitoring | Partial | Interrupt/vector fields are inspects only; no breakpoints, event filters or logpoints. [ADR-0010](../adr/0010-debugging-depth.md) is accepted and M4-A9–M4-A11 are pending. |
+| FR-DEBUG-005 | Register, memory and disassembly views | Planned | Not implemented. [ADR-0010](../adr/0010-debugging-depth.md) defines the decoded CPU/VDP/interrupt/bus views and the execution-cross-checked bounded 68000-subset disassembler; M4-A6–M4-A8 and M4-A13–M4-A15 are pending. |
+| FR-DEBUG-006 | Mega Drive-specific inspectors | Planned | Not implemented. [ADR-0010](../adr/0010-debugging-depth.md) defines the CPU/SR, VDP (status/registers/address/auto-increment/VRAM digest), interrupt-scheduler and bus-window inspectors; M4-A13–M4-A15 are pending. |
+| FR-DEBUG-007 | Bounded, non-canonical debug observation | Planned | Not implemented. [ADR-0010](../adr/0010-debugging-depth.md) requires explicit event/table/log bounds, typed errors, no debug state in snapshots/hashes and byte-identical canonical artifacts; M4-A5, M4-A10 and M4-A12 are pending. |
 | FR-TRACE-001 | Structured instruction/bus/device traces with emulated timestamps | Partial | Narrow debug-only `index`/`pc`/`opcode` ring and TSV export; no timestamps, bus/device events or general structured format |
 | FR-TRACE-002 | Trace comparison and historical queries | Partial | Executed-address projection, first-divergence report, opcode/ROM-byte audit and negative control against the pinned oracle; no historical queries or general trace tooling |
 | FR-TAS-001 | Movie record/playback, frame advance, rerecord, seek | Implemented | Implemented and independently verified: v1/v2 record/playback of a per-step input sequence, replay verification with exact first divergence, restart and M2-seeded replay, the `chronofork tas record/play/verify` CLI, ranged replay/seek, forward single-tick advance and rewind by deterministic re-simulation, branch comparison, `tas studio`/rewind cache, `tas edit` rerecord/branch editing, and real-hardware input TAS on the minimal Mega Drive slice (`--rom` on record/play/verify/studio/edit; TH-high 3-button controller reads). Evidence: [M3 acceptance plan](../quality/m3-tas-replay-acceptance.md) M3-A1–A12, [increment-2](../quality/m3-partial-replay-acceptance.md) M3-A13–A17, [format-v2](../quality/m3-format-v2-acceptance.md) M3-A18–A27, [rewind](../quality/m3-rewind-acceptance.md) M3-A28–A34, [rerecord](../quality/m3-rerecord-acceptance.md) M3-A35–A44 and [hardware](../quality/m3-hardware-acceptance.md) M3-A45–A53, all `executed - passed` (t5 PASS 2026-11-16), with the dated [quality gates](../quality/quality-gates.md) results. Import/export adapters (for example BizHawk BK2) remain documented-only and are not claimed; the hardware claim is the synthetic 68000 controller-reading ROM and 3-button subset, not real commercial ROMs or cycle accuracy. M3 is complete for the documented deterministic minimal-slice scope. |
