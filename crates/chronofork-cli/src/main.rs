@@ -25,6 +25,7 @@ use chronofork_sessions::{
 };
 use chronofork_test_backend::SyntheticBackendFactory;
 
+mod debug;
 mod studio;
 mod tas;
 mod tas_edit;
@@ -79,6 +80,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("megadrive") => run_megadrive(&args[1..]),
         Some("session") => run_session(&args[1..]),
         Some("tas") => tas::run(&args[1..]),
+        Some("debug") => debug::run(&args[1..]),
         Some("backend") => match args.get(1).map(String::as_str) {
             Some("describe") => {
                 ensure(args.len() == 2, "`backend describe` takes no arguments")?;
@@ -125,6 +127,17 @@ fn print_usage() {
     println!(
         "  chronofork megadrive trace     Run a bounded instruction trace and write final state"
     );
+    println!("  chronofork debug run --rom <FILE> --steps <N> [debugger flags]...");
+    println!("  chronofork debug inspect --rom <FILE> [--steps <N>]");
+    println!("  chronofork debug memory --rom <FILE> [--steps <N>] --address <ADDR> --length <N>");
+    println!(
+        "  chronofork debug disasm --rom <FILE> [--steps <N>] [--address <ADDR>] [--count <N>]"
+    );
+    println!(
+        "  chronofork debug vdp --rom <FILE> [--steps <N>] [--vram-address <ADDR> --vram-length <N>]"
+    );
+    println!("  chronofork debug interrupts --rom <FILE> [--steps <N>]");
+    println!("  chronofork debug bus --rom <FILE>");
     println!("  chronofork backend describe   Show synthetic backend identity and capabilities");
     println!("  chronofork session save --root <DIR> [--session <KEY>] [--name <NAME>]");
     println!("                            [--steps <N>] [--input <U32>]");
@@ -177,6 +190,12 @@ fn print_usage() {
     println!();
     println!("For trace file formats and options run:");
     println!("  chronofork megadrive trace --help");
+    println!("`chronofork debug` is the headless one-shot debugger over the minimal Mega Drive");
+    println!(
+        "slice; `chronofork debug --help` documents its subcommands, flags, record blocks and"
+    );
+    println!("limits. Every debug subcommand requires `--rom <FILE>` and prints only `key=value`");
+    println!("record blocks to stdout.");
 }
 
 /// Options for the `megadrive trace` subcommand.
