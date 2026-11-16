@@ -71,8 +71,13 @@ ChronoFork is not merely a graphical emulator. Its defining capabilities are:
 
 ## Current horizon
 
-The bootstrap proves the session and snapshot architecture with a synthetic
-backend. The first real system is expected to be the Sega Mega Drive / Genesis,
-but the backend strategy is still a [proposal](../architecture/backend-strategy.md)
-awaiting approval. Multi-system support, GUI, HTTP/MCP transports and scripting are
-roadmap items, not current features.
+The [backend strategy](../architecture/backend-strategy.md) is decided: [ADR-0002](../adr/0002-backend-boundaries.md)
+accepted the staged hybrid on 2026-11-13, and the Sega Mega Drive / Genesis is the
+first real system. Milestones M0–M4 are complete and merged to `main` (M4 at
+`4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`); M5 (tracing and
+scripting) is next.
+The machine model itself is still narrow, and that gap is tracked in the parallel
+hardware-depth tracks H1–H5 rather than in the capability stages. Multi-system
+support, GUI, HTTP/MCP transports and scripting are roadmap items, not current
+features. See the [milestone status table](../roadmap/milestones.md) for the
+canonical status and integration state.

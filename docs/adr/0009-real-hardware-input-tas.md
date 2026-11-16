@@ -3,7 +3,8 @@
 - **Status:** **Accepted** (owner-approved 2026-11-15T23:38:06-03:00,
   America/Fortaleza; 2026-11-16T02:38:06Z); **implemented and independently verified** for
   the documented deterministic minimal-slice scope (t5 PASS, 2026-11-16). M3 is complete
-  for that scope per the t6 promotion, subject to the t7 promotion audit.
+  for that scope per the t6 promotion; the t7 promotion audit returned PASS on 2026-11-16
+  (ignored `.research/m3-hardware/final-verification/SUMMARY.txt`).
 - **Date:** 2026-11-15
 - **Decision owner:** Project owner (approved 2026-11-15)
 - **Approval evidence:** The project owner explicitly approved ADR-0009 as proposed with the
@@ -67,7 +68,8 @@
 > canonical Mega Drive snapshot payload (`CFMD68K2` v2), state body, state hash,
 > configuration hash, demos, M1 oracle evidence and all existing M2/M3 movies are unchanged
 > and byte-identical to the pre-change baseline. **M3 is complete for this documented
-> minimal-slice scope**, recorded by the t6 promotion and subject to the t7 promotion audit.
+> minimal-slice scope**, recorded by the t6 promotion; the t7 promotion audit returned PASS
+> on 2026-11-16 (ignored `.research/m3-hardware/final-verification/SUMMARY.txt`).
 > Limits remain stated in §10: A and Start, TH/6-button/Start multiplexing, controller
 > timing, analog/keyboard hardware, port 3, real commercial ROMs, cycle accuracy and
 > import/export adapters are **not** implemented or claimed.
@@ -670,8 +672,8 @@ deferred list above is still honestly unimplemented. The audit covered the five 
 M3 milestone items — anchors/seek, rewind/interactive stepping, rerecord/branch editing,
 multi-device input and real-hardware input TAS — each with executed evidence
 (`SUMMARY.txt` §9). **M3 is complete for the documented deterministic minimal-slice scope**;
-the t6 promotion records it and the t7 promotion audit is the final check. Import/export
-adapters remain documented-only and are not claimed.
+the t6 promotion records it and the t7 promotion audit returned PASS on 2026-11-16.
+Import/export adapters remain documented-only and are not claimed.
 
 ### 11. Owner decisions (approved 2026-11-15)
 
@@ -765,7 +767,8 @@ persistent seek/cache claim is changed.
 items — anchors/seek, in-process rewind/interactive stepping, rerecord/branch editing,
 multi-device input and real-hardware input TAS — each with executed evidence. **M3 is
 complete for the documented deterministic minimal-slice scope**; this ADR's t6 promotion
-records it, and the t7 promotion audit is the final check. No commit or push is claimed.
+records it, and the t7 promotion audit returned PASS on 2026-11-16. No commit or push is
+claimed.
 
 ## Rationale
 
@@ -845,10 +848,10 @@ M3-A45–M3-A53 row and the M3 completion audit and returned **PASS** (2026-11-1
 canonical Mega Drive snapshot, state body, state hash, configuration hash, demos, M1 oracle
 evidence and existing M2/M3 movies are unchanged and byte-identical to the pre-change
 baseline. **M3 is complete for the documented deterministic minimal-slice scope**, recorded
-by this t6 promotion and subject to the t7 promotion audit. Limits remain stated in §10:
-A/Start, TH/6-button/Start multiplexing, controller timing, analog/keyboard hardware, port
-3, real commercial ROMs, cycle accuracy and import/export adapters are not implemented or
-claimed. No commit or push was made.
+by this t6 promotion; the t7 promotion audit returned PASS on 2026-11-16. Limits remain
+stated in §10: A/Start, TH/6-button/Start multiplexing, controller timing,
+analog/keyboard hardware, port 3, real commercial ROMs, cycle accuracy and import/export
+adapters are not implemented or claimed. No commit or push was made.
 
 ## Evidence
 
@@ -922,8 +925,8 @@ claimed. No commit or push was made.
   adapters separately documented-only; `FR-EXEC-002` covers the verified hardware
   controller reads. The M3 "Real-hardware input TAS" item and the M3 milestone are complete
   for the documented deterministic minimal-slice scope in
-  [milestones](../roadmap/milestones.md) and [roadmap](../roadmap/roadmap.md), subject to
-  the t7 promotion audit.
+  [milestones](../roadmap/milestones.md) and [roadmap](../roadmap/roadmap.md); the
+  subsequent t7 promotion audit returned PASS on 2026-11-16.
 - **M3 completion audit (t5, 2026-11-16):** the five remaining M3 milestone items —
   anchors/seek (movie_v2 8, replay 23), rewind/interactive stepping (player 16, studio 11),
   rerecord/branch editing (edit 22, tas_edit 19), multi-device input (tas 21, movie_v2 8)
@@ -960,3 +963,9 @@ claimed. No commit or push was made.
   independently verified for the documented deterministic minimal-slice scope, and recorded
   M3 completion subject to the t7 promotion audit. No contract address, bit layout, limit,
   command, typed boundary or deferred item changed.
+- **2026-11-16 (t7 promotion audit).** The independent t7 promotion audit returned PASS on
+  2026-11-16; the verdict is recorded in the ignored
+  `.research/m3-hardware/final-verification/SUMMARY.txt` and the completion is recorded in
+  commit `662d06e`. M3 completion is final for the documented deterministic minimal-slice
+  scope; no contract address, bit layout, limit, command, typed boundary or deferred item
+  changed.

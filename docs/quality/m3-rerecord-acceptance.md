@@ -944,8 +944,11 @@ This increment does not implement or claim:
 - **A persisted rerecord counter or ancestry service.** No counter field, edit log,
   global registry, parent lookup, cycle detection or automatic chain traversal; the
   printed `edits`/`prefix_steps`/`resimulated_steps` are per-invocation diagnostics.
-- **Real-hardware input TAS.** The Mega Drive `step` ignores input; no controller or
-  multi-port hardware input is implemented. `FR-MD-010` remains Planned.
+- **Real-hardware input TAS at the increment-5 boundary.** At this increment the Mega
+  Drive `step` ignored input and no controller or multi-port hardware input was
+  implemented; `FR-MD-010` was Planned. It was delivered by the later final increment
+  under [ADR-0009](../adr/0009-real-hardware-input-tas.md) (M3-A45–A53 in the [M3 hardware
+  acceptance plan](m3-hardware-acceptance.md)); the increment-5 scope above is unchanged.
 - **Mixing retained prefix anchors with rebuilt suffix anchors** and anchor-based
   skipping of edit prefix verification.
 - **CLI editing of ports 1–3, axes or keys.** Full-frame replacement is library-only;

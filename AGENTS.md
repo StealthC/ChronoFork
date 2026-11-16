@@ -16,13 +16,21 @@ platform built primarily in Rust. It treats emulated execution as deterministic,
 independent, forkable sessions that humans, scripts and AI agents can inspect and
 replay.
 
-**Current status:** bootstrap + partial real-hardware slice. The repository contains a
+**Current status:** bootstrap + partial real-hardware slice. Milestones M0–M4 are
+complete and merged to `main` (M4 merged at `4c595a2`, verified on
+`agent/m4-debugging-depth` at `6d30243`); M5 is next and the hardware-depth tracks
+H1–H5 are partial or planned. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
 subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic
 instruction-quantum VBlank/HBlank interrupt scheduler. The slice includes 68000 SR-mask
 interrupt gating (level 7 always admitted, other levels only when strictly above the
-mask), `RTE` handler return and VDP VINT pending/acknowledge. Rendering, DMA, audio,
-Z80, controllers, privilege enforcement, other exception groups and cycle accuracy
+mask), `RTE` handler return, VDP VINT pending/acknowledge and per-step controller reads
+of `0x00A10003`/`0x00A10005` for the TH-high 3-button subset on ports 1–2. A host
+debugger (`chronofork-debug`, exposed as `chronofork debug`, M4) adds breakpoints,
+byte-granular watchpoints, event breakpoints/logpoints and bounded inspection views.
+Rendering, DMA, audio, Z80, timer interrupts, ROM header/region detection and
+cartridge mapping, the rest of the controller protocol (A/Start, TH/6-button, port 3,
+analog/keyboard), privilege enforcement, other exception groups and cycle accuracy
 remain absent, and most 68000 instructions are not implemented. Do not present either
 backend as a complete emulator or claim game compatibility.
 
@@ -34,8 +42,9 @@ backend as a complete emulator or claim game compatibility.
 | `crates/chronofork-backend-api/` | Backend, capability, snapshot, inspection traits |
 | `crates/chronofork-sessions/` | Session lifecycle, checkpoints, lineage, forks |
 | `crates/chronofork-test-backend/` | Synthetic deterministic validation backend |
-| `crates/chronofork-megadrive/` | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice |
-| `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features |
+| `crates/chronofork-megadrive/` | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler + controller-read Mega Drive slice; debug/disassembly/inspector views |
+| `crates/chronofork-debug/` | Host debugger layer: breakpoints, watchpoints, event breakpoints/logpoints |
+| `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features (`demo`, `megadrive`, `backend`, `session`, `tas`, `debug`) |
 | `docs/` | Durable official documentation |
 | `docs/README.md` | Documentation index; start here |
 | `docs/adr/` | Architectural decisions and status |
@@ -260,9 +269,9 @@ already wrote, not a fact lookup:
 - Claim honesty: does a doc or README sentence promise more than the evidence we have?
   Put the claim and the evidence (gate results, deferred-scope list, accepted ADR) in
   the same state; the evaluator cannot read the repository.
-- Triage: which crate owns a change, whether a change needs a new ADR or which M3
-  increment it belongs to, and how severe a review finding is. Prefer `choice` with
-  described options; keep `noul` for a coarse yes/no.
+- Triage: which crate owns a change, whether a change needs a new ADR or which
+  milestone (or hardware-depth track H1–H5) it belongs to, and how severe a review
+  finding is. Prefer `choice` with described options; keep `noul` for a coarse yes/no.
 - Commit and PR honesty: does the message claim something the diffstat does not show?
 
 Constraints:

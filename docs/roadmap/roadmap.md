@@ -1,222 +1,565 @@
 # Roadmap
 
-This is the long-term product roadmap. It is not the bootstrap scope. Stages are
-sequential only where a dependency requires it; research and documentation can run
-in parallel.
+This is the long-term product roadmap. It is not the bootstrap scope. Stages describe the
+capabilities the platform must gain, ordered only where a dependency requires it; research
+and documentation can run in parallel.
 
-## Stage 0 — Bootstrap foundation (current)
+The roadmap has two structures, kept deliberately separate:
 
-**Goal:** prove the architecture and establish durable project infrastructure.
+- **Capability stages 0–8.** Each stage has exactly one checkpoint milestone, M0–M8,
+  defined in [Milestones](milestones.md). A stage tracks a product capability, not how
+  complete a console model is.
+- **Hardware-depth track H1–H5.** A parallel, cross-cutting track that records how complete
+  the emulated machine is. It is not a stage and not M9. Hardware completeness never appears
+  as an open item inside a stage, so a stage can be complete while the machine model is
+  still narrow.
 
-- Environment validation, persistent planning, reference acquisition.
-- Upstream research, licensing assessment, provenance.
-- Official docs, AGENTS.md, EPIC-0001.
-- Rust workspace, backend contracts, synthetic deterministic backend.
+Status, integration state, evidence and follow-ups are recorded once, in
+[Milestones](milestones.md#status-at-a-glance). The sections below record intent: goal,
+scope, exit criteria, dependencies and non-goals.
+
+## How to read this document
+
+- **Stage ↔ milestone mapping.** One stage, one milestone: Stage 0 ↔ M0 through Stage 8 ↔ M8,
+  plus the parallel H1–H5 track. The [stage index](#stage-index) below links both sides;
+  [Milestones](milestones.md#status-at-a-glance) holds the reverse mapping and the status.
+- **Status vocabulary.** `Complete`, `Complete with integration pending`, `Next` and
+  `Planned`, plus `Partial` for hardware-depth rows only. The definitions live in
+  [Milestones — status vocabulary](milestones.md#status-vocabulary); this page names the
+  vocabulary but does not restate a status.
+- **What belongs where.** A stage records capability intent and exit criteria;
+  [Milestones](milestones.md) records status, work items, evidence and follow-ups; the
+  [architecture docs](../architecture/overview.md) describe what exists; the
+  [requirements](../requirements/functional.md) carry FR/NFR statuses; the
+  [quality gates](../quality/quality-gates.md) carry executed gate results.
+- **Checkboxes.** This page uses plain bullets, never task boxes. Open work lives in
+  Milestones as an unchecked work item, in a follow-up, or in H1–H5.
+
+## Stage index
+
+| Stage | Milestone | Focus |
+|---|---|---|
+| [Stage 0 — Bootstrap foundation](#stage-0--bootstrap-foundation) | [M0](milestones.md#m0--bootstrap-foundation) | Architecture, workspace, synthetic validator, docs, gates |
+| [Stage 1 — Real backend decision and minimal hardware core](#stage-1--real-backend-decision-and-minimal-hardware-core) | [M1](milestones.md#m1--backend-decision-and-minimal-hardware-slice) | ADR-0002, 68000 subset, ROM/RAM, VDP port window, interrupt scheduler, oracle differential |
+| [Stage 2 — Sessions, forks and save states at product quality](#stage-2--sessions-forks-and-save-states-at-product-quality) | [M2](milestones.md#m2--durable-sessions) | Durable checkpoints, metadata, compatibility, writer ownership |
+| [Stage 3 — TAS and deterministic replay](#stage-3--tas-and-deterministic-replay) | [M3](milestones.md#m3--tas-and-replay) | Movies, replay/seek, rewind, rerecord/edit, hardware input TAS |
+| [Stage 4 — Debugging depth](#stage-4--debugging-depth) | [M4](milestones.md#m4--debugging-depth) | Debug observation, breakpoints/watchpoints, views, inspectors, debug CLI |
+| [Stage 5 — Tracing and scripting](#stage-5--tracing-and-scripting) | [M5](milestones.md#m5--tracing-and-scripting) | Structured traces, sandboxed scripting |
+| [Stage 6 — Agent-native interfaces](#stage-6--agent-native-interfaces) | [M6](milestones.md#m6--agent-interfaces) | HTTP, MCP, typed tools, permissions |
+| [Stage 7 — Human-facing GUI](#stage-7--human-facing-gui) | [M7](milestones.md#m7--gui) | Presentation, panels, attach/detach |
+| [Stage 8 — Multi-backend expansion](#stage-8--multi-backend-expansion) | [M8](milestones.md#m8--multi-backend) | Second backend, capability differences, SDKs |
+| [Hardware depth H1–H5](#hardware-depth-parallel-track-h1h5) | `H1`–`H5` (track, not a stage) | CPU, video/VDP/DMA, audio/Z80, cartridge/controllers/timers, accuracy/evidence |
+
+## Stage 0 — Bootstrap foundation
+
+- **Goal:** prove the architecture and establish durable project infrastructure.
+- **Milestone:** [M0 — Bootstrap foundation](milestones.md#m0--bootstrap-foundation).
+- **Depends on:** nothing.
+
+### Scope and deliverables
+
+- Environment validation, persistent planning and reference acquisition under ignored paths.
+- Upstream research, licensing assessment and provenance.
+- Official documentation, `AGENTS.md` and [EPIC-0001](../epics/EPIC-0001-foundation.md).
+- Rust workspace, backend contracts and the deterministic synthetic backend.
 - Session lifecycle, snapshots, restore, three-way fork, replay and isolation tests.
 - Quality gates and local verification.
 
-**Exit:** workspace compiles, tests pass, docs are navigable, references are ignored,
-and the real-backend decision is explicitly proposed.
+### Exit criteria
+
+- The workspace compiles and the required local gate passes, as recorded in
+  [quality gates](../quality/quality-gates.md).
+- Documentation is navigable from the [documentation index](../README.md), and reference
+  material stays under ignored paths.
+- The real-backend decision is explicitly proposed and approved:
+  [ADR-0002](../adr/0002-backend-boundaries.md), accepted 2026-11-13.
+
+### Non-goals and tracked elsewhere
+
+- No real console backend, transport, GUI or TAS in this stage; those begin at Stages 1, 3,
+  6 and 7.
 
 ## Stage 1 — Real backend decision and minimal hardware core
 
-**Goal:** select a real Mega Drive backend strategy and implement the smallest
-credible hardware slice.
+- **Goal:** select a real Mega Drive backend strategy and implement the smallest credible
+  hardware core behind the existing contracts.
+- **Milestone:** [M1 — Backend decision and minimal hardware slice](milestones.md#m1--backend-decision-and-minimal-hardware-slice).
+- **Depends on:** M0 (contracts and synthetic validator) and
+  [ADR-0002](../adr/0002-backend-boundaries.md).
 
-- [x] Approve ADR-0002 (Option E accepted).
-- [x] Rust-native 68000 subset, ROM/RAM map, reset vectors, deterministic
+### Scope and deliverables
+
+- Accepted [ADR-0002](../adr/0002-backend-boundaries.md) (Option E, Rust-native staged
+  hybrid).
+- A documented 68000 subset with ROM/RAM map, reset vectors and a deterministic
   instruction-quantum tick.
-- [x] ROM identity/config hash and an independently authored synthetic ROM.
-- [x] Snapshot/restore/fork on the real core.
-- [x] Minimal VDP status/control and VRAM window.
-- [x] Deterministic interrupt/tick scheduler.
-- [x] Bounded debug-only instruction trace and `megadrive trace` CLI.
-- [x] Differential trace evidence against the Exodus oracle — current PASS 3/3:
-  `rom_alu` 99/99 and `rom_mem_vdp` 51/51 at the explicit 1,000,000-instruction
-  controlled window, plus `rom_masked` 155/155 at the CLI default quantum 64 with
-  the flag omitted, with equal projection SHA-256 and final states, negative
-  controls 3/3 and the masked default-quantum gating control. `rom_masked` crosses
-  two HBlank boundaries at SR mask 7 with no handler entry, so it is negative
-  gating evidence, not interrupt-delivery equivalence. The earlier post-repair
-  two-ROM PASS 2/2, the pre-repair divergence at `0x00027A` and the E2-13
-  absolute-long `MOVE` repair are preserved as history in
-  [oracle differential evidence](../research/oracle-differential-evidence.md).
-- [ ] Complete production hardware state, including VDP/audio/Z80.
+- ROM identity (`config_hash`) and an independently authored synthetic ROM.
+- Snapshot/restore/fork on the real core, with slice state in snapshots and state hashes.
+- Minimal VDP status/control port window with 64 KiB VRAM.
+- Deterministic interrupt/tick scheduler: HBlank level 4 and VBlank level 6 sources, SR-mask
+  gating (level 7 always admitted, other levels only when strictly above the mask), `RTE`
+  handler return and CPU-side VDP VINT pending/acknowledge.
+- Bounded debug-only instruction trace and the `megadrive trace` CLI.
+- Pinned-oracle differential evidence for three synthetic ROMs, including a default-quantum
+  masked-ROM negative gating control.
 
-**Exit:** a known synthetic ROM executes deterministically; snapshot/restore/fork
-works on the real core; differential evidence exists. The hardware slice, VDP port
-window, interrupt scheduler with SR-mask gating/`RTE`/VINT pending-acknowledge,
-bounded debug trace and differential evidence for three synthetic ROMs are done for
-the modelled slice, and E2-15 is done. Remaining hardware (rendering, Z80, audio,
-DMA) is still pending, and the modelled slice keeps its documented limits:
-privilege is not enforced; only HBlank level 4 / VBlank level 6 sources exist, with
-level 7 a predicate rule only; no interrupt-timing equivalence is claimed; and VDP
-interrupt-enable/acknowledge logic is absent.
+### Exit criteria
+
+- A known synthetic ROM executes deterministically and snapshot/restore/fork works on the
+  real core.
+- The differential harness matches the pinned Exodus oracle on projected address streams and
+  selected final state, with negative controls caught; the current run, its controlled
+  windows and the pre-repair history are recorded in
+  [oracle differential evidence](../research/oracle-differential-evidence.md).
+- The masked-ROM differential is **negative gating evidence**, not interrupt-delivery or
+  interrupt-timing equivalence.
+- The capability report advertises only behavior that exists
+  ([functional requirements](../requirements/functional.md)).
+
+### Non-goals and tracked elsewhere
+
+- **Production hardware completeness is not a Stage 1 exit criterion.** Rendering, DMA,
+  CRAM/VSRAM, audio, Z80, cartridge identity/mapper, timers, the full controller protocol,
+  privilege and cycle accuracy belong to the parallel
+  [H1–H5](#hardware-depth-parallel-track-h1h5) track; Stage 1 stays complete for the
+  modelled slice while that work continues.
+- The slice keeps its documented limits: privilege is not enforced; only HBlank level 4 and
+  VBlank level 6 sources exist, with level 7 a predicate rule only; no interrupt-timing
+  equivalence is claimed; VDP interrupt-enable registers and VDP-side acknowledge logic are
+  not modelled (the CPU-side pending/acknowledge path exists); controller input is the
+  TH-high 3-button subset on ports 1–2. See [Mega Drive
+  slice](../architecture/megadrive-slice.md#not-implemented).
+- Broader instruction/addressing coverage is [H1](#h1--cpu-and-instruction-completeness);
+  the remaining controller protocol, cartridge identity and timers are
+  [H4](#h4--cartridge-controllers-and-timers).
 
 ## Stage 2 — Sessions, forks and save states at product quality
 
-- Durable checkpoint storage with versioned format and retention policy.
-- Named snapshots, session metadata and ownership.
-- Snapshot compatibility across backend versions.
-- Copy-on-write investigation (only after correctness).
-- Multi-process or worker isolation if required.
-- Concurrency policy for shared sessions.
+- **Goal:** make sessions, forks and save states durable and trustworthy across process
+  restarts.
+- **Milestone:** [M2 — Durable sessions](milestones.md#m2--durable-sessions).
+- **Depends on:** M1 (real core to persist) and the session model.
 
-**Exit:** users can create, fork, restore and compare sessions across process
-restarts without state loss.
+### Scope and deliverables
+
+- Durable checkpoint storage with a versioned format and explicit retention.
+- Named snapshots, session metadata and writer ownership.
+- Reject-only snapshot compatibility across backend versions.
+- Storage-backed rehydration and the `chronofork session save/load/list/delete` CLI.
+- Concurrency policy at the service boundary: one writer per durable session, typed
+  contention, owner-checked stale-lock recovery, lock-free readers.
+- Copy-on-write investigation only after correctness.
+
+### Exit criteria
+
+- Users can create, fork, restore and compare sessions across process restarts without state
+  loss.
+- Incompatible or corrupt input is rejected with typed errors; nothing is migrated or
+  repaired silently.
+- Writing, reading or deleting one session never changes another session's checkpoint bytes,
+  state hash or lineage.
+- The executed criteria are recorded in the [M2 acceptance
+  plan](../quality/m2-durable-sessions-acceptance.md) and [quality
+  gates](../quality/quality-gates.md).
+
+### Non-goals and tracked elsewhere
+
+- Copy-on-write/shared-page forks stay deferred (FR-FORK-007) until correctness work is done.
+- Encryption, authentication and format migration are out of scope; retention stays manual
+  and there is no automatic garbage collection.
+- Windows and network-filesystem durability, and a concurrent publish/read interleaving, are
+  residual limits tracked as M2-FU1 in [Milestones](milestones.md#m2--durable-sessions).
 
 ## Stage 3 — TAS and deterministic replay
 
-First through sixth increments implemented and independently verified: the first five for
-the deterministic synthetic backend (M3-T4, M3-T5, the t7 format-v2 verification PASS, the
-t5 rewind verification PASS and the t10 repair-round-2 PASS, 2026-11-15/2026-11-16) and the
-sixth for real-hardware input TAS on the minimal Mega Drive slice (t5 PASS, 2026-11-16).
-See [ADR-0004](../adr/0004-tas-movie-format.md),
-[ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md),
-[ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
-[ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md),
-[ADR-0008](../adr/0008-rerecord-and-branch-editing.md),
-[ADR-0009](../adr/0009-real-hardware-input-tas.md) and the [M3 acceptance
-plan](../quality/m3-tas-replay-acceptance.md), the [increment-2 acceptance
-plan](../quality/m3-partial-replay-acceptance.md), the [format-v2 acceptance
-plan](../quality/m3-format-v2-acceptance.md), the [M3 rewind acceptance
-plan](../quality/m3-rewind-acceptance.md), the [M3 rerecord acceptance
-plan](../quality/m3-rerecord-acceptance.md) and the [M3 hardware acceptance
-plan](../quality/m3-hardware-acceptance.md). The v2 increment adds the `CFMOVIE2`
-checkpoint-anchor container, nearest-anchor seek and schema-2 multi-device input. The
-fourth increment adds a bounded in-process rewind state cache, deterministic rewind by
-restore plus verified forward replay and the interactive `chronofork tas studio` stepping
-surface. The fifth increment adds deterministic input editing/truncation with suffix
-re-simulation, branch artifact identity/isolation, anchor retention/drop/rebuild and the
-`chronofork tas edit` surface. The sixth increment adds `--rom` backend selection and
-stateless per-step Mega Drive controller reads (TH-high 3-button subset, ports 1–2) with
-the canonical snapshot/state-hash/demo/M1 evidence unchanged. **M3 is complete** for the
-documented deterministic minimal-slice scope after the t5 completion audit and this t6
-promotion (t7 promotion audit pending). Import/export adapters remain documented-only,
-checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred, and none of the
-deferred in-place/timeline editing, persisted counter or mixed-anchor modes is claimed.
+- **Goal:** record, replay, verify, rewind and edit deterministic input movies (TAS) on the
+  synthetic validator and on the minimal Mega Drive slice.
+- **Milestone:** [M3 — TAS and replay](milestones.md#m3--tas-and-replay).
+- **Depends on:** M2 (durable checkpoints and storage) and the TH-high 3-button controller
+  subset that H4 delivered into the slice.
 
-- [x] Canonical movie format with versioning and metadata (v1 `.cfmovie` and v2
-      `CFMOVIE2`).
-- [x] Record/playback of a per-tick input sequence on the deterministic synthetic
-      backend.
-- [x] Replay verification with exact first-divergence reporting.
-- [x] Ranged replay/seek, forward single-tick advance and rewind by deterministic
-      linear re-simulation from the embedded checkpoint (typed range bounds; no
-      carried state).
-- [x] Branch comparison of recorded `(tick, state hash)` records with first-divergence,
-      length and embedded-checkpoint identity reporting (no re-simulation).
-- [x] Periodic anchors/checkpoints and seek via checkpoints (movie format v2) —
-      implemented and independently verified (M3-A18–A21/A24; ADR-0006, t7 PASS).
-- [x] In-process rewind buffer/state cache and interactive stepping — implemented as the
-      session-layer `Player`/`StateCache` and `chronofork tas studio`, and independently
-      verified for the deterministic synthetic backend (M3-A28–A34; ADR-0007, t5 PASS,
-      2026-11-15). The cache is process-local; no persistent/shared cache or O(1) seek is
-      claimed.
-- [x] Rerecording and branch editing — implemented as the session-layer
-      `chronofork_sessions::edit` and the `chronofork tas edit` surface, and independently
-      verified for the deterministic synthetic backend (M3-A35–A44; ADR-0008, t10
-      repair-round-2 PASS, 2026-11-16). No in-place/timeline editing, persisted counter,
-      format v3 or mixed-anchor mode is claimed; real-hardware input TAS is the separate
-      sixth increment below.
-- [x] Multi-controller, ports, analog and keyboard input — schema-2 multi-device frames
-      (four digital ports, four analog axes and a keyboard bitmap) are implemented and
-      independently verified for the deterministic synthetic backend (M3-A22/A24; ADR-0006,
-      t7 PASS), and the Mega Drive controller ports 1–2 are mapped for the TH-high 3-button
-      subset (M3-A45–A53; ADR-0009, t5 PASS 2026-11-16). Real-hardware analog/keyboard/port-3
-      hardware is not modelled.
-- [x] Real-hardware input TAS — implemented and independently verified for the documented
-      deterministic minimal-slice scope ([ADR-0009](../adr/0009-real-hardware-input-tas.md);
-      [M3 hardware acceptance plan](../quality/m3-hardware-acceptance.md) M3-A45–A53
-      `executed - passed`, t5 PASS 2026-11-16): stateless per-step controller reads of
-      `0x00A10003`/`0x00A10005` (TH-high 3-button subset; A/Start, TH/6-button and
-      controller timing deferred), no canonical snapshot/state-hash/demo/M1 change, and
-      `--rom` on `tas record/play/verify/studio/edit` (`compare` stays backend-agnostic).
-      The claim is the synthetic `controller_rom()` and 3-button subset, not commercial
-      ROMs, controller timing or cycle accuracy.
-- [ ] Import/export adapters, documented only, not implemented.
+### Scope and deliverables
 
-**Exit (six increments met):** a recorded input sequence reproduces every recorded tick
-and state hash exactly, reports the first divergence exactly, can be replayed/seeked over
-an exact tick window or from a checkpoint anchor and compared against another recording,
-can be rewound and stepped interactively through a bounded in-process state cache, can be
-edited/truncated into a new verified branch artifact with anchor handling on the
-deterministic synthetic backend, and can be recorded/played/verified/edited/stepped on the
-minimal Mega Drive slice with per-step controller input and `--rom` backend selection.
-**M3 is complete for the documented deterministic minimal-slice scope** (t5 PASS
-2026-11-16; t6 promotion; t7 audit pending). Import/export adapters remain documented-only,
-and the hardware claim is the synthetic `controller_rom()` and 3-button subset, not real
-commercial ROMs, controller timing or cycle accuracy.
+- Canonical single-file movie formats: v1 `.cfmovie` and v2 `CFMOVIE2`
+  ([ADR-0004](../adr/0004-tas-movie-format.md),
+  [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md)).
+- Record/playback of per-tick input sequences, replay verification with exact
+  first-divergence reporting, restart and M2-seeded replay.
+- Ranged replay/seek, forward single-tick advance, and rewind by deterministic
+  re-simulation ([ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)).
+- Checkpoint anchors and nearest-anchor seek in the v2 container.
+- Schema-2 multi-device input (four digital ports, four analog axes, keyboard bitmap).
+- In-process rewind state cache and interactive `chronofork tas studio` stepping
+  ([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md)).
+- Rerecord and branch editing through `chronofork tas edit`
+  ([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)).
+- Real-hardware input TAS: `--rom` backend selection and stateless per-step controller reads
+  for the TH-high 3-button subset on ports 1–2
+  ([ADR-0009](../adr/0009-real-hardware-input-tas.md)).
 
-## Stage 4 — Debugging depth (M4)
+### Exit criteria
 
-Status: **implemented and independently verified for the minimal Mega Drive slice**
-(t5 PASS, 2026-11-16; M4-A1–A17 `executed - passed`; [ADR-0010](../adr/0010-debugging-depth.md)
-and the [M4 acceptance plan](../quality/m4-debugging-depth-acceptance.md)). The post-PASS
-capability-report/wording fix at `6b2a567` was re-gated and audited.
+- Six increments are implemented and independently verified; every recorded tick and state
+  hash is reproduced exactly and the first divergence is reported exactly.
+- Ranged replay/seek, anchored seek, rewind/stepping and rerecord/edit behave as specified
+  on the deterministic synthetic backend, and record/play/verify/edit/step work on the
+  minimal Mega Drive slice with per-step controller input.
+- The M3 completion audit and the t7 promotion audit passed on 2026-11-16
+  ([Milestones — M3](milestones.md#m3--tas-and-replay) records the evidence).
+- No unimplemented capability is claimed: the hardware claim is the synthetic
+  `controller_rom()` and the 3-button subset, not commercial ROMs, controller timing or
+  cycle accuracy.
 
-- [x] CPU registers, decoded flags, bounded disassembly and instruction-boundary stops.
-- [x] Memory inspector and byte-granular read/write watchpoints.
-- [x] Breakpoints, logpoints and event/interrupt breakpoints.
-- [x] Bus transaction and device event observation.
-- [x] VDP, interrupt-scheduler and bus inspectors.
-- [ ] DMA, YM2612, PSG and mapper introspection.
-- [ ] Code/data analysis, symbol mapping, call-stack/step-over and reverse execution.
+### Non-goals and tracked elsewhere
 
-**Exit:** a reverse-engineering workflow can find what wrote a value and step
-through the responsible code without a GUI. The implemented M4 surface covers the
-instruction-boundary workflow for the modelled slice; DMA/audio/mapper introspection,
-code/data analysis and reverse execution remain open and are not claimed.
+- Movie import/export adapters (for example BK2) are deferred to **M3-FU1**; they are not an
+  open Stage 3 item.
+- Checkpoint-reference movies are deferred to **M3-FU2**.
+- In-place/timeline editing, a persisted rerecord counter, format v3, mixed-anchor mode and
+  O(1)/persistent-cache seek are deferred to **M3-FU3**.
+- The rest of the controller protocol (TH latch, A/Start, 6-button, port 3, analog/keyboard
+  hardware) is [H4](#h4--cartridge-controllers-and-timers); controller timing and cycle
+  accuracy are [H4](#h4--cartridge-controllers-and-timers)/[H5](#h5--accuracy-and-evidence).
+- HTTP/MCP/GUI/daemon surfaces are Stages 6–7, not TAS work.
+
+## Stage 4 — Debugging depth
+
+- **Goal:** let reverse-engineering and automation workflows inspect and stop a session
+  without a GUI.
+- **Milestone:** [M4 — Debugging depth](milestones.md#m4--debugging-depth).
+- **Depends on:** M1 (backend inspection contract and slice) and
+  [ADR-0010](../adr/0010-debugging-depth.md).
+
+### Scope and deliverables
+
+- Accepted [ADR-0010](../adr/0010-debugging-depth.md): optional, bounded, non-canonical
+  debug observation (`DebugAccess`, `DebugConfig`, typed events, `Capabilities::debug_events`).
+- Host debugger layer: PC/range/conditional breakpoints, byte-granular read/write
+  watchpoints, event breakpoints and logpoints.
+- Register, memory and bounded 68000-subset disassembly views.
+- Mega Drive CPU/VDP/interrupt-scheduler/bus inspectors.
+- `chronofork debug run|inspect|memory|disasm|vdp|interrupts|bus` CLI surface.
+- Non-perturbation evidence: observation off/on leaves canonical state, snapshots, demos and
+  movie bytes unchanged.
+
+### Exit criteria
+
+- Every M4-A1–A17 row in the [M4 acceptance
+  plan](../quality/m4-debugging-depth-acceptance.md) is `executed - passed`, and the full
+  gate passes on the M4 tree ([quality gates](../quality/quality-gates.md)).
+- The non-perturbation probe finds zero canonical differences between observation off and
+  on, and the demo/movie bytes and pinned-oracle differential are unchanged.
+- The promotion audit and the final content review pass ([Milestones —
+  M4](milestones.md#m4--debugging-depth) records status and integration state).
+
+### Non-goals and tracked elsewhere
+
+- Mid-instruction or cycle-exact stops, reverse execution, call-stack/step-over/step-out,
+  code/data analysis, symbol mapping, conditional watchpoint values and persistent debugger
+  configuration are **M4-FU1**.
+- DMA, rendering, CRAM/VSRAM, audio/Z80 and mapper inspector views are **M4-FU2**, and they
+  cannot be verified before the [H2–H4](#h2--video-vdp-and-dma) device models exist.
+- UI, HTTP and MCP surfaces are Stages 6–7; cross-platform runtime evidence is
+  [H5](#h5--accuracy-and-evidence).
 
 ## Stage 5 — Tracing and scripting
 
-- Structured instruction/bus/device traces with emulated timestamps.
-- Triggered tracing, circular buffers, structured exports.
-- Trace comparison and historical queries.
-- Script runtime evaluation (Rhai/Luau/WASM/Python SDK) with sandboxing, memory and
-  time limits.
-- Script APIs for sessions, forks, inspection, TAS and experiments.
+- **Goal:** let scripts run controlled experiments and produce reproducible reports without
+  host-language plugins.
+- **Milestone:** [M5 — Tracing and scripting](milestones.md#m5--tracing-and-scripting).
+- **Depends on:** M4 (bounded observation surface), M2 (sessions and storage) and M3
+  (movies). It does **not** depend on hardware-depth work.
 
-**Exit:** scripts can run controlled experiments and produce reproducible reports
-without host-language plugins.
+### Scope and deliverables
+
+- Structured instruction/bus/device traces with emulated timestamps and structured exports.
+- Triggered tracing, circular buffers and bounded trace retention.
+- Trace comparison and historical queries.
+- A sandboxed script runtime (Rhai/Luau/WASM/Python SDK) with memory and time limits.
+- Script APIs for sessions, forks, inspection, TAS and experiments.
+- CLI surfaces for every implemented capability, verified by process-level tests.
+
+### Exit criteria
+
+- Scripts can run controlled experiments and produce reproducible reports without
+  host-language plugins.
+- Trace export round-trips, and trace comparison reports the first divergence.
+- Sandbox limits are enforced, typed and tested.
+- FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 reflect the delivered scope
+  ([functional requirements](../requirements/functional.md)).
+
+### Non-goals and tracked elsewhere
+
+- Frame pacing and a host-time run loop are [M7](milestones.md#m7--gui) work.
+- Trace sources for DMA, audio and Z80 wait for [H2](#h2--video-vdp-and-dma) and
+  [H3](#h3--audio-and-z80).
+- HTTP/MCP transport is Stage 6; GUI trace viewers are Stage 7.
+- No performance claim: performance measurement after correctness is
+  [H5](#h5--accuracy-and-evidence).
 
 ## Stage 6 — Agent-native interfaces
 
-- HTTP API and MCP over Streamable HTTP using the same services.
-- Typed tool surface, not hundreds of loose endpoints.
-- Session ownership, permissions and concurrency controls.
-- Experiment artifacts consumable by external tools.
-- CLI as a first-class client, not a separate implementation.
+- **Goal:** expose the same application services to humans, scripts and agents through CLI,
+  HTTP and MCP with identical semantics.
+- **Milestone:** [M6 — Agent interfaces](milestones.md#m6--agent-interfaces).
+- **Depends on:** the M2–M5 services (sessions, movies, debug, tracing/scripting).
 
-**Exit:** humans, scripts and agents can drive identical operations through CLI,
-HTTP and MCP with identical semantics.
+### Scope and deliverables
+
+- HTTP API and MCP over Streamable HTTP using the same services as the CLI.
+- A typed tool surface instead of hundreds of loose endpoints.
+- Session ownership, permissions and concurrency controls at the transport boundary.
+- Machine-consumable experiment artifacts.
+- CLI as a first-class client of those services, not a separate implementation.
+- A daemon/deployment shape for long-running use.
+
+### Exit criteria
+
+- Humans, scripts and agents can drive identical operations through CLI, HTTP and MCP with
+  identical semantics, proven by parity tests.
+- Transport types never appear in core, backend or session APIs.
+- No second source of truth: the session layer stays canonical.
+
+### Non-goals and tracked elsewhere
+
+- The GUI is Stage 7; it consumes these services but never owns canonical state.
+- Additional systems are Stage 8.
 
 ## Stage 7 — Human-facing GUI
 
+- **Goal:** provide optional human-facing windows for viewing and controlling sessions
+  without owning canonical state.
+- **Milestone:** [M7 — GUI](milestones.md#m7--gui).
+- **Depends on:** M6 (attach/detach transport) and
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80) (video and audio to present).
+
+### Scope and deliverables
+
 - Optional windows for one or many sessions.
 - Live video/audio presentation decoupled from canonical state.
-- Debugger panels, memory viewers, hardware inspectors, TAS timelines.
+- Frame pacing and a host-time run loop.
+- Debugger panels, memory viewers, hardware inspectors and TAS timelines.
 - Remote observation and human/agent control handoff.
-- Multi-window/mosaic layouts.
+- Multi-window and mosaic layouts.
 
-**Exit:** GUI can attach to and detach from sessions without changing emulation
-results.
+### Exit criteria
+
+- The GUI can attach to and detach from sessions without changing emulation results.
+- Presentation consumes state but never owns or mutates canonical emulation state.
+- A human and an agent can hand control back and forth with observable, deterministic
+  results.
+
+### Non-goals and tracked elsewhere
+
+- The GUI adds no emulation semantics; rendering and audio depth are
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80).
+- Scripting and the HTTP/MCP surface stay in Stages 5–6.
 
 ## Stage 8 — Multi-backend expansion
 
-- Additional consoles/backends behind the same capability model.
-- Backend capability differences surfaced honestly.
+- **Goal:** add further systems behind the same capability model without changing session,
+  storage or transport semantics.
+- **Milestone:** [M8 — Multi-backend](milestones.md#m8--multi-backend).
+- **Depends on:** the M2–M7 shared layers and the backend boundaries in
+  [ADR-0002](../adr/0002-backend-boundaries.md).
+
+### Scope and deliverables
+
+- Additional consoles/backends behind the backend and capability contracts.
+- Backend capability differences surfaced honestly, not normalized away.
 - Shared tracing/TAS/debugging where capabilities allow.
 - Differential testing across backends.
 - Stable external SDKs.
 
-**Exit:** a second system is integrated without changing session/storage/transport
-core semantics.
+### Exit criteria
+
+- A second system is integrated without changing session/storage/transport core semantics.
+- The capability matrix distinguishes what each backend really supports.
+- Cross-backend differential tests run and are recorded.
+
+### Non-goals and tracked elsewhere
+
+- Hardware completeness for each system is tracked in that system's own hardware-depth track;
+  [H1–H5](#hardware-depth-parallel-track-h1h5) cover the Mega Drive model only.
+- Feature parity between backends is not required; honest capability differences are.
+- Performance and determinism evidence follow the [H5](#h5--accuracy-and-evidence) rules.
+
+## Hardware depth (parallel track H1–H5)
+
+Hardware depth is orthogonal to the capability stages: it tracks how complete the emulated
+machine is and proceeds alongside them. H1–H5 are checkpoints, not stage milestones: they are
+**not M9**, they never reopen a closed milestone, and their status is recorded in
+[Milestones](milestones.md#status-at-a-glance).
+
+A stage, epic or requirement that hits a hardware limit references the H item instead of
+carrying an unchecked hardware box.
+
+### H1 — CPU and instruction completeness
+
+- **Goal:** a documented, testable 68000 model instead of a subset that happens to run the
+  current fixtures.
+- **Milestone:** [H1](milestones.md#h1--cpu-and-instruction-completeness).
+- **Depends on:** the Stage 1 slice and its differential harness.
+
+#### Scope and deliverables
+
+- Broader 68000 instruction and addressing-mode coverage (EPIC-0002 E2-13 continued),
+  driven by differential tests.
+- Privilege enforcement, separate user/supervisor stacks and the resulting exception
+  behavior.
+- Exception groups beyond the implemented interrupt path.
+- A wired level-7 interrupt source instead of a predicate rule only.
+- Cycle and prefetch behavior only as far as [H5](#h5--accuracy-and-evidence) requires it.
+
+#### Exit criteria
+
+- The instruction/addressing matrix the slice documents is implemented and
+  differential-tested.
+- Privilege and user/supervisor separation are enforced and covered by tests; every
+  documented exception group has an executable test.
+- The H1 work items in [Milestones](milestones.md#h1--cpu-and-instruction-completeness) are
+  checked with evidence.
+
+#### Non-goals and tracked elsewhere
+
+- No complete-68000 or complete-disassembly claim until coverage and tests support it; the M4
+  disassembler stays bounded to the implemented subset.
+- Cycle accuracy, prefetch fidelity and interrupt-delivery equivalence are
+  [H5](#h5--accuracy-and-evidence), not H1.
+
+### H2 — Video, VDP and DMA
+
+- **Goal:** a VDP model that renders and transfers data, not only a memory-mapped port
+  window.
+- **Milestone:** [H2](milestones.md#h2--video-vdp-and-dma).
+- **Depends on:** H1 (instruction coverage for realistic ROM code) and the stable
+  non-rendering state model from M1.
+
+#### Scope and deliverables
+
+- Rendering: planes, sprites, scrolling and the visible-frame pipeline.
+- CRAM and VSRAM.
+- DMA transfers and their timing relative to the CPU.
+- Raster effects and H/V timing.
+- VDP interrupt-enable registers and VDP-side acknowledge logic (the CPU-side
+  pending/acknowledge path already exists).
+- FIFO behavior where it affects observable results.
+
+#### Exit criteria
+
+- Rendering, DMA, CRAM/VSRAM and raster timing are implemented and covered by differential or
+  reference evidence.
+- New device state enters canonical snapshots and state hashes through versioned payloads.
+- The H2 work items in [Milestones](milestones.md#h2--video-vdp-and-dma) are checked with
+  evidence.
+
+#### Non-goals and tracked elsewhere
+
+- DMA/rendering **inspector views** in the debugger are M4-FU2 and can only be verified after
+  this track delivers the device model.
+- GUI presentation is Stage 7; frame pacing is M7.
+- Audio is H3.
+
+### H3 — Audio and Z80
+
+- **Goal:** model the second CPU and the sound chips instead of leaving those windows
+  unmapped.
+- **Milestone:** [H3](milestones.md#h3--audio-and-z80).
+- **Depends on:** H1 (bus and CPU discipline) and H2 (bus-arbitration context).
+
+#### Scope and deliverables
+
+- Z80 CPU core and its memory map.
+- Bus arbitration between 68000, Z80 and VDP.
+- YM2612 FM synthesis and PSG tone generation, at a documented accuracy level.
+- Audio sample production and timing relative to emulated ticks.
+
+#### Exit criteria
+
+- Z80 execution and bus arbitration are implemented and tested.
+- YM2612 and PSG produce documented, deterministic output for reference programs.
+- The H3 work items in [Milestones](milestones.md#h3--audio-and-z80) are checked with
+  evidence.
+
+#### Non-goals and tracked elsewhere
+
+- Audio/Z80 **inspection views** are M4-FU2 until this model exists.
+- Bit-exact hardware audio and cycle accuracy are [H5](#h5--accuracy-and-evidence)
+  questions.
+- Host audio output and GUI presentation are M7.
+
+### H4 — Cartridge, controllers and timers
+
+- **Goal:** load and identify cartridge images and model the full peripheral set the slice
+  currently narrows.
+- **Milestone:** [H4](milestones.md#h4--cartridge-controllers-and-timers).
+- **Depends on:** M1 (the slice and its bus) and H1 for the code paths involved.
+
+#### Scope and deliverables
+
+- ROM header, region, TMSS and checksum handling, plus a cartridge loader and ROM identity
+  (EPIC-0002 E2-11).
+- Cartridge mapper (including SSF2-style banking) and SRAM.
+- The full controller protocol: TH latch and TH-low phase, A/Start, 6-button X/Y/Z/Mode,
+  controller timing and interrupts, port 3, analog and keyboard hardware.
+- Timer interrupts.
+
+#### Exit criteria
+
+- A cartridge image with a recognized header/region loads, is identified and maps correctly,
+  with SRAM persistence where supported.
+- The controller protocol extends beyond the TH-high 3-button subset and is verified against a
+  reference or synthetic fixture.
+- Timer interrupts are implemented and tested.
+- The H4 work items in [Milestones](milestones.md#h4--cartridge-controllers-and-timers) are
+  checked with evidence.
+
+#### Non-goals and tracked elsewhere
+
+- No commercial-ROM compatibility claim follows from this track alone.
+- Mapper/SRAM **inspection views** are M4-FU2; the cartridge loader is not M3 movie
+  import/export (M3-FU1).
+- Interrupt-delivery equivalence is [H5](#h5--accuracy-and-evidence).
+
+### H5 — Accuracy and evidence
+
+- **Goal:** measure accuracy instead of asserting it.
+- **Milestone:** [H5](milestones.md#h5--accuracy-and-evidence).
+- **Depends on:** H1–H4 progress and the existing oracle harness.
+
+#### Scope and deliverables
+
+- A broader differential corpus beyond the three synthetic ROMs.
+- Positive differential comparison of interrupt delivery and timing, which needs an oracle
+  model of those semantics.
+- Cycle accuracy, including prefetch and bus timing, at a documented level.
+- Cross-platform determinism measured for a real backend (FR-EXEC-006, NFR-DET-005).
+- Performance measurement after correctness.
+
+#### Exit criteria
+
+- Each accuracy claim has executable evidence, not a code-reading argument.
+- Interrupt delivery/timing has positive differential evidence, or the architecture docs state
+  the absence of that claim.
+- Cross-platform determinism is measured, not assumed.
+- The H5 work items in [Milestones](milestones.md#h5--accuracy-and-evidence) are checked with
+  evidence.
+
+#### Non-goals and tracked elsewhere
+
+- No game-compatibility claim follows from accuracy work alone.
+- CI matrices and fuzzing stay cross-cutting (below); H5 owns the accuracy/evidence
+  conclusions.
 
 ## Cross-cutting tracks
 
-- Licensing/provenance review at every incorporation point.
+These run alongside every stage and are not milestones:
+
+- Licensing and provenance review at every incorporation point
+  ([policy](../licensing/policy.md)).
 - Cross-platform CI (Linux, Windows, macOS where feasible).
-- Fuzzing, property tests and regression corpus.
-- Performance measurement after correctness.
+- Fuzzing, property tests and a regression corpus.
 - Documentation and ADR maintenance.
+
+Performance measurement after correctness, and cross-platform determinism evidence, are
+[H5](#h5--accuracy-and-evidence) conclusions rather than a separate track.

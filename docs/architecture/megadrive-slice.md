@@ -194,9 +194,11 @@ FIFO/access timing and H/V counters.
   request is admitted by the current SR mask and 0 while it is masked. The schema
   has no dedicated device-inspection section yet; this keeps the generic backend
   API unchanged.
-- Capabilities truthfully report no breakpoints, watchpoints, tracing, rendering or
-  audio. The bounded trace is a concrete-type debug facility, not the generic
-  `Backend` `tracing` capability.
+- Capabilities truthfully report `breakpoints = false` and `tracing = false`: host
+  breakpoints are a debugger feature and the bounded trace is a concrete-type debug
+  facility, not the generic `Backend` `tracing` capability. Since M4 the slice reports
+  `watchpoints = true` and `debug_events = true` for its optional observation layer, and
+  `rendering = false` / `audio = false`.
 
 ### Bounded instruction trace (debug only)
 
@@ -321,7 +323,8 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
   unmapped frames and odd PCs without touching state;
 - ROM/RAM big-endian access, alignment, unmapped and atomic-write errors;
 - VDP port mapping through the bus, register/VRAM round-trips, byte-lane behavior,
-  side-effect-free debugger reads and explicit PSG/Z80/controller errors;
+  side-effect-free debugger reads, mapped byte reads of the two controller data
+  registers and explicit PSG/Z80 and other-controller-access errors;
 - VDP snapshot round-trip and malformed-input rejection; VDP VINT-pending driven by
   the owning machine, status reads never clearing it, and the derived latch being
   excluded from the VDP snapshot;
@@ -406,7 +409,6 @@ the deterministic minimal-slice scope and with the canonical Mega Drive state un
 - Cycle accuracy. One executed instruction equals one ChronoFork tick in this
   slice; the scheduler maps instruction quanta to scanlines with configurable
   constants. This is deterministic but not hardware timing.
-- ROM header validation, checksum, region detection or ROM database.
 - ROM header validation, checksum, region detection or a ROM database. The
   `megadrive trace` and TAS `--rom` commands accept an explicitly supplied image; the demo
   uses an independently authored synthetic ROM.
