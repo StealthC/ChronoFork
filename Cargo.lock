@@ -56,6 +56,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronofork-debug"
+version = "0.1.0"
+dependencies = [
+ "chronofork-backend-api",
+ "chronofork-core",
+ "chronofork-megadrive",
+ "chronofork-test-backend",
+]
+
+[[package]]
 name = "chronofork-megadrive"
 version = "0.1.0"
 dependencies = [
