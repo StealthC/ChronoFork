@@ -294,10 +294,25 @@ promotion and subject to the t7 promotion audit.
 
 ## M4 — Debugging depth
 
-- [ ] Breakpoints and watchpoints.
-- [ ] Register/memory/disassembly views.
-- [ ] Interrupt/bus/device event observation.
-- [ ] Mega Drive-specific inspectors.
+Status: **complete for the documented deterministic minimal-slice scope on Linux.** The
+[ADR-0010](../adr/0010-debugging-depth.md) contract is implemented and independently
+verified (t5 PASS, 2026-11-16); every M4-A1–A17 row in the [M4 acceptance
+plan](../quality/m4-debugging-depth-acceptance.md) is `executed - passed`. The verifier
+executed the exact row commands, the full gate, the demo/regression comparison, the
+1,700-step non-perturbation probe, the movie byte checks and the pinned-oracle differential
+with no prohibited overclaim. The post-PASS capability-report/wording fix at `6b2a567` was
+re-gated and audited. Covered: PC/range/conditional breakpoints, byte-granular read/write
+watchpoints, event breakpoints and logpoints, bounded register/memory/disassembly views,
+interrupt/bus/device event observation and Mega Drive CPU/VDP/interrupt/bus inspectors.
+Not covered: mid-instruction or cycle-exact stops, reverse execution, call-stack/step-over/
+step-out, conditional watchpoint values, bus-read logging without a watchpoint, DMA/Z80/
+audio/rendering inspection, persistent debugger state, UI/HTTP/MCP or cross-platform
+runtime evidence.
+
+- [x] Breakpoints and watchpoints.
+- [x] Register/memory/disassembly views.
+- [x] Interrupt/bus/device event observation.
+- [x] Mega Drive-specific inspectors.
 
 ## M5 — Tracing and scripting
 
@@ -329,7 +344,10 @@ promotion and subject to the t7 promotion audit.
 
 ## Current milestone
 
-**M1, M2 and M3 are complete. M4 (Debugging depth) is the next milestone.** M3's first
+**M1, M2, M3 and M4 are complete for the documented deterministic minimal-slice scope.
+M5 (Tracing and scripting) is the next milestone; M4's debugging surface does not claim
+cycle-exact stops, reverse execution, persistent debugger state, UI/HTTP/MCP or
+cross-platform runtime evidence.** M3's first
 through fifth increments are implemented and independently verified (M3-T4, M3-T5, the t7
 format-v2 verification PASS, the t5 rewind verification PASS and the t10 repair-round-2
 PASS, 2026-11-15/2026-11-16), and the sixth and final real-hardware input TAS increment is

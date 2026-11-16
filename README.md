@@ -72,8 +72,8 @@ is in [milestones](docs/roadmap/milestones.md).
 | M0 — Foundation | Contracts, synthetic backend, sessions, docs and quality gates | Complete |
 | M1 — First hardware | 68000, ROM/RAM, VDP port window and interrupt scheduler | Complete for the modelled slice |
 | M2 — Durable sessions | Checkpoints on disk, names, ownership and safe reloads | Complete; verified on local Linux filesystems |
-| M3 — TAS and replay | Movie format, record/play/verify and divergence reports | First increment complete; more to come |
-| M4 — Debugging | Breakpoints, watchpoints and hardware inspectors | Planned |
+| M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
+| M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete for the modelled slice; independently verified (t5 PASS 2026-11-16) |
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Planned |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Planned |
 | M7 — GUI | Presentation that never owns canonical state | Planned |

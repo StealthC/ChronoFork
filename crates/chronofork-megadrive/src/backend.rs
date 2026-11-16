@@ -71,6 +71,28 @@
 //! generic [`Backend`] interface exposes no trace method, so the backend
 //! capability `tracing` stays `false`; use the concrete type.
 //!
+//! # Debug observation
+//!
+//! [`Backend::debug_access`] returns this backend's [`DebugAccess`], so the host
+//! can install a bounded event ring and up to
+//! [`MAX_WATCHPOINTS`](chronofork_backend_api::MAX_WATCHPOINTS) watchpoints. The
+//! bus reports one `Watchpoint` event per matching byte lane of every emulated
+//! read or write (instruction fetches included), one `BusWrite` per work-RAM byte
+//! write, one `VdpPort` per VDP port access and one `ControllerRead` per
+//! controller data-register read. The scheduler side reports
+//! `InterruptRequested` when a per-level issued counter advances without a
+//! coalesced increment, `InterruptDelivered` after a successful CPU interrupt
+//! entry and `InterruptAcknowledged` after the scheduler acknowledges exactly the
+//! delivered level. Events created during a step carry that step's pre-step tick.
+//!
+//! Observation is **not** canonical state: it is absent from the serialized state
+//! body, the state hash, the configuration hash, the payload version and every
+//! snapshot, restoring a snapshot does not rewind it, and the debugger
+//! `read_memory`/`write_memory` paths never produce an event. The descriptor
+//! therefore reports `watchpoints = true` and `debug_events = true`, while
+//! `breakpoints` stays `false`: breakpoints are a host debugger feature built on
+//! `inspect`, not a backend capability.
+//!
 //! # Controller input
 //!
 //! [`Backend::step`] makes its `InputFrame` visible to the two controller data
@@ -96,7 +118,8 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
-    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome, validate_envelope,
+    BackendId, BackendSnapshot, Capabilities, DebugAccess, DebugConfig, DebugEventKind,
+    DebugEventLog, MachineInspection, StepOutcome, validate_envelope,
 };
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
@@ -177,6 +200,10 @@ impl MegadriveFactory {
             memory_write: true,
             register_inspection: true,
             instruction_stepping: true,
+            // The bus itself matches watchpoints and produces typed bus/device
+            // events. Breakpoints stay a host feature over `inspect`.
+            watchpoints: true,
+            debug_events: true,
             state_cloning: true,
             deterministic_replay: true,
             ..Capabilities::none()
@@ -264,6 +291,17 @@ impl MegadriveBackend {
     #[must_use]
     pub const fn cpu(&self) -> &M68000 {
         &self.cpu
+    }
+
+    /// Returns the machine bus for read-only debug inspection.
+    ///
+    /// Views such as [`crate::BusView`] and the disassembler's
+    /// [`crate::WindowMemory`] take the bus or its ROM/RAM slices. The accessor
+    /// hands out `&MegadriveBus`, so a view can never issue a mutating bus
+    /// access or produce a debug event.
+    #[must_use]
+    pub const fn bus(&self) -> &MegadriveBus {
+        &self.bus
     }
 
     /// Returns the current VDP state.
@@ -404,12 +442,45 @@ impl MegadriveBackend {
         self.cpu
             .interrupt(level.level(), vector_address(level), &mut self.bus)
             .map_err(map_cpu)?;
+        self.bus
+            .debug_observer_mut()
+            .record(DebugEventKind::InterruptDelivered {
+                level: level.level(),
+            });
         // Acknowledge exactly the delivered level: selecting the highest-priority
         // pending request instead could acknowledge a different (masked) level.
         let acknowledged = self.scheduler.acknowledge(level);
         debug_assert!(acknowledged, "a deliverable level must have been pending");
+        if acknowledged {
+            self.bus
+                .debug_observer_mut()
+                .record(DebugEventKind::InterruptAcknowledged {
+                    level: level.level(),
+                });
+        }
         self.sync_vdp_vint_pending();
         Ok(())
+    }
+
+    /// Returns the per-level scheduler counter pairs observed for request events,
+    /// in [`InterruptLevel::ALL`] order.
+    fn scheduler_counters(&self) -> ([u64; 2], [u64; 2]) {
+        (
+            InterruptLevel::ALL.map(|level| self.scheduler.requests_issued(level)),
+            InterruptLevel::ALL.map(|level| self.scheduler.requests_coalesced(level)),
+        )
+    }
+
+    /// Reports scheduler request-counter changes to the debug observer.
+    ///
+    /// A coalesced request advances its level's coalesced counter as well, so the
+    /// observer records no duplicate request event for a request that merged into
+    /// one that is already pending.
+    fn observe_scheduler_requests(&mut self) {
+        let (issued, coalesced) = self.scheduler_counters();
+        self.bus
+            .debug_observer_mut()
+            .observe_scheduler(issued, coalesced);
     }
 
     /// Executes one instruction with the step's controller input already set on
@@ -418,6 +489,10 @@ impl MegadriveBackend {
     /// The caller ([`Backend::step`]) owns the transient set/clear pair; this
     /// helper must never be called on its own.
     fn step_with_current_input(&mut self) -> Result<StepOutcome, BackendError> {
+        // Debug observation is debug-only: stamping the pre-step tick here is
+        // the only state it shares with the machine. Every event created below
+        // carries this tick.
+        self.bus.debug_begin_step(self.tick);
         // Take at most one interrupt at the instruction boundary, then execute
         // one instruction. This models the 68000 taking one request between
         // instructions instead of nesting several handlers in a single tick.
@@ -425,6 +500,7 @@ impl MegadriveBackend {
         self.cpu.step(&mut self.bus).map_err(map_cpu)?;
         self.tick = self.tick.next().map_err(|_| BackendError::TickOverflow)?;
         self.scheduler.tick().map_err(map_scheduler)?;
+        self.observe_scheduler_requests();
         self.sync_vdp_status();
         Ok(StepOutcome {
             tick: self.tick,
@@ -520,6 +596,15 @@ impl Backend for MegadriveBackend {
         // canonical VBlank bit (bit 3) is serialized and was validated against
         // the snapshot state hash, so it is not reinterpreted here.
         self.sync_vdp_vint_pending();
+        // The scheduler's diagnostic counters were just restored. Rebase the
+        // debug-only request detection on them so a restore never reports a
+        // request raised before the snapshot. The event ring, watchpoint table
+        // and every other piece of observer state are deliberately left alone:
+        // debug state is not canonical and restore does not rewind it.
+        let (issued, coalesced) = self.scheduler_counters();
+        self.bus
+            .debug_observer_mut()
+            .sync_scheduler(issued, coalesced);
         Ok(())
     }
 
@@ -586,6 +671,32 @@ impl Backend for MegadriveBackend {
                 debugger_window_end(self.bus.rom().len(), address, true),
             )
         })
+    }
+
+    fn debug_access(&mut self) -> Option<&mut dyn DebugAccess> {
+        Some(self)
+    }
+}
+
+impl DebugAccess for MegadriveBackend {
+    fn configure_debug(&mut self, config: DebugConfig) -> Result<(), BackendError> {
+        self.bus.debug_configure(config)?;
+        // Request detection is a counter delta. Rebaseline it on the current
+        // scheduler counters so enabling observation never reports a request
+        // that was raised before observation started.
+        let (issued, coalesced) = self.scheduler_counters();
+        self.bus
+            .debug_observer_mut()
+            .sync_scheduler(issued, coalesced);
+        Ok(())
+    }
+
+    fn debug_event_log(&self) -> Option<&DebugEventLog> {
+        self.bus.debug_event_log()
+    }
+
+    fn take_debug_event_log(&mut self) -> Option<DebugEventLog> {
+        self.bus.take_debug_event_log()
     }
 }
 

@@ -7,16 +7,21 @@
 //! deterministic instruction-quantum VBlank/HBlank interrupt scheduler whose
 //! delivery honours the 68000 `SR` interrupt-priority mask (level 7 always,
 //! otherwise strictly above the mask), versioned snapshots and session
-//! integration. **Not implemented:** rendering, audio, Z80, DMA, TH-latched and
-//! 6-button controller protocols (A/Start are not readable), mapper hardware, VDP
-//! interrupt-enable/acknowledge registers and cycle-accurate timing. This is
-//! real-hardware groundwork, not a playable emulator.
+//! integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
+//! bounded, execution-cross-checked 68000-subset disassembler are available
+//! without changing canonical state. **Not implemented:** rendering, audio, Z80,
+//! DMA, TH-latched and 6-button controller protocols (A/Start are not readable),
+//! mapper hardware, VDP interrupt-enable/acknowledge registers and cycle-accurate
+//! timing. This is real-hardware groundwork, not a playable emulator.
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod backend;
 pub mod bus;
 pub mod cpu;
+mod debug;
+pub mod disasm;
+pub mod inspect;
 pub mod interrupts;
 pub mod trace;
 pub mod vdp;
@@ -31,6 +36,14 @@ pub use bus::{
     VDP_END, VDP_WINDOW_SIZE,
 };
 pub use cpu::{CpuError, M68000};
+pub use disasm::{
+    DisasmError, DisasmInstruction, DisasmMemory, MAX_DISASSEMBLY_COUNT, RomMemory, WindowMemory,
+    disassemble,
+};
+pub use inspect::{
+    BusView, BusWindowView, CpuView, InterruptCounterView, InterruptView, PendingInterruptView,
+    VdpView,
+};
 pub use interrupts::{
     DEFAULT_INSTRUCTIONS_PER_LINE, HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler,
     PendingInterrupt, SchedulerConfig, SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,

@@ -3,7 +3,7 @@
 Status: engineering assessment for planning. **This is not legal advice.** Every
 "clear", "conditional" or "blocked" label below describes what the checked-out
 evidence supports for engineering decisions, not a legal conclusion. Unclear
-cases are listed as decisions for the user (see [Open questions](#open-questions-for-user-decision))
+cases are listed as decisions for the user (see [Open questions](#7-open-questions-for-user-decision))
 rather than silently resolved.
 
 - Audit date: 2026-11-13

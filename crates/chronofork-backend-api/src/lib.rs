@@ -7,12 +7,18 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod debug;
 pub mod descriptor;
 pub mod error;
 pub mod inspection;
 pub mod snapshot;
 pub mod traits;
 
+pub use debug::{
+    DEFAULT_DEBUG_EVENT_CAPACITY, DebugAccess, DebugAddressRange, DebugConfig, DebugEvent,
+    DebugEventKind, DebugEventLog, MAX_DEBUG_EVENT_CAPACITY, MAX_WATCHPOINTS, WatchpointAccess,
+    WatchpointSpec,
+};
 pub use descriptor::{BackendDescriptor, BackendId, Capabilities};
 pub use error::BackendError;
 pub use inspection::MachineInspection;

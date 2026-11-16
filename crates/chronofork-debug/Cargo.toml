@@ -1,0 +1,18 @@
+[package]
+name = "chronofork-debug"
+description = "Host-layer ChronoFork debugger: breakpoints, watchpoints, event breakpoints and logpoints"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-core.workspace = true
+chronofork-backend-api.workspace = true
+
+[dev-dependencies]
+chronofork-test-backend.workspace = true
+chronofork-megadrive.workspace = true
+
+[lints]
+workspace = true
