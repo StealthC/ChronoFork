@@ -118,7 +118,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** same target, tests `range_breakpoint_matches_inclusive_bounds` and
   `conditional_breakpoint_requires_register_and_memory_conditions`.
-- **Command:** `cargo test -p chronofork-debug --test debugger range_breakpoint_matches_inclusive_bounds conditional_breakpoint_requires_register_and_memory_conditions`.
+- **Command:** `cargo test -p chronofork-debug --test debugger -- range_breakpoint_matches_inclusive_bounds conditional_breakpoint_requires_register_and_memory_conditions`.
 - **Expected:** a range stop hits at the first enabled PC inside the inclusive bounds and
   misses immediately outside; a register condition (`d0==3`) stops only at the matching
   state; a memory condition (big-endian 2 bytes at a known RAM address) stops only when
@@ -130,7 +130,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** same target, tests `trigger_tables_are_bounded_and_removable` and
   `unknown_register_and_missing_pc_are_typed_errors`.
-- **Command:** `cargo test -p chronofork-debug --test debugger trigger_tables_are_bounded_and_removable unknown_register_and_missing_pc_are_typed_errors`.
+- **Command:** `cargo test -p chronofork-debug --test debugger -- trigger_tables_are_bounded_and_removable unknown_register_and_missing_pc_are_typed_errors`.
 - **Expected:** add/remove/disable/enable for breakpoints, watchpoints, event breakpoints
   and logpoints; removal of an unknown id and a full table return typed `DebugError`
   values; an unknown register is `UnknownRegister`; a backend whose register map lacks
@@ -142,8 +142,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `watchpoints_report_emulated_reads_and_writes`; `crates/chronofork-debug/tests/debugger.rs`,
   test `watchpoint_stops_after_the_writing_instruction`.
-- **Command:** `cargo test -p chronofork-megadrive --test debug_observation watchpoints_report_emulated_reads_and_writes` and
-  `cargo test -p chronofork-debug --test debugger watchpoint_stops_after_the_writing_instruction`.
+- **Command:** `cargo test -p chronofork-megadrive --test debug_observation watchpoints_report_emulated_reads_and_writes` and `cargo test -p chronofork-debug --test debugger watchpoint_stops_after_the_writing_instruction`.
 - **Expected:** a write watchpoint over a RAM range produces a byte event with the exact
   address, value, access kind and pre-step tick; the host stops after the instruction and
   the stop state hash equals a fresh inspection after that step; a read watchpoint fires
@@ -157,7 +156,7 @@ must record the exact row command and exit code. All commands run with
   `debug_observation_does_not_change_state_or_payload` and
   `watchpoint_configuration_is_bounded`; `crates/chronofork-debug/tests/debugger.rs`, test
   `watchpoints_require_backend_support`.
-- **Command:** the three exact tests from both packages.
+- **Command:** `cargo test -p chronofork-megadrive --test debug_observation -- debug_observation_does_not_change_state_or_payload watchpoint_configuration_is_bounded` and `cargo test -p chronofork-debug --test debugger watchpoints_require_backend_support`.
 - **Expected:** a machine with observation enabled and watchpoints installed produces the
   same state hash, `to_bytes` payload/version and config hash as the same machine with
   observation disabled, at every checked tick; restore leaves the event log untouched;
@@ -172,7 +171,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_inspect_prints_stable_cpu_and_device_fields`; `crates/chronofork-megadrive/tests/inspect.rs`,
   test `cpu_view_decodes_sr_fields`.
-- **Command:** both exact tests.
+- **Command:** `cargo test -p chronofork-cli --test debug debug_inspect_prints_stable_cpu_and_device_fields` and `cargo test -p chronofork-megadrive --test inspect cpu_view_decodes_sr_fields`.
 - **Expected:** `chronofork debug inspect --rom <fixture> --steps N` prints one
   deterministic `record=debug-inspect` block containing tick, state hash, halted, PC,
   SR, supervisor, trace, interrupt mask, X/N/Z/V/C, VDP status/address/auto-increment and
@@ -184,7 +183,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_memory_dump_is_exact_and_bounded`.
-- **Command:** exact test.
+- **Command:** `cargo test -p chronofork-cli --test debug debug_memory_dump_is_exact_and_bounded`.
 - **Expected:** `debug memory --address --length` prints the exact big-endian bytes in
   the documented 16-byte hex/ASCII rows with no timestamps; a zero length prints an empty
   body after the header; an unaligned (odd) address and a length crossing the mapped
@@ -197,7 +196,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/src/disasm.rs` unit tests (module target
   `chronofork_megadrive`) and `crates/chronofork-cli/tests/debug.rs`, test
   `debug_disasm_matches_supported_encodings`.
-- **Command:** `cargo test -p chronofork-megadrive disasm::` and the exact CLI test.
+- **Command:** `cargo test -p chronofork-megadrive disasm::` and `cargo test -p chronofork-cli --test debug debug_disasm_matches_supported_encodings`.
 - **Expected:** every supported encoding prints the accepted mnemonic/operands and a
   length equal to the CPU's executed PC delta; unsupported encodings print `DC.W` with
   length 2; a bad count, odd address, truncation and out-of-window extension word return
@@ -209,7 +208,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `interrupt_events_are_requested_delivered_and_acknowledged`.
-- **Command:** exact test.
+- **Command:** `cargo test -p chronofork-megadrive --test debug_observation interrupt_events_are_requested_delivered_and_acknowledged`.
 - **Expected:** with the independently authored `interrupt_rom` and a short quantum the
   log shows `InterruptRequested`, then `InterruptDelivered` and
   `InterruptAcknowledged` for the delivered level, in that order and with the expected
@@ -223,7 +222,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, tests
   `bus_and_device_events_capture_the_documented_windows` and
   `event_log_is_bounded_and_deterministic`.
-- **Command:** both exact tests.
+- **Command:** `cargo test -p chronofork-megadrive --test debug_observation -- bus_and_device_events_capture_the_documented_windows event_log_is_bounded_and_deterministic`.
 - **Expected:** controller reads, VDP port reads/writes and RAM byte writes appear with
   exact address/offset/value/width and pre-step tick; instruction fetches appear only when
   a watchpoint matches them; a small-capacity log evicts oldest entries, reports the
@@ -236,7 +235,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-debug/tests/debugger.rs`, tests
   `event_breakpoint_stops_on_a_matching_event` and
   `logpoint_records_without_stopping`.
-- **Command:** both exact tests on the Mega Drive fixture.
+- **Command:** `cargo test -p chronofork-debug --test debugger -- event_breakpoint_stops_on_a_matching_event logpoint_records_without_stopping`.
 - **Expected:** an interrupt-delivery filter stops after the delivering step and reports
   the matching event; a VDP-write, controller-read and bus-write-range filter each stop
   on the first matching event; a logpoint at a repeated PC records every hit, increments
@@ -249,8 +248,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `debug_observation_does_not_change_state_or_payload` (shared with A5), plus the
   command-level probe `debug_observation_off_on_differential`.
-- **Command:** exact target test and a verifier-run differential using the CLI/`tas`
-  outputs recorded under `.research/m4/verification/audit/`.
+- **Command:** `cargo test -p chronofork-megadrive --test debug_observation debug_observation_does_not_change_state_or_payload` and a verifier-run differential using the CLI/`tas` outputs recorded under `.research/m4/verification/audit/`.
 - **Expected:** for the same ROM, steps and input, state hashes and snapshot payload bytes
   are identical with observation off and on at every probed tick; configuration hash and
   payload version are unchanged; both demos remain byte-identical to the baseline; an
@@ -264,7 +262,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `vdp_view_matches_direct_device_accessors`; CLI test
   `debug_vdp_prints_registers_status_and_vram_digest`.
-- **Command:** both exact tests.
+- **Command:** `cargo test -p chronofork-megadrive --test inspect vdp_view_matches_direct_device_accessors` and `cargo test -p chronofork-cli --test debug debug_vdp_prints_registers_status_and_vram_digest`.
 - **Expected:** status word and decoded VBlank/VINT bits, address, auto-increment and all
   24 registers equal the direct `Vdp` accessors after a known program; the VRAM SHA-256
   equals a hash of `vdp.vram()`; a requested VRAM window prints the exact bytes and is
@@ -276,7 +274,7 @@ must record the exact row command and exit code. All commands run with
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `interrupt_view_matches_scheduler_state`; CLI test
   `debug_interrupts_prints_pending_issue_tick_and_counters`.
-- **Command:** both exact tests.
+- **Command:** `cargo test -p chronofork-megadrive --test inspect interrupt_view_matches_scheduler_state` and `cargo test -p chronofork-cli --test debug debug_interrupts_prints_pending_issue_tick_and_counters`.
 - **Expected:** standard, quantum, frame/line/quantum position, pending requests with
   exact issue tick and the CPU-mask deliverability predicate, and per-level issued and
   coalesced counters equal the scheduler accessors; a masked run reports
@@ -288,7 +286,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `bus_view_lists_the_mapped_windows`; CLI test `debug_bus_and_cpu_view_are_stable`.
-- **Command:** both exact tests.
+- **Command:** `cargo test -p chronofork-megadrive --test inspect bus_view_lists_the_mapped_windows` and `cargo test -p chronofork-cli --test debug debug_bus_and_cpu_view_are_stable`.
 - **Expected:** the bus view lists exactly the ROM, work-RAM, VDP and controller windows
   with correct inclusive/exclusive bounds and writability; ROM/RAM lengths match the
   backend; the CPU/disassembly view at PC shows the instruction the CPU will execute
@@ -300,7 +298,7 @@ must record the exact row command and exit code. All commands run with
 
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_command_rejects_invalid_input_with_typed_errors`.
-- **Command:** exact test.
+- **Command:** `cargo test -p chronofork-cli --test debug debug_command_rejects_invalid_input_with_typed_errors`.
 - **Expected:** missing/unknown subcommand, missing `--rom`, unreadable/empty/oversized
   ROM, unknown flag, malformed breakpoint/watchpoint/eventpoint/logpoint spec, odd
   address, out-of-window memory/disassembly request, too many steps and a full trigger
