@@ -21,6 +21,7 @@ backends; layer 4 must not own canonical emulated state.
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │ chronofork-cli                 (presentation / demo)         │
+│ chronofork-debug               (host debugger over Backend)  │
 ├──────────────────────────────────────────────────────────────┤
 │ chronofork-sessions            (lifecycle, snapshots, forks) │
 ├──────────────────────────────────────────────────────────────┤
@@ -40,7 +41,10 @@ backends; layer 4 must not own canonical emulated state.
 `chronofork-backend-api` depends only on `chronofork-core`.
 `chronofork-sessions` depends on both, but never on a concrete backend.
 Each backend depends on the contract, not on sessions.
-`chronofork-cli` composes sessions with a selected backend.
+`chronofork-debug` depends only on core and backend-api and borrows a backend for host
+breakpoints, watchpoints, event breakpoints and logpoints; it owns no session, storage,
+transport or UI state. `chronofork-cli` composes sessions, the debugger and a selected
+backend.
 
 ## Data flow
 

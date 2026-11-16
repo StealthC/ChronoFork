@@ -31,14 +31,19 @@ plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 `executed - passed`. 
 complete for the documented deterministic minimal-slice scope**; ADR-0002 is accepted.
 Claims below distinguish implemented facts from proposals and upstream research claims.
 
-**M4 (debugging depth) is the current milestone: its design is accepted and
-implementation is in progress, with every acceptance row still pending.** The contract
-[ADR-0010](adr/0010-debugging-depth.md) and the [M4 acceptance
-plan](quality/m4-debugging-depth-acceptance.md) define bounded, non-canonical debug
-observation (event log and watchpoints), host breakpoints/logpoints, register/memory/
-disassembly views and Mega Drive CPU/VDP/interrupt/bus inspectors. No M4 feature may be
-described as implemented until the independent verifier records the rows
-`executed - passed`.
+**M4 (debugging depth) is complete and independently verified for the documented
+deterministic minimal-slice scope on Linux.** The contract
+[ADR-0010](adr/0010-debugging-depth.md) is implemented: optional bounded non-canonical
+debug observation (`DebugAccess` event log and byte-granular watchpoints), the
+`chronofork-debug` host layer (PC/range/conditional breakpoints, read/write watchpoints,
+event breakpoints and logpoints), register/memory/disassembly views and Mega Drive
+CPU/VDP/interrupt/bus inspectors, exposed by `chronofork debug
+run|inspect|memory|disasm|vdp|interrupts|bus`. Every M4-A1–A17 row in the [M4 acceptance
+plan](quality/m4-debugging-depth-acceptance.md) is `executed - passed` (independent t5
+PASS, 2026-11-16); the post-PASS capability-report/wording fix at `6b2a567` was re-gated
+and audited. Stops are instruction-granular; no mid-instruction/cycle-exact stop, reverse
+execution, persistent debugger state, UI/HTTP/MCP, DMA/Z80/audio/rendering inspection,
+complete 68000 disassembly or cross-platform runtime evidence is claimed.
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -112,7 +117,7 @@ checkpoint-reference movie support, HTTP/MCP/GUI and the Stage 6 daemon remain d
 none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities or
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
-controller timing. M2 and M3 are the completed milestones.
+controller timing. M2, M3 and M4 are the completed milestones.
 
 ## Start here
 
@@ -142,6 +147,7 @@ controller timing. M2 and M3 are the completed milestones.
 | [M3 rewind acceptance](quality/m3-rewind-acceptance.md) | Executed acceptance criteria, results and residual limits for the in-process rewind state cache and interactive `tas studio` stepping (t5 PASS, 2026-11-15) |
 | [M3 rerecord acceptance](quality/m3-rerecord-acceptance.md) | Executed acceptance criteria, results and residual limits for input editing, suffix re-simulation, branch artifacts and anchor handling (M3-A35–A44; t10 repair-round-2 PASS, 2026-11-16) |
 | [M3 hardware acceptance](quality/m3-hardware-acceptance.md) | Executed acceptance criteria, results and evidence for Mega Drive controller reads, hardware record/play/verify/edit/studio, snapshot/fork/rewind, two-controller input, `--rom` selection and M1/M2/M3 non-regression (M3-A45–A53; t5 PASS 2026-11-16) |
+| [M4 debugging-depth acceptance](quality/m4-debugging-depth-acceptance.md) | Executed acceptance criteria, results and evidence for breakpoints, watchpoints, event breakpoints/logpoints, views/disassembly, Mega Drive inspectors and non-perturbation (M4-A1–A17; independent t5 PASS 2026-11-16) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |

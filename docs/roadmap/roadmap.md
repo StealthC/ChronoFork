@@ -148,33 +148,25 @@ minimal Mega Drive slice with per-step controller input and `--rom` backend sele
 and the hardware claim is the synthetic `controller_rom()` and 3-button subset, not real
 commercial ROMs, controller timing or cycle accuracy.
 
-## Stage 3.5 — Debugging depth
+## Stage 4 — Debugging depth (M4)
 
-Design accepted (2026-11-16) and implementation in progress; no acceptance row is
-executed yet. [ADR-0010](../adr/0010-debugging-depth.md) and the [M4 acceptance
-plan](../quality/m4-debugging-depth-acceptance.md) define PC/range/conditional
-breakpoints, read/write watchpoints, event breakpoints and logpoints, bounded
-register/memory/disassembly views, interrupt/bus/device event observation and
-CPU/VDP/interrupt/bus inspectors for the minimal Mega Drive slice. Stops are at
-instruction boundaries; no mid-instruction, cycle-exact or reverse execution is claimed.
+Status: **implemented and independently verified for the minimal Mega Drive slice**
+(t5 PASS, 2026-11-16; M4-A1–A17 `executed - passed`; [ADR-0010](../adr/0010-debugging-depth.md)
+and the [M4 acceptance plan](../quality/m4-debugging-depth-acceptance.md)). The post-PASS
+capability-report/wording fix at `6b2a567` was re-gated and audited.
 
-- [ ] PC, range and conditional breakpoints.
-- [ ] Read/write memory watchpoints and typed bus/device/interrupt events.
-- [ ] Event breakpoints and logpoints.
-- [ ] Register, memory and disassembly views.
-- [ ] Mega Drive CPU/VDP/interrupt/bus inspectors.
-
-## Stage 4 — Deep Mega Drive debugging
-
-- CPU registers, flags, disassembly and instruction stepping.
-- Memory inspector/editor and watchpoints.
-- Breakpoints, logpoints, event and interrupt breakpoints.
-- Bus transaction and device event observation.
-- VDP, DMA, YM2612, PSG and mapper introspection.
-- Code/data analysis and symbol mapping foundations.
+- [x] CPU registers, decoded flags, bounded disassembly and instruction-boundary stops.
+- [x] Memory inspector and byte-granular read/write watchpoints.
+- [x] Breakpoints, logpoints and event/interrupt breakpoints.
+- [x] Bus transaction and device event observation.
+- [x] VDP, interrupt-scheduler and bus inspectors.
+- [ ] DMA, YM2612, PSG and mapper introspection.
+- [ ] Code/data analysis, symbol mapping, call-stack/step-over and reverse execution.
 
 **Exit:** a reverse-engineering workflow can find what wrote a value and step
-through the responsible code without a GUI.
+through the responsible code without a GUI. The implemented M4 surface covers the
+instruction-boundary workflow for the modelled slice; DMA/audio/mapper introspection,
+code/data analysis and reverse execution remain open and are not claimed.
 
 ## Stage 5 — Tracing and scripting
 

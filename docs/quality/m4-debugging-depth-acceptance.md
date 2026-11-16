@@ -1,15 +1,16 @@
 # M4 Debugging Depth — Executable Acceptance Plan
 
-- **Status:** **Planned — no row is executed yet.** The design contract
-  [ADR-0010](../adr/0010-debugging-depth.md) is accepted; implementation and independent
-  verification are pending. No row may be described as implemented, working, supported or
-  complete before it is `executed - passed`.
-- **Date:** design 2026-11-16; execution record pending.
+- **Status:** **Executed; every row M4-A1–M4-A17 is `executed - passed`** (independent
+  verifier PASS, 2026-11-16). The design contract
+  [ADR-0010](../adr/0010-debugging-depth.md) is accepted and implemented for the documented
+  deterministic minimal-slice scope on Linux. The post-PASS capability-report and wording
+  fix at `6b2a567` was re-gated and audited; M4 is complete for that scope.
+- **Date:** design 2026-11-16; execution and independent verification 2026-11-16.
 - **Companion contract:** [ADR-0010: Debugging depth](../adr/0010-debugging-depth.md) —
   **Accepted** (owner-approved 2026-11-16 by the explicit M4 implementation directive).
 - **Milestone:** [M4 — Debugging depth](../roadmap/milestones.md#m4--debugging-depth).
-  M4 is not complete until every row below is `executed - passed` and the durable docs
-  are promoted.
+  Every row below is `executed - passed`, the independent verifier returned PASS and the
+  durable docs are promoted, so M4 is complete for the documented minimal-slice scope.
 - **Related:** [backend model](../architecture/backend-model.md), [Mega Drive
   slice](../architecture/megadrive-slice.md), [execution
   model](../architecture/execution-model.md), [functional
@@ -19,6 +20,25 @@
   policy](anti-slop-policy.md), [research: TAS and
   debugging](../research/tas-and-debugging.md), [research: emulator
   architecture](../research/emulator-architecture.md).
+
+> **Verification record (2026-11-16).** The independent verifier executed all M4-A1–A17
+> rows on the committed tree at HEAD
+> `df983214bb145a3e2e073949d81814cf808b69a0` (branch `agent/m4-debugging-depth`, clean
+> tree): 22 row commands plus 2 supplementary row parts, every exit 0, every expected test
+> count met, 0 failed and 0 ignored. `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` exited 0
+> (fmt, check, Clippy `-D warnings`, workspace tests, rustdoc `-D warnings`); the matrix
+> grew from the 39-target / 532-passed baseline to 45 targets / 596 passed with no target
+> below baseline and no test weakening. Both demos were byte-identical to the baseline in
+> six runs each (hashes `9b4dd564…` and `912a5bb6…`, empty stderr), the non-perturbation
+> probe made 1,700 per-step off/on comparisons with 0 mismatches, existing movie bytes were
+> identical between the baseline build and HEAD (11/11 checks), and the pinned-oracle
+> differential remained PASS 3/3 including negative and scheduler controls. The claim audit
+> found no prohibited overclaim and recorded three low-severity precision notes, all fixed
+> in the promotion (fixed 256-entry log ring wording, adjacent instruction-fetch caveat, and
+> `backend describe` now prints `capability.debug_events`). Raw evidence is in the ignored
+> `.research/m4/verification/` tree (`SUMMARY.txt`, `rows/`, `gate/`, `demos/`, `audit/`,
+> `target-matrix.txt`, `MANIFEST.sha256`); the dated gate block is in [quality
+> gates](quality-gates.md).
 
 ## 1. Status rules
 
@@ -46,7 +66,7 @@
    backend on the Linux acceptance platform. No mid-instruction, cycle-exact,
    reverse-execution, cross-platform, UI, HTTP or MCP claim is made.
 8. The implementation commits are not verification. Only the independent verifier
-   execution under §8 produces the PASS.
+   execution under §5 produces the PASS.
 
 ## 2. Scope, definitions and evidence
 
@@ -79,7 +99,7 @@
   the host breakpoint/logpoint engine and the unsupported-observation path.
 - **Platform:** Linux, matching M1/M2/M3. Compile checks on other platforms are not
   runtime evidence.
-- **Raw evidence (pending):** `.research/m4/verification/` with `SUMMARY.txt`,
+- **Raw evidence (executed):** `.research/m4/verification/` with `SUMMARY.txt`,
   `target-matrix.txt`, `rows/M4-A*.txt`, `gate/`, `demos/`, `audit/`,
   `MANIFEST.sha256`. Paths are ignored and never committed.
 - **No host time in data or reports:** valid output contains no timestamp, process id,
@@ -98,12 +118,16 @@
 
 ## 4. Acceptance rows
 
-Every row is **`planned - not yet executed`** at design time. The command column names
-the lowest useful target; the verifier may add the full-package command as context but
-must record the exact row command and exit code. All commands run with
-`CARGO_HOME=/tmp/t7-cargo` in the acceptance worktree.
+At design time every row was **`planned - not yet executed`**; the verifier executed each
+one and every row below is now **`executed - passed`** with its exact command, exit code,
+tree state and evidence artifact recorded. The command column names the lowest useful
+target; the verifier could add the full-package command as context but recorded the exact
+row command and exit code. All commands ran with `CARGO_HOME=/tmp/t7-cargo` in the
+acceptance worktree.
 
 ### M4-A1 — PC breakpoint stops before the instruction
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-debug/tests/debugger.rs` (new target
   `debugger`), test `pc_breakpoint_stops_before_the_instruction`.
@@ -115,6 +139,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with the stop block and both repeated values.
 
 ### M4-A2 — Range and conditional breakpoints
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** same target, tests `range_breakpoint_matches_inclusive_bounds` and
   `conditional_breakpoint_requires_register_and_memory_conditions`.
@@ -128,6 +154,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A3 — Trigger lifecycle, limits and typed errors
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** same target, tests `trigger_tables_are_bounded_and_removable` and
   `unknown_register_and_missing_pc_are_typed_errors`.
 - **Command:** `cargo test -p chronofork-debug --test debugger -- trigger_tables_are_bounded_and_removable unknown_register_and_missing_pc_are_typed_errors`.
@@ -138,6 +166,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with every error variant and the table counts.
 
 ### M4-A4 — Memory watchpoints on the Mega Drive bus
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `watchpoints_report_emulated_reads_and_writes`; `crates/chronofork-debug/tests/debugger.rs`,
@@ -151,6 +181,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** both row logs with address/value/tick/hash and the negative controls.
 
 ### M4-A5 — Observation is non-canonical and unsupported backends are typed
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, tests
   `debug_observation_does_not_change_state_or_payload` and
@@ -168,6 +200,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A6 — Register/SR inspection view
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_inspect_prints_stable_cpu_and_device_fields`; `crates/chronofork-megadrive/tests/inspect.rs`,
   test `cpu_view_decodes_sr_fields`.
@@ -181,6 +215,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A7 — Memory view
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_memory_dump_is_exact_and_bounded`.
 - **Command:** `cargo test -p chronofork-cli --test debug debug_memory_dump_is_exact_and_bounded`.
@@ -192,6 +228,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with the exact dump, bounds failure and before/after hashes.
 
 ### M4-A8 — Disassembly view and execution cross-check
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/src/disasm.rs` unit tests (module target
   `chronofork_megadrive`) and `crates/chronofork-cli/tests/debug.rs`, test
@@ -206,6 +244,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A9 — Interrupt event observation
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `interrupt_events_are_requested_delivered_and_acknowledged`.
 - **Command:** `cargo test -p chronofork-megadrive --test debug_observation interrupt_events_are_requested_delivered_and_acknowledged`.
@@ -218,6 +258,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with the event sequence for both runs.
 
 ### M4-A10 — Bus and device event observation with bounds
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, tests
   `bus_and_device_events_capture_the_documented_windows` and
@@ -232,6 +274,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A11 — Event breakpoints and logpoints
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-debug/tests/debugger.rs`, tests
   `event_breakpoint_stops_on_a_matching_event` and
   `logpoint_records_without_stopping`.
@@ -244,6 +288,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with stop reasons, event blocks and log entries.
 
 ### M4-A12 — Debug observation does not perturb canonical artifacts
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/tests/debug_observation.rs`, test
   `debug_observation_does_not_change_state_or_payload` (shared with A5), plus the
@@ -259,6 +305,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A13 — VDP inspector
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `vdp_view_matches_direct_device_accessors`; CLI test
   `debug_vdp_prints_registers_status_and_vram_digest`.
@@ -270,6 +318,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with values and digest.
 
 ### M4-A14 — Interrupt/scheduler inspector
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `interrupt_view_matches_scheduler_state`; CLI test
@@ -284,6 +334,8 @@ must record the exact row command and exit code. All commands run with
 
 ### M4-A15 — Bus and CPU inspectors
 
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
+
 - **Target:** `crates/chronofork-megadrive/tests/inspect.rs`, test
   `bus_view_lists_the_mapped_windows`; CLI test `debug_bus_and_cpu_view_are_stable`.
 - **Command:** `cargo test -p chronofork-megadrive --test inspect bus_view_lists_the_mapped_windows` and `cargo test -p chronofork-cli --test debug debug_bus_and_cpu_view_are_stable`.
@@ -295,6 +347,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with the window table and instruction-at-PC.
 
 ### M4-A16 — CLI grammar, errors and exit codes
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** `crates/chronofork-cli/tests/debug.rs`, test
   `debug_command_rejects_invalid_input_with_typed_errors`.
@@ -308,6 +362,8 @@ must record the exact row command and exit code. All commands run with
 - **Evidence:** row log with every command, exit code and stderr.
 
 ### M4-A17 — Full gate, regression and documentation promotion
+
+- **Status:** **executed - passed** (independent verifier PASS, 2026-11-16).
 
 - **Target:** repository quality gate and documentation audit.
 - **Command:** `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh`, both demos three times,

@@ -9,6 +9,9 @@
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
   the canonical state, demos and M1 evidence unchanged. A/Start, TH/6-button/Start
   multiplexing, controller timing, analog/keyboard hardware and port 3 remain absent.
+  M4 debugging depth (bounded non-canonical observation, views/disassembly and
+  CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
+  slice (t5 PASS, 2026-11-16).
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -465,18 +468,21 @@ never changed implicitly; the CLI records the effective quantum in the state fil
 and prints a note on stderr when the requested instruction window exceeds the
 configured quantum, describing the instruction-quantum model and SR-mask gating.
 
-## Debugging depth (M4, implementation in progress)
+## Debugging depth (M4, implemented and verified)
 
 [ADR-0010](../adr/0010-debugging-depth.md) and the [M4 acceptance
-plan](../quality/m4-debugging-depth-acceptance.md) add a debug-only observation layer to
-this slice: an optional bounded `DebugAccess` event ring (watchpoint hits, RAM writes,
-VDP port and controller reads, interrupt request/delivery/acknowledgement), pure
+plan](../quality/m4-debugging-depth-acceptance.md) implement a debug-only observation
+layer for this slice: an optional bounded `DebugAccess` event ring (watchpoint hits, RAM
+writes, VDP port and controller reads, interrupt request/delivery/acknowledgement), pure
 CPU/VDP/interrupt/bus view types, a bounded 68000-subset disassembler whose instruction
 lengths are cross-checked against execution, and the `chronofork debug` CLI surface.
-Debug state is absent from the canonical payload, state hash and configuration hash.
-Stops are at instruction boundaries; no mid-instruction, cycle-exact or reverse execution
-is claimed. **No M4 row is executed yet**; the section becomes implemented only after the
-independent verifier promotes every M4-A row.
+Debug state is absent from the canonical payload, state hash and configuration hash; the
+independent verifier's 1,700-step off/on probe found zero canonical differences, demo and
+movie bytes stayed identical, and every M4-A1–A17 row is `executed - passed` (t5 PASS
+2026-11-16). Stops are at instruction boundaries; no mid-instruction, cycle-exact or
+reverse execution is claimed. Bus events are byte-granular, VDP events carry the device
+width, instruction fetches appear only through a matching read watchpoint, and the logpoint
+ring is fixed at 256 entries with a 4,096 compile-time bound.
 
 ## Next increments
 

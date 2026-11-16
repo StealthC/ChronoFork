@@ -59,7 +59,10 @@ implements [`DebugAccess`] with a bounded event ring and matching watchpoint spe
 a backend that cannot returns `None` and must not advertise `watchpoints` or
 `debug_events`. Debugger observation is non-canonical: it never enters snapshots,
 state hashes or configuration hashes, and restore does not rewind it. See
-[ADR-0010](../adr/0010-debugging-depth.md).
+[ADR-0010](../adr/0010-debugging-depth.md). The contract and the Mega Drive observer are
+implemented and independently verified for the minimal slice (t5 PASS, 2026-11-16); the
+synthetic backend still returns `None`, and both host breakpoints and backend watchpoints
+remain absent from the canonical snapshot format.
 
 `BackendFactory` creates fresh, independent instances. A factory must never return
 two handles to the same mutable machine.

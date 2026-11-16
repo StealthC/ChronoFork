@@ -617,6 +617,37 @@ promotion this block requires; this verifier did not edit those paths. AS-14 not
 `backend.rs`/`bus.rs` already exceeded the 800-line review trigger at HEAD and the
 controller additions are cohesive, tested and within the accepted ADR-0009 scope.
 
+## 2026-11-16 — M4 debugging depth (independent verification PASS; promotion audit)
+
+The independent verifier executed all M4-A1–A17 rows on the committed tree at HEAD
+`df983214bb145a3e2e073949d81814cf808b69a0` (branch `agent/m4-debugging-depth`, clean
+tree). Every row used the acceptance plan's exact command (22 row commands plus 2
+supplementary row parts); all exited 0 with the expected counts, 0 failed and 0 ignored.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Exit 0 |
+| Compilation | `cargo check --workspace` | Exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0 |
+| Tests | `cargo test --workspace` | 45 targets, 596 passed, 0 failed, 0 ignored |
+| Full script | `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` | Exit 0, ends "all quality gates passed" |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Exit 0 |
+| Demo | `cargo run -p chronofork-cli -- demo` | Exit 0; SHA-256 `9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652`, empty stderr |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | Exit 0; SHA-256 `912a5bb6f5597179d76eca94f673112b6084e1357ff151eaac0368da30348996`, empty stderr |
+
+The pre-change baseline was 39 targets / 532 passed; no target is below baseline and the
+M4 diff adds no `#[ignore]`, no `#[allow]` and deletes no test. Both demos were byte-identical
+to the baseline in six runs each. The non-perturbation probe compared observation off/on
+for 1,700 per-step states (state hash, config hash, payload bytes/version, inspection and
+memory reads) with 0 mismatches; existing movie bytes matched between the baseline build
+and HEAD (11/11 checks); the pinned-oracle differential was re-run at HEAD and remained
+PASS 3/3 with 3/3 negative and 3/3 scheduler controls. The claim audit covered 44 statements
+with no prohibited overclaim; its three low-severity precision notes (fixed 256-entry log
+ring, adjacent instruction-fetch caveat, `backend describe` capability line) were fixed at
+`6b2a567` and re-gated. Raw evidence, including per-row logs and the manifest, is in the
+ignored `.research/m4/verification/` tree. This block is the M4 gate record; M4 is complete
+for the documented deterministic minimal-slice scope on Linux.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.

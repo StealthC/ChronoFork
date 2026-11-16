@@ -1,10 +1,14 @@
 # ADR-0010: Debugging Depth — Breakpoints, Watchpoints, Views and Event Observation
 
 - **Status:** **Accepted** (owner-approved 2026-11-16 by the explicit directive to
-  implement M4 completely and commit each successful phase; see "Approval evidence").
-  Implementation and independent verification are **pending** at acceptance time; the
-  [M4 debugging-depth acceptance plan](../quality/m4-debugging-depth-acceptance.md) is
-  the only execution record.
+  implement M4 completely and commit each successful phase; see "Approval evidence");
+  **implemented and independently verified for the documented deterministic minimal-slice
+  scope** (independent verifier PASS 2026-11-16 at HEAD
+  `df983214bb145a3e2e073949d81814cf808b69a0`; every M4-A1–A17 row `executed - passed`; the
+  post-PASS capability-report/wording fix at `6b2a567` was re-gated and audited in the
+  [acceptance plan](../quality/m4-debugging-depth-acceptance.md)). Implementation and
+  verification are limited to the minimal Mega Drive slice on Linux; no push, merge or
+  release is part of that claim.
 - **Date:** 2026-11-16
 - **Decision owner:** Project owner
 - **Approval evidence:** the project owner's goal directive, recorded in this session on
@@ -13,6 +17,12 @@
   necessário alguma decisão do usuário." The directive authorizes the decisions in this
   ADR and implementation under the M4 acceptance plan. It does not authorize a push, a
   merge or a release.
+- **Implementation status:** **Implemented and independently verified** (t5 PASS,
+  2026-11-16). The verified surface is the optional `DebugAccess` observation contract,
+  `chronofork-debug`, the Mega Drive observer/views/disassembler and the `chronofork debug`
+  CLI, exercised by the executed [M4 acceptance
+  plan](../quality/m4-debugging-depth-acceptance.md) and its raw evidence under the ignored
+  `.research/m4/verification/` tree. The deferred scope in §6 is unchanged.
 - **Supersedes:** none. It extends [ADR-0002](0002-backend-boundaries.md) (backend
   contract), [ADR-0007](0007-in-process-rewind-and-interactive-stepping.md) (bounded,
   debug-only auxiliary state) and [ADR-0009](0009-real-hardware-input-tas.md) (minimal
@@ -446,8 +456,11 @@ labels, paths in data fields, randomness or unordered maps.
 
 ## 7. Evidence requirement
 
-Implementation is complete only when every row in the [M4 debugging-depth acceptance
-plan](../quality/m4-debugging-depth-acceptance.md) is `executed - passed` with the exact
+Implementation was complete when every row in the [M4 debugging-depth acceptance
+plan](../quality/m4-debugging-depth-acceptance.md) became `executed - passed` with the exact
 command, tree state, observed values and raw artifact recorded, the full quality gate and
-both demos are green, and the durable docs are promoted. Until then this ADR may be cited
-for the design only, never as proof of implementation or verification.
+both demos were green, and the durable docs were promoted. That independent verification
+returned PASS on 2026-11-16 (HEAD `df98321`); the post-PASS capability-report and wording
+fix at `6b2a567` was re-gated and audited. The design in this ADR may be cited as
+implemented only for that verified minimal-slice scope, and never as a broader hardware,
+UI, transport or cross-platform claim.
