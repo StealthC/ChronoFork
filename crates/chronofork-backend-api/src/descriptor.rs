@@ -49,10 +49,14 @@ pub struct Capabilities {
     pub register_inspection: bool,
     /// Execution can advance by a single backend-defined quantum.
     pub instruction_stepping: bool,
-    /// Conditional code breakpoints can be installed (not yet implemented).
+    /// Conditional code breakpoints can be installed (not implemented by a
+    /// backend; host debuggers implement them over `inspect`).
     pub breakpoints: bool,
-    /// Memory watchpoints can be installed (not yet implemented).
+    /// Memory watchpoints can be installed and reported by the backend bus.
     pub watchpoints: bool,
+    /// Bounded typed bus, device and interrupt events are observable through
+    /// [`crate::DebugAccess`].
+    pub debug_events: bool,
     /// Structured execution tracing is available (not yet implemented).
     pub tracing: bool,
     /// A snapshot can be restored into a fresh independent instance.
@@ -78,6 +82,7 @@ impl Capabilities {
             instruction_stepping: false,
             breakpoints: false,
             watchpoints: false,
+            debug_events: false,
             tracing: false,
             state_cloning: false,
             deterministic_replay: false,

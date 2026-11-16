@@ -15,11 +15,25 @@
 //! the side-effecting VDP window instead of silently changing device state. The
 //! controller value is step-scoped rather than machine state, so the debugger path
 //! rejects it too.
+//!
+//! # Debug observation
+//!
+//! Every emulated bus access passes through this type, which makes it the single
+//! observation point for debug events (see the private `debug` module). An
+//! optional observer records one watchpoint event per matching byte lane plus
+//! typed bus/device events; it is off by default and never changes emulated
+//! behavior. The debugger paths [`MegadriveBus::read_memory`] and
+//! [`MegadriveBus::write_memory`] deliberately bypass the observer, because they
+//! are not emulated bus accesses.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
+use chronofork_core::Tick;
+
+use crate::debug::DebugObserver;
 use crate::vdp::{Vdp, VdpError};
 
 /// First address of the cartridge ROM window.
@@ -143,6 +157,13 @@ pub struct MegadriveBus {
     /// executing. [`MegadriveBackend::step`](crate::MegadriveBackend) sets it at
     /// step entry and clears it on every exit path.
     controller_ports: [u8; 2],
+    /// Debug-only observation state.
+    ///
+    /// Never canonical: absent from snapshots, state hashes and configuration
+    /// hashes, and a restore does not rewind it. It is off (no event ring, no
+    /// watchpoints) until debug observation is configured, so an ordinary
+    /// machine pays one branch per bus byte access and stores nothing.
+    debug: DebugObserver,
 }
 
 impl MegadriveBus {
@@ -157,7 +178,79 @@ impl MegadriveBus {
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
             controller_ports: [CONTROLLER_NEUTRAL; 2],
+            debug: DebugObserver::default(),
         }
+    }
+
+    /// Installs a validated debug observation configuration.
+    ///
+    /// Any previously retained events are discarded and observation starts from
+    /// the current machine state. This is debug-only state: canonical state,
+    /// snapshots, the state hash and the configuration hash are untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed [`BackendError`](chronofork_backend_api::BackendError)
+    /// when the event ring cannot be created.
+    pub(crate) fn debug_configure(
+        &mut self,
+        config: DebugConfig,
+    ) -> Result<(), chronofork_backend_api::BackendError> {
+        self.debug.configure(config)
+    }
+
+    /// Returns the installed event ring, or `None` while observation is off.
+    pub(crate) fn debug_event_log(&self) -> Option<&DebugEventLog> {
+        self.debug.event_log()
+    }
+
+    /// Removes the installed event ring, disabling further recording.
+    pub(crate) fn take_debug_event_log(&mut self) -> Option<DebugEventLog> {
+        self.debug.take_event_log()
+    }
+
+    /// Marks the start of a backend step so events carry its pre-step tick.
+    pub(crate) fn debug_begin_step(&mut self, tick: Tick) {
+        self.debug.begin_step(tick);
+    }
+
+    /// Returns the observer for the backend's interrupt-event bookkeeping.
+    pub(crate) fn debug_observer_mut(&mut self) -> &mut DebugObserver {
+        &mut self.debug
+    }
+
+    /// Records one VDP port event and any matching watchpoints.
+    ///
+    /// `value` is the byte or word the access transferred, so a word access
+    /// reports both its byte lanes to a watchpoint and one width-2 device event.
+    fn observe_vdp_access(&mut self, offset: u8, address: u32, value: u32, width: u8, write: bool) {
+        self.debug.record(DebugEventKind::VdpPort {
+            offset,
+            value,
+            width,
+            write,
+        });
+        self.debug.observe_watchpoints(
+            if write {
+                WatchpointAccess::Write
+            } else {
+                WatchpointAccess::Read
+            },
+            address,
+            value,
+            width,
+        );
+    }
+
+    /// Records one work-RAM byte write and any matching watchpoints.
+    fn observe_ram_write(&mut self, address: u32, value: u8) {
+        self.debug.record(DebugEventKind::BusWrite {
+            address,
+            value: u32::from(value),
+            width: 1,
+        });
+        self.debug
+            .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
     }
 
     /// Makes one step's controller port masks visible to execution byte reads.
@@ -206,12 +299,22 @@ impl MegadriveBus {
     /// step-scoped controller data registers.
     pub fn read8(&mut self, address: u32) -> Result<u8, BusError> {
         if let Some(offset) = vdp_offset(address) {
-            return self.vdp.read8(offset).map_err(BusError::Vdp);
+            let value = self.vdp.read8(offset).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(value), 1, false);
+            return Ok(value);
         }
-        if let Some(port) = controller_port(address) {
-            return Ok(self.controller_ports[port]);
+        if let Some((slot, port)) = controller_port(address) {
+            let value = self.controller_ports[slot];
+            self.debug
+                .record(DebugEventKind::ControllerRead { port, value });
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
+            return Ok(value);
         }
-        self.peek8(address)
+        let value = self.peek8(address)?;
+        self.debug
+            .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
+        Ok(value)
     }
 
     /// Reads one byte without side effects.
@@ -250,7 +353,9 @@ impl MegadriveBus {
             return Err(BusError::OddAddress { address });
         }
         if let Some(offset) = vdp_offset(address) {
-            return self.vdp.read16(offset).map_err(BusError::Vdp);
+            let value = self.vdp.read16(offset).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(value), 2, false);
+            return Ok(value);
         }
         let high = self.read8(address)?;
         let low = self.read8(
@@ -273,9 +378,11 @@ impl MegadriveBus {
             let second_offset = vdp_offset(second_address).ok_or(BusError::UnmappedRead {
                 address: second_address,
             })?;
-            let high = u32::from(self.vdp.read16(offset).map_err(BusError::Vdp)?);
-            let low = u32::from(self.vdp.read16(second_offset).map_err(BusError::Vdp)?);
-            return Ok((high << 16) | low);
+            let high = self.vdp.read16(offset).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(high), 2, false);
+            let low = self.vdp.read16(second_offset).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(second_offset, second_address, u32::from(low), 2, false);
+            return Ok((u32::from(high) << 16) | u32::from(low));
         }
         let high = u32::from(self.read16(address)?);
         let low = u32::from(
@@ -313,8 +420,21 @@ impl MegadriveBus {
     /// Writes one byte to a mapped window.
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         if let Some(offset) = vdp_offset(address) {
-            return self.vdp.write8(offset, value).map_err(BusError::Vdp);
+            self.vdp.write8(offset, value).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(value), 1, true);
+            return Ok(());
         }
+        self.write_ram_byte(address, value)?;
+        self.observe_ram_write(address, value);
+        Ok(())
+    }
+
+    /// Writes one byte to work RAM without debug observation.
+    ///
+    /// Emulated execution reaches this through [`MegadriveBus::write8`], which
+    /// adds the debug events. Debugger writes use it directly so that
+    /// [`MegadriveBus::write_memory`] never produces an event.
+    fn write_ram_byte(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         self.ensure_ram_write_range(address, 1)?;
         // As in `peek8`, the 16-bit mask makes the offset conversion total.
         let offset = usize::from((address & 0xFFFF) as u16);
@@ -331,7 +451,9 @@ impl MegadriveBus {
             return Err(BusError::OddAddress { address });
         }
         if let Some(offset) = vdp_offset(address) {
-            return self.vdp.write16(offset, value).map_err(BusError::Vdp);
+            self.vdp.write16(offset, value).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(value), 2, true);
+            return Ok(());
         }
         self.ensure_ram_write_range(address, 2)?;
         let bytes = value.to_be_bytes();
@@ -355,13 +477,15 @@ impl MegadriveBus {
                 address: second_address,
             })?;
             let bytes = value.to_be_bytes();
+            let high = u16::from_be_bytes([bytes[0], bytes[1]]);
+            self.vdp.write16(offset, high).map_err(BusError::Vdp)?;
+            self.observe_vdp_access(offset, address, u32::from(high), 2, true);
+            let low = u16::from_be_bytes([bytes[2], bytes[3]]);
             self.vdp
-                .write16(offset, u16::from_be_bytes([bytes[0], bytes[1]]))
+                .write16(second_offset, low)
                 .map_err(BusError::Vdp)?;
-            return self
-                .vdp
-                .write16(second_offset, u16::from_be_bytes([bytes[2], bytes[3]]))
-                .map_err(BusError::Vdp);
+            self.observe_vdp_access(second_offset, second_address, u32::from(low), 2, true);
+            return Ok(());
         }
         self.ensure_ram_write_range(address, 4)?;
         let bytes = value.to_be_bytes();
@@ -456,7 +580,9 @@ impl MegadriveBus {
 
     /// Writes a byte range to work RAM for debugger consumers.
     ///
-    /// The whole range is validated before the first byte is written.
+    /// The whole range is validated before the first byte is written. This is
+    /// not an emulated bus write, so it never produces a debug event: it writes
+    /// work RAM directly instead of going through [`MegadriveBus::write8`].
     pub fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), BusError> {
         let start =
             u32::try_from(address).map_err(|_| BusError::UnmappedWrite { address: u32::MAX })?;
@@ -468,7 +594,7 @@ impl MegadriveBus {
                 address: start,
                 length: data.len(),
             })?;
-            self.write8(target, *byte)?;
+            self.write_ram_byte(target, *byte)?;
         }
         Ok(())
     }
@@ -492,14 +618,17 @@ fn vdp_offset(address: u32) -> Option<u8> {
     }
 }
 
-/// Returns the controller port index addressed by `address`, if any.
+/// Returns the step-scoped input slot and Mega Drive port number addressed by
+/// `address`, if any.
 ///
 /// Only the two data-register bytes are mapped; the version, control, TX/RX and
-/// port-3 addresses are not.
-fn controller_port(address: u32) -> Option<usize> {
+/// port-3 addresses are not. The port number is the hardware-facing one (`1` for
+/// `0xA10003`, `2` for `0xA10005`) and is what
+/// [`DebugEventKind::ControllerRead`] reports.
+fn controller_port(address: u32) -> Option<(usize, u8)> {
     match address {
-        CONTROLLER_PORT_1 => Some(0),
-        CONTROLLER_PORT_2 => Some(1),
+        CONTROLLER_PORT_1 => Some((0, 1)),
+        CONTROLLER_PORT_2 => Some((1, 2)),
         _ => None,
     }
 }

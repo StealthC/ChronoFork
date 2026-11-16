@@ -481,6 +481,23 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_backend_reports_no_debug_observation() {
+        // This backend has no bus to observe, so it must keep the defaulted
+        // `Backend::debug_access` and advertise neither watchpoints nor debug
+        // events (ADR-0010).
+        let factory = SyntheticBackendFactory::default();
+        let capabilities = factory.capabilities();
+        assert!(!capabilities.watchpoints);
+        assert!(!capabilities.debug_events);
+        assert!(!capabilities.breakpoints);
+        let mut machine = factory.create().expect("machine");
+        assert!(
+            machine.debug_access().is_none(),
+            "the synthetic backend must not expose a debug observation surface"
+        );
+    }
+
+    #[test]
     fn identical_machines_converge_on_identical_inputs() {
         let factory = SyntheticBackendFactory::default();
         let mut left = factory.create().expect("left machine");

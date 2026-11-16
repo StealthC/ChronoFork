@@ -17,6 +17,7 @@
 pub mod backend;
 pub mod bus;
 pub mod cpu;
+mod debug;
 pub mod interrupts;
 pub mod trace;
 pub mod vdp;

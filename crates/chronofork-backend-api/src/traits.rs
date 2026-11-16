@@ -2,6 +2,7 @@
 
 use chronofork_core::{InputFrame, StateHash, Tick};
 
+use crate::debug::DebugAccess;
 use crate::descriptor::{BackendDescriptor, Capabilities};
 use crate::error::BackendError;
 use crate::inspection::MachineInspection;
@@ -48,6 +49,21 @@ pub trait Backend: Send {
     /// This is not an emulated-bus write and must not trigger side effects that
     /// would not occur at the current execution point.
     fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), BackendError>;
+
+    /// Returns the optional bounded debug observation surface.
+    ///
+    /// The default is `None`: a backend that cannot observe its own bus keeps
+    /// the default and must not advertise
+    /// [`Capabilities::watchpoints`] or [`Capabilities::debug_events`].
+    ///
+    /// Observation is debug data, not canonical state: it must never enter a
+    /// snapshot, the state hash, the configuration hash or the payload version,
+    /// and restoring a snapshot must not rewind it. Debugger `read_memory` and
+    /// `write_memory` calls must not produce events either. See
+    /// [ADR-0010](../../../docs/adr/0010-debugging-depth.md).
+    fn debug_access(&mut self) -> Option<&mut dyn DebugAccess> {
+        None
+    }
 }
 
 /// Creates fresh, independent backend instances.
