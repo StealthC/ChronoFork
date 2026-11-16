@@ -293,6 +293,17 @@ impl MegadriveBackend {
         &self.cpu
     }
 
+    /// Returns the machine bus for read-only debug inspection.
+    ///
+    /// Views such as [`crate::BusView`] and the disassembler's
+    /// [`crate::WindowMemory`] take the bus or its ROM/RAM slices. The accessor
+    /// hands out `&MegadriveBus`, so a view can never issue a mutating bus
+    /// access or produce a debug event.
+    #[must_use]
+    pub const fn bus(&self) -> &MegadriveBus {
+        &self.bus
+    }
+
     /// Returns the current VDP state.
     #[must_use]
     pub const fn vdp(&self) -> &Vdp {
