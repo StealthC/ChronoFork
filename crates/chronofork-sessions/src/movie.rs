@@ -47,8 +47,9 @@
 use std::error::Error;
 use std::fmt;
 
+use chronofork_backend_api::StepOutcome;
 use chronofork_core::codec::{CodecError, Reader, Writer};
-use chronofork_core::{InputFrame, SessionId, StateHash, Tick, hash_bytes};
+use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick, hash_bytes};
 
 use crate::error::SessionError;
 use crate::manager::SessionManager;
@@ -1305,6 +1306,154 @@ fn reject_v1_device_inputs(inputs: &[InputFrame]) -> Result<(), MovieError> {
     Ok(())
 }
 
+/// Identity written into a captured anchor snapshot envelope.
+///
+/// The snapshot identity is descriptive metadata, not a registry key: the
+/// authoritative anchor binding is the recorded step, tick and state digest, and
+/// backend compatibility is decided only by the envelope's backend fields. v2
+/// recording keeps the identity assigned by its recording session, so its bytes
+/// are unchanged. An ADR-0008 branch edit rebuilds anchors with the canonical
+/// identity so two identical edits of the same source produce identical bytes
+/// regardless of how many sessions the caller's manager created first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AnchorIdentity {
+    /// Keep the snapshot id and origin session id assigned by the capture session.
+    SessionCapture,
+    /// Re-encode the captured envelope with the canonical fixed snapshot and
+    /// origin-session identities.
+    Canonical,
+}
+
+/// Canonical snapshot id written into a rebuilt anchor envelope.
+const CANONICAL_ANCHOR_SNAPSHOT_ID: u64 = 1;
+/// Canonical origin-session id written into a rebuilt anchor envelope.
+const CANONICAL_ANCHOR_ORIGIN_SESSION_ID: u64 = 1;
+
+/// Captures one deterministic anchor after a recorded step.
+///
+/// This is the single anchor capture path: it captures the checkpoint through the
+/// existing [`SessionManager::snapshot`] / [`SessionManager::snapshot_record`] /
+/// [`SessionManager::snapshot_bytes`] calls, binds it to the step's observed
+/// tick and state digest, enforces the per-anchor and cumulative byte budgets, and
+/// parses the snapshot exactly once through [`MovieAnchor`]. v2 recording and the
+/// ADR-0008 edit rebuild policy both use it, so there is no second capture rule.
+/// `identity` selects whether the captured envelope keeps its session-assigned
+/// identity or is re-encoded with [`AnchorIdentity::Canonical`] through the one
+/// snapshot parser ([`Snapshot::from_bytes`]) and serializer
+/// ([`Snapshot::to_bytes`]); only fixed-width identity fields change, so the
+/// envelope length, tick, state digest and backend fields are unchanged.
+pub(crate) fn capture_anchor(
+    manager: &mut SessionManager,
+    session: SessionId,
+    anchor_step: usize,
+    outcome: StepOutcome,
+    identity: AnchorIdentity,
+    anchors: &mut Vec<MovieAnchor>,
+    anchor_bytes_total: &mut usize,
+) -> Result<(), MovieError> {
+    let anchor_ordinal = anchors.len();
+    let snapshot_id =
+        manager
+            .snapshot(session)
+            .map_err(|source| MovieError::AnchorCaptureFailed {
+                anchor_step,
+                source,
+            })?;
+    let (snapshot_tick, snapshot_hash) = {
+        let record = manager
+            .snapshot_record(session, snapshot_id)
+            .map_err(|source| MovieError::AnchorCaptureFailed {
+                anchor_step,
+                source,
+            })?;
+        (record.tick(), record.state_hash())
+    };
+    let snapshot_bytes = manager
+        .snapshot_bytes(session, snapshot_id)
+        .map_err(|source| MovieError::AnchorCaptureFailed {
+            anchor_step,
+            source,
+        })?;
+    if snapshot_tick != outcome.tick {
+        return Err(MovieError::AnchorTickMismatch {
+            anchor_ordinal,
+            index: anchor_step,
+            snapshot_tick,
+            recorded_tick: outcome.tick,
+        });
+    }
+    if snapshot_hash != outcome.state_hash {
+        return Err(MovieError::AnchorStateHashMismatch {
+            anchor_ordinal,
+            index: anchor_step,
+            snapshot_hash,
+            recorded_hash: outcome.state_hash,
+        });
+    }
+    let length = snapshot_bytes.len();
+    if length > MAX_ANCHOR_SNAPSHOT_BYTES {
+        return Err(MovieError::AnchorSnapshotTooLarge {
+            anchor_ordinal,
+            limit: MAX_ANCHOR_SNAPSHOT_BYTES,
+            found: length as u64,
+        });
+    }
+    let total = anchor_bytes_total
+        .checked_add(length)
+        .ok_or(MovieError::AnchorTableTooLarge {
+            limit: MAX_ANCHOR_BYTES,
+            found: u64::MAX,
+        })?;
+    if total > MAX_ANCHOR_BYTES {
+        return Err(MovieError::AnchorTableTooLarge {
+            limit: MAX_ANCHOR_BYTES,
+            found: total as u64,
+        });
+    }
+    let snapshot_bytes = match identity {
+        AnchorIdentity::SessionCapture => snapshot_bytes,
+        AnchorIdentity::Canonical => {
+            canonical_anchor_bytes(anchor_ordinal, anchor_step, snapshot_bytes)?
+        }
+    };
+    anchors.push(MovieAnchor::with_ordinal(
+        anchor_ordinal,
+        anchor_step,
+        snapshot_bytes,
+    )?);
+    *anchor_bytes_total = total;
+    Ok(())
+}
+
+/// Re-encodes one captured anchor envelope with the canonical fixed identity.
+///
+/// The bytes still pass through the one snapshot parser and the one snapshot
+/// serializer; only the snapshot id and origin session id are canonicalized, so
+/// the envelope length, tick, state digest, backend identity and payload are
+/// unchanged and the budgets checked on the captured bytes remain exact.
+fn canonical_anchor_bytes(
+    anchor_ordinal: usize,
+    anchor_step: usize,
+    snapshot_bytes: Vec<u8>,
+) -> Result<Vec<u8>, MovieError> {
+    let snapshot = Snapshot::from_bytes(&snapshot_bytes).map_err(|source| {
+        MovieError::InvalidAnchorSnapshot {
+            anchor_ordinal,
+            source,
+        }
+    })?;
+    Snapshot::new(
+        SnapshotId::from_raw(CANONICAL_ANCHOR_SNAPSHOT_ID),
+        SessionId::from_raw(CANONICAL_ANCHOR_ORIGIN_SESSION_ID),
+        snapshot.backend().clone(),
+    )
+    .to_bytes()
+    .map_err(|source| MovieError::AnchorCaptureFailed {
+        anchor_step,
+        source,
+    })
+}
+
 /// Rejects a byte slice outside the v1 container bounds before it is parsed.
 fn validate_slice_len(len: usize) -> Result<(), MovieError> {
     if len < FIXED_OVERHEAD {
@@ -1395,7 +1544,6 @@ mod v2 {
     //! bytes that actually remain before a buffer is allocated or a slice is taken,
     //! using checked arithmetic; arbitrary bytes never panic.
 
-    use chronofork_backend_api::StepOutcome;
     use chronofork_core::codec::{Reader, Writer};
     use chronofork_core::{InputFrame, SessionId, StateHash, Tick, hash_bytes};
 
@@ -1404,11 +1552,11 @@ mod v2 {
     use crate::snapshot::Snapshot;
 
     use super::{
-        ANCHOR_RECORD_OVERHEAD, MAX_ANCHOR_BYTES, MAX_ANCHOR_SNAPSHOT_BYTES, MAX_ANCHORS,
-        MAX_EMBEDDED_SNAPSHOT_BYTES, MAX_MOVIE_BYTES, MAX_NAME_BYTES, MAX_V2_STEPS, Movie,
-        MovieAnchor, MovieError, MovieMeta, MovieStep, V2_FIXED_OVERHEAD, V2_MAGIC,
-        V2_MOVIE_FORMAT_VERSION, V2_MOVIE_INPUT_SCHEMA_VERSION, V2_STEP_RECORD_LEN, codec_error,
-        validate_name, validate_steps,
+        ANCHOR_RECORD_OVERHEAD, AnchorIdentity, MAX_ANCHOR_BYTES, MAX_ANCHOR_SNAPSHOT_BYTES,
+        MAX_ANCHORS, MAX_EMBEDDED_SNAPSHOT_BYTES, MAX_MOVIE_BYTES, MAX_NAME_BYTES, MAX_V2_STEPS,
+        Movie, MovieAnchor, MovieError, MovieMeta, MovieStep, V2_FIXED_OVERHEAD, V2_MAGIC,
+        V2_MOVIE_FORMAT_VERSION, V2_MOVIE_INPUT_SCHEMA_VERSION, V2_STEP_RECORD_LEN, capture_anchor,
+        codec_error, validate_name, validate_steps,
     };
 
     /// An anchor that has been parsed but not yet range-checked against the steps.
@@ -1543,6 +1691,7 @@ mod v2 {
                         session,
                         input_index,
                         outcome,
+                        AnchorIdentity::SessionCapture,
                         &mut anchors,
                         &mut anchor_bytes_total,
                     )?;
@@ -1550,84 +1699,6 @@ mod v2 {
             }
             Self::from_v2_parts(meta, snapshot_bytes, anchors, steps)
         }
-    }
-
-    /// Captures one deterministic anchor in the separate recording session.
-    fn capture_anchor(
-        manager: &mut SessionManager,
-        session: SessionId,
-        anchor_step: usize,
-        outcome: StepOutcome,
-        anchors: &mut Vec<MovieAnchor>,
-        anchor_bytes_total: &mut usize,
-    ) -> Result<(), MovieError> {
-        let anchor_ordinal = anchors.len();
-        let snapshot_id =
-            manager
-                .snapshot(session)
-                .map_err(|source| MovieError::AnchorCaptureFailed {
-                    anchor_step,
-                    source,
-                })?;
-        let (snapshot_tick, snapshot_hash) = {
-            let record = manager
-                .snapshot_record(session, snapshot_id)
-                .map_err(|source| MovieError::AnchorCaptureFailed {
-                    anchor_step,
-                    source,
-                })?;
-            (record.tick(), record.state_hash())
-        };
-        let snapshot_bytes = manager
-            .snapshot_bytes(session, snapshot_id)
-            .map_err(|source| MovieError::AnchorCaptureFailed {
-                anchor_step,
-                source,
-            })?;
-        if snapshot_tick != outcome.tick {
-            return Err(MovieError::AnchorTickMismatch {
-                anchor_ordinal,
-                index: anchor_step,
-                snapshot_tick,
-                recorded_tick: outcome.tick,
-            });
-        }
-        if snapshot_hash != outcome.state_hash {
-            return Err(MovieError::AnchorStateHashMismatch {
-                anchor_ordinal,
-                index: anchor_step,
-                snapshot_hash,
-                recorded_hash: outcome.state_hash,
-            });
-        }
-        let length = snapshot_bytes.len();
-        if length > MAX_ANCHOR_SNAPSHOT_BYTES {
-            return Err(MovieError::AnchorSnapshotTooLarge {
-                anchor_ordinal,
-                limit: MAX_ANCHOR_SNAPSHOT_BYTES,
-                found: length as u64,
-            });
-        }
-        let total =
-            anchor_bytes_total
-                .checked_add(length)
-                .ok_or(MovieError::AnchorTableTooLarge {
-                    limit: MAX_ANCHOR_BYTES,
-                    found: u64::MAX,
-                })?;
-        if total > MAX_ANCHOR_BYTES {
-            return Err(MovieError::AnchorTableTooLarge {
-                limit: MAX_ANCHOR_BYTES,
-                found: total as u64,
-            });
-        }
-        anchors.push(MovieAnchor::with_ordinal(
-            anchor_ordinal,
-            anchor_step,
-            snapshot_bytes,
-        )?);
-        *anchor_bytes_total = total;
-        Ok(())
     }
 
     /// Encodes a v2 movie into its canonical, checksummed bytes.

@@ -44,11 +44,12 @@ owner-checked recovery; retention is manual; there is no encryption, authenticat
 format migration; and the public convenience `save_snapshot` remains publish-only for
 third-party callers while the CLI uses the lock-aware workflow.
 
-**M3's first, second, third and fourth increments (TAS, deterministic replay, partial
-replay/seek, branch comparison, movie format v2 anchors and multi-device input, and the
-in-process rewind state cache with interactive stepping) are implemented and independently
-verified (M3-T4, M3-T5, the t7 format-v2 verification PASS and the t5 rewind verification
-PASS, 2026-11-15).** The first increment adds the canonical single-file v1 `.cfmovie`
+**M3's first, second, third, fourth and fifth increments (TAS, deterministic replay,
+partial replay/seek, branch comparison, movie format v2 anchors and multi-device input,
+the in-process rewind state cache with interactive stepping, and rerecord/branch editing)
+are implemented and independently verified (M3-T4, M3-T5, the t7 format-v2 verification
+PASS, the t5 rewind verification PASS and the t10 repair-round-2 PASS,
+2026-11-15/2026-11-16).** The first increment adds the canonical single-file v1 `.cfmovie`
 format, record/playback of a per-tick input sequence on the deterministic synthetic
 backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
 checkpoint, and the `chronofork tas record/play/verify` CLI. The second increment adds
@@ -74,10 +75,19 @@ rewind state cache, deterministic rewind by restoring the nearest verified state
 replaying recorded inputs, and the interactive `chronofork tas studio` stepping surface —
 is implemented and independently verified for the deterministic synthetic backend
 ([ADR-0007](adr/0007-in-process-rewind-and-interactive-stepping.md), M3-A28–A34, t5 PASS
-2026-11-15; [M3 rewind acceptance plan](quality/m3-rewind-acceptance.md)). M3 is **not
-complete**: rerecord and branch editing, real-hardware input TAS (the Mega Drive `step`
-ignores input), import/export adapters, checkpoint-reference movies, HTTP/MCP/GUI and the
-Stage 6 daemon remain deferred. The acceptance claim is the deterministic synthetic backend
+2026-11-15; [M3 rewind acceptance plan](quality/m3-rewind-acceptance.md)). A fifth
+increment — input editing, deterministic suffix re-simulation, branch artifacts and
+anchor handling on edit — is implemented and independently verified for the deterministic
+synthetic backend ([ADR-0008](adr/0008-rerecord-and-branch-editing.md); [M3 rerecord
+acceptance plan](quality/m3-rerecord-acceptance.md) rows M3-A35–A44 `executed - passed`,
+t10 repair-round-2 PASS 2026-11-16). It adds `chronofork tas edit`, verified-prefix plus
+suffix re-simulation into a new branch artifact with `parent_movie_id` set to the source
+id, `keep-prefix`/`drop`/`rebuild` anchor handling, and v1→v1 / v2→v2 preservation without
+a new format version or stored rerecord counter. M3 is **not complete**: real-hardware
+input TAS (the Mega Drive `step` ignores input), import/export adapters,
+checkpoint-reference movies, HTTP/MCP/GUI and the Stage 6 daemon remain deferred, and
+none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities is
+claimed. The acceptance claim is the deterministic synthetic backend
 on Linux; no hardware input, cross-backend portability, O(1) seek or persistent cache is
 claimed. M2 remains the previous completed milestone.
 
@@ -107,6 +117,7 @@ claimed. M2 remains the previous completed milestone.
 | [M3 partial-replay acceptance](quality/m3-partial-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for ranged replay/seek, single-tick advance, rewind and branch comparison |
 | [M3 format-v2 acceptance](quality/m3-format-v2-acceptance.md) | Executed acceptance criteria, results and residual limits for the v2 movie container, anchors, anchor-based seek and multi-device input (t7 PASS, 2026-11-15) |
 | [M3 rewind acceptance](quality/m3-rewind-acceptance.md) | Executed acceptance criteria, results and residual limits for the in-process rewind state cache and interactive `tas studio` stepping (t5 PASS, 2026-11-15) |
+| [M3 rerecord acceptance](quality/m3-rerecord-acceptance.md) | Executed acceptance criteria, results and residual limits for input editing, suffix re-simulation, branch artifacts and anchor handling (M3-A35–A44; t10 repair-round-2 PASS, 2026-11-16) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -120,6 +131,7 @@ claimed. M2 remains the previous completed milestone.
 | [ADR-0005: partial replay and branch comparison](adr/0005-partial-replay-and-branch-comparison.md) | Accepted typed-range partial replay/seek by re-simulation and recorded-expectation branch comparison; implemented and verified for the synthetic backend, deferred scope unchanged |
 | [ADR-0006: movie format v2](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) | Accepted (owner-approved 2026-11-15) v2 container, checkpoint anchors, anchor-based seek and schema-2 multi-device input; implemented and independently verified for the synthetic backend (t7 PASS) |
 | [ADR-0007: in-process rewind and interactive stepping](adr/0007-in-process-rewind-and-interactive-stepping.md) | Accepted (owner-approved 2026-11-15) bounded session-layer state cache, deterministic rewind and `tas studio` stdin surface; implemented and independently verified for the synthetic backend (t5 PASS) |
+| [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

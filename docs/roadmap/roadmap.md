@@ -67,23 +67,28 @@ restarts without state loss.
 
 ## Stage 3 — TAS and deterministic replay
 
-First, second, third and fourth increments implemented and independently verified on
-2026-11-15 for the deterministic synthetic backend (M3-T4, M3-T5, the t7 format-v2
-verification PASS and the t5 rewind verification PASS); see
-[ADR-0004](../adr/0004-tas-movie-format.md),
+First, second, third, fourth and fifth increments implemented and independently verified
+for the deterministic synthetic backend (M3-T4, M3-T5, the t7 format-v2 verification
+PASS, the t5 rewind verification PASS and the t10 repair-round-2 PASS,
+2026-11-15/2026-11-16); see [ADR-0004](../adr/0004-tas-movie-format.md),
 [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md),
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
-[ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) and the [M3
+[ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md),
+[ADR-0008](../adr/0008-rerecord-and-branch-editing.md) and the [M3
 acceptance plan](../quality/m3-tas-replay-acceptance.md), the [increment-2 acceptance
 plan](../quality/m3-partial-replay-acceptance.md), the [format-v2 acceptance
-plan](../quality/m3-format-v2-acceptance.md) and the [M3 rewind acceptance
-plan](../quality/m3-rewind-acceptance.md). The v2 increment adds the `CFMOVIE2`
+plan](../quality/m3-format-v2-acceptance.md), the [M3 rewind acceptance
+plan](../quality/m3-rewind-acceptance.md) and the [M3 rerecord acceptance
+plan](../quality/m3-rerecord-acceptance.md). The v2 increment adds the `CFMOVIE2`
 checkpoint-anchor container, nearest-anchor seek and schema-2 multi-device input. The
 fourth increment adds a bounded in-process rewind state cache, deterministic rewind by
 restore plus verified forward replay and the interactive `chronofork tas studio` stepping
-surface. M3 is not complete: rerecord/branch editing, real-hardware input TAS,
-import/export adapters, checkpoint-reference movies and HTTP/MCP/GUI/daemon remain
-deferred.
+surface. The fifth increment adds deterministic input editing/truncation with suffix
+re-simulation, branch artifact identity/isolation, anchor retention/drop/rebuild and the
+`chronofork tas edit` surface. M3 is not complete: real-hardware input TAS, import/export
+adapters, checkpoint-reference movies and HTTP/MCP/GUI/daemon remain deferred, and none
+of the deferred in-place/timeline editing, persisted counter or mixed-anchor modes is
+claimed.
 
 - [x] Canonical movie format with versioning and metadata (v1 `.cfmovie` and v2
       `CFMOVIE2`).
@@ -102,7 +107,11 @@ deferred.
       verified for the deterministic synthetic backend (M3-A28–A34; ADR-0007, t5 PASS,
       2026-11-15). The cache is process-local; no persistent/shared cache or O(1) seek is
       claimed.
-- [ ] Rerecording and branch editing.
+- [x] Rerecording and branch editing — implemented as the session-layer
+      `chronofork_sessions::edit` and the `chronofork tas edit` surface, and independently
+      verified for the deterministic synthetic backend (M3-A35–A44; ADR-0008, t10
+      repair-round-2 PASS, 2026-11-16). No in-place/timeline editing, persisted counter,
+      format v3, mixed-anchor mode or real-hardware input TAS is claimed.
 - [x] Multi-controller, ports, analog and keyboard input — schema-2 multi-device frames
       (four digital ports, four analog axes and a keyboard bitmap) are implemented and
       independently verified for the deterministic synthetic backend (M3-A22/A24; ADR-0006,
@@ -111,14 +120,14 @@ deferred.
 - [ ] Real-hardware input TAS (the Mega Drive `step` ignores input).
 - [ ] Import/export adapters, documented only, not implemented.
 
-**Exit (first four increments met):** a recorded input sequence reproduces every
+**Exit (first five increments met):** a recorded input sequence reproduces every
 recorded tick and state hash exactly, reports the first divergence exactly, can be
 replayed/seeked over an exact tick window or from a checkpoint anchor and compared
-against another recording, and can be rewound and stepped interactively through a bounded
-in-process state cache, on the deterministic synthetic backend. Full Stage 3 exit also
-requires rerecord and branch editing, and real-hardware input TAS, which remain deferred.
-The schema-2 multi-device model is synthetic-backend only and does not satisfy
-real-hardware controller input.
+against another recording, can be rewound and stepped interactively through a bounded
+in-process state cache, and can be edited/truncated into a new verified branch artifact
+with anchor handling, on the deterministic synthetic backend. Full Stage 3 exit still
+requires real-hardware input TAS, which remains deferred. The schema-2 multi-device model
+is synthetic-backend only and does not satisfy real-hardware controller input.
 
 ## Stage 4 — Deep Mega Drive debugging
 

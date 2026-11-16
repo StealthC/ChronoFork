@@ -4,6 +4,7 @@
 //! stubs for HTTP, MCP, GUI or a real Mega Drive backend.
 
 use std::error::Error;
+use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs::File;
@@ -26,6 +27,7 @@ use chronofork_test_backend::SyntheticBackendFactory;
 
 mod studio;
 mod tas;
+mod tas_edit;
 
 /// Crate version used by the help and version output.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,7 +52,15 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Collect `OsString` arguments and reject a non-UTF-8 value through the typed
+    // CLI error path. `std::env::args()` panics on such a value, which would break
+    // the exit-1/empty-stdout/`chronofork:` contract; valid UTF-8 argv keeps the
+    // previous behavior exactly.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(OsString::into_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CliError("command-line arguments must be valid UTF-8".to_owned()))?;
     match args.first().map(String::as_str) {
         None | Some("help") => {
             ensure(args.len() <= 1, "`help` takes no arguments")?;
@@ -132,6 +142,11 @@ fn print_usage() {
     println!("  chronofork tas compare --movie <FILE> --against <FILE>");
     println!("  chronofork tas studio --movie <FILE> [--cache-interval <N>]");
     println!("                        [--cache-capacity <N>] [--cache-bytes <N>]");
+    println!("  chronofork tas edit --movie <FILE> --out <FILE>");
+    println!("                      --set-input <INDEX=MASK>...   or --truncate-after <INDEX>");
+    println!("                      [--movie-id <U64>] [--name <NAME>]");
+    println!("                      [--anchors <keep-prefix|drop|rebuild>]");
+    println!("                      [--anchor-interval <N>]");
     println!("  chronofork --version          Show version");
     println!("  chronofork help               Show this help");
     println!();
@@ -148,6 +163,10 @@ fn print_usage() {
     println!("`tas studio` reads stepping commands from stdin and keeps one in-process player");
     println!("with a bounded state cache; rewind restores a verified state (or the embedded");
     println!("checkpoint) and replays forward, so it is not O(1) random access.");
+    println!("`tas edit` creates a new branch movie by functional suffix re-simulation from the");
+    println!("source's embedded checkpoint. The source file is never modified, and no stored");
+    println!("rerecord counter exists; `chronofork tas edit --help` documents the flags and");
+    println!("the anchor, format and device-field rules.");
     println!("`chronofork tas --help` documents the flags, output blocks and the features that");
     println!("are deliberately not implemented.");
     println!();

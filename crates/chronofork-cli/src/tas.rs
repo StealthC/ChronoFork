@@ -42,17 +42,19 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         Some("verify") => tas_verify(&args[1..]),
         Some("compare") => tas_compare(&args[1..]),
         Some("studio") => crate::studio::run(&args[1..]),
+        Some("edit") => crate::tas_edit::run(&args[1..]),
         Some("--help" | "-h") => {
             ensure(args.len() == 1, "`tas --help` takes no other arguments")?;
             print_help();
             Ok(())
         }
         None => Err(CliError(
-            "`tas` requires a subcommand: record, play, verify, compare or studio".to_owned(),
+            "`tas` requires a subcommand: record, play, verify, compare, studio or edit".to_owned(),
         )
         .into()),
         Some(other) => Err(CliError(format!(
-            "unknown `tas` subcommand `{other}`; expected record, play, verify, compare or studio"
+            "unknown `tas` subcommand `{other}`; expected record, play, verify, compare, studio \
+             or edit"
         ))
         .into()),
     }
@@ -61,7 +63,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
 /// Returns whether the arguments request subcommand help.
 ///
 /// Help is accepted only as the sole argument, matching the existing CLI shape.
-fn help_requested(args: &[String], command: &str) -> Result<bool, CliError> {
+pub(crate) fn help_requested(args: &[String], command: &str) -> Result<bool, CliError> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         if args.len() != 1 {
             return Err(CliError(format!(
@@ -736,10 +738,11 @@ pub(crate) fn read_movie_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
 
 /// Publishes movie bytes through a sibling temporary file renamed on success.
 ///
-/// The complete movie is written before the rename, so a failed record never
-/// replaces an existing movie file. The temporary file name contains only the
-/// process id; no host timestamp enters the movie bytes or stdout.
-fn write_movie_file(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+/// The complete movie is written before the rename, so a failed record or edit
+/// never replaces an existing movie file. The temporary file name contains only
+/// the process id; no host timestamp enters the movie bytes or stdout. This is the
+/// one publish implementation; `tas edit` reuses it instead of copying it.
+pub(crate) fn write_movie_file(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let file_name = path.file_name().ok_or_else(|| {
         CliError(format!(
             "`--movie` must name a file, not a directory: `{}`",
@@ -910,14 +913,16 @@ fn write_divergence_block(
 }
 
 pub(crate) fn print_help() {
-    println!("chronofork {VERSION} — tas record|play|verify|compare|studio");
+    println!("chronofork {VERSION} — tas record|play|verify|compare|studio|edit");
     println!();
-    println!("Records, replays, verifies and compares canonical `.cfmovie` input sequences on");
-    println!("the deterministic synthetic test backend. A movie embeds its canonical");
-    println!("checkpoint, so replay needs only the movie file. Partial replay and seek are");
-    println!("deterministic re-simulation from that checkpoint or from the nearest embedded");
-    println!("anchor, not O(1) random access; a rewind is a new invocation and no state is");
-    println!("carried between invocations.");
+    println!("Records, replays, verifies, compares and edits canonical `.cfmovie` input");
+    println!("sequences on the deterministic synthetic test backend. A movie embeds its");
+    println!("canonical checkpoint, so replay and edit need only the movie file. Partial");
+    println!("replay and seek are deterministic re-simulation from that checkpoint or from");
+    println!("the nearest embedded anchor, not O(1) random access; a rewind is a new");
+    println!("invocation and no state is carried between invocations. `tas edit` creates a");
+    println!("new branch movie by functional suffix re-simulation; it never modifies the");
+    println!("source file and stores no rerecord counter.");
     println!();
     println!("Movie format v1 is the default. `--ports`, `--axes`, `--keys` (schema-2");
     println!("multi-device input) and `--anchor-interval N` with N > 0 select movie format");
@@ -929,10 +934,22 @@ pub(crate) fn print_help() {
     println!("`verify` imports the embedded checkpoint and still verifies every step. v1 files");
     println!("stay readable and there is no migration.");
     println!();
-    println!("These are not implemented: rerecord and branch editing, real-hardware input TAS");
-    println!("(the Mega Drive slice ignores input), TAS import/export adapters (such as BizHawk");
-    println!("BK2) and HTTP/MCP/GUI/daemon. No persistent/on-disk rewind cache, shared cache");
-    println!("or O(1)/random-access seek exists. `tas studio` is an in-process rewind and");
+    println!("These are not implemented: real-hardware input TAS (the Mega Drive slice ignores");
+    println!("input), TAS import/export adapters (such as BizHawk BK2) and HTTP/MCP/GUI/daemon.");
+    println!("`tas edit` implements ADR-0008 rerecord and branch editing as a functional edit");
+    println!("and deterministic suffix re-simulation: it runs the unchanged prefix from the");
+    println!("embedded checkpoint, applies edited inputs, re-simulates every later step and");
+    println!("writes a new artifact whose parent is the source movie id. The source file is");
+    println!("opened read-only and never overwritten. No rerecord counter, edit history or");
+    println!("new movie format is stored; `edits`, `truncate_after`, `prefix_steps` and");
+    println!("`resimulated_steps` describe one invocation only. Format v1 stays v1 and format");
+    println!("v2 stays v2, and the CLI edits only port 0 while preserving ports 1-3, axes and");
+    println!("keys. Explicit anchor flags are rejected on a v1 source. The default anchor");
+    println!("policy retains source anchors before the earliest edited or truncated step;");
+    println!("`drop` and `rebuild` are explicit and rebuilding needs `--anchor-interval`. The");
+    println!("embedded checkpoint is always copied unchanged. See `chronofork tas edit --help`");
+    println!("for the deferred list. No persistent/on-disk rewind cache, shared cache or");
+    println!("O(1)/random-access seek exists. `tas studio` is an in-process rewind and");
     println!("interactive-stepping surface implemented under ADR-0007 but not independently");
     println!("verified; the acceptance backend is the deterministic synthetic fixture, and");
     println!("this is one increment of M3, which is not complete.");
@@ -948,6 +965,11 @@ pub(crate) fn print_help() {
     println!("  chronofork tas compare --movie <FILE> --against <FILE>");
     println!("  chronofork tas studio --movie <FILE> [--cache-interval <N>]");
     println!("                        [--cache-capacity <N>] [--cache-bytes <N>]");
+    println!("  chronofork tas edit --movie <FILE> --out <FILE>");
+    println!("                      --set-input <INDEX=MASK>...   or --truncate-after <INDEX>");
+    println!("                      [--movie-id <U64>] [--name <NAME>]");
+    println!("                      [--anchors <keep-prefix|drop|rebuild>]");
+    println!("                      [--anchor-interval <N>]");
     println!();
     println!("record:");
     println!("  --movie <FILE>     Required output movie file, published atomically on success");
@@ -993,6 +1015,42 @@ pub(crate) fn print_help() {
     println!("  --movie <FILE>     First recorded branch file");
     println!("  --against <FILE>   Second recorded branch file");
     println!();
+    println!("edit:");
+    println!("  --movie <FILE>     Required source movie, opened read-only and never modified");
+    println!("  --out <FILE>       Required new movie, published atomically; it may not identify");
+    println!("                     the source by normalized path or, on Unix, by device/inode");
+    println!("  --set-input <INDEX=MASK>  Repeatable. INDEX is a zero-based decimal step index");
+    println!("                     below the source step count; MASK is a decimal u32 replacing");
+    println!("                     only port 0. Duplicate indices are rejected. At least one");
+    println!("                     --set-input or --truncate-after is required (a metadata-only");
+    println!("                     copy is rejected). Ports 1-3, axes and keys are preserved");
+    println!("  --truncate-after <INDEX>  Zero-based decimal index retaining steps 0..=INDEX;");
+    println!("                     at least one step must be dropped and every edited index");
+    println!("                     must be <= INDEX");
+    println!("  --movie-id <U64>   Non-zero output id (default source id + 1), distinct from the");
+    println!("                     source id");
+    println!(
+        "  --name <NAME>      Optional output label (at most {MAX_NAME_BYTES} UTF-8 bytes, no"
+    );
+    println!("                     control characters), never inherited from the source");
+    println!("  --anchors <keep-prefix|drop|rebuild>  Default keep-prefix retains source anchors");
+    println!("                     before the earliest affected step; drop removes them all;");
+    println!("                     rebuild requires --anchor-interval and captures a new table");
+    println!("  --anchor-interval <N>  Positive interval, valid only with `--anchors rebuild`");
+    println!("                     and at most the output step count");
+    println!();
+    println!("edit is a functional suffix re-simulation from the embedded checkpoint: it");
+    println!("executes and verifies the unchanged prefix against the source records, applies");
+    println!("the edited frames, re-simulates every later step and recomputes every later");
+    println!("expectation. It is not an in-place or O(1) edit, and a late edit costs almost a");
+    println!("full replay. The output preserves the source format (v1 to v1, v2 to v2), has");
+    println!("`parent_movie_id` equal to the source id, and stores no rerecord counter. The");
+    println!("embedded checkpoint is copied unchanged; explicit anchor flags are rejected on");
+    println!("a v1 source. See `chronofork tas edit --help` for the full contract and the");
+    println!("deferred list (real-hardware input TAS, in-place and timeline editing, scripted");
+    println!("inputs, persisted counters, import/export adapters, mixed retained/rebuilt");
+    println!("anchors and CLI editing beyond port 0).");
+    println!();
     println!("Output is one or more `key=value` blocks on stdout; diagnostics go to stderr");
     println!("as `chronofork: <error>`. Exit code is 0 on success and 1 on any typed failure.");
     println!("record prints `movie_version`, `input_schema`, `movie_id`, `name`, `start_tick`,");
@@ -1017,6 +1075,14 @@ pub(crate) fn print_help() {
     println!("`common_steps`), always with both step counts, and exits 1. Comparison reads");
     println!("recorded expectations only and never re-simulates; movie metadata, format");
     println!("version, anchors and input masks never decide equality.");
+    println!();
+    println!("edit prints exactly one `record=edit` block: `movie_version`, `input_schema`,");
+    println!("`source_movie_id`, `movie_id`, `parent_movie_id`, `name`, `start_tick`,");
+    println!("`end_tick`, `steps`, `edits`, `truncate_after` (empty when absent),");
+    println!("`prefix_steps`, `resimulated_steps`, `prefix_verified=1`, `anchor_policy`,");
+    println!("`anchors_retained`, `anchors_dropped`, `anchors_rebuilt`, `final_state_hash`,");
+    println!("`movie_sha256` and `source_movie_sha256`. A rejected edit prints nothing on");
+    println!("stdout and exits 1 with a stderr diagnostic.");
     println!();
     println!("studio:");
     println!("  --movie <FILE>       Required movie file, opened read-only and never rewritten");

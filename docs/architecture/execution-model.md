@@ -78,7 +78,12 @@ Current evidence (synthetic backend only):
 - an in-process rewind through the bounded state cache reproduces the recorded tick and
   state hash at every recorded tick, equal to fresh `Movie::verify`/`ReplayRange` replay,
   and the `tas studio` blocks (including `cache_entries`/`cache_bytes`/`cache_evictions`)
-  are byte-identical across separate processes and debug/release (M3-A29, M3-A31).
+  are byte-identical across separate processes and debug/release (M3-A29, M3-A31);
+- an input edit copies and verifies the unchanged prefix, re-simulates the suffix
+  deterministically, recomputes every expectation and emits a new branch artifact with
+  the source movie/value/file unchanged; truncation does not execute the dropped suffix,
+  rebuilt anchors use the canonical fixed identity, and repeated edits are byte-identical
+  across processes and in one manager (M3-A35–A41, t10 repair-round-2 PASS 2026-11-16).
 
 These tests do **not** establish determinism for a real Mega Drive backend. That
 requires differential tests against a trusted reference, including floating-point
@@ -131,11 +136,13 @@ artifacts under the ignored `.research/m3-tas-inc2/verification/` path, and the 
 [quality gates](../quality/quality-gates.md) result. [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)
 is the canonical contract.
 
-Deferred: checkpoint-reference movies, rerecord and branch editing, real-hardware input
-TAS (the Mega Drive `step` ignores input), import/export adapters, compression/encryption
-and HTTP/MCP/GUI/daemon. The in-process rewind state cache and interactive stepping
-contract is implemented and verified below
-([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md)).
+Not implemented: checkpoint-reference movies, real-hardware input TAS (the Mega Drive
+`step` ignores input), import/export adapters, compression/encryption and
+HTTP/MCP/GUI/daemon. The in-process rewind state cache and interactive stepping contract
+is implemented and verified below
+([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md)); rerecord and
+branch editing is implemented and verified below
+([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)).
 
 **Implemented and verified v2 anchors and anchored seek (t7 PASS, 2026-11-15).**
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) adds the
@@ -154,8 +161,8 @@ limits are 2,000,000 steps, 65,536 anchors and 48 MiB cumulative anchor snapshot
 the existing 256 MiB file bound. Evidence: M3-A18–A21 and M3-A24–A25 in the [format-v2
 acceptance plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
 `.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
-result. M3 remains incomplete: rerecord/branch editing and real-hardware input TAS are
-still deferred.
+result. M3 remains incomplete: real-hardware input TAS and the other deferred items are
+still unimplemented.
 
 **Implemented and verified in-process rewind state cache and interactive stepping (t5 PASS,
 2026-11-15).** [ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) adds a
@@ -179,6 +186,34 @@ artifacts under the ignored `.research/m3-rewind/verification/` path and the dat
 [quality gates](../quality/quality-gates.md) result. The acceptance claim is the
 deterministic synthetic backend on Linux; no persistent or cross-process cache, hardware
 rewind or O(1) seek is claimed.
+
+**Implemented and independently verified rerecord and branch editing (t10 repair-round-2
+PASS, 2026-11-16).** [ADR-0008](../adr/0008-rerecord-and-branch-editing.md) adds
+`chronofork tas edit` and the session-layer `chronofork_sessions::edit` implementation.
+An edit imports the source movie's embedded checkpoint into a fresh session, executes and
+verifies the unchanged prefix against its recorded expectations, applies replacement
+input frames to one or more existing recorded steps, optionally truncates after a chosen
+step, re-simulates the suffix deterministically, recomputes every expectation and
+constructs a new canonical movie of the **same** format and input-schema version (a v1
+source produces a v1 output, a v2 source a v2 output; no migration, upgrade or
+downgrade). The source movie value, source file and any pre-existing session are
+unchanged. The output is a new branch artifact with its own non-zero movie id and
+`parent_movie_id` set to the source id; the parent is passive metadata under the existing
+dangling-parent rule and is never resolved. The embedded checkpoint is copied unchanged.
+Anchors before the earliest affected step are retained verbatim; anchors at or after it
+are dropped or rebuilt at the v2 cadence, with rebuilt envelopes re-encoded under the
+canonical fixed snapshot/origin identity so an unrelated session or prior edit cannot
+change a later edit's bytes. No second anchor format and no anchor-based prefix skipping
+exist. No new canonical field, format version or persisted rerecord counter was added:
+the command prints per-invocation `edits`/`truncate_after`/`prefix_steps`/
+`resimulated_steps` diagnostics, and the parent edge is the provenance. Existing `play`,
+`verify`, ranged replay, `compare` and `studio` accept the output unchanged. Evidence:
+M3-A35–A44 in the [M3 rerecord acceptance
+plan](../quality/m3-rerecord-acceptance.md), raw artifacts under the ignored
+`.research/m3-rerecord/verification-round-2/` path, and the dated
+[quality gates](../quality/quality-gates.md) result. The claim is the deterministic
+synthetic backend on Linux; real-hardware input TAS, in-place/timeline editing, persisted
+counters, import/export and O(1) seek remain unimplemented, and M3 remains incomplete.
 
 ## Snapshot format
 
@@ -236,10 +271,14 @@ best-effort parse.
   anchor-based seek and schema-2 multi-device input are implemented and independently
   verified for the deterministic synthetic backend (M3-A18–A27, t7 PASS 2026-11-15;
   [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md),
-  [format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md)). Deferred and
-  unimplemented: checkpoint-reference movies, rerecord/branch editing, real-hardware input
-  TAS (the Mega Drive `step` ignores input), import/export adapters,
-  compression/encryption and HTTP/MCP/GUI/daemon.
+  [format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md)). Rerecord and branch
+  editing is implemented and independently verified for the deterministic synthetic
+  backend (M3-A35–A44, t10 repair-round-2 PASS 2026-11-16;
+  [ADR-0008](../adr/0008-rerecord-and-branch-editing.md),
+  [M3 rerecord acceptance plan](../quality/m3-rerecord-acceptance.md)). Deferred and
+  unimplemented: checkpoint-reference movies, real-hardware input TAS (the Mega Drive
+  `step` ignores input), import/export adapters, in-place/timeline editing, persisted
+  rerecord counters, mixed anchors, compression/encryption and HTTP/MCP/GUI/daemon.
 - Branch comparison is a recorded-expectation diff, not a verification or determinism
   proof; it cannot detect a build whose emulation changed, and metadata is never an
   equality field.

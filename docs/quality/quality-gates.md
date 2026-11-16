@@ -413,6 +413,137 @@ captures evict lower indices) — intended, documented and asserted. Full detail
 exit codes and hashes are in the ignored artifacts above; this dated block is a gate-result
 snapshot and the per-target counts stay in the evidence.
 
+## 2026-11-16 — M3 rerecord and branch editing, increment 5 (independent verification — FAIL, not verified)
+
+**Verdict: FAIL.** This is a dated gate-result record for the uncommitted increment-5
+tree (`3f76d5f` plus the rerecord working-tree paths). It is **not** a verification PASS:
+the increment must not be described as implemented-and-verified, the acceptance rows must
+not be promoted to `executed - passed`, and M3 remains incomplete.
+
+Tree under test: HEAD `3f76d5ffee680d2c7271c7c1d81d8c5a44055675` (branch
+`agent/m3-complete`) + the uncommitted rerecord paths recorded in
+`.research/m3-rerecord/verification/tree/` (git status, diff, changed-path list, manifest
+hashes). The verifier's only tracked edit is this dated block; all other evidence is under
+the ignored `.research/m3-rerecord/verification/` path. Every Cargo command used
+`CARGO_HOME=/tmp/t7-cargo`. Pre-change baseline:
+`.research/m3-rerecord/baseline/` (HEAD `3f76d5f`, clean tree).
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 37 targets, 497 passed, 0 failed, 0 ignored; no pre-existing target below the 35-target/458-passed baseline |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0; same 37/497/0/0 |
+| Whitespace | `git diff --check` | exit 0 |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 cargo + 3 direct-binary runs, 0-byte program stderr, byte-identical to baseline (986 B, `9b4dd564…4652`) |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 cargo + 3 direct-binary runs, 0-byte program stderr, byte-identical to baseline (1582 B, `912a5bb6…8996`) |
+| v1/v2/M2/M3 regression | baseline transcript replay, movie byte comparison, two-root session probe, target matrix | 134/134 regression checks PASS; movies/store/keys/checkpoint/state hash byte-identical; M1 oracle exit 0 (3/3 traces, final states, controls) |
+| Edit acceptance rows | M3-A35–A44 executed per `rows/` | A35, A39, A43, A44 PASS; **A38, A40, A41, A42 FAIL**; A36 and A37 have unexecuted sub-criteria |
+
+Blocking findings (details and commands in `SUMMARY.txt` and `rows/`):
+
+- **F1 (blocker, A38.4/A40.1/A40.3):** an invalid-UTF-8 `--name` argument panics in
+  `std::env::args()` with exit 101 and Rust panic text on stderr instead of the required
+  typed rejection. Reproduced with a Python `execv` probe
+  (`cli/edit/results/edit-name-invalid-utf8/`).
+- **F2 (blocker, A41.4/A42):** rebuilt-anchor bytes embed the manager-allocated
+  `origin_session`; two identical rebuild edits of the same source in one
+  `SessionManager` produce different output bytes (first differing offset 547). This
+  violates "a prior edit leaves no state in the manager that changes a later edit's
+  bytes". Independent harness scenarios in `edit/determinism/`.
+- **F3 (blocker, A40 planned targets/A42.1):** the accepted ADR-0008/plan module and test
+  target `tas_edit` is implemented as `edit`
+  (`crates/chronofork-cli/src/edit.rs`, `tests/edit.rs`); the documented command
+  `cargo test -p chronofork-cli --test tas_edit` exits 101 "no test target named
+  tas_edit", and no ADR/plan amendment records the spelling change.
+- **F5 (low, A42.3):** `EditOutcome::into_movie` has no caller (speculative public API).
+- **F6 (verification gap, A36.6/A37.5):** the output-size limit and the per-anchor /
+  cumulative anchor byte budgets have no executing edit fixture with the fixed-size
+  synthetic checkpoint; these sub-criteria remain unexecuted.
+
+Non-blocking observation O1: the ADR, acceptance plan, execution model, requirements,
+milestones, roadmap and `docs/README.md` still say the increment is "design only" / "no
+implementation exists" while the tree contains the implementation and 39 new passing
+tests. That wording understates the tree (it does not overclaim a capability) and must be
+promoted by the documentation task only after the blocking findings and the unexecuted
+sub-criteria are resolved and a verification re-run returns PASS.
+
+No commit, push, tag or merge is authorized by this block. Full commands, exit codes,
+artifact paths and SHA-256 manifests are in `.research/m3-rerecord/verification/`.
+
+## 2026-11-16 — M3 rerecord and branch editing, increment 5, repair round 2 (independent verification PASS)
+
+**Verdict: PASS** for the repaired uncommitted increment-5 tree under test (`3f76d5f` plus
+the rerecord working-tree paths). This PASS supersedes the round-1 FAIL block above: the
+blocking findings F1/F2/F3/F5 and the unexecuted A36.6/A37.5 sub-criteria were repaired
+and re-executed from the corrected tree. It remains a verification record only: M3 is
+**not** complete, real-hardware input TAS remains unimplemented, and the durable docs/plan
+promotion is a separate task (t6) that must use this evidence.
+
+Tree under test: HEAD `3f76d5ffee680d2c7271c7c1d81d8c5a44055675` (branch
+`agent/m3-complete`) + the rerecord paths recorded in
+`.research/m3-rerecord/verification-round-2/tree/` (status, diff, manifest hashes). The
+verifier's only tracked edit is this dated block; every other artifact is under the
+ignored evidence root. Every Cargo command used `CARGO_HOME=/tmp/t7-cargo`. Pre-change
+baseline: `.research/m3-rerecord/baseline/` (HEAD `3f76d5f`, clean tree).
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 37 targets, 502 passed, 0 failed, 0 ignored; no target below the 35-target/458-passed baseline |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0; same 37/502/0/0 |
+| Whitespace | `git diff --check` | exit 0 |
+| CLI demo | `cargo run -p chronofork-cli -- demo` | exit 0; 3 cargo + 3 direct-binary runs, 0-byte program stderr, byte-identical to baseline (986 B, `9b4dd564…4652`) |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` | exit 0; 3 cargo + 3 direct-binary runs, 0-byte program stderr, byte-identical to baseline (1582 B, `912a5bb6…8996`) |
+| v1/v2/M2/M3 regression | baseline transcript/movie replay, two-root session probe, target matrix | 134/134 checks PASS; movies/store/keys/checkpoint/state hash byte-identical; M1 oracle 3/3 traces, final states and controls |
+| Edit acceptance rows | M3-A35–A44 per `rows/` | **all PASS**; A36.6/A37.5 now executed with bulk-payload fixtures; F1/F2/F3/F5 closed |
+
+Repair closure evidence:
+
+- **F1 closed:** `main.rs` collects `args_os` and rejects non-UTF-8 argv through the typed
+  CLI error path. CLI probe: exit 1, empty stdout, `chronofork: command-line arguments
+  must be valid UTF-8`, no output/temp file, valid argv still succeeds; targeted
+  `invalid_utf8_arguments_are_typed_failures_not_panics` passes.
+- **F2 closed:** rebuilt anchors carry the documented canonical fixed snapshot/origin
+  identity (v2 recording keeps its session-assigned identity). Independent harness
+  same-manager repeated-rebuild scenario now passes in debug and release; targeted
+  `rebuild_anchors_do_not_depend_on_manager_history` asserts byte equality, identical
+  reports, canonical ids, verification and anchored seek. v1/v2 recording movies remain
+  byte-identical to the baseline.
+- **F3 closed:** CLI adapter and test target are `tas_edit` as accepted; both
+  `cargo test -p chronofork-cli --test tas_edit` (19 passed) and the release variant pass.
+- **F5 closed:** unused `EditOutcome::into_movie` removed; structural audit finds no
+  speculative public item.
+- **F6 closed:** executable bulk-payload fixtures drive per-anchor
+  `AnchorSnapshotTooLarge`, cumulative `AnchorTableTooLarge` and writer
+  `FileTooLarge` (source at exactly `MAX_MOVIE_BYTES`, one-byte branch name) with typed
+  errors and no returned movie.
+- ADR-0008/acceptance-plan repair clarifications audited: no decision, limit, flag, block
+  field, v1/v2 movie byte or recording byte changed; all 10 rows remained `planned`
+  pending this verification.
+
+Independent verification beyond the product tests: 13/13 harness scenarios in debug and
+release (source non-mutation, prefix/suffix exactness, truncation without executing the
+dropped suffix, anchors/checkpoint, branch metadata/chains/isolation, formats/device
+boundary, incompatible-backend import, determinism), 301/301 CLI process-contract checks,
+19/19 re-signed tamper probes, 134/134 baseline regression checks, 46/46 demo checks, and
+structural/suppression audits. Full commands, exit codes and hashes are in
+`.research/m3-rerecord/verification-round-2/` (`SUMMARY.txt`, `rows/`, `target-matrix.txt`,
+`MANIFEST.sha256`).
+
+Non-blocking observation O1: the ADR, acceptance plan, execution model, requirements,
+milestones, roadmap and `docs/README.md` still carry pre-verification wording ("design
+only", "no implementation exists", rows `planned - not yet executed`, milestone unchecked).
+This understates the now-verified tree and must be promoted by the documentation task (t6)
+using this evidence; this block is the gate result, not a capability/roadmap promotion.
+Real-hardware input TAS remains unimplemented and M3 remains incomplete. No commit, push,
+tag or merge is authorized by this block.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.
