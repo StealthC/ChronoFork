@@ -118,13 +118,14 @@ The checked M2 items rest on the executed M2-A criteria, not on that NFR clause.
 Status: the first, second, third, fourth and fifth increments are implemented and
 independently verified for the deterministic synthetic backend (M3-T4, M3-T5, the t7
 format-v2 verification PASS, the t5 rewind verification PASS and the t10 repair-round-2
-PASS, 2026-11-15/2026-11-16). The first increment delivered the canonical v1 `.cfmovie`
-format ([ADR-0004](../adr/0004-tas-movie-format.md)), record/playback of a per-tick input
-sequence, replay verification with first-divergence reporting, restart and M2-seeded
-replay, and the `chronofork tas record/play/verify` CLI. The second increment delivered
-ranged replay/seek, forward single-tick advance and rewind by deterministic linear
-re-simulation from the embedded checkpoint, and branch comparison of recorded
-`(tick, state hash)` records
+PASS, 2026-11-15/2026-11-16), and the sixth and final real-hardware input TAS increment is
+implemented and independently verified on the minimal Mega Drive slice (t5 PASS,
+2026-11-16). The first increment delivered the canonical v1 `.cfmovie` format
+([ADR-0004](../adr/0004-tas-movie-format.md)), record/playback of a per-tick input sequence,
+replay verification with first-divergence reporting, restart and M2-seeded replay, and the
+`chronofork tas record/play/verify` CLI. The second increment delivered ranged replay/seek,
+forward single-tick advance and rewind by deterministic linear re-simulation from the
+embedded checkpoint, and branch comparison of recorded `(tick, state hash)` records
 ([ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)). The third increment
 delivered the `CFMOVIE2` checkpoint-anchor container, nearest-anchor seek and schema-2
 multi-device input ([ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md)).
@@ -134,11 +135,20 @@ acceptance plan](../quality/m3-partial-replay-acceptance.md) (M3-A13–A17), the
 [format-v2 acceptance plan](../quality/m3-format-v2-acceptance.md) (M3-A18–A27), the
 executed [M3 rewind acceptance plan](../quality/m3-rewind-acceptance.md) (M3-A28–A34), the
 executed [M3 rerecord acceptance plan](../quality/m3-rerecord-acceptance.md)
-(M3-A35–A44) and the dated [quality gates](../quality/quality-gates.md) results. The fifth
-increment delivered rerecord and branch editing
-([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)). M3 is **not complete**:
-real-hardware input TAS, import/export adapters, checkpoint-reference movies and
-HTTP/MCP/GUI/daemon remain deferred and unchecked.
+(M3-A35–A44), the executed [M3 hardware acceptance
+plan](../quality/m3-hardware-acceptance.md) (M3-A45–A53) and the dated [quality
+gates](../quality/quality-gates.md) results. The fifth increment delivered rerecord and
+branch editing ([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)); the sixth delivered
+real-hardware input TAS and `--rom` backend selection
+([ADR-0009](../adr/0009-real-hardware-input-tas.md)). **M3 is complete** for the documented
+deterministic minimal-slice scope: the t5 completion audit covered the five remaining
+milestone items (anchors/seek, rewind/interactive stepping, rerecord/branch editing,
+multi-device input and real-hardware input TAS) with executed evidence, and this t6
+promotion records it; the t7 promotion audit is the final check. Import/export adapters
+remain documented-only, and checkpoint-reference movies and HTTP/MCP/GUI/daemon remain
+deferred and unchecked. The hardware claim is limited to the independently authored
+synthetic `controller_rom()` and the TH-high 3-button subset; A/Start, TH/6-button,
+controller timing, analog/keyboard hardware, port 3 and cycle accuracy are not claimed.
 
 **Increment 3 implemented and independently verified (t7 PASS, 2026-11-15).**
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) is accepted,
@@ -148,8 +158,9 @@ validated against the recorded step tick and state hash, nearest-anchor seek in 
 ranged replay path (reporting `anchored=1`, `anchor_step`, `anchor_tick` and
 `prefix_verified=0`), and schema-2 multi-device input (four digital ports, four analog
 axes and a keyboard bitmap) consumed deterministically by the synthetic backend. The
-checked v2 subitems below are backed by M3-A18–A27; real-hardware input TAS remains
-unimplemented and unchecked. M3 is not complete.
+checked v2 subitems below are backed by M3-A18–A27. The later hardware increment is
+implemented and verified under ADR-0009; M3 is complete for the documented deterministic
+minimal-slice scope.
 
 **Increment 4 implemented and independently verified (t5 PASS, 2026-11-15).**
 [ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) is accepted,
@@ -161,8 +172,9 @@ stdin-driven `chronofork tas studio` stepping surface with fixed `key=value` blo
 cache uses a crate-private capture path that allocates no snapshot identity, is bounded by
 count and the deterministic `payload+256` metric, and evicts lowest-step-first. The
 rewind subitem below is checked on the executed [M3-A28–A34
-rows](../quality/m3-rewind-acceptance.md) (t5 PASS, 2026-11-15); real-hardware input TAS
-remains unimplemented and unchecked. M3 is not complete.
+rows](../quality/m3-rewind-acceptance.md) (t5 PASS, 2026-11-15). The later hardware
+increment is implemented and verified under ADR-0009; M3 is complete for the documented
+deterministic minimal-slice scope.
 
 **Increment 5 implemented and independently verified (t10 repair-round-2 PASS,
 2026-11-16).** [ADR-0008](../adr/0008-rerecord-and-branch-editing.md) is accepted,
@@ -174,7 +186,8 @@ identity, v1→v1 and v2→v2 preservation, and the atomic `chronofork tas edit`
 without a new format version or stored rerecord counter. The executed [M3 rerecord
 acceptance plan](../quality/m3-rerecord-acceptance.md) rows M3-A35–A44 are
 `executed - passed`; round-1 FAIL findings F1/F2/F3/F5 and gaps F6 were repaired and
-re-verified. Real-hardware input TAS stays unchecked and M3 is not complete.
+re-verified. The later hardware increment is implemented and verified under ADR-0009; M3
+is complete for the documented deterministic minimal-slice scope.
 
 - [x] Versioned canonical movie format.
   - [x] Single-file `.cfmovie` v1 with magic, format and input-schema versions,
@@ -244,15 +257,40 @@ re-verified. Real-hardware input TAS stays unchecked and M3 is not complete.
       verified for the deterministic synthetic backend
       ([ADR-0008](../adr/0008-rerecord-and-branch-editing.md);
       [M3 rerecord acceptance plan](../quality/m3-rerecord-acceptance.md) rows
-      M3-A35–A44, t10 repair-round-2 PASS 2026-11-16). No real-hardware input TAS,
-      in-place/timeline editing, persisted counter, format v3 or mixed-anchor mode is
-      claimed; real-hardware input TAS remains unchecked.
+      M3-A35–A44, t10 repair-round-2 PASS 2026-11-16). No in-place/timeline editing,
+      persisted counter, format v3 or mixed-anchor mode is claimed. Real-hardware input TAS
+      is delivered by the final increment below (M3-A45–A53).
 - [x] Multi-controller, ports, analog and keyboard input — implemented as schema-2
-      multi-device frames (four digital ports, four analog axes and a keyboard bitmap)
-      for the deterministic synthetic backend (M3-A22, M3-A24). Real-hardware controller
-      input remains absent; the Mega Drive `step` still ignores input, so FR-MD-010
-      (controller input and multi-port schema for real hardware) remains Planned.
-- [ ] Real-hardware input TAS — deferred; the Mega Drive `step` ignores input.
+      multi-device frames (four digital ports, four analog axes and a keyboard bitmap) for
+      the deterministic synthetic backend (M3-A22, M3-A24), and the final increment maps
+      the Mega Drive controller ports 1–2 for the TH-high 3-button subset (M3-A45–A53).
+      Real-hardware analog/keyboard/port-3 hardware is not modelled; FR-MD-010 is
+      **Implemented (3-button TH-high subset; ports 1–2)**.
+- [x] Real-hardware input TAS — implemented and independently verified for the documented
+      deterministic minimal-slice scope ([ADR-0009](../adr/0009-real-hardware-input-tas.md);
+      [M3 hardware acceptance plan](../quality/m3-hardware-acceptance.md) rows
+      M3-A45–A53 `executed - passed`, t5 PASS 2026-11-16). The verified scope is stateless
+      per-step reads of the two controller data registers (`0x00A10003`/`0x00A10005`) from
+      `InputFrame` ports 1–2, TH-high 3-button subset (Up/Down/Left/Right/B/C, active-low,
+      neutral `0x7F`), a transient non-serialized step-scoped field with no canonical
+      snapshot/state-hash/config change, the independently authored synthetic
+      `controller_rom()`, and `--rom` backend selection on
+      `tas record/play/verify/studio/edit` (`compare` stays backend-agnostic). Hardware
+      record/play/verify, snapshot/restore/fork, rewind/`studio`, two-controller v2 input,
+      the `--rom` contract and typed errors are covered by the executed rows. A/Start,
+      TH/6-button/Start multiplexing, controller timing, analog/keyboard hardware, port 3,
+      real commercial ROMs and cycle accuracy are **not** implemented or claimed;
+      import/export adapters remain documented-only.
+
+**M3 completion audit (2026-11-16).** The independent t5 verification executed the five
+remaining M3 milestone items — anchors/seek (movie_v2 8, replay 23), rewind/interactive
+stepping (player 16, studio 11), rerecord/branch editing (edit 22, tas_edit 19),
+multi-device input (tas 21, movie_v2 8) and real-hardware input TAS (controller 6, CLI
+hardware 13, rows A45–A52) — each with executed evidence, and returned PASS. Import/export
+adapters remain documented-only; no O(1)/persistent-cache, real-controller-timing,
+TH/6-button, analog/keyboard, cycle-accuracy or game-compatibility claim was found. **M3 is
+complete for the documented deterministic minimal-slice scope**, recorded by this t6
+promotion and subject to the t7 promotion audit.
 
 ## M4 — Debugging depth
 
@@ -291,28 +329,32 @@ re-verified. Real-hardware input TAS stays unchecked and M3 is not complete.
 
 ## Current milestone
 
-**M1 and M2 are complete. M3 (TAS and replay) is the current milestone: its first,
-second, third, fourth and fifth increments are implemented and independently verified
-(M3-T4, M3-T5, the t7 format-v2 verification PASS, the t5 rewind verification PASS and
-the t10 repair-round-2 PASS, 2026-11-15/2026-11-16), and M3 is not complete.** The canonical
-v1 and v2 `.cfmovie` formats, per-tick record/playback on the deterministic synthetic
-backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
-checkpoint, the `chronofork tas record/play/verify` CLI, ranged replay/seek, forward
-single-tick advance and rewind by deterministic linear re-simulation, branch comparison of
-recorded `(tick, state hash)` records, checkpoint-anchored seek and schema-2 multi-device
-input are done and backed by the executed [M3 acceptance
+**M1, M2 and M3 are complete. M4 (Debugging depth) is the next milestone.** M3's first
+through fifth increments are implemented and independently verified (M3-T4, M3-T5, the t7
+format-v2 verification PASS, the t5 rewind verification PASS and the t10 repair-round-2
+PASS, 2026-11-15/2026-11-16), and the sixth and final real-hardware input TAS increment is
+implemented and independently verified on the minimal Mega Drive slice (t5 PASS,
+2026-11-16). The canonical v1 and v2 `.cfmovie` formats, per-tick record/playback on the
+deterministic synthetic backend, exact first-divergence reporting, restart and M2-seeded
+replay from the embedded checkpoint, the `chronofork tas record/play/verify` CLI, ranged
+replay/seek, forward single-tick advance and rewind by deterministic linear re-simulation,
+branch comparison of recorded `(tick, state hash)` records, checkpoint-anchored seek,
+schema-2 multi-device input, the in-process rewind cache/`tas studio`, rerecord/branch
+editing and real-hardware input TAS are done and backed by the executed [M3 acceptance
 plan](../quality/m3-tas-replay-acceptance.md), the executed [increment-2 acceptance
 plan](../quality/m3-partial-replay-acceptance.md), the executed [format-v2 acceptance
-plan](../quality/m3-format-v2-acceptance.md) and the dated [quality
-gates](../quality/quality-gates.md) results. A fourth increment covering the in-process
-rewind state cache, deterministic rewind and the interactive `chronofork tas studio`
-stepping is implemented and independently verified (M3-A28–A34, t5 PASS 2026-11-15).
-A fifth increment covering rerecord and branch editing is implemented and independently
-verified for the deterministic synthetic backend ([ADR-0008](../adr/0008-rerecord-and-branch-editing.md);
-M3-A35–A44 `executed - passed`, t10 repair-round-2 PASS 2026-11-16). Real-hardware input
-TAS, import/export adapters, checkpoint-reference movies and HTTP/MCP/GUI/daemon remain
-unimplemented/deferred. The increments are verified for the deterministic synthetic
-backend only; they do not complete M3. M1's
+plan](../quality/m3-format-v2-acceptance.md), the executed [M3 rewind acceptance
+plan](../quality/m3-rewind-acceptance.md), the executed [M3 rerecord acceptance
+plan](../quality/m3-rerecord-acceptance.md), the executed [M3 hardware acceptance
+plan](../quality/m3-hardware-acceptance.md) and the dated [quality
+gates](../quality/quality-gates.md) results. The t5 completion audit covered the five
+remaining M3 milestone items with executed evidence; this t6 promotion records M3 complete
+for the documented deterministic minimal-slice scope, subject to the t7 promotion audit.
+Import/export adapters remain documented-only, and checkpoint-reference movies and
+HTTP/MCP/GUI/daemon remain deferred. The hardware claim is limited to the independently
+authored synthetic `controller_rom()` and the 3-button subset; A/Start, TH/6-button,
+controller timing, analog/keyboard hardware, port 3 and cycle accuracy are not claimed.
+M1's
 differential
 item is ticked on the current PASS 3/3 evidence: three synthetic ROMs match the pinned
 oracle's projected address streams, selected final

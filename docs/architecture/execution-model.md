@@ -20,7 +20,8 @@ This is intentionally not a full controller model. The v1 model is one backend-d
 mask per step; schema 2 adds ports, analog axes and a keyboard bitmap for the synthetic
 backend (below). Remaining future work:
 
-- device-specific peripherals and real controller hardware;
+- deeper controller protocol beyond the verified TH-high 3-button reads (A/Start, TH
+  latch/6-button, controller timing, analog/keyboard hardware, port 3);
 - input scheduled by emulated time or as per-step/scripted events, not host arrival time;
 - a versioned input schema shared with TAS records. [ADR-0004](../adr/0004-tas-movie-format.md)
   defines v1 movies as one backend-defined `u32` mask per step; [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md)
@@ -35,11 +36,28 @@ analog axes and a 64-bit keyboard bitmap, one frame per step. The v1 constructor
 consumes non-neutral fields only on its existing `APPLY_INPUT` instruction in fixed
 ascending order (ports, axes, keyboard bytes), so v1 frames keep their exact state hashes
 (a golden pre-schema-2 hash and 0..=255 mask equivalence are verified). The Mega Drive
-slice still ignores input and is not an input-TAS backend; schema 2 is a synthetic-backend
-input model, not real controller support. Evidence: M3-A22 in the [format-v2 acceptance
+slice's controller reads are a separate verified model (below); schema 2 remains the
+generic multi-device input schema, not a cross-backend controller layout or real
+controller-hardware claim. Evidence: M3-A22 in the [format-v2 acceptance
 plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
 `.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
 result.
+
+**Implemented and independently verified: Mega Drive controller input (t5 PASS,
+2026-11-16).** [ADR-0009](../adr/0009-real-hardware-input-tas.md) is accepted, implemented
+and verified for the deterministic minimal-slice scope. The backend reads the Mega Drive
+controller data registers `0xA10003`/`0xA10005` from `InputFrame` ports 0 and 1 with
+stateless per-step semantics: the input is visible only during the executed step, is
+cleared on every exit path including typed failures, and is never serialized into the
+snapshot or state hash. The canonical payload (`CFMD68K2` v2), state body, state hash and
+configuration hash are unchanged, so a restored machine uses the next step's input; the
+differential probe, demos, M1 oracle/state probes and all existing M2/M3 movie fixtures are
+byte-identical to baseline. The verified subset is the TH-high 3-button phase
+(Up/Down/Left/Right/B/C, active-low; neutral `0x7F`) on ports 1–2; A, Start, TH/6-button
+multiplexing, controller timing, analog and keyboard hardware and port 3 are deferred.
+Evidence: [M3 hardware acceptance plan](../quality/m3-hardware-acceptance.md) rows
+M3-A45–A53 `executed - passed`, ignored `.research/m3-hardware/verification/` and the dated
+[quality gates](../quality/quality-gates.md) result.
 
 ## State hashing
 
@@ -62,7 +80,7 @@ Determinism means: identical ROM/configuration, identical initial state and
 identical input sequence at identical ticks produce an identical state hash and
 identical observable outputs.
 
-Current evidence (synthetic backend only):
+Current evidence (synthetic backend and the minimal Mega Drive controller-read slice):
 
 - two fresh machines given the same input sequence produce equal step outcomes and
   equal final hashes;
@@ -83,11 +101,19 @@ Current evidence (synthetic backend only):
   deterministically, recomputes every expectation and emits a new branch artifact with
   the source movie/value/file unchanged; truncation does not execute the dropped suffix,
   rebuilt anchors use the canonical fixed identity, and repeated edits are byte-identical
-  across processes and in one manager (M3-A35–A41, t10 repair-round-2 PASS 2026-11-16).
+  across processes and in one manager (M3-A35–A41, t10 repair-round-2 PASS 2026-11-16);
+- the minimal Mega Drive slice reads the per-step controller frame deterministically: two
+  fresh-process recordings with the same ROM/steps/masks are byte-identical, debug and
+  release movie bytes agree (`3e11e762…`), 23/23 per-step state hashes are identical for
+  neutral vs extreme frames on a non-controller ROM, and pre-change snapshots restore on the
+  post-change tree with payload/state/config equality (M3-A45, M3-A46, M3-A50, t5 PASS
+  2026-11-16).
 
-These tests do **not** establish determinism for a real Mega Drive backend. That
-requires differential tests against a trusted reference, including floating-point
-audio paths and device scheduling.
+These tests do **not** establish determinism for a complete real Mega Drive backend. That
+requires differential tests against a trusted reference, including floating-point audio
+paths and device scheduling; the controller-read slice is deterministic but is not a
+controller-protocol or game-compatibility claim. M3 is complete for the documented
+deterministic minimal-slice scope.
 
 ## Replay
 
@@ -136,13 +162,15 @@ artifacts under the ignored `.research/m3-tas-inc2/verification/` path, and the 
 [quality gates](../quality/quality-gates.md) result. [ADR-0005](../adr/0005-partial-replay-and-branch-comparison.md)
 is the canonical contract.
 
-Not implemented: checkpoint-reference movies, real-hardware input TAS (the Mega Drive
-`step` ignores input), import/export adapters, compression/encryption and
-HTTP/MCP/GUI/daemon. The in-process rewind state cache and interactive stepping contract
-is implemented and verified below
+Not implemented: checkpoint-reference movies, the rest of the real-hardware controller
+protocol beyond the verified TH-high 3-button reads (A/Start, TH latch/6-button, controller
+timing, analog/keyboard hardware, port 3), import/export adapters,
+compression/encryption and HTTP/MCP/GUI/daemon. The in-process rewind state cache and
+interactive stepping contract is implemented and verified below
 ([ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md)); rerecord and
 branch editing is implemented and verified below
-([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)).
+([ADR-0008](../adr/0008-rerecord-and-branch-editing.md)); real-hardware input TAS is
+implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).
 
 **Implemented and verified v2 anchors and anchored seek (t7 PASS, 2026-11-15).**
 [ADR-0006](../adr/0006-movie-format-v2-anchors-and-multi-device-input.md) adds the
@@ -161,8 +189,9 @@ limits are 2,000,000 steps, 65,536 anchors and 48 MiB cumulative anchor snapshot
 the existing 256 MiB file bound. Evidence: M3-A18–A21 and M3-A24–A25 in the [format-v2
 acceptance plan](../quality/m3-format-v2-acceptance.md), raw artifacts under
 `.research/m3-v2/verification/` and the dated [quality gates](../quality/quality-gates.md)
-result. M3 remains incomplete: real-hardware input TAS and the other deferred items are
-still unimplemented.
+result. Real-hardware input TAS is implemented and verified for the TH-high 3-button
+subset (M3-A45–A53); M3 is complete for the documented deterministic minimal-slice scope,
+with the remaining deferred items listed under Known limitations.
 
 **Implemented and verified in-process rewind state cache and interactive stepping (t5 PASS,
 2026-11-15).** [ADR-0007](../adr/0007-in-process-rewind-and-interactive-stepping.md) adds a
@@ -211,9 +240,11 @@ the command prints per-invocation `edits`/`truncate_after`/`prefix_steps`/
 M3-A35–A44 in the [M3 rerecord acceptance
 plan](../quality/m3-rerecord-acceptance.md), raw artifacts under the ignored
 `.research/m3-rerecord/verification-round-2/` path, and the dated
-[quality gates](../quality/quality-gates.md) result. The claim is the deterministic
-synthetic backend on Linux; real-hardware input TAS, in-place/timeline editing, persisted
-counters, import/export and O(1) seek remain unimplemented, and M3 remains incomplete.
+[quality gates](../quality/quality-gates.md) result. The synthetic-backend claim is
+Linux-hosted and deterministic; real-hardware input TAS is implemented and verified for
+the TH-high 3-button subset, while in-place/timeline editing, persisted counters,
+import/export and O(1) seek remain unimplemented. M3 is complete for the documented
+deterministic minimal-slice scope.
 
 ## Snapshot format
 
@@ -263,7 +294,9 @@ best-effort parse.
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
   historical query or breakpoint surface.
-- TAS movie v1 and v2 are implemented and verified for the deterministic synthetic backend only.
+- TAS movie v1 and v2 are implemented and verified for the deterministic synthetic backend;
+  the TH-high 3-button controller reads and `--rom` hardware TAS are implemented and
+  independently verified on the minimal Mega Drive slice (M3-A45–A53, t5 PASS 2026-11-16).
   Ranged replay/seek, forward single-tick advance and rewind by deterministic linear
   re-simulation from the embedded checkpoint (O(n), typed range bounds) and branch
   comparison of recorded `(tick, state hash)` records (no re-simulation) are implemented
@@ -275,10 +308,14 @@ best-effort parse.
   editing is implemented and independently verified for the deterministic synthetic
   backend (M3-A35–A44, t10 repair-round-2 PASS 2026-11-16;
   [ADR-0008](../adr/0008-rerecord-and-branch-editing.md),
-  [M3 rerecord acceptance plan](../quality/m3-rerecord-acceptance.md)). Deferred and
-  unimplemented: checkpoint-reference movies, real-hardware input TAS (the Mega Drive
-  `step` ignores input), import/export adapters, in-place/timeline editing, persisted
-  rerecord counters, mixed anchors, compression/encryption and HTTP/MCP/GUI/daemon.
+  [M3 rerecord acceptance plan](../quality/m3-rerecord-acceptance.md)). Real-hardware input
+  TAS is implemented and independently verified for the TH-high 3-button subset
+  ([ADR-0009](../adr/0009-real-hardware-input-tas.md); M3-A45–A53, t5 PASS 2026-11-16), with
+  the canonical state/demos/M1 evidence unchanged. Deferred and unimplemented:
+  checkpoint-reference movies, the deeper controller protocol (A/Start, TH/6-button,
+  timing, analog/keyboard, port 3), import/export adapters, in-place/timeline editing,
+  persisted rerecord counters, mixed anchors, compression/encryption and
+  HTTP/MCP/GUI/daemon.
 - Branch comparison is a recorded-expectation diff, not a verification or determinism
   proof; it cannot detect a build whose emulation changed, and metadata is never an
   equality field.

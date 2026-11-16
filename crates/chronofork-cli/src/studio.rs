@@ -9,21 +9,20 @@
 //! cache; this module only parses flags and commands, maps typed failures to the
 //! process exit codes and formats the fixed blocks. It opens the movie read-only
 //! with the existing size bound, writes no file, storage root or cache, and reads
-//! no host clock or entropy, so valid stdout is data only.
+//! no host clock or entropy, so valid stdout is data only. The session runs on the
+//! unchanged synthetic backend by default, or on the minimal Mega Drive backend
+//! when `--rom <FILE>` selects it (ADR-0009).
 
 use std::error::Error;
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use chronofork_backend_api::BackendFactory;
 use chronofork_core::{StateHash, Tick};
 use chronofork_sessions::{
     CacheOptions, DEFAULT_CACHE_BYTE_LIMIT, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_INTERVAL_STEPS,
     Movie, MovieError, Player, PlayerError, PlayerState, SeekProgress, SeekReport,
 };
-use chronofork_test_backend::SyntheticBackendFactory;
 
 use crate::{CliError, begin_record, option_value, parse_u64, set_once};
 
@@ -49,7 +48,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // imported, so no cache structure is sized from an unchecked flag.
     let cache = CacheOptions::new(options.interval, options.capacity, options.byte_limit)?;
     let movie = Movie::from_bytes(&crate::tas::read_movie_file(&options.movie)?)?;
-    let factory: Arc<dyn BackendFactory> = Arc::new(SyntheticBackendFactory::default());
+    let factory = crate::tas::backend_factory(options.rom.as_deref())?;
     let mut player = Player::open(factory, movie, cache)?;
 
     let stdin = io::stdin();
@@ -120,6 +119,7 @@ struct Options {
     interval: usize,
     capacity: usize,
     byte_limit: usize,
+    rom: Option<PathBuf>,
 }
 
 /// Parses the fixed `tas studio` flag set.
@@ -127,18 +127,26 @@ struct Options {
 /// Missing, duplicate, empty, non-numeric or unknown flags (including `--at`,
 /// `--from`, `--until`, `--root`, `--session`, `--steps` and `--against`) and
 /// positional arguments are typed CLI errors; no flag defaults to another
-/// subcommand's semantics.
+/// subcommand's semantics. `--rom <FILE>` selects the minimal Mega Drive backend
+/// through the shared bounded ROM reader; without it the unchanged synthetic
+/// factory is used.
 fn parse_options(args: &[String]) -> Result<Options, CliError> {
     let mut movie: Option<PathBuf> = None;
     let mut interval: Option<u64> = None;
     let mut capacity: Option<u64> = None;
     let mut byte_limit: Option<u64> = None;
+    let mut rom: Option<PathBuf> = None;
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].clone();
         match flag.as_str() {
             "--movie" => set_once(
                 &mut movie,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            "--rom" => set_once(
+                &mut rom,
                 PathBuf::from(option_value(args, &mut index, &flag)?),
                 &flag,
             )?,
@@ -160,7 +168,7 @@ fn parse_options(args: &[String]) -> Result<Options, CliError> {
             other => {
                 return Err(CliError(format!(
                     "unknown `tas studio` option `{other}`; expected --movie <FILE> \
-                     --cache-interval <N> --cache-capacity <N> --cache-bytes <N>"
+                     --rom <FILE> --cache-interval <N> --cache-capacity <N> --cache-bytes <N>"
                 )));
             }
         }
@@ -182,6 +190,7 @@ fn parse_options(args: &[String]) -> Result<Options, CliError> {
             byte_limit.unwrap_or(DEFAULT_CACHE_BYTE_LIMIT as u64),
             "--cache-bytes",
         )?,
+        rom,
     })
 }
 

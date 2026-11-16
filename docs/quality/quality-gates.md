@@ -544,6 +544,79 @@ using this evidence; this block is the gate result, not a capability/roadmap pro
 Real-hardware input TAS remains unimplemented and M3 remains incomplete. No commit, push,
 tag or merge is authorized by this block.
 
+## 2026-11-16 — M3 hardware input TAS, final increment (independent verification PASS; M3 completion audited)
+
+**Verdict: PASS** for the hardware-TAS increment and the M3 completion audit on the
+recorded tree under test (`85af523` plus the increment worktree paths). Every acceptance
+row M3-A45–A52 in the [M3 hardware acceptance plan](m3-hardware-acceptance.md) is
+`executed - passed` with an executed command, exit code and artifact. M3-A53 passes its
+scope-honesty/no-overclaim audit; its durable-doc half (ADR-0009 status wording,
+executed-passed row statuses, milestone checkbox and acceptance-plan execution record)
+is the separate documentation task t6, explicitly outside this verification's write
+scope. **M3 may be marked complete for the documented deterministic minimal-slice scope
+once t6 records that promotion and t7 audits it.** This block is a verification record
+only: it does not commit, push, tag, merge or promote capability docs.
+
+Tree under test: HEAD `85af5238fabf204bbb885df3823c604212edd948` (branch
+`agent/m3-complete`) + 19 working-tree paths recorded in
+`.research/m3-hardware/verification/tree/` (status, diff, manifest hashes). The verifier's
+only tracked edit is this dated block; all other artifacts are under the ignored
+`.research/m3-hardware/verification/` root (1053 files, `MANIFEST.sha256`).
+Every Cargo command used `CARGO_HOME=/tmp/t7-cargo`. Pre-change baseline:
+`.research/m3-hardware/baseline/` (HEAD `85af523`, clean tree; manifest verified before
+and after this run).
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | exit 0 |
+| Compilation | `cargo check --workspace` | exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| Tests | `cargo test --workspace` | exit 0; 39 targets, 532 passed, 0 failed, 0 ignored (baseline 37/502/0/0) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0 |
+| Full script | `./scripts/check.sh` | exit 0; same 39/532/0/0 |
+| Whitespace | `git diff --check` | exit 0 |
+
+Target matrix: every baseline target present with `passed >= baseline` and 0 failed;
+two new targets (`tests/controller.rs` 6, `tests/tas_hardware.rs` 13) and +11 unit/
+property tests explain the 30-test delta; no assertion deleted or relaxed.
+
+| Regression surface | Result |
+|---|---|
+| CLI + Mega Drive demos | 3 cargo + 3 direct-binary runs each, exit 0, 0-byte program stderr, pairwise and baseline byte-identical (986 B `9b4dd564…4652`; 1582 B `912a5bb6…8996`); Mega Drive fork/source hashes equal baseline |
+| v1/v2/edit/studio fixtures | 59/59 transcripts (exit/stdout/stderr) and 19/19 movies byte-identical to baseline; studio stdout `a6f23565…` |
+| Durable two-root session probe | store/keys/checkpoint and `state_hash a4c253d2…` byte-identical; only `.cfmeta` wall-clock differs |
+| Mega Drive state probes | all 3 oracle ROM state/trace files byte-identical to baseline (`dcbfcfdc/5237c672`, `9962a19a/6c278394`, `3bce3df7/bc61867b`) |
+| M1 oracle | `oracle-diff.py --skip-build` exit 0, status=pass, 3/3 traces, 3/3 final states, 3/3 negative controls, 3/3 scheduler controls, masked gating 1/1; per-ROM JSON fields identical to baseline; ROMs contain no controller-window access |
+| Differential serialized-state probe | pre-change (`git archive 85af523`) vs post-change payload/envelope/meta byte-identical (`db6e61db…` / `87c57711…` / `a8b7ffb0…`); pre-change snapshot restores post-change and vice versa; 23/23 per-step hashes equal for neutral vs extreme frames |
+| Controller semantics | per-bit `0x40|(!mask&0x3F)`, neutral `0x7F`, A/Start/high bits inert, two independent ports, writes/debugger typed errors, step-scoped clearing on success and failure, input absent from snapshot/state/config |
+
+Hardware-TAS acceptance highlights (raw evidence in
+`.research/m3-hardware/verification/`): hardware record/play/verify with input-dependent
+state (`6d1677d5…` neutral vs `2d97debc…` Up+B, first divergence index 4); deterministic
+debug/release movie bytes (`3e11e762…`); scripted edit and studio (11 blocks, 2 cache
+evictions, goto-2 state equal to ranged verify); two-controller v2 mapping with ports
+2/3, axes and keys inert; 18 typed-error transcripts for missing/dir/short/4 MiB+/
+unreadable/wrong ROM, wrong backend, `--root`/`--session`, `compare --rom` and
+missing/duplicate `--rom`; ROM read-only and never embedded. Structural/suppression
+audits: no added `#[allow]`/`#[ignore]`/`unsafe`/`todo!`, no deleted test or assertion,
+`Cargo.toml`/`Cargo.lock` diff 0 bytes, `cargo tree -d` empty, one controller read path
+and one manager-selection path.
+
+M3 completion audit (executed): anchors/seek (movie_v2 8, replay 23), rewind/interactive
+stepping (player 16, studio 11), rerecord/branch editing (edit 22, tas_edit 19),
+multi-device input (tas 21, movie_v2 8) and real-hardware input TAS (controller 6, CLI
+hardware 13, rows A45–A52) all pass; import/export adapters remain documented-only; no
+O(1)/persistent-cache/real-controller-timing/cycle-accuracy/game-compatibility claim was
+found. **M3 may be marked complete after t6 promotes the durable docs and acceptance
+record; formal completion must wait for that promotion and the t7 audit.**
+
+Non-blocking observation: the durable docs still carry pre-verification wording
+("Proposed", "planned - not yet executed", "no controller code exists"). That understates
+the now-verified tree (it is not an overclaim) and is exactly the t6 documentation
+promotion this block requires; this verifier did not edit those paths. AS-14 note:
+`backend.rs`/`bus.rs` already exceeded the 800-line review trigger at HEAD and the
+controller additions are cohesive, tested and within the accepted ADR-0009 scope.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.

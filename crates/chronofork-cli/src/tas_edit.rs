@@ -27,10 +27,8 @@ use chronofork_sessions::{
     AnchorPolicy, EditMeta, EditOutcome, MAX_NAME_BYTES, Movie, MovieEdit, edit_movie,
 };
 
-use crate::tas::{help_requested, read_movie_file, write_movie_file};
-use crate::{
-    CliError, VERSION, begin_record, option_value, parse_u64, set_once, synthetic_session_manager,
-};
+use crate::tas::{help_requested, read_movie_file, session_manager, write_movie_file};
+use crate::{CliError, VERSION, begin_record, option_value, parse_u64, set_once};
 
 /// One explicit `--anchors` choice, before an interval is resolved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +52,7 @@ struct EditOptions {
     name: Option<String>,
     anchors: Option<AnchorChoice>,
     anchor_interval: Option<u64>,
+    rom: Option<PathBuf>,
 }
 
 /// Runs `chronofork tas edit`.
@@ -93,7 +92,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         meta = meta.with_anchor_policy(policy);
     }
 
-    let mut manager = synthetic_session_manager();
+    let mut manager = session_manager(options.rom.as_deref())?;
     let outcome = edit_movie(&source, &mut manager, &edit, &meta)?;
     let bytes = outcome.movie().to_bytes()?;
     write_movie_file(out_path, &bytes)?;
@@ -155,11 +154,17 @@ fn parse_options(args: &[String]) -> Result<EditOptions, CliError> {
                 parse_u64(non_empty_value(args, &mut index, &flag)?, &flag)?,
                 &flag,
             )?,
+            "--rom" => set_once(
+                &mut parsed.rom,
+                PathBuf::from(non_empty_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
             other => {
                 return Err(CliError(format!(
                     "unknown `tas edit` option `{other}`; expected --movie <FILE> --out <FILE> \
                      --set-input <INDEX=MASK> --truncate-after <INDEX> --movie-id <U64> \
-                     --name <NAME> --anchors <keep-prefix|drop|rebuild> --anchor-interval <N>"
+                     --name <NAME> --anchors <keep-prefix|drop|rebuild> --anchor-interval <N> \
+                     --rom <FILE>"
                 )));
             }
         }
@@ -458,17 +463,20 @@ pub(crate) fn print_help() {
     println!("movie format is stored: `edits`, `truncate_after`, `prefix_steps` and");
     println!("`resimulated_steps` describe this invocation only.");
     println!();
-    println!("This is synthetic-backend scope; the Mega Drive slice ignores input. Deferred:");
-    println!("real-hardware input TAS, in-place editing, timeline insert/delete/reorder,");
-    println!("scripted input files, persisted rerecord counters, import/export adapters");
-    println!("(such as BizHawk BK2), mixing retained and rebuilt anchors, CLI editing of");
-    println!("ports 1-3/axes/keys, and HTTP/MCP/GUI/daemon. This is one increment of M3,");
-    println!("which is not complete.");
+    println!("This is synthetic-backend scope by default. `--rom <FILE>` edits a movie");
+    println!("recorded on the minimal Mega Drive backend instead; the ROM must match the");
+    println!("movie's embedded configuration hash, and the slice reads only the TH-high");
+    println!("3-button controller subset (A and Start are not readable). Deferred: A/Start");
+    println!("and TH/6-button controller support, in-place editing, timeline");
+    println!("insert/delete/reorder, scripted input files, persisted rerecord counters,");
+    println!("import/export adapters (such as BizHawk BK2), mixing retained and rebuilt");
+    println!("anchors, CLI editing of ports 1-3/axes/keys, and HTTP/MCP/GUI/daemon. This is");
+    println!("one increment of M3, which is not complete.");
     println!();
     println!("Usage:");
     println!("  chronofork tas edit --movie <FILE> --out <FILE>");
     println!("                      --set-input <INDEX=MASK>...   or --truncate-after <INDEX>");
-    println!("                      [--movie-id <U64>] [--name <NAME>]");
+    println!("                      [--movie-id <U64>] [--name <NAME>] [--rom <FILE>]");
     println!("                      [--anchors <keep-prefix|drop|rebuild>]");
     println!("                      [--anchor-interval <N>]");
     println!("  chronofork tas edit --help");
@@ -476,6 +484,8 @@ pub(crate) fn print_help() {
     println!("  --movie <FILE>     Required source movie, opened read-only and never modified");
     println!("  --out <FILE>       Required new movie file, published atomically on success;");
     println!("                     it must not identify the source file");
+    println!("  --rom <FILE>       Edit a movie recorded on the minimal Mega Drive backend; the");
+    println!("                     ROM must match the movie's embedded configuration hash");
     println!("  --set-input <INDEX=MASK>  Repeatable. INDEX is a zero-based decimal step index");
     println!("                     below the source step count; MASK is a decimal u32 that");
     println!("                     replaces only port 0 of that step. Duplicate indices are");

@@ -22,9 +22,14 @@ recorded, and the earlier two-ROM run is preserved as pre-E2-15 controlled-condi
 history). Remaining limits: privilege is not enforced; only HBlank level 4 / VBlank
 level 6 sources are modelled, with level 7 a predicate rule only; no interrupt-timing
 equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
-Rendering, DMA, audio, Z80 and controllers are not implemented. ADR-0002 is
-accepted. Claims below distinguish implemented facts from proposals and upstream
-research claims.
+Rendering, DMA, audio and Z80 are not implemented, and controller input covers only the
+TH-high 3-button subset. The final M3 increment — real-hardware input TAS on the minimal
+Mega Drive slice — is implemented and independently verified
+([ADR-0009](adr/0009-real-hardware-input-tas.md); **Accepted**, owner-approved
+2026-11-15T23:38:06-03:00; t5 PASS 2026-11-16), with the [M3 hardware acceptance
+plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 `executed - passed`. **M3 is
+complete for the documented deterministic minimal-slice scope**; ADR-0002 is accepted.
+Claims below distinguish implemented facts from proposals and upstream research claims.
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -44,11 +49,12 @@ owner-checked recovery; retention is manual; there is no encryption, authenticat
 format migration; and the public convenience `save_snapshot` remains publish-only for
 third-party callers while the CLI uses the lock-aware workflow.
 
-**M3's first, second, third, fourth and fifth increments (TAS, deterministic replay,
-partial replay/seek, branch comparison, movie format v2 anchors and multi-device input,
-the in-process rewind state cache with interactive stepping, and rerecord/branch editing)
-are implemented and independently verified (M3-T4, M3-T5, the t7 format-v2 verification
-PASS, the t5 rewind verification PASS and the t10 repair-round-2 PASS,
+**M3's first through sixth increments (TAS, deterministic replay, partial replay/seek,
+branch comparison, movie format v2 anchors and multi-device input, the in-process rewind
+state cache with interactive stepping, rerecord/branch editing, and real-hardware input TAS
+with `--rom` backend selection) are implemented and independently verified (M3-T4, M3-T5,
+the t7 format-v2 verification PASS, the t5 rewind verification PASS, the t10
+repair-round-2 PASS and the t5 hardware-TAS/M3 completion audit PASS,
 2026-11-15/2026-11-16).** The first increment adds the canonical single-file v1 `.cfmovie`
 format, record/playback of a per-tick input sequence on the deterministic synthetic
 backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
@@ -83,13 +89,21 @@ acceptance plan](quality/m3-rerecord-acceptance.md) rows M3-A35–A44 `executed 
 t10 repair-round-2 PASS 2026-11-16). It adds `chronofork tas edit`, verified-prefix plus
 suffix re-simulation into a new branch artifact with `parent_movie_id` set to the source
 id, `keep-prefix`/`drop`/`rebuild` anchor handling, and v1→v1 / v2→v2 preservation without
-a new format version or stored rerecord counter. M3 is **not complete**: real-hardware
-input TAS (the Mega Drive `step` ignores input), import/export adapters,
-checkpoint-reference movies, HTTP/MCP/GUI and the Stage 6 daemon remain deferred, and
-none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities is
-claimed. The acceptance claim is the deterministic synthetic backend
-on Linux; no hardware input, cross-backend portability, O(1) seek or persistent cache is
-claimed. M2 remains the previous completed milestone.
+a new format version or stored rerecord counter. A sixth increment adds real-hardware input
+TAS: stateless per-step Mega Drive controller data-register reads for ports 1–2 (TH-high
+3-button subset; A/Start, TH/6-button multiplexing, timing, analog/keyboard hardware and
+commercial ROMs deferred), no canonical snapshot/state-hash/demo/M1 change, and `--rom`
+backend selection on `tas record/play/verify/studio/edit` (`compare` stays
+backend-agnostic), verified end to end with the synthetic `controller_rom()`. The
+[M3 hardware acceptance plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 are
+`executed - passed` (t5 PASS 2026-11-16), and the M3 completion audit passed. **M3 is
+complete for the documented deterministic minimal-slice scope** (t6 promotion; t7
+promotion audit pending). Import/export adapters remain documented-only, and
+checkpoint-reference movie support, HTTP/MCP/GUI and the Stage 6 daemon remain deferred;
+none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities or
+TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
+synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
+controller timing. M2 and M3 are the completed milestones.
 
 ## Start here
 
@@ -118,6 +132,7 @@ claimed. M2 remains the previous completed milestone.
 | [M3 format-v2 acceptance](quality/m3-format-v2-acceptance.md) | Executed acceptance criteria, results and residual limits for the v2 movie container, anchors, anchor-based seek and multi-device input (t7 PASS, 2026-11-15) |
 | [M3 rewind acceptance](quality/m3-rewind-acceptance.md) | Executed acceptance criteria, results and residual limits for the in-process rewind state cache and interactive `tas studio` stepping (t5 PASS, 2026-11-15) |
 | [M3 rerecord acceptance](quality/m3-rerecord-acceptance.md) | Executed acceptance criteria, results and residual limits for input editing, suffix re-simulation, branch artifacts and anchor handling (M3-A35–A44; t10 repair-round-2 PASS, 2026-11-16) |
+| [M3 hardware acceptance](quality/m3-hardware-acceptance.md) | Executed acceptance criteria, results and evidence for Mega Drive controller reads, hardware record/play/verify/edit/studio, snapshot/fork/rewind, two-controller input, `--rom` selection and M1/M2/M3 non-regression (M3-A45–A53; t5 PASS 2026-11-16) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -132,6 +147,7 @@ claimed. M2 remains the previous completed milestone.
 | [ADR-0006: movie format v2](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) | Accepted (owner-approved 2026-11-15) v2 container, checkpoint anchors, anchor-based seek and schema-2 multi-device input; implemented and independently verified for the synthetic backend (t7 PASS) |
 | [ADR-0007: in-process rewind and interactive stepping](adr/0007-in-process-rewind-and-interactive-stepping.md) | Accepted (owner-approved 2026-11-15) bounded session-layer state cache, deterministic rewind and `tas studio` stdin surface; implemented and independently verified for the synthetic backend (t5 PASS) |
 | [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
+| [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 audit pending |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

@@ -23,6 +23,7 @@ documentation, not meeting notes.
 | [0006](0006-movie-format-v2-anchors-and-multi-device-input.md) | Movie format v2 — checkpoint anchors and multi-device input | Accepted (owner-approved 2026-11-15); implemented and independently verified for the synthetic backend (t7 PASS) |
 | [0007](0007-in-process-rewind-and-interactive-stepping.md) | In-process rewind state cache and interactive stepping | Accepted (owner-approved 2026-11-15); implemented and independently verified for the synthetic backend (t5 PASS) |
 | [0008](0008-rerecord-and-branch-editing.md) | Rerecord and branch editing | **Accepted** (owner-approved 2026-11-15); implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
+| [0009](0009-real-hardware-input-tas.md) | Real-hardware input TAS — controller-port reads and Mega Drive backend selection | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16; M3 complete, t6 promotion, t7 audit pending) |
 
 ## Template
 

@@ -1,4 +1,5 @@
-//! `chronofork tas` process boundary: record, play, verify and compare.
+//! `chronofork tas` process boundary: record, play, verify, compare, studio and
+//! edit.
 //!
 //! This module is a thin, line-oriented adapter over [`chronofork_sessions::Movie`]
 //! and the session replay/comparison API: it parses flags, reads or writes one
@@ -6,6 +7,10 @@
 //! Encoding, decoding, checkpoint import, replay, range validation and branch
 //! comparison stay in `chronofork-sessions`; this code never re-implements the
 //! movie codec, a range predicate or a comparison predicate.
+//!
+//! `--rom <FILE>` selects the minimal Mega Drive backend (ADR-0009) through the
+//! existing [`chronofork_megadrive::MegadriveFactory`]; without it every command
+//! keeps the unchanged deterministic synthetic factory and output.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -13,14 +18,19 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use chronofork_backend_api::BackendFactory;
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
+use chronofork_megadrive::{MegadriveFactory, ROM_END};
 use chronofork_sessions::{
     ComparisonReport, ComparisonVerdict, DEFAULT_CACHE_BYTE_LIMIT, DEFAULT_CACHE_CAPACITY,
     DEFAULT_CACHE_INTERVAL_STEPS, LoadedSnapshot, MAX_ANCHORS, MAX_CACHE_BYTE_LIMIT,
     MAX_CACHE_CAPACITY, MAX_MOVIE_BYTES, MAX_NAME_BYTES, MAX_STEPS, MAX_V2_STEPS, Movie,
-    MovieError, MovieMeta, ReplayOutcome, ReplayRange, SnapshotRepository, compare_movies,
+    MovieError, MovieMeta, ReplayOutcome, ReplayRange, SessionManager, SnapshotRepository,
+    compare_movies,
 };
+use chronofork_test_backend::SyntheticBackendFactory;
 
 use crate::{
     CliError, VERSION, begin_record, ensure, input_frame, option_value, parse_key, parse_u32,
@@ -90,6 +100,7 @@ struct RecordOptions {
     root: Option<PathBuf>,
     session: Option<u64>,
     snapshot: Option<u64>,
+    rom: Option<PathBuf>,
 }
 
 fn parse_record_options(args: &[String]) -> Result<RecordOptions, CliError> {
@@ -158,12 +169,17 @@ fn parse_record_options(args: &[String]) -> Result<RecordOptions, CliError> {
                 parse_key(option_value(args, &mut index, &flag)?, &flag)?,
                 &flag,
             )?,
+            "--rom" => set_once(
+                &mut parsed.rom,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
             other => {
                 return Err(CliError(format!(
                     "unknown `tas record` option `{other}`; expected --movie <FILE> \
                      --steps <N> --input <U32> --ports <P1,P2,P3> --axes <A0,A1,A2,A3> \
                      --keys <U64> --anchor-interval <N> --movie-id <U64> --name <NAME> \
-                     --root <DIR> --session <KEY> --snapshot <KEY>"
+                     --root <DIR> --session <KEY> --snapshot <KEY> --rom <FILE>"
                 )));
             }
         }
@@ -255,6 +271,19 @@ fn tas_record(args: &[String]) -> Result<(), Box<dyn Error>> {
             CliError("`--snapshot` requires `--session <KEY>` in `tas record`".to_owned()).into(),
         );
     }
+    // Durable M2 storage remains a synthetic-backend surface in this increment:
+    // no Mega Drive checkpoint can be published there, so the combination is a
+    // typed failure before any storage read or session creation.
+    if options.rom.is_some()
+        && (options.root.is_some() || options.session.is_some() || options.snapshot.is_some())
+    {
+        return Err(CliError(
+            "`--rom` cannot be combined with `--root`, `--session` or `--snapshot` in \
+             `tas record`: durable storage is synthetic-backend only"
+                .to_owned(),
+        )
+        .into());
+    }
     let steps = options.steps.unwrap_or(0);
     let requested_interval = options.anchor_interval.unwrap_or(0);
     // The v2 writer is used only when a multi-device flag is present or the
@@ -294,17 +323,24 @@ fn tas_record(args: &[String]) -> Result<(), Box<dyn Error>> {
     // fails without recording and without touching the output path.
     let meta = MovieMeta::new(options.movie_id.unwrap_or(1), options.name, None)?;
 
-    let mut manager = synthetic_session_manager();
-    let source = match options.root {
+    let (mut manager, source) = match options.root {
         Some(root) => {
             // A record never initializes or writes storage: open an existing root,
-            // load the selected committed checkpoint and replay in memory only.
+            // load the selected committed checkpoint and replay in memory only. The
+            // `--rom`/`--root` combination was rejected above, so this is the
+            // unchanged synthetic storage path.
+            let mut manager = synthetic_session_manager();
             let repository = SnapshotRepository::open(root)?;
             let loaded = select_checkpoint(&repository, options.session, options.snapshot)?;
-            manager
-                .create_session_from_stored_snapshot(loaded.snapshot, loaded.entry.session_key)?
+            let source = manager
+                .create_session_from_stored_snapshot(loaded.snapshot, loaded.entry.session_key)?;
+            (manager, source)
         }
-        None => manager.create_session()?,
+        None => {
+            let mut manager = session_manager(options.rom.as_deref())?;
+            let source = manager.create_session()?;
+            (manager, source)
+        }
     };
     let movie = if v2_requested {
         Movie::record_v2(&mut manager, source, meta, &inputs, anchor_interval)?
@@ -405,6 +441,7 @@ struct ReplayOptions {
     movie: PathBuf,
     from: Option<Tick>,
     until: Option<Tick>,
+    rom: Option<PathBuf>,
 }
 
 fn parse_replay_options(
@@ -414,6 +451,7 @@ fn parse_replay_options(
     let mut movie: Option<PathBuf> = None;
     let mut from: Option<u64> = None;
     let mut until: Option<u64> = None;
+    let mut rom: Option<PathBuf> = None;
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].clone();
@@ -433,10 +471,15 @@ fn parse_replay_options(
                 parse_u64(option_value(args, &mut index, &flag)?, &flag)?,
                 &flag,
             )?,
+            "--rom" => set_once(
+                &mut rom,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
             other => {
                 return Err(CliError(format!(
                     "unknown `tas {subcommand}` option `{other}`; expected --movie <FILE> \
-                     --from <TICK> --until <TICK>"
+                     --from <TICK> --until <TICK> --rom <FILE>"
                 ))
                 .into());
             }
@@ -450,6 +493,7 @@ fn parse_replay_options(
         movie,
         from: from.map(Tick::from_raw),
         until: until.map(Tick::from_raw),
+        rom,
     })
 }
 
@@ -524,7 +568,8 @@ fn latest_committed_checkpoint(
 /// `final_state_hash` are the observed values at `range_until`.
 ///
 /// Every invocation imports the embedded checkpoint into a fresh in-process
-/// session, so a rewind is a new invocation and no state is carried between
+/// session over the backend selected by `--rom` (the synthetic default without
+/// it), so a rewind is a new invocation and no state is carried between
 /// process runs. Range validation is owned by [`ReplayRange::new`] and runs before
 /// the checkpoint import; an invalid range exits 1 with a stderr diagnostic and
 /// no stdout block. A state-hash divergence prints the record block plus the exact
@@ -543,7 +588,7 @@ fn replay_movie(
     } else {
         ReplayRange::full(&movie)
     };
-    let mut manager = synthetic_session_manager();
+    let mut manager = session_manager(options.rom.as_deref())?;
     match range.replay(&mut manager) {
         Ok(outcome) => {
             let mut output = String::new();
@@ -693,6 +738,75 @@ fn tas_compare(args: &[String]) -> Result<(), Box<dyn Error>> {
             .into())
         }
     }
+}
+
+/// Reads one Mega Drive ROM file through a single bounded, read-only path.
+///
+/// The file is opened read-only, must be a regular file and is read through the
+/// 4 MiB cartridge-window bound before any factory allocation. A file larger than
+/// the window is rejected from its metadata, so an oversized image never becomes
+/// an oversized allocation; [`MegadriveFactory`] still owns the remaining
+/// minimum-size and window validation. The ROM is never written, renamed or
+/// deleted, and its bytes never enter stdout.
+pub(crate) fn read_rom_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    let file = File::open(path)
+        .map_err(|error| CliError(format!("failed to open ROM `{}`: {error}", path.display())))?;
+    let metadata = file.metadata().map_err(|error| {
+        CliError(format!(
+            "failed to inspect ROM `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError(format!(
+            "ROM path `{}` is not a regular file",
+            path.display()
+        ))
+        .into());
+    }
+    let limit = u64::from(ROM_END);
+    if metadata.len() > limit {
+        return Err(CliError(format!(
+            "ROM `{}` is {} bytes, exceeding the {limit}-byte (4 MiB) cartridge window",
+            path.display(),
+            metadata.len()
+        ))
+        .into());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| CliError(format!("failed to read ROM `{}`: {error}", path.display())))?;
+    if bytes.len() as u64 > limit {
+        return Err(CliError(format!(
+            "ROM `{}` exceeds the {limit}-byte (4 MiB) cartridge window",
+            path.display()
+        ))
+        .into());
+    }
+    Ok(bytes)
+}
+
+/// Builds the backend factory selected by an optional `--rom` path.
+///
+/// With a ROM this is the existing [`MegadriveFactory`] over the bounded image;
+/// without one it is the unchanged [`SyntheticBackendFactory::default`] path. No
+/// other compatibility predicate or manager is introduced.
+pub(crate) fn backend_factory(
+    rom: Option<&Path>,
+) -> Result<Arc<dyn BackendFactory>, Box<dyn Error>> {
+    match rom {
+        Some(path) => Ok(Arc::new(MegadriveFactory::new(read_rom_file(path)?)?)),
+        None => Ok(Arc::new(SyntheticBackendFactory::default())),
+    }
+}
+
+/// Builds the session manager over the backend selected by `--rom`.
+///
+/// Every executing TAS command (record, play, verify, studio and edit) shares this
+/// one selection path; `compare` never calls it because it is backend-agnostic.
+pub(crate) fn session_manager(rom: Option<&Path>) -> Result<SessionManager, Box<dyn Error>> {
+    Ok(SessionManager::new(backend_factory(rom)?))
 }
 
 /// Reads one movie file with an explicit size bound applied before decoding.
@@ -916,8 +1030,10 @@ pub(crate) fn print_help() {
     println!("chronofork {VERSION} — tas record|play|verify|compare|studio|edit");
     println!();
     println!("Records, replays, verifies, compares and edits canonical `.cfmovie` input");
-    println!("sequences on the deterministic synthetic test backend. A movie embeds its");
-    println!("canonical checkpoint, so replay and edit need only the movie file. Partial");
+    println!("sequences on the deterministic synthetic test backend by default, or on the");
+    println!("minimal Mega Drive 68000 slice when `--rom <FILE>` selects it. A movie embeds");
+    println!("its canonical checkpoint, so replay and edit need only the movie file (and, for");
+    println!("a Mega Drive movie, the same ROM). Partial");
     println!("replay and seek are deterministic re-simulation from that checkpoint or from");
     println!("the nearest embedded anchor, not O(1) random access; a rewind is a new");
     println!("invocation and no state is carried between invocations. `tas edit` creates a");
@@ -934,8 +1050,14 @@ pub(crate) fn print_help() {
     println!("`verify` imports the embedded checkpoint and still verifies every step. v1 files");
     println!("stay readable and there is no migration.");
     println!();
-    println!("These are not implemented: real-hardware input TAS (the Mega Drive slice ignores");
-    println!("input), TAS import/export adapters (such as BizHawk BK2) and HTTP/MCP/GUI/daemon.");
+    println!("`--rom <FILE>` selects the minimal Mega Drive slice for real-hardware input TAS");
+    println!("on its documented TH-high 3-button subset: controller port 1 reads port 0");
+    println!("(`--input`) and controller port 2 reads port 1 (`--ports`), exposing");
+    println!("Up/Down/Left/Right/B/C active-low. The following are not implemented: A and");
+    println!("Start (no TH latch, direction register or TH-low phase), TH/6-button");
+    println!("multiplexing, analog axes, keyboard hardware, controller timing, port 3, TAS");
+    println!("import/export adapters (such as BizHawk BK2) and HTTP/MCP/GUI/daemon. Without");
+    println!("`--rom` every command keeps the unchanged synthetic backend.");
     println!("`tas edit` implements ADR-0008 rerecord and branch editing as a functional edit");
     println!("and deterministic suffix re-simulation: it runs the unchanged prefix from the");
     println!("embedded checkpoint, applies edited inputs, re-simulates every later step and");
@@ -960,14 +1082,17 @@ pub(crate) fn print_help() {
     println!("                        [--keys <U64>] [--anchor-interval <N>]");
     println!("                        [--movie-id <U64>] [--name <NAME>]");
     println!("                        [--root <DIR> [--session <KEY> [--snapshot <KEY>]]]");
+    println!("                        [--rom <FILE>]");
     println!("  chronofork tas play --movie <FILE> [--from <TICK>] [--until <TICK>]");
+    println!("                      [--rom <FILE>]");
     println!("  chronofork tas verify --movie <FILE> [--from <TICK>] [--until <TICK>]");
+    println!("                        [--rom <FILE>]");
     println!("  chronofork tas compare --movie <FILE> --against <FILE>");
     println!("  chronofork tas studio --movie <FILE> [--cache-interval <N>]");
-    println!("                        [--cache-capacity <N>] [--cache-bytes <N>]");
+    println!("                        [--cache-capacity <N>] [--cache-bytes <N>] [--rom <FILE>]");
     println!("  chronofork tas edit --movie <FILE> --out <FILE>");
     println!("                      --set-input <INDEX=MASK>...   or --truncate-after <INDEX>");
-    println!("                      [--movie-id <U64>] [--name <NAME>]");
+    println!("                      [--movie-id <U64>] [--name <NAME>] [--rom <FILE>]");
     println!("                      [--anchors <keep-prefix|drop|rebuild>]");
     println!("                      [--anchor-interval <N>]");
     println!();
@@ -995,6 +1120,9 @@ pub(crate) fn print_help() {
         "  --session <KEY>    Durable session to seed from (default: latest committed checkpoint)"
     );
     println!("  --snapshot <KEY>   Durable snapshot to seed from (requires --session)");
+    println!("  --rom <FILE>       Record on the minimal Mega Drive backend selected by this ROM;");
+    println!("                     the same ROM is required to verify or play the movie. Not");
+    println!("                     valid with --root, --session or --snapshot (synthetic-only)");
     println!();
     println!("play/verify:");
     println!("  --movie <FILE>     Required input movie file");
@@ -1010,6 +1138,9 @@ pub(crate) fn print_help() {
     println!("                     `prefix_verified=0` and verifies the recorded suffix from");
     println!("                     the anchor only; run a full-range `verify` to re-simulate");
     println!("                     the pre-anchor prefix as well.");
+    println!("  --rom <FILE>       Import the embedded checkpoint through the minimal Mega Drive");
+    println!("                     backend selected by this ROM; the ROM's configuration hash");
+    println!("                     must match the movie, or the import is a typed failure");
     println!();
     println!("compare:");
     println!("  --movie <FILE>     First recorded branch file");
@@ -1019,6 +1150,8 @@ pub(crate) fn print_help() {
     println!("  --movie <FILE>     Required source movie, opened read-only and never modified");
     println!("  --out <FILE>       Required new movie, published atomically; it may not identify");
     println!("                     the source by normalized path or, on Unix, by device/inode");
+    println!("  --rom <FILE>       Edit a movie recorded on the minimal Mega Drive backend; the");
+    println!("                     ROM must match its embedded configuration hash");
     println!("  --set-input <INDEX=MASK>  Repeatable. INDEX is a zero-based decimal step index");
     println!("                     below the source step count; MASK is a decimal u32 replacing");
     println!("                     only port 0. Duplicate indices are rejected. At least one");
@@ -1047,9 +1180,9 @@ pub(crate) fn print_help() {
     println!("`parent_movie_id` equal to the source id, and stores no rerecord counter. The");
     println!("embedded checkpoint is copied unchanged; explicit anchor flags are rejected on");
     println!("a v1 source. See `chronofork tas edit --help` for the full contract and the");
-    println!("deferred list (real-hardware input TAS, in-place and timeline editing, scripted");
-    println!("inputs, persisted counters, import/export adapters, mixed retained/rebuilt");
-    println!("anchors and CLI editing beyond port 0).");
+    println!("deferred list (A/Start and TH/6-button controller support, in-place and timeline");
+    println!("editing, scripted inputs, persisted counters, import/export adapters, mixed");
+    println!("retained/rebuilt anchors and CLI editing beyond port 0).");
     println!();
     println!("Output is one or more `key=value` blocks on stdout; diagnostics go to stderr");
     println!("as `chronofork: <error>`. Exit code is 0 on success and 1 on any typed failure.");
@@ -1086,6 +1219,8 @@ pub(crate) fn print_help() {
     println!();
     println!("studio:");
     println!("  --movie <FILE>       Required movie file, opened read-only and never rewritten");
+    println!("  --rom <FILE>         Open the movie on the minimal Mega Drive backend selected");
+    println!("                       by this ROM; it must match the embedded configuration hash");
     println!("  --cache-interval <N> Capture a verified state every N recorded steps (default");
     println!(
         "                       {DEFAULT_CACHE_INTERVAL_STEPS}; 0 disables capture; max {MAX_STEPS})"
@@ -1120,6 +1255,7 @@ pub(crate) fn print_help() {
     println!("  target, next at the end, back at the start, tick mismatch, replay failure)");
     println!("  exits 1 with a stderr diagnostic and no block for that line. Studio writes");
     println!("  no movie, cache, checkpoint, storage root or metadata file; nothing persists.");
-    println!("  The acceptance backend is the deterministic synthetic fixture, and this is");
-    println!("  one increment of M3, which is not complete.");
+    println!("  The verified acceptance backend is the deterministic synthetic fixture; `--rom`");
+    println!("  selects the minimal Mega Drive controller subset for the same blocks, and this");
+    println!("  is one increment of M3, which is not complete.");
 }
