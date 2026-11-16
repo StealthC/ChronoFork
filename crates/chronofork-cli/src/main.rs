@@ -695,6 +695,7 @@ fn describe_backend() -> Result<(), Box<dyn Error>> {
     );
     println!("capability.breakpoints: {}", capabilities.breakpoints);
     println!("capability.watchpoints: {}", capabilities.watchpoints);
+    println!("capability.debug_events: {}", capabilities.debug_events);
     println!("capability.tracing: {}", capabilities.tracing);
     println!("capability.rendering: {}", capabilities.rendering);
     println!("capability.audio: {}", capabilities.audio);

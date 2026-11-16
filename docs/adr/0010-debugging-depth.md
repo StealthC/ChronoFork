@@ -289,9 +289,11 @@ with their dropped count. `StopReason` is `Breakpoint { id }`, `Watchpoint { ids
 `Event { id }`, `Halted` or `StepLimit`.
 
 **Limits.** At most 64 breakpoints, 64 watchpoints, 64 event breakpoints and 64
-logpoints. Event capacity is `1..=65_536` (default 1,024). Log capacity is
-`1..=4_096` (default 256). A full table returns a typed error; a full ring evicts the
-oldest entry and counts it. All limits are constants in the crate.
+logpoints. Event capacity is `1..=65_536` (default 1,024). The logpoint ring is fixed at
+256 entries in this increment; the public `MAX_LOG_CAPACITY` constant is only the asserted
+compile-time upper bound (4,096), not a configurable capacity. A full table returns a typed
+error; a full ring evicts the oldest entry and counts it. All limits are constants in the
+crate.
 
 **Errors.** `DebugError` is one typed enum: backend errors, unsupported observation,
 missing `pc`, unknown trigger, unknown register, invalid range/condition/message/limit,
@@ -305,7 +307,8 @@ configuration hash, payload version and all snapshots; `restore` leaves it untou
 matching the existing instruction-trace rule. The bus records:
 
 - `Watchpoint` for every matching byte access, read or write, on any mapped or device
-  window.
+  window. The CPU's own opcode and extension-word fetches are ordinary bus reads and
+  therefore match a read watchpoint; they are not logged as a separate event class.
 - `BusWrite` for work-RAM byte writes (VDP writes are `VdpPort` events, not duplicates).
 - `VdpPort` for VDP port byte/word reads and writes with offset, value and width.
 - `ControllerRead` for controller data-register reads with port and byte value.
@@ -315,8 +318,8 @@ changes, `InterruptDelivered` after a successful interrupt entry and
 `InterruptAcknowledged` after the scheduler acknowledges exactly the delivered level.
 Events created during a step carry the tick at the start of that step (the pre-step
 `tick`); byte-granular bus events are the documented unit because the bus serves byte
-accesses. Instruction fetches are not logged unless a watchpoint matches them. Debugger
-`read_memory`/`write_memory` never produce events.
+accesses. There is no general instruction-fetch event; a fetch appears only through a matching
+watchpoint. Debugger `read_memory`/`write_memory` never produce events.
 
 **Views.** New pure view types in `chronofork-megadrive` expose decoded state without
 side effects:

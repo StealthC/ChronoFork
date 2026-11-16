@@ -52,6 +52,7 @@ fn backend_describe_reports_real_capabilities() {
     assert!(stdout.contains("backend: chronofork.test.synthetic"));
     assert!(stdout.contains("test_backend: true"));
     assert!(stdout.contains("capability.breakpoints: false"));
+    assert!(stdout.contains("capability.debug_events: false"));
     assert!(stdout.contains("capability.tracing: false"));
 }
 

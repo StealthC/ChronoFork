@@ -37,11 +37,12 @@
 //!
 //! At most [`MAX_BREAKPOINTS`], [`MAX_WATCHPOINTS`],
 //! [`MAX_EVENT_BREAKPOINTS`] and [`MAX_LOGPOINTS`] triggers are stored; a full
-//! table is a [`DebugError::TableFull`]. The backend event ring is bounded by
-//! [`MAX_EVENT_CAPACITY`] (default [`DEFAULT_EVENT_CAPACITY`]) and the logpoint
-//! ring by [`MAX_LOG_CAPACITY`] (default [`DEFAULT_LOG_CAPACITY`]); both count
-//! evictions instead of growing without bound. [`Debugger::run`] accepts a step
-//! limit in `1..=MAX_RUN_STEP_LIMIT`.
+//! table is a [`DebugError::TableFull`]. The backend event ring accepts
+//! `1..=MAX_EVENT_CAPACITY` (default [`DEFAULT_EVENT_CAPACITY`]). The logpoint
+//! ring is fixed at [`DEFAULT_LOG_CAPACITY`] (256) entries in this increment;
+//! [`MAX_LOG_CAPACITY`] (4,096) is only the asserted compile-time upper bound, not
+//! a configurable capacity. Both rings count evictions instead of growing without
+//! bound. [`Debugger::run`] accepts a step limit in `1..=MAX_RUN_STEP_LIMIT`.
 //!
 //! # Non-canonical state
 //!
