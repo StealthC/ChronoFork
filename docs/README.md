@@ -6,8 +6,10 @@ it is never a substitute for these documents.
 
 ## Status
 
-Bootstrap foundation and milestones M0–M4 complete and merged to `main` (M4 merged
-at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`). The repository
+Bootstrap foundation and milestones M0–M4 are complete and merged to `main` (M4 merged
+at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`); M5 tracing and
+scripting is implemented and independently verified on `agent/m5-tracing-scripting` at
+base `84f1476` but is not merged. The repository
 builds and tests a
 deterministic synthetic backend, the generic session layer, and a minimal 68000 +
 ROM/RAM Mega Drive backend with a VDP
@@ -47,6 +49,27 @@ PASS, 2026-11-16); the post-PASS capability-report/wording fix at `6b2a567` was 
 and audited. Stops are instruction-granular; no mid-instruction/cycle-exact stop, reverse
 execution, persistent debugger state, UI/HTTP/MCP, DMA/Z80/audio/rendering inspection,
 complete 68000 disassembly or cross-platform runtime evidence is claimed.
+
+**M5 (tracing and scripting) is implemented and independently verified for the documented
+deterministic minimal-slice scope on Linux, on branch `agent/m5-tracing-scripting` at
+HEAD/base `84f1476`; it is uncommitted and not merged.** The contract
+[ADR-0011](adr/0011-tracing-and-scripting.md) is implemented: a host-provided `CFTRACE1`
+v1 trace format for instructions, bus writes, VDP-port accesses, controller reads and
+interrupt phases with emulated ticks, triggered capture, circular retention, typed
+reject-only import, historical queries, first-divergence comparison and one-way TSV
+export, exposed by `chronofork trace capture/info/query/compare/export`; and a purpose-built
+deterministic script DSL with explicit source/operation/loop/variable/memory/report/step/
+trace/snapshot/wall-time limits, typed errors, a canonicalized capability sandbox and a
+byte-deterministic report, exposed by `chronofork script run`. All M5-A1–A39 rows in the
+[M5 acceptance plan](quality/m5-tracing-and-scripting-acceptance.md) are `executed -
+passed` (final T12 PASS, 2026-11-16, after the T7 `needs_revision` round and the T11 repair
+of F1–F10; T10 integrated review PASS). `Capabilities::tracing` stays `false` because the
+surface is host-provided; no canonical snapshot, state, configuration or movie byte
+changed. Limits: no DMA/audio/Z80 trace sources, no generic bus-read record,
+instruction-boundary stops, canonical v1 only, no TSV import or trace migration; no
+Rhai/Luau/Lua/WASM/Python embedding; the sandbox is a deterministic capability boundary,
+not process/OS isolation; TSV output is bounded by record count, not `MAX_TRACE_BYTES`;
+wall-time checks occur at statement and every-256-operation boundaries.
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -123,9 +146,10 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M4 are complete and merged to `main` (M4 at `4c595a2`); M5
-(tracing and scripting) is next, and the
-parallel hardware-depth tracks H1–H5 (CPU/instructions; video/VDP/DMA; audio/Z80;
-cartridge/controllers/timers; accuracy/evidence) remain partial or planned. The
+(tracing and scripting) is implemented and independently verified but integration-pending,
+and M6 (agent-native interfaces) is next. The parallel hardware-depth tracks H1–H5
+(CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
+accuracy/evidence) remain partial or planned. The
 [milestone status table](roadmap/milestones.md) is the canonical record of milestone
 status and integration state.
 
@@ -142,6 +166,7 @@ status and integration state.
 | [Execution model](architecture/execution-model.md) | Virtual time, determinism and replay |
 | [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
 | [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice and debug trace |
+| [Tracing and scripting architecture](architecture/tracing-and-scripting.md) | Host trace and session capture layers, canonical trace/query/compare, script runtime/limits/sandbox and CLI ownership |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
@@ -158,6 +183,7 @@ status and integration state.
 | [M3 rerecord acceptance](quality/m3-rerecord-acceptance.md) | Executed acceptance criteria, results and residual limits for input editing, suffix re-simulation, branch artifacts and anchor handling (M3-A35–A44; t10 repair-round-2 PASS, 2026-11-16) |
 | [M3 hardware acceptance](quality/m3-hardware-acceptance.md) | Executed acceptance criteria, results and evidence for Mega Drive controller reads, hardware record/play/verify/edit/studio, snapshot/fork/rewind, two-controller input, `--rom` selection and M1/M2/M3 non-regression (M3-A45–A53; t5 PASS 2026-11-16) |
 | [M4 debugging-depth acceptance](quality/m4-debugging-depth-acceptance.md) | Executed acceptance criteria, results and evidence for breakpoints, watchpoints, event breakpoints/logpoints, views/disassembly, Mega Drive inspectors and non-perturbation (M4-A1–A17; independent t5 PASS 2026-11-16) |
+| [M5 tracing/scripting acceptance](quality/m5-tracing-and-scripting-acceptance.md) | Executed acceptance criteria, results and evidence for the canonical trace format/capture/query/compare/TSV, the sandboxed script DSL and both CLI surfaces (M5-A1–A39; final T12 PASS 2026-11-16) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -173,6 +199,7 @@ status and integration state.
 | [ADR-0007: in-process rewind and interactive stepping](adr/0007-in-process-rewind-and-interactive-stepping.md) | Accepted (owner-approved 2026-11-15) bounded session-layer state cache, deterministic rewind and `tas studio` stdin surface; implemented and independently verified for the synthetic backend (t5 PASS) |
 | [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
 | [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 promotion audit PASS 2026-11-16 |
+| [ADR-0011: tracing and scripting](adr/0011-tracing-and-scripting.md) | **Accepted** (owner-approved 2026-11-16 by the explicit Stage 5 directive); implemented and independently verified for the documented minimal-slice scope (final T12 PASS 2026-11-16): host trace surface, `CFTRACE1` v1, queries/comparison/TSV and the sandboxed deterministic DSL; integration pending |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

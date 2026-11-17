@@ -45,8 +45,8 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M2 | [Stage 2 — Sessions, forks and save states at product quality](roadmap.md#stage-2--sessions-forks-and-save-states-at-product-quality) | `Complete` | merged to `main` |
 | M3 | [Stage 3 — TAS and deterministic replay](roadmap.md#stage-3--tas-and-deterministic-replay) | `Complete` | merged to `main` at `e816d79` |
 | M4 | [Stage 4 — Debugging depth](roadmap.md#stage-4--debugging-depth) | `Complete` | merged to `main` at `4c595a2` (PR #2); verified on `agent/m4-debugging-depth` at `6d30243` |
-| M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Next` | not started |
-| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Planned` | not started |
+| M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete with integration pending` | verified on `agent/m5-tracing-scripting` at base `84f1476`; uncommitted, not merged |
+| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Next` | not started |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Planned` | not started |
 | M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Planned` | not started |
 
@@ -62,10 +62,11 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M5 — Tracing and scripting is `Next`.** It starts from the M4 observation surface plus
-the M2/M3 session and movie layers, so it is not blocked by hardware-depth work; H1–H5
-proceed in parallel. M0–M4 are merged to `main`; M4 was merged at `4c595a2` (PR #2) after
-its verification on `agent/m4-debugging-depth` at `6d30243`.
+**M6 — Agent-native interfaces is `Next`.** M5 is complete and independently verified on
+`agent/m5-tracing-scripting` at base `84f1476` but is not merged, so its integration state
+is `Complete with integration pending`; M6 is the first unblocked milestone that has not
+started. M0–M4 are merged to `main`; M4 was merged at `4c595a2` (PR #2) after its
+verification on `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
 
 ## M0 — Bootstrap foundation
 
@@ -423,48 +424,76 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
 ## M5 — Tracing and scripting
 
 - **Roadmap stage:** [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting)
-- **Status:** `Next`
-- **Integration state:** not started
-- **Objective:** structured, timestamped traces and a sandboxed script runtime for
-  reproducible experiments without host-language plugins.
+- **Status:** `Complete with integration pending`
+- **Integration state:** verified on branch `agent/m5-tracing-scripting` at HEAD/base
+  `84f1476466c14e72f911689845c390173982fd81`; implementation complete and **uncommitted**,
+  not merged to `main`.
+- **Objective:** structured, timestamped traces and a sandboxed deterministic script
+  runtime for reproducible experiments without host-language plugins.
 - **Depends on:** M4 (bounded observation surface), M2 (sessions and storage) and M3
   (movies). Not blocked by H1–H5.
-- **Evidence:** none yet. The scope is [Stage 5](roadmap.md#stage-5--tracing-and-scripting);
-  current capability status is FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 in
-  [functional requirements](../requirements/functional.md).
+- **Evidence:** final independent verification **T12 PASS (2026-11-16)** after the T7
+  `needs_revision` round and the T11 repair of findings F1–F10; integrated review T10
+  PASS. All 36 test-row commands and A36–A39 are `executed - passed` in the [M5 acceptance
+  plan](../quality/m5-tracing-and-scripting-acceptance.md); the dated gate block is the
+  2026-11-16 M5 block in [quality gates](../quality/quality-gates.md); contracts are
+  [ADR-0011](../adr/0011-tracing-and-scripting.md) and the [tracing and scripting
+  architecture](../architecture/tracing-and-scripting.md); requirements are
+  FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 in [functional
+  requirements](../requirements/functional.md). Raw evidence is under the ignored
+  `.agents/notes/m5/t12/` tree (`t12-verification.md`, `rows/`, `gate/`, `demos/`,
+  `audit/`) and `t10-review.md`.
 
 ### Work items
 
-- [ ] Versioned structured trace format for instruction, bus and device events, with
-      emulated timestamps and bounded retention.
-- [ ] Structured export and import with typed rejection of incompatible versions.
-- [ ] Triggered and circular tracing with bounded buffers.
-- [ ] Trace comparison and historical queries with first-divergence reporting.
-- [ ] Sandboxed script runtime with memory and time limits and typed errors.
-- [ ] Script APIs for sessions, forks, inspection, TAS and experiments.
-- [ ] Process-level CLI tests for every trace and script surface.
+- [x] Versioned structured trace format for instruction, bus and device events, with
+      emulated timestamps and bounded retention (M5-A1–A10; `CFTRACE1` v1).
+- [x] Structured export and import with typed rejection of incompatible versions
+      (M5-A2, M5-A17; TSV is one-way only).
+- [x] Triggered and circular tracing with bounded buffers (M5-A9, M5-A10).
+- [x] Trace comparison and historical queries with first-divergence reporting
+      (M5-A11–A13, M5-A15–A16).
+- [x] Sandboxed script runtime with memory and time limits and typed errors
+      (M5-A19–A31; purpose-built DSL, not an embedded host-language engine).
+- [x] Script APIs for sessions, forks, inspection, TAS and experiments
+      (M5-A24–A28; the experiment artifact is the deterministic `ScriptRun` report).
+- [x] Process-level CLI tests for every trace and script surface
+      (M5-A14–A18 and M5-A32–A34; 16 trace and 3 script process tests).
 
 ### Exit criteria
 
-- Scripts can run controlled experiments and produce reproducible reports without
-  host-language plugins.
-- Trace export round-trips, and trace comparison reports the first divergence.
-- Sandbox limits are enforced, typed and tested.
-- FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 are updated to match the delivered scope.
+- **Met:** scripts run controlled experiments and produce reproducible reports without
+  host-language plugins; byte-identical reports are demonstrated by M5-A28/A32 and the
+  report determinism tests.
+- **Met:** canonical trace export round-trips byte-identically and trace comparison reports
+  the first record or length divergence (M5-A1, M5-A12, M5-A17).
+- **Met:** sandbox limits are enforced, typed and tested, including fake-clock wall time and
+  path-escape rejection (M5-A29–A31).
+- **Met:** FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 are promoted to **Implemented** for
+  the documented scope in [functional requirements](../requirements/functional.md).
 
 ### Deferred and follow-ups
+
+M5 is closed; the following are tracked elsewhere and do not reopen it:
 
 - Frame pacing and a host-time run loop belong to [M7](#m7--gui), not to tracing.
 - GUI trace viewers are [M7](#m7--gui); HTTP/MCP transport is
   [M6](#m6--agent-interfaces).
-- Trace sources for DMA, audio and Z80 wait for
-  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80); performance evidence is
+- DMA, audio and Z80 trace sources wait for
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80); performance evidence remains
   [H5](#h5--accuracy-and-evidence).
+- **M5-FU1:** trace import from TSV, trace migration/compression and a separate TSV byte cap
+  (TSV output is bounded by record count, not `MAX_TRACE_BYTES`).
+- **M5-FU2:** race-free sandbox file operations and, if untrusted users are ever in scope, a
+  process/WASM isolation layer; the current sandbox is a deterministic capability boundary,
+  not an OS security boundary.
+- **M5-FU3:** preempting a single long backend call against the wall-time deadline (checks
+  currently occur at statement and every-256-operation boundaries).
 
 ## M6 — Agent interfaces
 
 - **Roadmap stage:** [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces)
-- **Status:** `Planned`
+- **Status:** `Next`
 - **Integration state:** not started
 - **Objective:** expose the same services to humans, scripts and agents through CLI, HTTP
   and MCP with identical semantics.
@@ -532,7 +561,7 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
 
 - Frame pacing is intentionally here rather than in M5: it is a presentation-cadence concern
   and depends on [H2](#h2--video-vdp-and-dma) for video.
-- Rendering and audio depth stay in H2/H3; scripting and HTTP/MCP stay in M5/M6.
+- Rendering and audio depth stay in H2/H3; scripting is delivered in M5 and HTTP/MCP in M6.
 
 ## M8 — Multi-backend
 

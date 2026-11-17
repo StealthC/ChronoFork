@@ -269,13 +269,23 @@ scope, exit criteria, dependencies and non-goals.
 - **Milestone:** [M5 — Tracing and scripting](milestones.md#m5--tracing-and-scripting).
 - **Depends on:** M4 (bounded observation surface), M2 (sessions and storage) and M3
   (movies). It does **not** depend on hardware-depth work.
+- **Delivered:** host-provided structured tracing (`chronofork-trace`, the session capture
+  entry point and `chronofork trace`) and a purpose-built deterministic script DSL with
+  explicit limits (`chronofork-script` and `chronofork script`). The implementation was
+  independently verified on `agent/m5-tracing-scripting` (T12 PASS, 2026-11-16); the
+  milestone page is the single record of status/integration and the [acceptance
+  plan](../quality/m5-tracing-and-scripting-acceptance.md) holds the executed rows and
+  evidence.
 
 ### Scope and deliverables
 
 - Structured instruction/bus/device traces with emulated timestamps and structured exports.
 - Triggered tracing, circular buffers and bounded trace retention.
 - Trace comparison and historical queries.
-- A sandboxed script runtime (Rhai/Luau/WASM/Python SDK) with memory and time limits.
+- A sandboxed, deterministic script runtime (a purpose-built DSL, not an embedded
+  host-language engine) with memory and time limits. The earlier Rhai/Luau/WASM/Python list
+  named examples, not a mandate; [ADR-0011](../adr/0011-tracing-and-scripting.md) §3.5
+  records why embedding those engines is rejected.
 - Script APIs for sessions, forks, inspection, TAS and experiments.
 - CLI surfaces for every implemented capability, verified by process-level tests.
 
@@ -294,6 +304,9 @@ scope, exit criteria, dependencies and non-goals.
 - Trace sources for DMA, audio and Z80 wait for [H2](#h2--video-vdp-and-dma) and
   [H3](#h3--audio-and-z80).
 - HTTP/MCP transport is Stage 6; GUI trace viewers are Stage 7.
+- TSV import, trace migration/compression and embedded host-language engines are not
+  delivered; [ADR-0011](../adr/0011-tracing-and-scripting.md) records the rejected
+  alternatives and the one-way TSV and canonical-v1 boundaries.
 - No performance claim: performance measurement after correctness is
   [H5](#h5--accuracy-and-evidence).
 

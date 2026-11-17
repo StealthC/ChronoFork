@@ -150,8 +150,11 @@ negative controls); see
 [Oracle differential evidence](../research/oracle-differential-evidence.md). The VDP
 port window and interrupt scheduler are partial slices, not a complete VDP or
 hardware-timed interrupt controller. Capabilities report rendering/audio and the
-generic `tracing` capability as `false`/absent; the bounded instruction trace is a
-concrete-type debug facility, not a generic capability. See
+generic `tracing` capability as `false`/absent; structured tracing is host-provided by
+[`chronofork-trace`](tracing-and-scripting.md) over `inspect`/`read_memory` plus optional
+`DebugAccess` events, with the backend contract unchanged and `Capabilities::tracing`
+staying `false` ([ADR-0011](../adr/0011-tracing-and-scripting.md)). The bounded
+`megadrive trace` instruction trace remains a concrete-type debug facility. See
 [Mega Drive 68000 slice](megadrive-slice.md).
 
 ## Open questions
@@ -159,6 +162,7 @@ concrete-type debug facility, not a generic capability. See
 - How are ROM identity and regional hardware configuration represented in
   `config_hash`?
 - Which debugger operations are guaranteed side-effect-free across devices?
-- Should the backend contract expose structured tracing directly, or should the
-  host derive traces from step/inspection events?
+- **Resolved by ADR-0011:** the backend contract does not expose structured tracing;
+  the host provides it over `inspect`/`read_memory`/`DebugAccess`, and
+  `Capabilities::tracing` stays `false`.
 - What is the concurrency model for a future process-isolated backend?
