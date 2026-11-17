@@ -150,7 +150,7 @@ and integrate interrupt delivery with cycle timing.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #18
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.5-timers-controllers.md)
 
 ### Phase 8.6: Commercial compatibility, accuracy evidence and performance [status: pending]
 
