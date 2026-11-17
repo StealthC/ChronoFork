@@ -10,9 +10,9 @@
   contract for the trace format, capture semantics, script grammar, limits, sandbox, CLI
   grain and deferred scope; this plan defines how it is proven.
 - **Milestone:** [M5 — Tracing and scripting](../roadmap/milestones.md#m5--tracing-and-scripting)
-  (`Complete with integration pending`; verified on `agent/m5-tracing-scripting`, not
-  merged); roadmap stage [Stage 5 — Tracing and
-  scripting](../roadmap/roadmap.md#stage-5--tracing-and-scripting).
+  (`Complete`; merged to `main` at `0c4e9f0`, PR #4; verified on
+  `agent/m5-tracing-scripting` at base `84f1476` before merge); roadmap stage [Stage 5 —
+  Tracing and scripting](../roadmap/roadmap.md#stage-5--tracing-and-scripting).
 
 - **Related:** [tracing and scripting architecture](../architecture/tracing-and-scripting.md),
   [backend model](../architecture/backend-model.md), [execution
@@ -26,10 +26,9 @@
 
 > **Final verification record (2026-11-16).** The independent verifier T12 re-executed all
 > 36 test-row commands (M5-A1–A34 plus the two A35 parts) with their exact plan commands on
-> the uncommitted,
-> implementation-complete tree at branch `agent/m5-tracing-scripting`, HEAD/base
-> `84f1476466c14e72f911689845c390173982fd81`: all exit 0, 0 failed, 0 ignored, every filter
-> matched at least one test. A36–A39 were re-verified by their component commands (demos,
+> the then-uncommitted, implementation-complete tree at branch `agent/m5-tracing-scripting`,
+> HEAD/base `84f1476466c14e72f911689845c390173982fd81` before merge: all exit 0, 0 failed,
+> 0 ignored, every filter matched at least one test. A36–A39 were re-verified by their component commands (demos,
 > artifacts, M1 oracle rerun, full gate and capability audit). The full gate
 > `./scripts/check.sh` exited 0 with **57 targets / 662 passed / 0 failed / 0 ignored**
 > against the pre-M5 baseline of 45 targets / 596 passed; rustdoc `-D warnings` passed;
@@ -106,9 +105,11 @@
 - **M4 state-hash anchors:** reset
   `7dcab59e97446accafdd27a3fb5f6b4053579b0337af9fea1012670e97c31304`, five steps
   `d354cb249fb3a38c1edde145b8183ebe9fe17e8497e6ed0cb966315b32d92c7b`.
-- **Implementation tree:** the uncommitted changes in the worktree on
-  `agent/m5-tracing-scripting` (M5 crates and docs). No commit/push/merge is authorized;
-  the verifier records `git status --short --branch` and the tree state exactly.
+- **Implementation tree:** the changes in the worktree on `agent/m5-tracing-scripting`
+  (M5 crates and docs). At verification time they were uncommitted, and the verifier
+  recorded `git status --short --branch` and the tree state exactly. The owner's later
+  delivery instruction authorized commit/push/PR/merge; M5 was merged at `0c4e9f0`
+  (PR #4) with the same tree.
 - **Raw evidence (executed):** the ignored `.agents/notes/m5/t12/` tree with
   `t12-verification.md`, `rows/` (all 36 test-row commands), `gate/` (check log, target
   matrix, contract commands, demos/artifacts/trace, anchors), `demos/` and `audit/`
