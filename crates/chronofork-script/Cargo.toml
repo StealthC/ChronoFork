@@ -1,0 +1,20 @@
+[package]
+name = "chronofork-script"
+description = "Sandboxed deterministic scripting runtime for ChronoFork experiments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-backend-api.workspace = true
+chronofork-core.workspace = true
+chronofork-sessions.workspace = true
+chronofork-trace.workspace = true
+
+[dev-dependencies]
+chronofork-test-backend.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -26,9 +26,11 @@ use chronofork_sessions::{
 use chronofork_test_backend::SyntheticBackendFactory;
 
 mod debug;
+mod script;
 mod studio;
 mod tas;
 mod tas_edit;
+mod trace;
 
 /// Crate version used by the help and version output.
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -46,7 +48,11 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("chronofork: {error}");
+            // A script-level failed run already printed its report; the contract
+            // keeps its stderr empty and exits 1 without a `chronofork:` line.
+            if error.downcast_ref::<script::ScriptFailed>().is_none() {
+                eprintln!("chronofork: {error}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -80,6 +86,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("megadrive") => run_megadrive(&args[1..]),
         Some("session") => run_session(&args[1..]),
         Some("tas") => tas::run(&args[1..]),
+        Some("trace") => trace::run(&args[1..]),
+        Some("script") => script::run(&args[1..]),
         Some("debug") => debug::run(&args[1..]),
         Some("backend") => match args.get(1).map(String::as_str) {
             Some("describe") => {
@@ -126,6 +134,17 @@ fn print_usage() {
     println!("  chronofork megadrive demo      Run the minimal 68000 + VDP + interrupt slice");
     println!(
         "  chronofork megadrive trace     Run a bounded instruction trace and write final state"
+    );
+    println!("  chronofork trace capture [--rom <FILE>] [--steps <N>] ... --out <FILE>");
+    println!("  chronofork trace info --file <FILE>");
+    println!("  chronofork trace query --file <FILE> [--kind GROUP] [--limit <N>]");
+    println!("  chronofork trace compare --left <FILE> --right <FILE>");
+    println!("  chronofork trace export --file <FILE> [--format tsv|canonical] --out <FILE>");
+    println!("  chronofork trace --help       Show trace commands, output blocks and limits");
+    println!("  chronofork script run --file <FILE> [--rom <FILE>] [--sandbox <DIR>]");
+    println!("                        [limits flags]...");
+    println!(
+        "  chronofork script --help      Show script commands, defaults, limits and exit codes"
     );
     println!("  chronofork debug run --rom <FILE> --steps <N> [debugger flags]...");
     println!("  chronofork debug inspect --rom <FILE> [--steps <N>]");
@@ -188,7 +207,11 @@ fn print_usage() {
     println!("`chronofork tas --help` documents the flags, output blocks and the features that");
     println!("are deliberately not implemented.");
     println!();
-    println!("For trace file formats and options run:");
+    println!("For host structured tracing run:");
+    println!("  chronofork trace --help");
+    println!("For the sandboxed deterministic script runtime run:");
+    println!("  chronofork script --help");
+    println!("For the backend-specific instruction trace format run:");
     println!("  chronofork megadrive trace --help");
     println!("`chronofork debug` is the headless one-shot debugger over the minimal Mega Drive");
     println!(
@@ -366,13 +389,13 @@ pub(crate) fn parse_u32(value: &str, flag: &str) -> Result<u32, CliError> {
         .map_err(|_| CliError(format!("`{flag}` expects a decimal integer, got `{value}`")))
 }
 
-fn parse_usize(value: &str, flag: &str) -> Result<usize, CliError> {
+pub(crate) fn parse_usize(value: &str, flag: &str) -> Result<usize, CliError> {
     value
         .parse()
         .map_err(|_| CliError(format!("`{flag}` expects a decimal integer, got `{value}`")))
 }
 
-fn parse_hex_u32(value: &str, flag: &str) -> Result<u32, CliError> {
+pub(crate) fn parse_hex_u32(value: &str, flag: &str) -> Result<u32, CliError> {
     let digits = value
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))

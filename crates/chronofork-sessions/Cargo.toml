@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 chronofork-core.workspace = true
 chronofork-backend-api.workspace = true
+chronofork-trace.workspace = true
 sha2.workspace = true
 
 [lints]

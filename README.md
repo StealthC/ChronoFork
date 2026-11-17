@@ -12,9 +12,11 @@ The project is written in Rust and designed so that people, scripts and AI
 agents use the same services, not three different worlds.
 
 > **Project status:** the foundation is complete; milestones M0–M4 are complete and
-> merged to `main` (M4 merged at `4c595a2`), but ChronoFork is **not a finished Mega
-> Drive emulator** and does not run commercial games. See [what works today](#what-works-today)
-> and [what comes next](#what-comes-next) for the honest picture.
+> merged to `main` (M4 merged at `4c595a2`), and M5 (tracing and scripting) is implemented
+> and independently verified on `agent/m5-tracing-scripting` but not yet merged. ChronoFork
+> is **not a finished Mega Drive emulator** and does not run commercial games. See [what
+> works today](#what-works-today) and [what comes next](#what-comes-next) for the honest
+> picture.
 
 ## Why ChronoFork exists
 
@@ -74,21 +76,24 @@ is in [milestones](docs/roadmap/milestones.md).
 | M2 — Durable sessions | Checkpoints on disk, names, ownership and safe reloads | Complete; verified on local Linux filesystems |
 | M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
 | M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
-| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Next — not started |
+| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete with integration pending; independently verified on `agent/m5-tracing-scripting`, not merged |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Planned |
 | M7 — GUI | Presentation that never owns canonical state | Planned |
 | M8 — More systems | A second backend behind the same contract | Planned |
 
 M0–M4 are merged to `main`; M4 was merged at `4c595a2` after being verified on
 `agent/m4-debugging-depth` at `6d30243`, so a current `main` checkout exposes the
-`chronofork debug` surface. The
+`chronofork debug` surface. M5 was verified on `agent/m5-tracing-scripting` at base
+`84f1476` (final T12 PASS, 2026-11-16) and is implementation-complete but uncommitted and
+not merged; a `main` checkout does **not** yet contain `chronofork trace` or
+`chronofork script`. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
 Hardware completeness is tracked in parallel tracks rather than stages: **H1**
 CPU and instruction coverage, **H2** video/VDP/DMA, **H3** audio/Z80, **H4**
 cartridge/controllers/timers and **H5** accuracy and evidence. A milestone can be
-complete while a hardware track is partial, so starting M5 does not claim a
+complete while a hardware track is partial, so completing M5 does not claim a
 complete Mega Drive.
 
 ## What works today
@@ -137,6 +142,24 @@ are instruction-granular and debugger state is process-local. This surface was
 verified on `agent/m4-debugging-depth` at `6d30243` and is merged to `main` at
 `4c595a2`.
 
+**Structured traces.** `chronofork-trace` adds a versioned, bounded trace format
+(`CFTRACE1` v1) for instructions and observed bus-write, VDP-port, controller-read and
+interrupt-phase events with emulated ticks. Capture supports one start and one stop trigger
+(PC or tick), a circular buffer with a dropped counter, typed failure for malformed or
+incompatible input, historical queries, first-divergence comparison and a deterministic
+one-way TSV export. The surface is host-provided over the backend inspection contract, so
+`Capabilities::tracing` stays `false` and bus/device records appear only where the backend
+advertises `debug_events`. `chronofork trace capture/info/query/compare/export` exposes it.
+
+**Scripted experiments.** `chronofork-script` adds a purpose-built deterministic script
+language (integers, booleans and text; `let`/`set`, `print`, `assert`, `if`, `repeat`,
+`while`; typed builtins for sessions, forks, inspection, trace capture/export/compare, TAS
+verify/compare and report fields) with explicit source, operation, loop, variable, memory,
+report, step, trace and wall-time limits, typed errors, a canonicalized `--sandbox`
+capability boundary and a byte-deterministic report. `chronofork script run` exposes it.
+No Rhai, Luau, Lua, WASM or Python engine is embedded; the reasons are recorded in
+[ADR-0011](docs/adr/0011-tracing-and-scripting.md).
+
 **Quality gates.** `./scripts/check.sh` runs formatting, compilation, Clippy, the
 workspace tests and rustdoc as one local gate, and CI runs on every push and pull
 request.
@@ -154,20 +177,27 @@ compatibility.
 
 Debugging stops at instruction boundaries: there is no reverse execution, no
 code/data analysis or symbol mapping, and no DMA, audio or mapper inspection.
-Durable storage is verified on local Linux filesystems only: the writer lock is
-cooperative, retention is manual, and encryption, authentication and format
-migration are not implemented. No commercial ROMs, BIOS or firmware are included
-or required.
+Tracing covers instruction, bus-write, VDP-port, controller-read and interrupt-phase records
+only: there are no DMA/audio/Z80 sources, no generic bus-read or instruction-fetch record,
+instruction-boundary stops only, canonical v1 only (no migration) and no TSV import. TSV
+export is bounded by record count rather than the 64 MiB canonical byte cap. Scripting is a
+small fixed DSL, not a host-language engine; its sandbox is a deterministic capability
+boundary, not process isolation or a hostile-code security boundary, and wall-time checks
+occur at statement and every-256-operation boundaries. Durable storage is verified on local
+Linux filesystems only: the writer lock is cooperative, retention is manual, and
+encryption, authentication and format migration are not implemented. No commercial ROMs,
+BIOS or firmware are included or required.
 
 ## What comes next
 
-M0–M4 are merged to `main` (M4 at `4c595a2`); M5, tracing and scripting, is the
-next milestone. Hardware depth runs in parallel, so the stage sequence does not
-wait for a complete machine model:
+M0–M4 are merged to `main` (M4 at `4c595a2`); M5, tracing and scripting, is
+implemented and independently verified but not merged, so it is integration-pending. M6,
+agent-native interfaces, is the next unstarted milestone. Hardware depth runs in parallel,
+so the stage sequence does not wait for a complete machine model:
 
-- **Make traces and scripts first-class (M5).** Structured trace formats with
-  comparison and export, triggered and circular tracing, followed by a sandboxed
-  scripting runtime.
+- **Merge and integrate traces and scripts (M5).** The verified branch adds structured
+  trace formats with comparison and export, triggered/circular tracing and the sandboxed
+  purpose-built scripting runtime; merging needs separate authorization.
 - **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
   rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
   complete controller and timer behaviour, and stronger accuracy evidence.
@@ -213,6 +243,15 @@ cargo run -p chronofork-cli -- session list --root ./cf-store
 # Record, replay and verify a short input movie
 cargo run -p chronofork-cli -- tas record --movie ./demo.cfmovie --steps 8
 cargo run -p chronofork-cli -- tas verify --movie ./demo.cfmovie
+
+# Capture, inspect, query and compare a structured trace
+cargo run -p chronofork-cli -- trace capture --steps 8 --capacity 64 --out ./demo.cftrace
+cargo run -p chronofork-cli -- trace info --file ./demo.cftrace
+cargo run -p chronofork-cli -- trace compare --left ./demo.cftrace --right ./demo.cftrace
+
+# Run a sandboxed deterministic experiment report
+printf 'let n = 3\nrepeat n { print n }\nreport("ok", true)\n' > ./demo.cfscript
+cargo run -p chronofork-cli -- script run --file ./demo.cfscript
 ```
 
 ## What guides the project

@@ -4,8 +4,12 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** the authoritative recorded run for the anti-slop refactor's
-implementation bytes is
+**Current status:** the latest dated block is the [2026-11-16 M5 tracing and scripting
+verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
+(57 targets / 662 passed, 0 failed, 0 ignored, both demos unchanged, M5 acceptance rows
+`executed - passed`), which verifies the implementation worktree as executed by T12; the
+T8 documentation promotion followed without a code change. For the earlier anti-slop
+refactor's implementation bytes, the authoritative recorded run is
 [anti-slop refactor evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting):
 `./scripts/check.sh` exit 0 with all gates clean, both demos byte-identical to the
 captured baseline ([§8.3](anti-slop-refactor-evidence.md#83-demos-three-runs-each-compared-with-the-t1-baseline)),
@@ -647,6 +651,75 @@ ring, adjacent instruction-fetch caveat, `backend describe` capability line) wer
 `6b2a567` and re-gated. Raw evidence, including per-row logs and the manifest, is in the
 ignored `.research/m4/verification/` tree. This block is the M4 gate record; M4 is complete
 for the documented deterministic minimal-slice scope on Linux.
+
+## 2026-11-16 — M5 tracing and scripting (independent verification PASS)
+
+The final independent verifier executed the [M5 acceptance
+plan](m5-tracing-and-scripting-acceptance.md) on the worktree
+`/home/stealthc/projects/ChronoFork/.agents/worktrees/m5-tracing-scripting`, branch
+`agent/m5-tracing-scripting`, HEAD and base
+`84f1476466c14e72f911689845c390173982fd81`. The implementation is complete and
+**uncommitted**; this block verifies the worktree, not a merge. The first T7 verification
+round returned `needs_revision` with findings F1–F10; T11 repaired every finding and T12
+re-ran the full matrix and returned **PASS** (2026-11-16). T10 then reviewed the integrated
+result and returned PASS. The T7 row executions remain round-1 evidence only; the final
+verdict is T12's.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Exit 0 |
+| Compilation | `cargo check --workspace` | Exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0 |
+| Tests | `cargo test --workspace` | 57 targets, 662 passed, 0 failed, 0 ignored |
+| Full script | `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` | Exit 0, ends "all quality gates passed" |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Exit 0 |
+| Contract: script CLI | `cargo test -p chronofork-cli --test script` | 3 passed, 0 failed, 0 ignored |
+| Contract: CLI package | `cargo test -p chronofork-cli` | 117 passed across 10 targets, 0 failed, 0 ignored |
+| Contract: fmt/Clippy | CLI-subtree fmt and `clippy -p chronofork-cli --all-targets -- -D warnings` | Exit 0 |
+| Demo | `cargo run -p chronofork-cli -- demo` ×3 | Exit 0, 3/3 byte-identical, SHA-256 `9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652`, empty stderr |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` ×3 | Exit 0, 3/3 byte-identical, SHA-256 `912a5bb6f5597179d76eca94f673112b6084e1357ff151eaac0368da30348996`, empty stderr |
+
+The pre-M5 baseline was **45 targets / 596 passed / 0 failed / 0 ignored**; no target is
+below baseline and the M5 diff adds no `#[ignore]`, no production `#[allow]`, no `unsafe`
+and deletes no test. All 36 test-row commands (M5-A1–A34 plus the two A35 parts) were
+re-executed with their exact plan commands (exit 0, every filter matched); A36–A39 were
+re-verified by their component commands. Both demos were 3/3 byte-identical with empty
+stderr; the baseline movie, Mega Drive state/trace and durable-store artifacts were
+**37/37 OK**
+(`demo.cfmovie` `160453c6…`, `md-state.bin` `e42c66ed…`, `md-trace.tsv` `b15d95bb…`,
+store `24fc2f54…`/`2ab51705…`/`4de16840…`/`062cb9c4…`); the M1 state-hash anchors passed
+(11 CLI debug tests), including reset `7dcab59e…` and five steps `d354cb24…`. Canonical
+trace capture bytes were unchanged from round 1 (`e39cb42f…`, `5afe37…`), proving no trace
+format change; the non-perturbation probe made **734 comparisons with 0 mismatches**
+(40 ticks × both backends × nine observables plus snapshot and post-tracing movie bytes);
+the pinned M1 oracle rerun matched 3/3 traces, 3/3 final states, 3/3 negative controls and
+3/3 scheduler controls with schema `chronofork.oracle-diff.v2`. The T10 integrated review
+covered the architecture boundaries, single-source-of-truth codec/capture/query/compare/
+script/CLI logic, typed rejection matrix and bounds, and found no overclaim.
+
+**Scoped test-only allow exception (F9).** `crates/chronofork-trace/src/lib.rs` carries
+`#![cfg_attr(test, allow(clippy::expect_used))]` solely so its `#[cfg(test)]` unit tests
+may use message-bearing `expect("…")`, which `AGENTS.md` allows for tests. It is
+test-only, matches the pre-existing sessions-crate pattern, adds no production `allow`, and
+`cargo clippy --workspace --all-targets -- -D warnings` passes. This is the only allow
+attribute in the M5 code.
+
+**Recorded precision limits (no T12 action required):** TSV export is bounded by the
+retained record count (at most 1,000,000 rows) and has no separate byte cap, so it can
+exceed the 64 MiB canonical `MAX_TRACE_BYTES`; the sandbox is a deterministic capability
+boundary with metadata-then-operation checks, not OS/process isolation or a race-free or
+hostile-code security boundary; wall-time checks occur at statement boundaries and every
+256 operations, so one long but step/movie-bounded builtin is not preempted mid-call;
+`string_bytes` also charges print text; and diagnostic stderr may name paths while reports
+and stdout never do. These are recorded as M5-FU1–FU3 in the
+[milestone](../roadmap/milestones.md#m5--tracing-and-scripting) rather than reopened.
+
+Raw evidence is in the ignored `.agents/notes/m5/t12/` tree
+(`gate/check.log`, `gate/target-matrix.txt`, `gate/contract-commands.log`,
+`gate/demos-artifacts-trace.log`, `rows/`, `demos/`, `audit/`), with
+`t12-verification.md`, `t10-review.md` and `t11-repair.md` beside it. This block is the M5
+gate record; M5 is verified for the deterministic synthetic backend and the minimal Mega
+Drive slice on Linux and is integration-pending, not merged or released.
 
 ## Gate policy
 

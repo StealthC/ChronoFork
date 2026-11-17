@@ -97,7 +97,7 @@ marketing claims; each has a verification path.
 |---|---|---|
 | NFR-SEC-001 | Never commit ROMs, firmware, BIOS images, commercial assets or secrets. | `.gitignore`, pre-commit inspection |
 | NFR-SEC-002 | Reference clones are ignored and not submodules. | `.research/` ignored; `git status` |
-| NFR-SEC-003 | Do not run untrusted scripts with host privileges. | Future scripting sandbox design |
+| NFR-SEC-003 | Do not run untrusted scripts with host privileges. | Delivered and independently verified: the purpose-built script runtime is sandboxed with explicit source/operation/loop/variable/memory/report/step/trace/snapshot/wall limits and a canonicalized sandbox root; it is a deterministic capability boundary, not OS/process isolation or an audited hostile-code boundary. Evidence: [ADR-0011](../adr/0011-tracing-and-scripting.md) §3.5 and the [M5 acceptance plan](../quality/m5-tracing-and-scripting-acceptance.md) rows M5-A19–A34/A39 (final T12 PASS, 2026-11-16). |
 | NFR-SEC-004 | Do not silently upload session data or telemetry. | No network code in bootstrap |
 | NFR-SEC-005 | Preserve license notices in distributions. | `THIRD_PARTY_NOTICES.md` |
 

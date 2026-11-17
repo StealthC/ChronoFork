@@ -1,0 +1,19 @@
+[package]
+name = "chronofork-trace"
+description = "Versioned structured traces for ChronoFork backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-core.workspace = true
+chronofork-backend-api.workspace = true
+
+[dev-dependencies]
+chronofork-megadrive.workspace = true
+chronofork-test-backend.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

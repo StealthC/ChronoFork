@@ -135,11 +135,12 @@ mutable state with its source.
 | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Implemented (partial hardware) |
 | VDP status/control/VRAM port window | Implemented (no rendering/DMA) |
 | Deterministic VBlank/HBlank interrupt scheduler | Implemented (instruction-quantum, not cycle-accurate) |
-| VDP rendering/DMA, audio, Z80, controllers, mapper/SRAM | Not implemented |
+| TH-high 3-button controller-read subset (ports 1–2) | Implemented for the minimal slice — see [Mega Drive slice](megadrive-slice.md) |
+| VDP rendering/DMA, audio, Z80, controller protocol beyond TH-high 3-button, mapper/SRAM | Not implemented |
 | `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege not enforced; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
 | HTTP/MCP/GUI | Not implemented |
-| Breakpoints/watchpoints/tracing | Contract sketches only |
-| TAS movie format | Not implemented |
+| Debugger triggers/views (M4) and structured tracing (M5) | Implemented for the minimal slice as host layers; backend `breakpoints`/`tracing` capabilities remain `false` — see [M4 debugging](../adr/0010-debugging-depth.md), [M5 architecture](tracing-and-scripting.md) and [M5 acceptance](../quality/m5-tracing-and-scripting-acceptance.md) |
+| TAS movie format | Implemented (v1/v2; M3) — see [M3 TAS/replay acceptance](../quality/m3-tas-replay-acceptance.md) |
 | Process-isolated backend | Proposed, not implemented |
 
 ## Open questions
