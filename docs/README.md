@@ -2,7 +2,10 @@
 
 This directory is the durable, human- and agent-readable knowledge base for
 ChronoFork. Operational working memory lives in the ignored `.planning/` directory;
-it is never a substitute for these documents.
+it is never a substitute for these documents. Durable **lifecycle** state — the
+current milestone, its phases, the session handoff and the project conventions — is
+committed in [`planning/`](planning/ROADMAP.md), and design specs/plans live under
+[`superpowers/`](superpowers/specs/2026-11-17-roadmap-design.md).
 
 ## Status
 
