@@ -128,7 +128,7 @@ injection, no GUI state persistence and no VDP/bus/disassembly/trace panel conte
 reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration, and
 no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
 controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 is merged; M8 (multi-backend) is next.**
+made. **M7 is merged; M8 (functional Mega Drive emulator) is next, with M9 multi-backend after it.**
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -204,7 +204,7 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 is next. The
+`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is next, with M9 multi-backend after it. The
 parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The
@@ -230,9 +230,10 @@ status and integration state.
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
-| [Milestones](roadmap/milestones.md) | Canonical milestone status and integration state (M0–M8) plus the hardware-depth checkpoints H1–H5 |
+| [Milestones](roadmap/milestones.md) | Canonical milestone status and integration state (M0–M9) plus the hardware-depth checkpoints H1–H5 |
 | [Planning lifecycle](planning/ROADMAP.md) | Committed execution state: current milestone and phases, session handoff (`STATE.md`) and project conventions (`CONVENTIONS.md`) |
 | [Roadmap design](superpowers/specs/2026-11-17-roadmap-design.md) | Approved whole-project design that established the lifecycle layer |
+| [M8 milestone design](superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md) | Functional Mega Drive milestone: full 68000/Z80/VDP/audio, execution modes and capture |
 | [Codebase map](superpowers/specs/2026-11-17-codebase-map.md) | Evidence-checked map of the crate graph, entry points, tests, hotspots and change traps |
 | [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic, its delivered increments and the hardware-depth follow-ups |

@@ -12,6 +12,10 @@
   M4 debugging depth (bounded non-canonical observation, views/disassembly and
   CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
   slice (t5 PASS, 2026-11-16).
+- **Next:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
+  is the milestone that completes this slice (full 68000/Z80, VDP rendering/DMA/timing,
+  YM2612/PSG audio, cartridge, controllers and capture). This page remains the canonical
+  capability/limitation home; it is updated as each phase lands, never in advance.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),

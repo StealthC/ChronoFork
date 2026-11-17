@@ -6,13 +6,13 @@ and documentation can run in parallel.
 
 The roadmap has two structures, kept deliberately separate:
 
-- **Capability stages 0–8.** Each stage has exactly one checkpoint milestone, M0–M8,
+- **Capability stages 0–9.** Each stage has exactly one checkpoint milestone, M0–M9,
   defined in [Milestones](milestones.md). A stage tracks a product capability, not how
   complete a console model is.
 - **Hardware-depth track H1–H5.** A parallel, cross-cutting track that records how complete
-  the emulated machine is. It is not a stage and not M9. Hardware completeness never appears
-  as an open item inside a stage, so a stage can be complete while the machine model is
-  still narrow.
+  the emulated machine is. It is not a stage and not a stage milestone. Hardware completeness
+  does not appear as an open item inside the capability stages, except in **M8 (Functional
+  Mega Drive)**, the product milestone that deliberately sequences H1–H5 to completion.
 
 Status, integration state, evidence and follow-ups are recorded once, in
 [Milestones](milestones.md#status-at-a-glance). The sections below record intent: goal,
@@ -20,7 +20,7 @@ scope, exit criteria, dependencies and non-goals.
 
 ## How to read this document
 
-- **Stage ↔ milestone mapping.** One stage, one milestone: Stage 0 ↔ M0 through Stage 8 ↔ M8,
+- **Stage ↔ milestone mapping.** One stage, one milestone: Stage 0 ↔ M0 through Stage 9 ↔ M9,
   plus the parallel H1–H5 track. The [stage index](#stage-index) below links both sides;
   [Milestones](milestones.md#status-at-a-glance) holds the reverse mapping and the status.
 - **Status vocabulary.** `Complete`, `Complete with integration pending`, `Next` and
@@ -47,7 +47,8 @@ scope, exit criteria, dependencies and non-goals.
 | [Stage 5 — Tracing and scripting](#stage-5--tracing-and-scripting) | [M5](milestones.md#m5--tracing-and-scripting) | Structured traces, sandboxed scripting |
 | [Stage 6 — Agent-native interfaces](#stage-6--agent-native-interfaces) | [M6](milestones.md#m6--agent-interfaces) | HTTP, MCP, typed tools, permissions |
 | [Stage 7 — Human-facing GUI](#stage-7--human-facing-gui) | [M7](milestones.md#m7--gui) | Presentation, panels, attach/detach |
-| [Stage 8 — Multi-backend expansion](#stage-8--multi-backend-expansion) | [M8](milestones.md#m8--multi-backend) | Second backend, capability differences, SDKs |
+| [Stage 8 — Functional Mega Drive](#stage-8--functional-mega-drive) | [M8](milestones.md#m8--functional-mega-drive) | Complete 68000/Z80/VDP/audio, cartridge, playable ROMs, headless capture, native window |
+| [Stage 9 — Multi-backend expansion](#stage-9--multi-backend-expansion) | [M9](milestones.md#m9--multi-backend) | Second backend, capability differences, SDKs |
 | [Hardware depth H1–H5](#hardware-depth-parallel-track-h1h5) | `H1`–`H5` (track, not a stage) | CPU, video/VDP/DMA, audio/Z80, cartridge/controllers/timers, accuracy/evidence |
 
 ## Stage 0 — Bootstrap foundation
@@ -347,7 +348,7 @@ scope, exit criteria, dependencies and non-goals.
 ### Non-goals and tracked elsewhere
 
 - The GUI is Stage 7; it consumes these services but never owns canonical state.
-- Additional systems are Stage 8, and external SDKs (FR-API-004) remain Stage 8 scope.
+- Additional systems are Stage 9, and external SDKs (FR-API-004) remain Stage 9 scope.
 - Not delivered in Stage 6 and tracked as M6-FU1–M6-FU4 on the milestone page: debug, trace,
   script and TAS operations over transport; durable per-principal ownership and
   restart-persistent live sessions; TLS, token rotation/expiry, audit log and multi-node
@@ -410,11 +411,59 @@ scope, exit criteria, dependencies and non-goals.
   v1 process always reports `unavailable`.
 - Scripting and the HTTP/MCP surface stay in Stages 5–6.
 
-## Stage 8 — Multi-backend expansion
+## Stage 8 — Functional Mega Drive
+
+- **Goal:** turn the minimal Mega Drive slice into a functional emulator — the whole 68000
+  and Z80, a complete VDP with rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/
+  SRAM, timers and controllers — playable with a curated set of commercial ROMs, capturable
+  headlessly and presentable in an optional native window.
+- **Milestone:** [M8 — Functional Mega Drive](milestones.md#m8--functional-mega-drive).
+- **Depends on:** the M1–M7 layers and contracts (backend, sessions, TAS, debug, trace,
+  service, presentation seam) and the accepted [ADR-0002](../adr/0002-backend-boundaries.md).
+  It consumes the [H1–H5](#hardware-depth-parallel-track-h1h5) checkpoints: M8 is the product
+  milestone that sequences them to completion.
+
+### Scope and deliverables
+
+- Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM.
+- Complete 68000: full instruction set, addressing modes, privilege, exception groups and
+  cycle accounting; canonical emulated time in CPU cycles.
+- Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
+  256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
+- Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
+- Timer interrupts, full TH latch and 3-/6-button controllers on ports 1–2.
+- Execution modes: unpaced headless batch, paced 60/50 fps with an injected host clock, and
+  manual stepping; run-to-target APIs for agents. Emulated cycle time is canonical; pacing is
+  a host policy.
+- Deterministic headless capture: PNG frames and WAV audio, hashed and mode-independent.
+- Optional native windowed frontend (video, audio, input, pause/step/save-state) behind a
+  new ADR that supersedes ADR-0013's no-toolkit constraint.
+
+### Exit criteria
+
+- Every criterion in [M8 — Definition of Done](milestones.md#m8--functional-mega-drive) is
+  demonstrated by executed evidence, including the curated commercial-ROM compatibility list.
+- The same inputs produce identical frame, audio and state hashes in unpaced, paced and
+  stepped modes.
+- The full quality gate passes and the M1–M7 contracts superseded by the new timing are
+  re-evidenced or explicitly marked superseded.
+- No commercial ROM, BIOS or game asset is committed.
+
+### Non-goals and tracked elsewhere
+
+- Universal commercial compatibility, cycle-perfect hardware equivalence and performance
+  beyond real time are not claimed; compatibility is a documented curated list.
+- Dynamic recompilation, run-ahead, skip-frames and savestate-rewind shortcuts are not
+  required; each would need its own ADR and determinism analysis.
+- Port 3, analog and keyboard hardware are H4 residual limits unless the curated set requires
+  them.
+- Additional systems remain [Stage 9](#stage-9--multi-backend-expansion).
+
+## Stage 9 — Multi-backend expansion
 
 - **Goal:** add further systems behind the same capability model without changing session,
   storage or transport semantics.
-- **Milestone:** [M8 — Multi-backend](milestones.md#m8--multi-backend).
+- **Milestone:** [M9 — Multi-backend](milestones.md#m9--multi-backend).
 - **Depends on:** the M2–M7 shared layers and the backend boundaries in
   [ADR-0002](../adr/0002-backend-boundaries.md).
 
@@ -443,8 +492,10 @@ scope, exit criteria, dependencies and non-goals.
 
 Hardware depth is orthogonal to the capability stages: it tracks how complete the emulated
 machine is and proceeds alongside them. H1–H5 are checkpoints, not stage milestones: they are
-**not M9**, they never reopen a closed milestone, and their status is recorded in
-[Milestones](milestones.md#status-at-a-glance).
+**not M10**, they never reopen a closed milestone, and their status is recorded in
+[Milestones](milestones.md#status-at-a-glance). M8 is the one product milestone that
+deliberately sequences H1–H5 to completion; the tracks remain the capability record and the
+decomposition of M8's phases.
 
 A stage, epic or requirement that hits a hardware limit references the H item instead of
 carrying an unchecked hardware box.

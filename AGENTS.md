@@ -65,12 +65,15 @@ analog/keyboard), privilege enforcement, other exception groups and cycle accura
 remain absent, and most 68000 instructions are not implemented. Do not present either
 backend as a complete emulator or claim game compatibility.
 
-**M8 (multi-backend expansion) is the active milestone.** Its phases are planned in
+**M8 (functional Mega Drive emulator) is the active milestone.** Its phases are planned in
 [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md) and none has started; M0–M7 are complete
-and merged. The second-system choice is an open decision owned by phase 8.1 — do not assume a
-console, and do not treat "active" as merged or implemented. Lifecycle state and the next
-action live in [docs/planning/](docs/planning/ROADMAP.md) and
-[docs/planning/STATE.md](docs/planning/STATE.md).
+and merged. M8 completes the Mega Drive backend — the full 68000 and Z80, a complete VDP with
+rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
+with cycle-based canonical time, deterministic headless capture of frames and audio and an
+optional native window. The former multi-backend milestone is M9. Do not treat "active" as
+merged or implemented, and keep the limitations above until each phase is verified by executed
+evidence. Lifecycle state and the next action live in
+[docs/planning/](docs/planning/ROADMAP.md) and [docs/planning/STATE.md](docs/planning/STATE.md).
 
 ## Repository map
 
@@ -117,7 +120,10 @@ action live in [docs/planning/](docs/planning/ROADMAP.md) and
   added no third-party dependency). Do not add `axum`/`hyper`/`tokio`/`serde` without an ADR
   that supersedes [ADR-0012](docs/adr/0012-agent-native-interfaces.md); do not add a GUI
   toolkit without an ADR that supersedes
-  [ADR-0013](docs/adr/0013-human-facing-gui.md).
+  [ADR-0013](docs/adr/0013-human-facing-gui.md). M8 plans a **separate native frontend
+  crate** (`winit` + `softbuffer` + `cpal`) behind such an ADR; no toolkit or audio-device
+  dependency may enter `chronofork-gui` or the core, and the headless path must keep working
+  without a display or an audio device.
 
 ## Architectural boundaries
 
@@ -171,6 +177,11 @@ Rules:
 8. Snapshot formats and backend payloads are versioned. Reject incompatible input;
    never silently reinterpret bytes.
 9. Preserve determinism: no implicit host wall-clock input to hardware.
+10. **Emulated time is canonical; host pacing is not.** The machine advances in deterministic
+    emulated cycles. Unpaced headless execution (run as fast as possible to a requested
+    frame/cycle), paced 60/50 fps presentation and manual stepping are host policies layered on
+    top; they must never change canonical state, frames or audio, and the same inputs produce
+    identical hashes in every mode.
 
 More detail: [architecture overview](docs/architecture/overview.md),
 [backend model](docs/architecture/backend-model.md),
@@ -546,7 +557,9 @@ printf 'create\nattach 1\npulse 3\nframe\nquit\n' | cargo run -p chronofork-cli 
 ```
 
 The `gui run` check must stay deterministic: stdout is byte-identical across runs, stderr is
-empty on success, and no block or frame may carry a host path, token or host time. A change
+empty on success, and no block or frame may carry a host path, token or host time. M8's
+cross-mode contract adds: the same input must produce identical frame, audio and state hashes
+in unpaced, paced and stepped execution. A change
 is not complete because it compiles. Required behavior needs an automated
 test at the lowest useful layer. Determinism, snapshot, fork and isolation claims
 need executable invariant tests. Do not fabricate test results. If a gate cannot
