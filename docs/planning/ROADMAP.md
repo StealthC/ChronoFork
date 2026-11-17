@@ -106,7 +106,7 @@ and with emulated cycle time separated from host pacing.
 **Definition of Done:** [see MILESTONE.md](MILESTONE.md#definition-of-done) (authoritative;
 the GitHub milestone description is projected from it).
 
-### Phase 8.1: Cartridge, region, TMSS and boot [status: pending]
+### Phase 8.1: Cartridge, region, TMSS and boot [status: active]
 
 **Goal:** Read the ROM header/region/TMSS/checksum, support images above 4 MiB, a banking
 mapper and SRAM, and boot a cartridge deterministically to its main loop.
