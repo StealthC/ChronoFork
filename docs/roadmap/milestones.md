@@ -48,7 +48,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `Next` | not started |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `Next` | phase 8.1 implemented and reviewed on `agent/8.1-cartridge-region-tmss` (unmerged); phases 8.2–8.8 not started |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -76,7 +76,9 @@ follow-ups. M7 is `Complete` and merged to `main` at `cb05836`
 also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-interfaces` at
 the same base. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
 verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
-milestone that has not started; it depends on the M1–M7 layers and consumes the H1–H5
+milestone and has started: phase 8.1 (cartridge, region, TMSS and boot) is implemented and
+reviewed on `agent/8.1-cartridge-region-tmss`, not yet merged, and phases 8.2–8.8 are not
+started; it depends on the M1–M7 layers and consumes the H1–H5
 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
@@ -698,7 +700,9 @@ and do not reopen it.
 
 - **Roadmap stage:** [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive)
 - **Status:** `Next`
-- **Integration state:** not started
+- **Integration state:** phase 8.1 (cartridge, region, TMSS and boot) implemented and
+  independently reviewed on `agent/8.1-cartridge-region-tmss`; not merged, phases 8.2–8.8 not
+  started
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic
@@ -706,13 +710,16 @@ and do not reopen it.
 - **Depends on:** the M1–M7 layers and contracts; it consumes the
   [H1–H5](#h1--cpu-and-instruction-completeness) checkpoints as its decomposition and depends
   on the accepted [ADR-0002](../adr/0002-backend-boundaries.md).
-- **Evidence:** none yet. The design is the
+- **Evidence:** phase 8.1 (cartridge/region/TMSS/boot) is implemented and reviewed, recorded
+  in the [Mega Drive slice](../architecture/megadrive-slice.md#implemented-cartridge-region-and-tmss-m8-phase-81).
+  The design is the
   [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md);
   phase execution lives in the [planning lifecycle](../planning/ROADMAP.md).
 
 ### Work items
 
-- [ ] Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM.
+- [x] Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM
+      (phase 8.1, reviewed PASS 2026-11-17).
 - [ ] Complete 68000 instruction set, addressing modes, privilege, exception groups and cycle
       accounting.
 - [ ] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
@@ -910,7 +917,10 @@ and do not reopen it.
 - **Evidence:** implemented 3-button data-register reads in [Mega Drive
   slice](../architecture/megadrive-slice.md#implemented-controller-port-input-for-tas),
   verified by [M3 hardware acceptance plan](../quality/m3-hardware-acceptance.md) rows
-  M3-A45–A53; FR-MD-010 and FR-MD-011 in
+  M3-A45–A53; the phase 8.1 cartridge device (header/region/TMSS/checksum/mapper/SRAM) in
+  [Mega Drive
+  slice](../architecture/megadrive-slice.md#implemented-cartridge-region-and-tmss-m8-phase-81),
+  reviewed PASS 2026-11-17; FR-MD-010 and FR-MD-011 in
   [functional requirements](../requirements/functional.md).
 
 ### Work items
@@ -922,8 +932,10 @@ and do not reopen it.
 - [ ] 6-button pad support (X/Y/Z/Mode).
 - [ ] Controller timing and controller/timer interrupt behavior.
 - [ ] Port 3 and analog/keyboard hardware.
-- [ ] ROM header, region, TMSS and checksum handling, plus a loader and ROM identity
-      (EPIC-0002 E2-11).
+- [x] ROM header, region, TMSS and checksum handling, plus a loader and ROM identity
+      (EPIC-0002 E2-11): phase 8.1's cartridge device, reviewed PASS 2026-11-17.
+- [ ] Mapper variants beyond the Sega banking, images above the 64 MiB ceiling and SRAM
+      banking schemes other than the 64 KiB window (phase 8.6 residual).
 - [ ] Cartridge mapper (including SSF2-style banking) and SRAM.
 - [ ] Timer interrupts.
 

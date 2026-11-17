@@ -4,7 +4,13 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** the latest dated block is the [2026-11-17 M7 human-facing GUI
+**Current status:** the latest dated block is the [2026-11-17 M8 phase 8.1 cartridge,
+region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
+(81 targets / 1,047 passed, 0 failed, 0 ignored; both demos byte-identical or explained only
+by the documented v3 state-hash bump; GUI run deterministic), which verified the worktree on
+branch `agent/8.1-cartridge-region-tmss` at base `a5de42a` after an independent review
+returned PASS; the work is committed locally on that branch and **not** merged. Before it,
+the [2026-11-17 M7 human-facing GUI
 verification](#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)
 (76 targets / 988 passed, 0 failed, 0 ignored, both demos byte-identical, M7 acceptance rows
 `executed - passed`), which verified the worktree on branch `agent/m7-gui` at base
@@ -924,6 +930,65 @@ the GUI, renderer, pacing, presentation, attach/detach and process rows run agai
 **deterministic synthetic backend**; the minimal Mega Drive backend appears only through
 local `--rom` composition and its capability report (M7-A18), so no Mega Drive rendering,
 audio or parity claim is made. M7 is merged to `main` at `cb05836` (PR #6).
+
+## 2026-11-17 — M8 phase 8.1 cartridge, region, TMSS and boot (integration gate)
+
+Phase 8.1 was implemented by an Agent Teams implementer in the worktree
+`/home/stealthc/projects/ChronoFork/.agents/worktrees/8.1-cartridge-region-tmss`, branch
+`agent/8.1-cartridge-region-tmss`, based on `origin/main` `a5de42a` (phase start commit
+`70a4d0c`). A separate reviewer reviewed it independently: round 1 returned
+**needs_revision** (five blocking findings F-01–F-05 plus lows: SRAM-spec offsets,
+unserialized mapper registers, a new `dead_code` allowance, unbounded file read, a duplicated
+header writer, TMSS unlock width and missing restore paths); the implementer repaired them and
+round 2 returned **PASS** with every round-1 code finding verified resolved. This block is the
+integrator's own re-run after applying the reviewer's advisory cleanups (three unreferenced
+public accessors removed, two doc corrections) and the phase documentation; **no behavioural
+change was made after the PASS**. The work is committed locally on the branch; **no push,
+PR or merge was authorized**. Environment: `CARGO_HOME=/tmp/t7-cargo`, the worktree's own
+`target/`, cargo 1.100.0 / rustc 1.100.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Exit 0 |
+| Compilation | `cargo check --workspace` | Exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0 |
+| Tests | `cargo test --workspace` | 81 targets, 1,047 passed, 0 failed, 0 ignored |
+| Full script | `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` | Exit 0, `all quality gates passed` |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Exit 0 |
+| Demo | `cargo run -p chronofork-cli -- demo` ×2 | Exit 0, byte-identical, 986 B, SHA-256 `9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652` (identical to baseline) |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` ×2 | Exit 0, byte-identical, 1,582 B, SHA-256 `132929190fd8a65576172dab6418f3a4a544f779e2a682d553fef6111a6da426`; the only line different from the pre-change baseline is the documented fork-isolation state hash |
+| GUI run | `printf 'create\nattach 1\npulse 3\nframe\nquit\n' \| cargo run -p chronofork-cli -- gui run` ×2 | Exit 0, byte-identical, 2,842 B, SHA-256 `d3abf57abbd251c8eb40144691bd652937e9002bfd46cadb7434bfe5984e5fe6`, empty stderr |
+
+**Non-regression accounting.** The pre-change baseline captured in the same worktree at
+`a5de42a` is **76 targets / 988 passed / 0 failed / 0 ignored** (all five gates exit 0, both
+demos byte-identical across three runs; collapsed in this page's previous M7 block and recorded
+raw in `.research/anti-slop/8.1-baseline/`). The phase adds **five test binaries** (megadrive
+`cartridge`, `cartridge_snapshot`, `cartridge_boot`, `bus_cartridge` and CLI `cartridge`) plus
+cartridge unit tests, for **+59 tests (988 → 1,047)** and **+5 targets**. The reviewer's
+per-target comparison found no target below baseline and no baseline test removed. No test was
+deleted or `#[ignore]`d, no new `#[allow]` was added in production code (the only pre-existing
+allowance is the unchanged `enum_variant_names` in `interrupts.rs` and the test-only
+`expect_used`), no third-party dependency was added (`Cargo.toml`/`Cargo.lock` untouched), and
+there is no `unsafe` and no `unwrap()` in production paths.
+
+**Documented deviations from the plan** (recorded in the plan's Execution notes): the header
+checksum is the hardware **word sum** over `0x200..` (the plan's byte sum matches neither
+fixture; both fixtures match the word sum — Kid Chameleon `0x24F4`, Chakan `0x4BBD`); the SRAM
+specification is the `RA` marker at `0x1B0` with start/end at `0x1B4`/`0x1B8`, so both fixtures
+declare no SRAM; the mapper register file is write-only so all CPU-visible mapper state is
+serialized and hashed; only a 32-bit write with bit 9 set releases TMSS. The independent
+review re-checksummed both fixtures itself.
+
+**Scoped claim.** The phase delivers the modelled cartridge device and payload/state/config
+v3; it does **not** boot a commercial ROM. The capability report still states
+`rendering=false` and `audio=false`, no compatibility is claimed, and no ROM, BIOS or game asset
+is committed. Mapper variants beyond the Sega banking, images above the 64 MiB ceiling and SRAM
+banking schemes other than the 64 KiB window remain phase 8.6 residual work.
+
+Raw evidence is in the ignored worktree-local trees `.research/anti-slop/8.1-baseline/`
+(pre-change) and `.research/anti-slop/8.1-integration/` (post-change): provenance, gate
+outputs and exit codes, per-target test-result lines, demo/gui stdout, SHA-256 sums and the
+`cmp` repeat results.
 
 ## Gate policy
 
