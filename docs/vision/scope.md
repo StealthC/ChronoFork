@@ -40,11 +40,11 @@ Delivered after the bootstrap:
   emulated ticks, triggered/circular capture, typed reject-only import, queries,
   first-divergence comparison and one-way TSV export (`chronofork trace`); and a
   purpose-built deterministic script DSL with explicit limits, a canonicalized capability
-  sandbox and a byte-deterministic report (`chronofork script`). M5 is implemented and
-  independently verified on `agent/m5-tracing-scripting` at base `84f1476` (final T12
-  PASS, 2026-11-16) and is integration-pending, not merged. No host-language engine is
-  embedded; hardware trace sources, TSV import, GUI/MCP transport and process isolation
-  remain deferred.
+  sandbox and a byte-deterministic report (`chronofork script`). M5 is complete and merged
+  to `main` at `0c4e9f0` (PR #4) after independent verification on
+  `agent/m5-tracing-scripting` at base `84f1476` (final T12 PASS, 2026-11-16). No
+  host-language engine is embedded; hardware trace sources, TSV import, GUI/MCP transport
+  and process isolation remain deferred.
 
 Milestone status and integration state are recorded once in the
 [milestone status table](../roadmap/milestones.md); this page does not duplicate

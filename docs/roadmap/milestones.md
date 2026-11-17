@@ -45,7 +45,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M2 | [Stage 2 — Sessions, forks and save states at product quality](roadmap.md#stage-2--sessions-forks-and-save-states-at-product-quality) | `Complete` | merged to `main` |
 | M3 | [Stage 3 — TAS and deterministic replay](roadmap.md#stage-3--tas-and-deterministic-replay) | `Complete` | merged to `main` at `e816d79` |
 | M4 | [Stage 4 — Debugging depth](roadmap.md#stage-4--debugging-depth) | `Complete` | merged to `main` at `4c595a2` (PR #2); verified on `agent/m4-debugging-depth` at `6d30243` |
-| M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete with integration pending` | verified on `agent/m5-tracing-scripting` at base `84f1476`; uncommitted, not merged |
+| M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Next` | not started |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Planned` | not started |
 | M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Planned` | not started |
@@ -62,11 +62,11 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M6 — Agent-native interfaces is `Next`.** M5 is complete and independently verified on
-`agent/m5-tracing-scripting` at base `84f1476` but is not merged, so its integration state
-is `Complete with integration pending`; M6 is the first unblocked milestone that has not
-started. M0–M4 are merged to `main`; M4 was merged at `4c595a2` (PR #2) after its
-verification on `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
+**M6 — Agent-native interfaces is `Next`.** M5 is complete and merged to `main` at
+`0c4e9f0` (PR #4) after being independently verified on `agent/m5-tracing-scripting` at
+base `84f1476`; M6 is the first unblocked milestone that has not started. M0–M4 are merged
+to `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
+`agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
 
 ## M0 — Bootstrap foundation
 
@@ -424,10 +424,11 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
 ## M5 — Tracing and scripting
 
 - **Roadmap stage:** [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting)
-- **Status:** `Complete with integration pending`
-- **Integration state:** verified on branch `agent/m5-tracing-scripting` at HEAD/base
-  `84f1476466c14e72f911689845c390173982fd81`; implementation complete and **uncommitted**,
-  not merged to `main`.
+- **Status:** `Complete`
+- **Integration state:** merged to `main` at
+  `0c4e9f0e8c3fd2426ca2fb313a48b992c0fbd2ee` (PR #4); verified on branch
+  `agent/m5-tracing-scripting` at HEAD/base
+  `84f1476466c14e72f911689845c390173982fd81` before the merge.
 - **Objective:** structured, timestamped traces and a sandboxed deterministic script
   runtime for reproducible experiments without host-language plugins.
 - **Depends on:** M4 (bounded observation surface), M2 (sessions and storage) and M3
@@ -442,7 +443,7 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
   FR-TRACE-001, FR-TRACE-002 and FR-SCRIPT-001 in [functional
   requirements](../requirements/functional.md). Raw evidence is under the ignored
   `.agents/notes/m5/t12/` tree (`t12-verification.md`, `rows/`, `gate/`, `demos/`,
-  `audit/`) and `t10-review.md`.
+  `audit/`) and `t10-review.md`. M5 was merged unchanged at `0c4e9f0` (PR #4).
 
 ### Work items
 

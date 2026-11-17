@@ -149,10 +149,10 @@ symbols, call-stack/step-over and reverse execution are recorded as M4 follow-up
 audio and mapper inspector views depend on the H2/H3/H4 device models and are follow-ups
 as well, so none of them reopens M4.
 
-M5 tracing and scripting is **implemented and independently verified** for the deterministic
-synthetic backend and the minimal Mega Drive slice on Linux, on branch
-`agent/m5-tracing-scripting` at HEAD/base `84f1476` (implementation complete and
-uncommitted, integration pending). All M5-A1–A39 rows are `executed - passed`; the final
+M5 tracing and scripting is **implemented, independently verified and merged** for the
+deterministic synthetic backend and the minimal Mega Drive slice on Linux. It was verified
+on branch `agent/m5-tracing-scripting` at HEAD/base `84f1476` before merge and merged to
+`main` at `0c4e9f0` (PR #4). All M5-A1–A39 rows are `executed - passed`; the final
 T12 PASS (2026-11-16) followed the T7 `needs_revision` round and the T11 repair of findings
 F1–F10, and T10 reviewed the integrated result PASS. The delivered scope is the host trace
 surface (`chronofork-trace`, the single session capture entry point and the `chronofork

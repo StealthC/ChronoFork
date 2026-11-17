@@ -76,17 +76,16 @@ is in [milestones](docs/roadmap/milestones.md).
 | M2 — Durable sessions | Checkpoints on disk, names, ownership and safe reloads | Complete; verified on local Linux filesystems |
 | M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
 | M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
-| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete with integration pending; independently verified on `agent/m5-tracing-scripting`, not merged |
+| M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Planned |
 | M7 — GUI | Presentation that never owns canonical state | Planned |
 | M8 — More systems | A second backend behind the same contract | Planned |
 
-M0–M4 are merged to `main`; M4 was merged at `4c595a2` after being verified on
-`agent/m4-debugging-depth` at `6d30243`, so a current `main` checkout exposes the
-`chronofork debug` surface. M5 was verified on `agent/m5-tracing-scripting` at base
-`84f1476` (final T12 PASS, 2026-11-16) and is implementation-complete but uncommitted and
-not merged; a `main` checkout does **not** yet contain `chronofork trace` or
-`chronofork script`. The
+M0–M5 are merged to `main`; M4 was merged at `4c595a2` after being verified on
+`agent/m4-debugging-depth` at `6d30243`, and M5 was merged at `0c4e9f0` (PR #4) after being
+verified on `agent/m5-tracing-scripting` at base `84f1476` (final T12 PASS, 2026-11-16), so
+a current `main` checkout exposes the `chronofork debug`, `chronofork trace` and
+`chronofork script` surfaces. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
@@ -190,14 +189,10 @@ BIOS or firmware are included or required.
 
 ## What comes next
 
-M0–M4 are merged to `main` (M4 at `4c595a2`); M5, tracing and scripting, is
-implemented and independently verified but not merged, so it is integration-pending. M6,
+M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4). M6,
 agent-native interfaces, is the next unstarted milestone. Hardware depth runs in parallel,
 so the stage sequence does not wait for a complete machine model:
 
-- **Merge and integrate traces and scripts (M5).** The verified branch adds structured
-  trace formats with comparison and export, triggered/circular tracing and the sandboxed
-  purpose-built scripting runtime; merging needs separate authorization.
 - **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
   rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
   complete controller and timer behaviour, and stronger accuracy evidence.

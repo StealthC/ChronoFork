@@ -1,9 +1,9 @@
 # Tracing and Scripting Architecture
 
-- **Status:** **implemented and independently verified** for the documented minimal-slice
-  scope (final T12 PASS, 2026-11-16, on branch `agent/m5-tracing-scripting` at HEAD/base
-  `84f1476466c14e72f911689845c390173982fd81`; implementation complete and uncommitted,
-  integration pending). All M5-A rows in the [M5 acceptance
+- **Status:** **implemented, independently verified and merged** for the documented
+  minimal-slice scope (final T12 PASS, 2026-11-16, on branch `agent/m5-tracing-scripting`
+  at HEAD/base `84f1476466c14e72f911689845c390173982fd81` before merge; merged to `main`
+  at `0c4e9f0e8c3fd2426ca2fb313a48b992c0fbd2ee`, PR #4). All M5-A rows in the [M5 acceptance
   plan](../quality/m5-tracing-and-scripting-acceptance.md) are `executed - passed`; the
   T7 round returned `needs_revision`, T11 repaired F1–F10, and T12 re-verified the result.
   The authoritative contract, exact byte layout, grammar, limits and deferred scope live in

@@ -3,8 +3,10 @@
 - **Status:** **Accepted** (owner-approved 2026-11-16 by the explicit Stage 5
   implementation directive; see "Approval evidence"). Acceptance authorizes design,
   implementation and independent verification under the [M5 acceptance
-  plan](../quality/m5-tracing-and-scripting-acceptance.md). It does **not** authorize a
-  commit, push, merge, rebase, tag, branch change or release.
+  plan](../quality/m5-tracing-and-scripting-acceptance.md). The original acceptance did
+  **not** by itself authorize a commit, push or merge; the owner's later explicit delivery
+  instruction (2026-11-16: "faça commit push pr e merge") authorized the commit, push,
+  pull request and merge recorded below.
 - **Date:** 2026-11-16
 - **Decision owner:** Project owner
 - **Approval evidence:** the project owner's Stage 5 directive recorded on 2026-11-16:
@@ -17,7 +19,8 @@
 - **Implementation status:** **Implemented and independently verified for the documented
   minimal-slice scope** (final independent T12 PASS, 2026-11-16, on branch
   `agent/m5-tracing-scripting` at HEAD/base
-  `84f1476466c14e72f911689845c390173982fd81`; uncommitted, integration pending). Every row
+  `84f1476466c14e72f911689845c390173982fd81` before merge; merged to `main` at
+  `0c4e9f0e8c3fd2426ca2fb313a48b992c0fbd2ee`, PR #4). Every row
   of the [M5 acceptance plan](../quality/m5-tracing-and-scripting-acceptance.md) is
   `executed - passed`. The earlier T7 verification returned `needs_revision` with findings
   F1–F10; T11 repaired them and T12 independently re-verified every row and fix. T10 then
@@ -815,12 +818,14 @@ new external crate, `unsafe`, `#[allow]`, `#[ignore]`, weakened test or relaxed 
 
 ## 7. Authorization boundary
 
-This ADR authorizes design, implementation and independent verification inside the
-`m5-tracing-scripting` worktree on branch `agent/m5-tracing-scripting`. It explicitly does
-**not** authorize a commit, push, merge, rebase, tag, release, branch deletion or worktree
-change. Integration and publication require a separate explicit authorization. The
-durable documentation promotion (requirements, roadmap, milestones, README, docs index,
-`AGENTS.md`, quality-gate block) happens only after the independent verifier PASS, and it
+The original ADR acceptance authorized design, implementation and independent verification
+inside the `m5-tracing-scripting` worktree on branch `agent/m5-tracing-scripting`; it did
+not by itself authorize a commit, push, merge, rebase, tag, release, branch deletion or
+worktree change. The owner's later explicit delivery instruction (2026-11-16: "faça commit
+push pr e merge") separately authorized the commit, push, pull request and merge. M5 was
+merged to `main` at `0c4e9f0` (PR #4) with the verified tree; no tag or release was made.
+The durable documentation promotion (requirements, roadmap, milestones, README, docs
+index, `AGENTS.md`, quality-gate block) happened after the independent verifier PASS and
 records verified evidence rather than anticipated results.
 
 ## 8. Evidence requirement

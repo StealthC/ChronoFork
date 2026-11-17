@@ -16,11 +16,10 @@ platform built primarily in Rust. It treats emulated execution as deterministic,
 independent, forkable sessions that humans, scripts and AI agents can inspect and
 replay.
 
-**Current status:** bootstrap + partial real-hardware slice. Milestones M0–M4 are
+**Current status:** bootstrap + partial real-hardware slice. Milestones M0–M5 are
 complete and merged to `main` (M4 merged at `4c595a2`, verified on
-`agent/m4-debugging-depth` at `6d30243`); M5 tracing and scripting is implemented and
-independently verified on `agent/m5-tracing-scripting` at base `84f1476` but is
-uncommitted and not merged, and the hardware-depth tracks
+`agent/m4-debugging-depth` at `6d30243`; M5 merged at `0c4e9f0`, PR #4, verified on
+`agent/m5-tracing-scripting` at base `84f1476`), and the hardware-depth tracks
 H1–H5 are partial or planned. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
 subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic

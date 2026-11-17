@@ -658,8 +658,9 @@ The final independent verifier executed the [M5 acceptance
 plan](m5-tracing-and-scripting-acceptance.md) on the worktree
 `/home/stealthc/projects/ChronoFork/.agents/worktrees/m5-tracing-scripting`, branch
 `agent/m5-tracing-scripting`, HEAD and base
-`84f1476466c14e72f911689845c390173982fd81`. The implementation is complete and
-**uncommitted**; this block verifies the worktree, not a merge. The first T7 verification
+`84f1476466c14e72f911689845c390173982fd81`. At verification time the implementation was
+complete and **uncommitted**; this block verifies the worktree. It was subsequently merged
+to `main` at `0c4e9f0` (PR #4) with the same tree. The first T7 verification
 round returned `needs_revision` with findings F1–F10; T11 repaired every finding and T12
 re-ran the full matrix and returned **PASS** (2026-11-16). T10 then reviewed the integrated
 result and returned PASS. The T7 row executions remain round-1 evidence only; the final
@@ -719,7 +720,7 @@ Raw evidence is in the ignored `.agents/notes/m5/t12/` tree
 `gate/demos-artifacts-trace.log`, `rows/`, `demos/`, `audit/`), with
 `t12-verification.md`, `t10-review.md` and `t11-repair.md` beside it. This block is the M5
 gate record; M5 is verified for the deterministic synthetic backend and the minimal Mega
-Drive slice on Linux and is integration-pending, not merged or released.
+Drive slice on Linux and is merged to `main` at `0c4e9f0` (PR #4); it is not released.
 
 ## Gate policy
 
