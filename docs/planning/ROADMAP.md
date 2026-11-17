@@ -22,11 +22,16 @@
 > its `**Started:**` date record when the lifecycle layer took M8 as the current milestone,
 > not when implementation began. When phase 8.1 starts, update the milestone page's
 > integration state instead of silently leaving the two vocabularies to disagree.
+>
+> **GitHub projection.** Milestone and Issue numbers below are written by `init-github-sync`
+> and reconciled by `sync-github` (one-way: this file → GitHub). Edit this file, never the
+> GitHub numbers, then let the sync project the change.
 
 ## Milestone 0: Bootstrap foundation [status: complete]
 
 **Goal:** Prove the architecture and establish durable project infrastructure.
 **Completed:** 2026-11-13
+**Milestone:** 1
 **Record:** [M0](../roadmap/milestones.md#m0--bootstrap-foundation)
 
 ## Milestone 1: Backend decision and minimal hardware slice [status: complete]
@@ -34,6 +39,7 @@
 **Goal:** Select the real-backend strategy and implement the smallest credible Mega Drive
 core behind the existing contracts.
 **Completed:** 2026-11-14
+**Milestone:** 2
 **Record:** [M1](../roadmap/milestones.md#m1--backend-decision-and-minimal-hardware-slice)
 
 ## Milestone 2: Durable sessions [status: complete]
@@ -41,6 +47,7 @@ core behind the existing contracts.
 **Goal:** Make checkpoints, metadata, ownership and reloads durable and trustworthy across
 process restarts.
 **Completed:** 2026-11-15
+**Milestone:** 3
 **Record:** [M2](../roadmap/milestones.md#m2--durable-sessions)
 
 ## Milestone 3: TAS and replay [status: complete]
@@ -48,6 +55,7 @@ process restarts.
 **Goal:** Record, replay, verify, rewind and edit deterministic input movies on the synthetic
 backend and on the minimal Mega Drive slice.
 **Completed:** 2026-11-16
+**Milestone:** 4
 **Record:** [M3](../roadmap/milestones.md#m3--tas-and-replay)
 
 ## Milestone 4: Debugging depth [status: complete]
@@ -55,6 +63,7 @@ backend and on the minimal Mega Drive slice.
 **Goal:** Let reverse-engineering and automation workflows inspect and stop a session without
 a GUI.
 **Completed:** 2026-11-16
+**Milestone:** 5
 **Record:** [M4](../roadmap/milestones.md#m4--debugging-depth)
 
 ## Milestone 5: Tracing and scripting [status: complete]
@@ -62,6 +71,7 @@ a GUI.
 **Goal:** Let scripts run controlled experiments and produce reproducible reports without
 host-language plugins.
 **Completed:** 2026-11-16
+**Milestone:** 6
 **Record:** [M5](../roadmap/milestones.md#m5--tracing-and-scripting)
 
 ## Milestone 6: Agent interfaces [status: complete]
@@ -69,12 +79,14 @@ host-language plugins.
 **Goal:** Expose the same application services through CLI, HTTP and MCP with identical
 semantics.
 **Completed:** 2026-11-17
+**Milestone:** 7
 **Record:** [M6](../roadmap/milestones.md#m6--agent-interfaces)
 
 ## Milestone 7: GUI [status: complete]
 
 **Goal:** Provide optional human-facing presentation surfaces that never own canonical state.
 **Completed:** 2026-11-17
+**Milestone:** 8
 **Record:** [M7](../roadmap/milestones.md#m7--gui)
 
 ## Milestone 8: Multi-backend expansion [status: active]
@@ -82,6 +94,7 @@ semantics.
 **Goal:** Integrate a second system behind the same capability model without changing session,
 storage or transport core semantics, and report capability differences honestly.
 **Started:** 2026-11-17
+**Milestone:** 9
 **Design:** [roadmap design](../superpowers/specs/2026-11-17-roadmap-design.md)
 **Definition of Done:**
 - [ ] A second system is integrated without changing session, storage or transport core semantics.
@@ -96,6 +109,7 @@ storage or transport core semantics, and report capability differences honestly.
 versioning and compatibility contract in an accepted ADR.
 **Surface:** Backend
 **HelpWanted:** no
+**Issue:** #7
 **Plan:** _to be written_
 
 ### Phase 8.2: Second backend core behind the backend contract [status: pending]
@@ -104,6 +118,7 @@ versioning and compatibility contract in an accepted ADR.
 payload and an honest capability report — behind the unchanged backend contract.
 **Surface:** Backend
 **HelpWanted:** no
+**Issue:** #8
 **Plan:** _to be written_
 
 ### Phase 8.3: Backend-neutral shared layers and capability matrix [status: pending]
@@ -112,6 +127,7 @@ payload and an honest capability report — behind the unchanged backend contrac
 backends, with differences surfaced in a capability matrix rather than normalized away.
 **Surface:** Refactor
 **HelpWanted:** no
+**Issue:** #9
 **Plan:** _to be written_
 
 ### Phase 8.4: Cross-backend differential tests [status: pending]
@@ -119,6 +135,7 @@ backends, with differences surfaced in a capability matrix rather than normalize
 **Goal:** Add an executable cross-backend differential corpus and record the evidence.
 **Surface:** Backend
 **HelpWanted:** no
+**Issue:** #10
 **Plan:** _to be written_
 
 ### Phase 8.5: External SDK contract and stability policy [status: pending]
@@ -127,6 +144,7 @@ backends, with differences surfaced in a capability matrix rather than normalize
 (FR-API-004).
 **Surface:** Docs
 **HelpWanted:** no
+**Issue:** #11
 **Plan:** _to be written_
 
 ## Parallel hardware-depth tracks (not milestones)
