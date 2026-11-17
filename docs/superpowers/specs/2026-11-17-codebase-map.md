@@ -97,11 +97,15 @@ executed gates on this checkout.
 - **Critical files — read fully before changing:** `AGENTS.md`, `docs/planning/CONVENTIONS.md`,
   `.github/workflows/ci.yml`, `Cargo.toml`, `scripts/check.sh`, and the format owners above.
 
-## Recommended starting points for the planned work (M8)
+## Recommended starting points for the planned work (M9 — multi-backend)
+
+The functional Mega Drive milestone (M8, redefined 2026-11-17) is backend-internal work:
+start from `crates/chronofork-megadrive/src/` and the H1–H5 checkpoints; see the
+[M8 design](2026-11-17-milestone-8-megadrive-functional-design.md). For M9:
 
 1. **Contract first:** `crates/chronofork-backend-api/src/{lib,descriptor,snapshot}.rs` — the
    second backend must satisfy these without changing them; an ADR is required first
-   (phase 8.1, Issue #7).
+   (phase 9.1, Issue #7).
 2. **Use both existing backends as exemplars:** `chronofork-test-backend` is the minimal
    deterministic shape; `chronofork-megadrive` is the real-device shape (state, snapshots,
    capability report).

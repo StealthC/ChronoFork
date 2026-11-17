@@ -8,6 +8,11 @@
 **Date:** 2026-11-17
 **Author:** DeepSeek Harness agent (captain), approved by the repository owner
 **Stage:** roadmap (whole project)
+**Updated 2026-11-17:** the owner redefined M8 as the **functional Mega Drive emulator** and
+moved the former multi-backend milestone to M9. This document remains the approved
+whole-project design; the milestone detail lives in the
+[M8 design](2026-11-17-milestone-8-megadrive-functional-design.md). References to M8 below
+record the pre-redefinition ordering unless marked otherwise.
 
 ## Goal
 
@@ -38,7 +43,7 @@ trackable projection, and `AGENTS.md` as the harness-independent index of rules.
 - A deterministic minimal slice and its host layers (M0–M7) stay testable and honestly
   documented; the quality gate passes from a clean checkout.
 - A second backend runs behind the unchanged backend/session/storage/transport contracts,
-  with capability differences reported rather than normalized away (M8).
+  with capability differences reported rather than normalized away (M9).
 - Hardware depth H1–H5 is tracked honestly, and no accuracy or compatibility claim exists
   without executable evidence.
 - Any new agent session can resume from `docs/planning/` and `AGENTS.md` alone, without the
@@ -66,7 +71,7 @@ The owner chose **A**, with M8 as the current milestone (its `active` status mea
 
 ## Milestones
 
-The project already numbers its capability stages M0–M8, so this roadmap keeps that
+The project already numbers its capability stages M0–M9, so this roadmap keeps that
 numbering instead of renumbering from 1. Completed milestones are recorded as one line
 each; their Definition of Done, work items and evidence remain in the canonical milestone
 page.
@@ -118,7 +123,7 @@ semantics.
 state.
 **Status:** complete (merged 2026-11-17, PR #6).
 
-### Milestone 8: Multi-backend expansion
+### Milestone 8: Multi-backend expansion (moved to M9 on 2026-11-17; M8 is now the functional Mega Drive — see the M8 design)
 
 **Goal:** Integrate a second system behind the same capability model without changing
 session, storage or transport core semantics, with capability differences reported honestly.
@@ -144,7 +149,7 @@ session, storage or transport core semantics, with capability differences report
 - M1 → M2/M3/M4/M5: persistence, movies, debugging and tracing all observe a real core.
 - M6 → M7: the GUI consumes the service/transport boundary; it must never reach a backend
   directly.
-- M8 depends on the M2–M7 shared layers; it is the first unblocked, unstarted milestone.
+- M9 (multi-backend) depends on the M2–M7 shared layers; M8 is the functional Mega Drive and is the current milestone.
 - H1–H5 run in parallel and never gate a capability stage; a stage may be complete while the
   machine model stays narrow.
 - External dependencies: none required — the project is self-contained, uses no third-party
@@ -161,9 +166,9 @@ session, storage or transport core semantics, with capability differences report
 
 ## Open Questions
 
-- Which second system does M8 target (for example Master System, NES, Game Boy or another)?
-  Decision and alternatives belong to phase 8.1; it needs owner approval before an ADR is
-  accepted.
+- Which second system does M9 target (for example Master System, NES, Game Boy or another)?
+  Decision and alternatives belong to phase 9.1; it needs owner approval before an ADR is
+  accepted. M8 has its own open questions in the [M8 design](2026-11-17-milestone-8-megadrive-functional-design.md).
 - Should `GitHub Projects v2` be adopted after native Issue/Milestone sync proves useful?
   Deferred; the native integration covers Issues and Milestones only.
 - Should the local `planning-with-files` scratch (`/.planning/`) remain, or be retired in

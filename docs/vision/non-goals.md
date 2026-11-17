@@ -14,6 +14,8 @@ These are deliberate boundaries, not missing features that will be silently adde
   canonical state.
 - **Not a single-backend product.** The host must not reduce every backend to the
   least capable one, nor expose unsupported capabilities.
+- **Not a universal-compatibility claim.** M8 targets a curated, documented set of
+  commercial ROMs; "runs everything" and cycle-perfect accuracy are not promised.
 - **Not an AI-only tool.** Agent-native interfaces are a feature, not the core
   architecture. The repository must remain usable by humans and other agents.
 - **Not a cloud service in the bootstrap.** No remote execution, account system,
@@ -21,7 +23,8 @@ These are deliberate boundaries, not missing features that will be silently adde
 
 ## Engineering non-goals for the bootstrap
 
-- Implementing a complete 68000, Z80, VDP, YM2612 or PSG.
+- Treating the bootstrap slice as a complete emulator. Completing the 68000, Z80,
+  VDP, YM2612 and PSG is the M8 milestone, not a bootstrap non-goal.
 - Claiming cycle accuracy or game compatibility without differential tests.
 - Optimizing snapshot size or fork speed before correctness is established.
 - Introducing a database, message broker, HTTP server or plugin runtime before a

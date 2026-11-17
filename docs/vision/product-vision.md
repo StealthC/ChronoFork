@@ -77,9 +77,11 @@ first real system. Milestones M0–M7 are complete and merged to `main` (M4 at
 `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 at `0c4e9f0`,
 PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`, final T12 PASS
 2026-11-16; M6 and M7 at `cb05836`, PR #6, verified on `agent/m6-agent-interfaces` and
-`agent/m7-gui` at base `93d47ed`); M8 is next.
-The machine model itself is still narrow, and that gap is tracked in the parallel
-hardware-depth tracks H1–H5 rather than in the capability stages. Multi-system support and
+`agent/m7-gui` at base `93d47ed`); M8 is the functional Mega Drive emulator and is next,
+with multi-backend expansion as M9.
+The machine model itself is still narrow. M8 now takes that gap as its deliverable and
+sequences the parallel hardware-depth tracks H1–H5 to completion, so the tracks remain the
+capability checkpoints while M8 is the product milestone. Multi-system support and
 hardware trace sources are roadmap items, not current features; the host trace surface, the
 sandboxed deterministic script DSL, the HTTP/MCP service surfaces and the text/HTML GUI
 presentation are delivered for the documented scope. See the [milestone status

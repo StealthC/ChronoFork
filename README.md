@@ -80,7 +80,8 @@ is in [milestones](docs/roadmap/milestones.md).
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 — GUI | Presentation that never owns canonical state | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 — More systems | A second backend behind the same contract | Next |
+| M8 — Functional Mega Drive | Complete 68000/Z80/VDP/audio and cartridge; playable commercial ROMs, headless capture and a native window | Next |
+| M9 — More systems | A second backend behind the same contract | Planned |
 
 M0–M7 are merged to `main`; M4 was merged at `4c595a2` after being verified on
 `agent/m4-debugging-depth` at `6d30243`, and M5 was merged at `0c4e9f0` (PR #4) after being
@@ -90,7 +91,10 @@ a current `main` checkout exposes the `chronofork debug`, `chronofork trace` and
 `93d47ed` (pass-2 PASS, 2026-11-17) and M7 on `agent/m7-gui` at the same base
 (final PASS4 and review REVIEW5 PASS, 2026-11-17); both are merged at `cb05836` (PR #6), so
 a current `main` checkout exposes `chronofork serve`, `api`, `mcp`, `experiment` and
-`chronofork gui`. The
+`chronofork gui`. The owner redefined M8 on 2026-11-17: it is now the **functional Mega
+Drive emulator** (full 68000/Z80, VDP rendering/timing/DMA, YM2612/PSG audio, cartridge,
+controllers, playable commercial ROMs, headless capture and a native window), and the former
+multi-backend milestone became M9. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
@@ -248,13 +252,15 @@ Linux/WSL-only and makes no performance or cross-platform claim.
 ## What comes next
 
 M0–M7 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
-`cb05836` via PR #6). M8, multi-backend expansion, is the next unstarted
-milestone. Hardware depth runs in parallel, so the stage sequence does not wait for a
-complete machine model:
+`cb05836` via PR #6). **M8 is the functional Mega Drive emulator** and is the next
+unstarted milestone; it deliberately sequences the hardware-depth tracks to completion
+instead of waiting for them in parallel:
 
-- **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
-  rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
-  complete controller and timer behaviour, and stronger accuracy evidence.
+- **Complete the Mega Drive model (M8, decomposed by H1–H5).** The full 68000 and Z80,
+  rendering/VDP/DMA with timing, YM2612/PSG audio, ROM header/TMSS/mapper/SRAM, complete
+  controller and timer behaviour, cycle-based time with unpaced/paced execution modes, and
+  deterministic headless capture of frames and audio. A curated commercial-ROM set is the
+  playability proof; the native window is the last phase.
 - **Close the replay follow-ups.** Import/export adapters (for example BK2),
   checkpoint-reference movies and in-place/timeline editing are documented
   follow-ups, not delivered features; 6-button and analog controller hardware
@@ -267,8 +273,8 @@ complete machine model:
   recorded follow-ups: a native toolkit frontend after H2/H3, real video/audio sources and
   sinks, live host-time playback, GUI input editing/settings and the inspector/trace panel
   content once M6-FU1 exposes those operations over transport.
-- **Grow beyond one system (M8).** A second backend behind the same contract, with
-  capability differences reported honestly.
+- **Grow beyond one system (M9).** After M8, a second backend behind the same contract,
+  with capability differences reported honestly.
 
 ## Try it
 

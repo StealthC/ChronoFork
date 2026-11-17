@@ -65,9 +65,14 @@ them.
 
 ## Next capability scope
 
-- **Multi-backend expansion (M8, not yet delivered).** A second backend behind the same
-  capability model, with honest capability differences and cross-backend differential
-  tests.
+- **Functional Mega Drive emulator (M8, next).** The complete 68000 and Z80, a complete VDP
+  with rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and
+  controllers, cycle-based canonical time with unpaced/paced execution modes, deterministic
+  headless capture of frames and audio, and an optional native window. A curated
+  commercial-ROM set is the playability proof; see the
+  [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md).
+- **Multi-backend expansion (M9, planned).** A second backend behind the same capability
+  model, with honest capability differences and cross-backend differential tests.
 
 
 ## Hardware-depth tracks (parallel, not stages)
@@ -91,9 +96,12 @@ live in the [milestones](../roadmap/milestones.md) document.
 
 ## Explicitly outside the current scope
 
-- A complete Mega Drive emulator.
+- A claim of complete or cycle-perfect Mega Drive accuracy, or of universal
+  commercial-ROM compatibility, without executed evidence. M8 defines a curated, documented
+  target instead.
 - Cycle-accurate CPU/VDP/audio claims without tests.
-- Commercial ROMs, BIOS/firmware images or game assets.
+- Commercial ROMs, BIOS/firmware images or game assets committed to the repository;
+  compatibility validation runs locally and is never versioned.
 - Multiplayer networking, cloud execution or remote session infrastructure.
 - A production GUI, installer or release pipeline.
 - Process isolation, copy-on-write forks or parallel session execution.

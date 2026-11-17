@@ -501,6 +501,6 @@ unknown tool, batch request) compare their typed code and message too.
 - Durable per-principal ownership and restart-persistent sessions (**M6-FU2**).
 - TLS, token rotation/expiry, audit logs, multi-node deployment (**M6-FU3**).
 - SSE/streaming, MCP resources/prompts/logging/completion, `Mcp-Session-Id` (**M6-FU4**).
-- Per-request backend selection, cartridge upload, external SDKs (Stage 8).
+- Per-request backend selection, cartridge upload, external SDKs (Stage 9).
 - Closed in-memory sessions are retained for the process lifetime; `max_sessions` bounds
   registered sessions and there is no reclamation API yet.

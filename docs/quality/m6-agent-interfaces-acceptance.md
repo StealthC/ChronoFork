@@ -697,7 +697,7 @@ the [M6 milestone](../roadmap/milestones.md#m6--agent-interfaces) (`Complete`; m
 `main` at `cb05836`, PR #6), the [roadmap Stage 6](../roadmap/roadmap.md#stage-6--agent-native-interfaces)
 delivered paragraph, [functional requirements](../requirements/functional.md)
 (`FR-API-001` updated, `FR-API-002`/`FR-API-003` **Implemented**, `FR-API-004` still
-`Planned` for Stage 8), the [architecture overview](../architecture/overview.md) layer
+`Planned` for Stage 9), the [architecture overview](../architecture/overview.md) layer
 diagram/dependency rules/implemented-versus-planned table, the [agent interfaces
 architecture](../architecture/agent-interfaces.md) token-bound wording, the
 [docs index](../README.md), the [ADR index](../adr/README.md), [README](../../README.md),

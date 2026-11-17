@@ -2,13 +2,13 @@
 
 Milestones are verifiable checkpoints, not dates. A milestone is complete only when its
 exit criteria are demonstrated by executed tests or recorded evidence. There is one
-milestone per roadmap stage (M0–M8) plus the parallel hardware-depth track H1–H5, which is
-a track, not a stage and not M9. This page is the canonical home of status, integration
+milestone per roadmap stage (M0–M9) plus the parallel hardware-depth track H1–H5, which is
+a track, not a stage and not M10. This page is the canonical home of status, integration
 state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 
 ## How to read this document
 
-- **One milestone per stage.** M0–M8 map one-to-one to roadmap Stages 0–8. The mapping is
+- **One milestone per stage.** M0–M9 map one-to-one to roadmap Stages 0–9. The mapping is
   the "Roadmap stage" column in [Status at a glance](#status-at-a-glance); every milestone
   section links its stage and every stage links back.
 - **Integration state is separate from status.** A verified branch is not a merge, and a
@@ -48,7 +48,8 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Next` | not started |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `Next` | not started |
+| M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
 
@@ -62,18 +63,24 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M8 — Multi-backend is `Next`.** Execution of M8 is tracked in the committed
-[planning lifecycle](../planning/ROADMAP.md) (phases 8.1–8.5); this page remains the
-canonical record of capability scope, its status vocabulary, evidence and follow-ups.
-M7 is `Complete` and merged to `main` at `cb05836`
+**M8 — Functional Mega Drive is `Next`.** The owner redefined M8 on 2026-11-17: the former
+multi-backend milestone became M9, and M8 now completes the Mega Drive model (full 68000 and
+Z80, VDP rendering/timing/DMA, YM2612/PSG audio, cartridge, controllers) so a curated set of
+commercial ROMs plays, with deterministic headless capture and an optional native window.
+Execution is tracked in the committed [planning lifecycle](../planning/ROADMAP.md) (phases
+8.1–8.8) and the [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md);
+this page remains the canonical record of capability scope, its status vocabulary, evidence and
+follow-ups. M7 is `Complete` and merged to `main` at `cb05836`
 (PR #6): it was independently verified on `agent/m7-gui` at base `origin/main` `93d47ed`
 (final verification PASS4 and final review REVIEW5, 2026-11-17) before the merge. M6 is
 also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-interfaces` at
 the same base. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
 verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
-milestone that has not started; it depends on the M2–M7 shared layers. M0–M7 are merged to
+milestone that has not started; it depends on the M1–M7 layers and consumes the H1–H5
+checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
-`agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
+`agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
+phases.
 
 ## M0 — Bootstrap foundation
 
@@ -562,12 +569,12 @@ M5 is closed; the following are tracked elsewhere and do not reopen it:
   A26).
 - **Met:** FR-API-002 and FR-API-003 are **Implemented** for the documented transport scope in
   [functional requirements](../requirements/functional.md), with FR-API-001 updated and
-  FR-API-004 still `Planned` for Stage 8.
+  FR-API-004 still `Planned` for Stage 9.
 
 ### Deferred and follow-ups
 
 M6 is closed for the documented scope; the following are tracked and do not reopen it. The
-GUI is [M7](#m7--gui) and additional systems are [M8](#m8--multi-backend).
+GUI is [M7](#m7--gui) and additional systems are [M9](#m9--multi-backend).
 
 - **M6-FU1:** debug, trace, script and TAS operations over transport. They stay CLI-local in
   M6 because they are large, sandbox-sensitive surfaces; the catalog is deliberately curated
@@ -687,17 +694,74 @@ and do not reopen it.
   frontend and streaming transport. The controller lease is cooperative, not a lock, and
   the acceptance evidence is Linux/WSL single-platform only.
 
-## M8 — Multi-backend
+## M8 — Functional Mega Drive
 
-- **Roadmap stage:** [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion)
+- **Roadmap stage:** [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive)
 - **Status:** `Next`
+- **Integration state:** not started
+- **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
+  rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
+  so a curated commercial ROM set plays with video, audio and input, with deterministic
+  headless capture and an optional native window.
+- **Depends on:** the M1–M7 layers and contracts; it consumes the
+  [H1–H5](#h1--cpu-and-instruction-completeness) checkpoints as its decomposition and depends
+  on the accepted [ADR-0002](../adr/0002-backend-boundaries.md).
+- **Evidence:** none yet. The design is the
+  [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md);
+  phase execution lives in the [planning lifecycle](../planning/ROADMAP.md).
+
+### Work items
+
+- [ ] Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM.
+- [ ] Complete 68000 instruction set, addressing modes, privilege, exception groups and cycle
+      accounting.
+- [ ] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
+      256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
+- [ ] Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
+- [ ] Timer interrupts and the full TH latch / 3- and 6-button controllers on ports 1–2.
+- [ ] Cycle-based canonical time plus unpaced/paced/manual execution modes with run-to-target
+      APIs for agents.
+- [ ] Deterministic headless PNG frame and WAV audio capture.
+- [ ] Optional native windowed frontend behind an accepted ADR that supersedes ADR-0013's
+      no-toolkit constraint.
+- [ ] Curated commercial-ROM compatibility list with executed evidence and measured
+      performance.
+- [ ] Versioned snapshot payloads for every device, with the superseded M1–M7 timing contracts
+      documented.
+
+### Exit criteria
+
+- The complete 68000 and Z80 instruction sets are implemented and differential-tested against
+  the pinned Exodus oracle.
+- The VDP renders and transfers per H2; YM2612/PSG audio per H3; cartridge, controllers and
+  timers per H4.
+- A curated set of commercial ROMs boots and plays with video, audio and input; the list and
+  its executed evidence are documented and no ROM is committed.
+- Unpaced, paced and stepped modes produce identical frame, audio and state hashes for the
+  same input.
+- Headless capture is hash-pinned; the native window presents video/audio and accepts input.
+- Performance is measured at 60/50 fps in paced mode and the optimizations are documented.
+- The H1–H5 rows for the implemented scope are checked with evidence.
+
+### Deferred and follow-ups
+
+- Port 3, analog and keyboard hardware remain H4 residual limits unless the curated set
+  requires them.
+- Dynamic recompilation, run-ahead, skip-frames and savestate-rewind shortcuts are out of
+  scope; each would need an ADR and a determinism analysis.
+- Universal commercial compatibility and cycle-perfect hardware equivalence are not claimed.
+
+## M9 — Multi-backend
+
+- **Roadmap stage:** [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion)
+- **Status:** `Planned`
 - **Integration state:** not started
 - **Objective:** integrate a second system behind the same capability model without changing
   session, storage or transport semantics.
 - **Depends on:** the M2–M7 shared layers and the boundaries in
   [ADR-0002](../adr/0002-backend-boundaries.md).
 - **Evidence:** none yet. The scope is
-  [Stage 8](roadmap.md#stage-8--multi-backend-expansion); capability status is FR-API-004 in
+  [Stage 9](roadmap.md#stage-9--multi-backend-expansion); capability status is FR-API-004 in
   [functional requirements](../requirements/functional.md).
 
 ### Work items
