@@ -7,6 +7,7 @@ use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendSnapshot, MachineInspection, StepOutcome,
 };
 use chronofork_core::{InputFrame, SessionId, SnapshotId};
+use chronofork_trace::{Trace, TraceConfig, capture};
 
 use crate::error::SessionError;
 use crate::lineage::Lineage;
@@ -191,6 +192,37 @@ impl Session {
         self.ensure_open()?;
         self.backend.restore(&self.initial_state)?;
         Ok(())
+    }
+
+    /// Captures a bounded structured trace from this session's backend.
+    ///
+    /// This is the single session-level capture entry point: it delegates to
+    /// [`chronofork_trace::capture()`] over the session's backend and advances the
+    /// session by the executed steps. Capture does not allocate a snapshot
+    /// identity, does not change lineage and never modifies canonical state
+    /// through any path other than `Backend::step`.
+    ///
+    /// The session must be [`SessionState::Ready`]; a paused or closed session is
+    /// rejected without advancing the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::NotRunning`] or [`SessionError::Closed`] for a
+    /// session that cannot execute, and [`SessionError::Trace`] for a typed trace
+    /// or backend failure.
+    pub fn capture_trace(
+        &mut self,
+        config: &TraceConfig,
+        steps: u64,
+    ) -> Result<Trace, SessionError> {
+        self.ensure_open()?;
+        if self.state != SessionState::Ready {
+            return Err(SessionError::NotRunning {
+                session: self.id,
+                state: self.state,
+            });
+        }
+        capture(self.backend.as_mut(), config, steps).map_err(SessionError::Trace)
     }
 
     /// Captures the canonical backend state without creating a checkpoint.
@@ -390,5 +422,92 @@ mod tests {
             matches!(&error, SessionError::IncompatibleSnapshot(message) if message.contains("config_hash")),
             "expected a session-level incompatibility error, got {error}"
         );
+    }
+
+    #[test]
+    fn capture_trace_does_not_perturb_snapshot() {
+        use std::sync::Arc;
+
+        use chronofork_core::InputFrame;
+        use chronofork_test_backend::SyntheticBackendFactory;
+        use chronofork_trace::{TraceConfig, TraceStopReason};
+
+        use crate::manager::SessionManager;
+        use crate::movie::{Movie, MovieMeta};
+
+        let factory = SyntheticBackendFactory::default();
+        let mut traced = SessionManager::new(Arc::new(factory.clone()));
+        let mut plain = SessionManager::new(Arc::new(factory));
+        let traced_session = traced.create_session().expect("traced session");
+        let plain_session = plain.create_session().expect("plain session");
+        let config = TraceConfig::default();
+
+        let trace = traced
+            .capture_trace(traced_session, &config, 5)
+            .expect("capture");
+        for _ in 0..5 {
+            plain
+                .step(plain_session, InputFrame::NEUTRAL)
+                .expect("plain step");
+        }
+
+        assert_eq!(trace.record_count(), 5);
+        assert_eq!(trace.meta().stop_reason, TraceStopReason::StepLimit);
+        assert!(trace.meta().triggered);
+        assert!(!trace.meta().events_observed);
+
+        let traced_view = traced.inspect(traced_session).expect("traced inspection");
+        let plain_view = plain.inspect(plain_session).expect("plain inspection");
+        assert_eq!(traced_view.machine.tick, plain_view.machine.tick);
+        assert_eq!(traced_view.machine.tick.raw(), 5);
+        assert_eq!(
+            traced_view.machine.state_hash,
+            plain_view.machine.state_hash
+        );
+        assert_eq!(traced_view.machine.registers, plain_view.machine.registers);
+        assert_eq!(traced_view.machine.memory, plain_view.machine.memory);
+
+        let traced_id = traced.snapshot(traced_session).expect("traced snapshot");
+        let plain_id = plain.snapshot(plain_session).expect("plain snapshot");
+        let traced_bytes = traced
+            .snapshot_bytes(traced_session, traced_id)
+            .expect("traced bytes");
+        let plain_bytes = plain
+            .snapshot_bytes(plain_session, plain_id)
+            .expect("plain bytes");
+        assert_eq!(
+            traced_bytes, plain_bytes,
+            "tracing must not change serialized snapshot bytes"
+        );
+
+        let meta = MovieMeta::new(7, Some("capture-non-perturbation".to_owned()), None)
+            .expect("movie meta");
+        let inputs = [InputFrame::NEUTRAL; 4];
+        let traced_movie = Movie::record(&mut traced, traced_session, meta.clone(), &inputs)
+            .expect("traced movie");
+        let plain_movie =
+            Movie::record(&mut plain, plain_session, meta, &inputs).expect("plain movie");
+        assert_eq!(
+            traced_movie.to_bytes().expect("traced movie bytes"),
+            plain_movie.to_bytes().expect("plain movie bytes"),
+            "a movie recorded after tracing must be byte-identical"
+        );
+
+        traced.pause(traced_session).expect("pause");
+        let error = traced
+            .capture_trace(traced_session, &config, 1)
+            .expect_err("a paused session cannot capture");
+        assert!(matches!(
+            error,
+            SessionError::NotRunning {
+                session,
+                state: crate::session::SessionState::Paused,
+            } if session == traced_session
+        ));
+
+        let unknown = traced
+            .capture_trace(chronofork_core::SessionId::from_raw(9_999), &config, 1)
+            .expect_err("unknown session");
+        assert!(matches!(unknown, SessionError::UnknownSession(_)));
     }
 }

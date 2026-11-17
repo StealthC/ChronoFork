@@ -4,6 +4,8 @@ members = [
     "crates/chronofork-core",
     "crates/chronofork-backend-api",
     "crates/chronofork-sessions",
+    "crates/chronofork-trace",
+    "crates/chronofork-script",
     "crates/chronofork-debug",
     "crates/chronofork-test-backend",
     "crates/chronofork-megadrive",
@@ -20,6 +22,8 @@ license = "MIT"
 chronofork-core = { path = "crates/chronofork-core" }
 chronofork-backend-api = { path = "crates/chronofork-backend-api" }
 chronofork-sessions = { path = "crates/chronofork-sessions" }
+chronofork-trace = { path = "crates/chronofork-trace" }
+chronofork-script = { path = "crates/chronofork-script" }
 chronofork-debug = { path = "crates/chronofork-debug" }
 chronofork-test-backend = { path = "crates/chronofork-test-backend" }
 chronofork-megadrive = { path = "crates/chronofork-megadrive" }

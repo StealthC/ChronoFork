@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use chronofork_backend_api::BackendError;
 use chronofork_core::{SessionId, SnapshotId};
+use chronofork_trace::TraceError;
 
 use crate::session::SessionState;
 use crate::storage::LockIdentity;
@@ -43,6 +44,8 @@ pub enum SessionError {
     IncompatibleSnapshot(String),
     /// The backend rejected an operation.
     Backend(BackendError),
+    /// The host trace capture or trace operation failed.
+    Trace(TraceError),
     /// The storage root has no `chronofork.store` marker.
     NotInitialized,
     /// The storage marker is present but is not a ChronoFork store marker.
@@ -186,6 +189,7 @@ impl fmt::Display for SessionError {
                 write!(f, "incompatible snapshot: {message}")
             }
             Self::Backend(error) => write!(f, "backend error: {error}"),
+            Self::Trace(error) => write!(f, "trace error: {error}"),
             Self::NotInitialized => f.write_str("storage root is not initialized"),
             Self::NotAStorageRoot(message) => write!(f, "not a ChronoFork storage root: {message}"),
             Self::RootNotEmpty(path) => {
@@ -303,6 +307,7 @@ impl Error for SessionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Backend(error) => Some(error),
+            Self::Trace(error) => Some(error),
             _ => None,
         }
     }

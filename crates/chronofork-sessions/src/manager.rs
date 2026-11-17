@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
+use chronofork_trace::{Trace, TraceConfig};
 
 use crate::error::SessionError;
 use crate::lineage::Lineage;
@@ -244,6 +245,27 @@ impl SessionManager {
     /// Restores a session's creation state.
     pub fn reset(&mut self, session: SessionId) -> Result<(), SessionError> {
         self.session_mut(session)?.reset()
+    }
+
+    /// Captures a bounded structured trace from one session's backend.
+    ///
+    /// The manager looks up the session and delegates to
+    /// [`Session::capture_trace`]; no second capture loop exists. Capture
+    /// advances the session by the executed steps and does not allocate a
+    /// snapshot identity or change lineage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::UnknownSession`] for an unregistered identifier,
+    /// the session lifecycle errors of [`Session::capture_trace`] and
+    /// [`SessionError::Trace`] for a typed trace or backend failure.
+    pub fn capture_trace(
+        &mut self,
+        session: SessionId,
+        config: &TraceConfig,
+        steps: u64,
+    ) -> Result<Trace, SessionError> {
+        self.session_mut(session)?.capture_trace(config, steps)
     }
 
     /// Captures a session's canonical backend state without creating a checkpoint.

@@ -44,8 +44,10 @@ dependencies = [
  "chronofork-core",
  "chronofork-debug",
  "chronofork-megadrive",
+ "chronofork-script",
  "chronofork-sessions",
  "chronofork-test-backend",
+ "chronofork-trace",
 ]
 
 [[package]]
@@ -77,12 +79,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "chronofork-script"
+version = "0.1.0"
+dependencies = [
+ "chronofork-backend-api",
+ "chronofork-core",
+ "chronofork-sessions",
+ "chronofork-test-backend",
+ "chronofork-trace",
+ "proptest",
+]
+
+[[package]]
 name = "chronofork-sessions"
 version = "0.1.0"
 dependencies = [
  "chronofork-backend-api",
  "chronofork-core",
  "chronofork-test-backend",
+ "chronofork-trace",
  "proptest",
  "sha2",
 ]
@@ -93,6 +108,17 @@ version = "0.1.0"
 dependencies = [
  "chronofork-backend-api",
  "chronofork-core",
+]
+
+[[package]]
+name = "chronofork-trace"
+version = "0.1.0"
+dependencies = [
+ "chronofork-backend-api",
+ "chronofork-core",
+ "chronofork-megadrive",
+ "chronofork-test-backend",
+ "proptest",
 ]
 
 [[package]]

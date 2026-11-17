@@ -15,6 +15,8 @@ chronofork-backend-api.workspace = true
 chronofork-core.workspace = true
 chronofork-debug.workspace = true
 chronofork-sessions.workspace = true
+chronofork-trace.workspace = true
+chronofork-script.workspace = true
 chronofork-test-backend.workspace = true
 chronofork-megadrive.workspace = true
 
