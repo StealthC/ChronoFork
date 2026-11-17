@@ -19,8 +19,10 @@ replay.
 **Current status:** bootstrap + partial real-hardware slice. Milestones M0–M5 are
 complete and merged to `main` (M4 merged at `4c595a2`, verified on
 `agent/m4-debugging-depth` at `6d30243`; M5 merged at `0c4e9f0`, PR #4, verified on
-`agent/m5-tracing-scripting` at base `84f1476`), and the hardware-depth tracks
-H1–H5 are partial or planned. The repository contains a
+`agent/m5-tracing-scripting` at base `84f1476`); M6 and M7 are verified and
+`Complete with integration pending` on the uncommitted branches
+`agent/m6-agent-interfaces` and `agent/m7-gui` at base `origin/main` `93d47ed`; and the
+hardware-depth tracks H1–H5 are partial or planned. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
 subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic
 instruction-quantum VBlank/HBlank interrupt scheduler. The slice includes 68000 SR-mask
@@ -31,6 +33,27 @@ debugger (`chronofork-debug`, exposed as `chronofork debug`, M4) adds breakpoint
 byte-granular watchpoints, event breakpoints/logpoints and bounded inspection views.
 The M5 host layers add structured tracing (`chronofork-trace`, `chronofork trace`) and a
 sandboxed deterministic script runtime (`chronofork-script`, `chronofork script`).
+The M6 agent interfaces add a transport-agnostic service layer (`chronofork-service`) and
+hand-rolled bounded HTTP/1.1 + MCP adapters with a typed client (`chronofork-transport`),
+exposed by `chronofork serve`, `chronofork api`, `chronofork mcp` and
+`chronofork experiment run`, with canonical machine-consumable experiment artifacts and
+byte-level direct/HTTP/MCP parity. M6 was verified on the uncommitted worktree
+`agent/m6-agent-interfaces` at base `93d47ed` and is **integration-pending**: no commit or
+merge was authorized, there is **no TLS**, no SSE/streaming, no keep-alive or chunked bodies,
+and debug/trace/script/TAS operations are not exposed over transport (those remain CLI-local
+and are tracked as M6-FU1–M6-FU4).
+The M7 GUI adds a presentation-only `chronofork-gui` crate (strict view decoders, pane/
+mosaic model, eight-panel matrix, deterministic plain/ANSI and self-contained HTML
+renderers, `HostClock`/`ManualClock` pacing with a host-time run loop, capability-gated
+video/audio pipelines and a cooperative human/agent controller lease) and the
+`chronofork gui run` stdin-driven process surface in local and remote modes, with a
+read-only `.cfmovie` timeline and attach/detach proven non-perturbative. M7 was verified on
+the uncommitted worktree `agent/m7-gui` at base `93d47ed` (PASS4 + review REVIEW5 PASS,
+2026-11-17) and is **integration-pending**: no commit or merge was authorized. v1 presents
+**text and a static HTML document only** — no native toolkit window, no picture, no sound;
+real video/audio sources and sinks remain H2/H3, so the pipeline honestly reports both as
+unavailable in every v1 process configuration, and no CLI process builds the host clock
+(playback is the deterministic `pulse`).
 Rendering, DMA, audio, Z80, timer interrupts, ROM header/region detection and
 cartridge mapping, the rest of the controller protocol (A/Start, TH/6-button, port 3,
 analog/keyboard), privilege enforcement, other exception groups and cycle accuracy
@@ -49,7 +72,10 @@ backend as a complete emulator or claim game compatibility.
 | `crates/chronofork-debug/` | Host debugger layer: breakpoints, watchpoints, event breakpoints/logpoints |
 | `crates/chronofork-trace/` | Host trace layer: canonical `CFTRACE1` v1 format, capture/triggers/ring, queries, comparison and TSV export |
 | `crates/chronofork-script/` | Sandboxed deterministic script DSL: lexer/parser/evaluator, limits, sandbox, session/trace/TAS/report bindings |
-| `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features (`demo`, `megadrive`, `backend`, `session`, `tas`, `debug`, `trace`, `script`) |
+| `crates/chronofork-service/` | Transport-agnostic application service: typed 16-operation catalog, canonical JSON codec, token/scope authentication, session ownership, concurrency boundary (manager lock + per-session writer lease), experiment artifacts |
+| `crates/chronofork-transport/` | Hand-rolled bounded HTTP/1.1 server, stateless MCP JSON-RPC endpoint over HTTP and a typed client; the only crate that knows HTTP/MCP framing |
+| `crates/chronofork-gui/` | Presentation-only GUI layer: command grammar/executor, strict view decoders, pane/mosaic model, panels, plain/ANSI + HTML renderers, `HostClock` pacing/run loop, capability-gated video/audio pipelines and the human/agent controller lease |
+| `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features (`demo`, `megadrive`, `backend`, `session`, `tas`, `debug`, `trace`, `script`, `serve`, `api`, `mcp`, `experiment`, `gui`) |
 | `docs/` | Durable official documentation |
 | `docs/README.md` | Documentation index; start here |
 | `docs/adr/` | Architectural decisions and status |
@@ -69,26 +95,48 @@ backend as a complete emulator or claim game compatibility.
 - Direct dependency: `sha2` (MIT OR Apache-2.0). Keep dependencies minimal.
 - `rustfmt` and `clippy` are required.
 - No `unsafe` (workspace lint forbids it).
-- No HTTP/MCP/GUI/database dependency in the bootstrap.
+- No third-party GUI or database dependency. HTTP and MCP are **hand-rolled** over
+  `std::net`/`std::thread` in `chronofork-transport` (HTTP/1.1 and MCP JSON-RPC subsets) with
+  no third-party HTTP, async-runtime or serialization dependency; M6 added no new
+  third-party dependency. The M7 GUI renders to plain text/ANSI and a static HTML document
+  in `chronofork-gui`, with no toolkit, browser, rendering or audio dependency (M7 also
+  added no third-party dependency). Do not add `axum`/`hyper`/`tokio`/`serde` without an ADR
+  that supersedes [ADR-0012](docs/adr/0012-agent-native-interfaces.md); do not add a GUI
+  toolkit without an ADR that supersedes
+  [ADR-0013](docs/adr/0013-human-facing-gui.md).
 
 ## Architectural boundaries
 
 Dependency direction is enforced by crate structure:
 
 ```text
-chronofork-core
-    ↑
-chronofork-backend-api
-    ↑
-chronofork-sessions ← chronofork-cli
-    ↑
-concrete backends (synthetic + minimal Mega Drive)
+crate                      direct workspace dependencies (read from each Cargo.toml)
+chronofork-core            none
+chronofork-backend-api     core
+chronofork-debug           core, backend-api
+chronofork-trace           core, backend-api
+chronofork-sessions        core, backend-api, trace
+chronofork-script          core, backend-api, sessions, trace
+chronofork-service         core, backend-api, sessions
+chronofork-transport       service
+chronofork-gui             core, service
+chronofork-cli             every layer above + chronofork-gui + test-backend and megadrive (selected backend)
+concrete backends          core, backend-api only
 ```
 
-`chronofork-trace` depends only on core and backend-api; `chronofork-sessions` consumes it
-and owns the single `capture_trace` entry point. `chronofork-script` consumes core,
-backend-api, sessions and trace. The CLI composes the trace/script libraries with a child
-factory and never re-implements a codec, matcher or limit.
+An entry means "depends on", so the direction is `core ← backend-api ← sessions ← service ←
+transport` with the host layers beside it, never a strict single stack.
+`chronofork-debug` and `chronofork-trace` are siblings that depend only on core and
+backend-api; neither depends on sessions. `chronofork-sessions` consumes `chronofork-trace`
+and owns the single `capture_trace` entry point, and `chronofork-script` sits above both.
+`chronofork-service` consumes core, backend-api and sessions (it does not depend on trace or
+script), `chronofork-transport` consumes only the service, and the CLI is the composition root
+that also selects a concrete backend. `chronofork-gui` consumes only core and service (never
+transport, sessions or a backend), so presentation can reach canonical state only through
+the service catalog; nothing depends on `chronofork-gui` except the CLI. No crate below the
+CLI depends on `chronofork-transport` (only the CLI composes its typed client and supplies
+the local/remote channel to the GUI), and the CLI never re-implements a codec, matcher or
+limit.
 
 Rules:
 
@@ -96,13 +144,19 @@ Rules:
    assumptions.
 2. `chronofork-sessions` must never depend on a concrete backend.
 3. A backend must not depend on sessions or transports.
-4. Transport types (HTTP, MCP JSON) must not appear in core/backend/session APIs.
-5. The GUI or client must never own canonical emulated state.
-6. A capability must be backed by tests and reported honestly. Do not advertise
+4. Transport types (HTTP, MCP JSON, sockets, JSON-RPC) must not appear in core,
+   backend-api, sessions or service. `chronofork-service` has its own canonical JSON value
+   type and knows nothing about wire framing.
+5. `chronofork-service` must not depend on a concrete backend or on `chronofork-transport`;
+   nothing below `chronofork-transport` may depend on it.
+6. The GUI or client must never own canonical emulated state. `chronofork-gui` depends on
+   core and service only; the CLI is the only crate that composes the transport, so a
+   frontend cannot reach a backend or bypass the service boundary.
+7. A capability must be backed by tests and reported honestly. Do not advertise
    unimplemented features.
-7. Snapshot formats and backend payloads are versioned. Reject incompatible input;
+8. Snapshot formats and backend payloads are versioned. Reject incompatible input;
    never silently reinterpret bytes.
-8. Preserve determinism: no implicit host wall-clock input to hardware.
+9. Preserve determinism: no implicit host wall-clock input to hardware.
 
 More detail: [architecture overview](docs/architecture/overview.md),
 [backend model](docs/architecture/backend-model.md),
@@ -373,9 +427,12 @@ Also run:
 ```sh
 cargo run -p chronofork-cli -- demo
 cargo run -p chronofork-cli -- megadrive demo
+printf 'create\nattach 1\npulse 3\nframe\nquit\n' | cargo run -p chronofork-cli -- gui run
 ```
 
-A change is not complete because it compiles. Required behavior needs an automated
+The `gui run` check must stay deterministic: stdout is byte-identical across runs, stderr is
+empty on success, and no block or frame may carry a host path, token or host time. A change
+is not complete because it compiles. Required behavior needs an automated
 test at the lowest useful layer. Determinism, snapshot, fork and isolation claims
 need executable invariant tests. Do not fabricate test results. If a gate cannot
 run, state exactly why.

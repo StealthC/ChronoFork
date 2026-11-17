@@ -316,6 +316,17 @@ scope, exit criteria, dependencies and non-goals.
   HTTP and MCP with identical semantics.
 - **Milestone:** [M6 — Agent interfaces](milestones.md#m6--agent-interfaces).
 - **Depends on:** the M2–M5 services (sessions, movies, debug, tracing/scripting).
+- **Delivered:** a transport-agnostic service layer (`chronofork-service`: 16-operation typed
+  catalog, canonical JSON, token/scope/ownership policy and the documented concurrency
+  boundary), bounded HTTP/1.1 and stateless MCP adapters plus a typed client
+  (`chronofork-transport`), the daemon and client shapes (`chronofork serve`, `api`, `mcp`,
+  `experiment run`), canonical machine-consumable `chronofork.experiment.v1` artifacts and
+  byte-level direct/HTTP/MCP parity. No third-party HTTP, async-runtime or serialization
+  dependency was added. The implementation was independently verified on the uncommitted
+  worktree `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17, after the
+  M6-R1–R10 repair and a round-2 review pass); the milestone page is the single record of
+  status/integration and the [acceptance
+  plan](../quality/m6-agent-interfaces-acceptance.md) holds the executed rows and evidence.
 
 ### Scope and deliverables
 
@@ -336,36 +347,67 @@ scope, exit criteria, dependencies and non-goals.
 ### Non-goals and tracked elsewhere
 
 - The GUI is Stage 7; it consumes these services but never owns canonical state.
-- Additional systems are Stage 8.
+- Additional systems are Stage 8, and external SDKs (FR-API-004) remain Stage 8 scope.
+- Not delivered in Stage 6 and tracked as M6-FU1–M6-FU4 on the milestone page: debug, trace,
+  script and TAS operations over transport; durable per-principal ownership and
+  restart-persistent live sessions; TLS, token rotation/expiry, audit log and multi-node
+  deployment; SSE/streaming, MCP resources/prompts/logging/completion and `Mcp-Session-Id`.
+  [ADR-0012](../adr/0012-agent-native-interfaces.md) records the rejected alternatives
+  (REST-per-operation, `axum`/`hyper`/`tokio` + `serde`, SSE, MCP stdio, persisting ownership
+  in the storage format).
 
 ## Stage 7 — Human-facing GUI
 
-- **Goal:** provide optional human-facing windows for viewing and controlling sessions
-  without owning canonical state.
-- **Milestone:** [M7 — GUI](milestones.md#m7--gui).
-- **Depends on:** M6 (attach/detach transport) and
-  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80) (video and audio to present).
+- **Goal:** provide optional human-facing presentation surfaces for viewing and controlling
+  sessions without owning canonical state.
+- **Milestone:** [M7 — GUI](milestones.md#m7--gui) (`Complete with integration pending`).
+- **Depends on:** M6 (attach/detach transport). Real video and audio to present depend on
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80), which are still partial/planned;
+  the delivered pipeline is capability-gated and reports both as unavailable until a real
+  source/sink exists.
+- **Delivered:** a presentation-only `chronofork-gui` crate (strict view decoders, window/
+  pane/mosaic model, eight-panel availability matrix, deterministic fixed-size plain/ANSI
+  and self-contained HTML renderers, `HostClock`/`ManualClock` pacing with a host-time run
+  loop and pause gate, capability-gated video/audio pipelines and the cooperative
+  human/agent controller lease), the `chronofork gui run` stdin-driven process surface in
+  the CLI (local and remote via the M6 channel, read-only `.cfmovie` timeline, `pulse`,
+  blocks and exit codes), and attach/detach proof that canonical results do not change.
+  The implementation is independently verified on the uncommitted worktree
+  `agent/m7-gui` at base `93d47ed` (final PASS4 and REVIEW5 PASS, 2026-11-17, after the
+  F1–F4/FAIL3 repairs); the milestone page is the single record of status/integration and
+  the [acceptance plan](../quality/m7-gui-acceptance.md) holds the executed rows and
+  evidence. **No commit, merge or publication was authorized**, so M7 remains
+  integration-pending.
 
 ### Scope and deliverables
 
-- Optional windows for one or many sessions.
-- Live video/audio presentation decoupled from canonical state.
-- Frame pacing and a host-time run loop.
-- Debugger panels, memory viewers, hardware inspectors and TAS timelines.
+- Presentation surfaces for one or many sessions (fixed-size text grids, ANSI emphasis and
+  a static HTML document).
+- Capability-gated video/audio presentation decoupled from canonical state; honest
+  `Unavailable` paths in v1.
+- Frame pacing and a host-time run loop with an injected clock; deterministic `pulse`.
+- Debugger panels, memory viewers, hardware inspector reasons and read-only TAS timelines.
 - Remote observation and human/agent control handoff.
-- Multi-window and mosaic layouts.
+- Single-session and mosaic layouts over up to four attached panes per window.
 
 ### Exit criteria
 
-- The GUI can attach to and detach from sessions without changing emulation results.
-- Presentation consumes state but never owns or mutates canonical emulation state.
+- The GUI can attach to and detach from sessions without changing emulation results
+  (M7-A6, A7, A21, A22).
+- Presentation consumes state but never owns or mutates canonical emulation state
+  (M7-A1–A4, A28).
 - A human and an agent can hand control back and forth with observable, deterministic
-  results.
+  results (M7-A16, A17, A22).
 
 ### Non-goals and tracked elsewhere
 
 - The GUI adds no emulation semantics; rendering and audio depth are
-  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80).
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80). There is no native toolkit window,
+  no browser/JS frontend, no streaming transport, no live audio output, no GUI input
+  injection, no GUI state persistence and no VDP/bus/disassembly/trace panel content until
+  M6-FU1 exposes it over transport. No performance or cross-platform claim is made.
+- The capability-gated `Available` video/audio path is proven with test doubles only; the
+  v1 process always reports `unavailable`.
 - Scripting and the HTTP/MCP surface stay in Stages 5–6.
 
 ## Stage 8 — Multi-backend expansion

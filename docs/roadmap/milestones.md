@@ -46,9 +46,9 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M3 | [Stage 3 — TAS and deterministic replay](roadmap.md#stage-3--tas-and-deterministic-replay) | `Complete` | merged to `main` at `e816d79` |
 | M4 | [Stage 4 — Debugging depth](roadmap.md#stage-4--debugging-depth) | `Complete` | merged to `main` at `4c595a2` (PR #2); verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
-| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Next` | not started |
-| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Planned` | not started |
-| M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Planned` | not started |
+| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete with integration pending` | verified on `agent/m6-agent-interfaces` at base `93d47ed`; uncommitted worktree, not merged |
+| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete with integration pending` | verified on `agent/m7-gui` at base `93d47ed`; uncommitted worktree, not merged |
+| M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Next` | not started |
 
 Hardware-depth track (parallel, not a stage):
 
@@ -62,10 +62,15 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M6 — Agent-native interfaces is `Next`.** M5 is complete and merged to `main` at
-`0c4e9f0` (PR #4) after being independently verified on `agent/m5-tracing-scripting` at
-base `84f1476`; M6 is the first unblocked milestone that has not started. M0–M4 are merged
-to `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
+**M8 — Multi-backend is `Next`.** M7 is `Complete with integration pending`: it was
+independently verified on the uncommitted worktree `agent/m7-gui` at base `origin/main`
+`93d47ed` (final verification PASS4 and final review REVIEW5, 2026-11-17), but no local
+commit, merge or publication was authorized, so it is not on `main` yet. M6 remains
+`Complete with integration pending` on `agent/m6-agent-interfaces` at the same base and is
+not reopened. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
+verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
+milestone that has not started; it depends on the M2–M7 shared layers. M0–M5 are merged to
+`main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
 
 ## M0 — Bootstrap foundation
@@ -494,80 +499,200 @@ M5 is closed; the following are tracked elsewhere and do not reopen it:
 ## M6 — Agent interfaces
 
 - **Roadmap stage:** [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces)
-- **Status:** `Next`
-- **Integration state:** not started
+- **Status:** `Complete with integration pending`
+- **Integration state:** verified on the **uncommitted** worktree at branch
+  `agent/m6-agent-interfaces`, HEAD and base `origin/main`
+  `93d47ed308874be0e8e7060641c238c7f6809e31`. **No local commit, merge, push or publication
+  was authorized in the task that produced this verification**, so M6 is not on `main`.
 - **Objective:** expose the same services to humans, scripts and agents through CLI, HTTP
   and MCP with identical semantics.
 - **Depends on:** the M2–M5 services; transport types must not enter core, backend or session
   APIs.
-- **Evidence:** none yet. The scope is
-  [Stage 6](roadmap.md#stage-6--agent-native-interfaces); capability status is FR-API-002,
-  FR-API-003 and FR-API-004 in
-  [functional requirements](../requirements/functional.md).
+- **Evidence:** independent pass 2 **PASS (2026-11-17)** after the round-1 review returned
+  `needs_revision` with findings M6-R1–M6-R10 and the repair closed them; the round-2 review
+  returned pass with no regression. All M6-A1–M6-A32 rows are `executed - passed` in the
+  [M6 acceptance plan](../quality/m6-agent-interfaces-acceptance.md); the dated gate record
+  is the 2026-11-17 M6 block in [quality gates](../quality/quality-gates.md); the gate
+  result, target accounting, demo hashes and non-regression comparison are recorded there and
+  are not duplicated here. Contracts are
+  [ADR-0012](../adr/0012-agent-native-interfaces.md) and the [agent interfaces
+  architecture](../architecture/agent-interfaces.md); requirements are FR-API-001,
+  FR-API-002 and FR-API-003 in [functional requirements](../requirements/functional.md).
+  Raw evidence is under the ignored `.agents/notes/m6/verify/` tree (`PASS2.md`,
+  `TREE-STATE-PASS2.md`, `rows2/`, `gate/`, `demos2/`, `parity/`, `audit/`, plus the
+  preserved round-1 `ROWS.md` and its directories).
+- **Verified behavior changes during the repair (pinned by tests, not silent):**
+  `max_sessions` counts all registered sessions including closed ones (closed sessions stay
+  unlisted and non-mutatable); the human `session list` prints exactly
+  `chronofork: storage listing truncated at 256 entries` on stderr when the service reports
+  `truncated:true` (stdout shape unchanged, `--json` keeps the field); locally produced and
+  human-facing failures use the base `chronofork: <message>` prefix, with typed codes only
+  in canonical envelopes; the invalid `--name` wording now comes from the service catalog.
 
 ### Work items
 
-- [ ] HTTP API over the existing application services.
-- [ ] MCP over Streamable HTTP, backed by the same services.
-- [ ] Typed tool surface instead of hundreds of loose endpoints.
-- [ ] Session ownership, permissions and concurrency controls at the transport boundary.
-- [ ] Machine-consumable experiment artifacts.
-- [ ] CLI reimplemented as a first-class client of the shared services.
-- [ ] Semantic parity tests across CLI, HTTP and MCP.
-- [ ] Daemon/deployment shape for long-running sessions.
+- [x] HTTP API over the existing application services (M6-A11–A13, A16, A18–A21;
+      `GET /health`, `GET /v1/tools`, `POST /v1/ops`).
+- [x] MCP over Streamable HTTP, backed by the same services (M6-A14, A15, A22; stateless
+      JSON-RPC 2.0, protocol `2025-03-26`, tools subset).
+- [x] Typed tool surface instead of hundreds of loose endpoints (M6-A6, A11, A14; one
+      curated 16-operation catalog mapped identically onto HTTP and MCP).
+- [x] Session ownership, permissions and concurrency controls at the transport boundary
+      (M6-A3–A5, A8, A12, A31; token file, read/write/admin scopes, per-principal session
+      ownership, manager lock plus per-session writer lease).
+- [x] Machine-consumable experiment artifacts (M6-A10, A24; deterministic
+      `chronofork.experiment.v1`, content-derived `artifact_id`, `experiment run --out`).
+- [x] CLI reimplemented as a first-class client of the shared services (M6-A20–A25;
+      `serve`, `api`, `mcp`, `experiment run` and the `session` refactor onto the service).
+- [x] Semantic parity tests across CLI, HTTP and MCP (M6-A18, A19, A21–A23; byte-level
+      parity over all 16 operations and the error matrix).
+- [x] Daemon/deployment shape for long-running sessions (M6-A16, A20, A30; bounded worker
+      pool, graceful shutdown, durable store shared across restarts).
 
 ### Exit criteria
 
-- Identical operations through CLI, HTTP and MCP with identical semantics, proven by parity
-  tests.
-- No transport type appears in core, backend or session APIs.
-- The session layer remains the only canonical state owner.
+- **Met:** identical operations through CLI, HTTP and MCP with identical semantics, proven by
+  byte-level parity tests over all 16 operations and the documented error matrix (M6-A18,
+  M6-A19, M6-A21–A23).
+- **Met:** no transport type appears in core, backend or session APIs (M6-A26 audit; the
+  dependency direction is `core ← backend-api ← sessions ← service ← transport`).
+- **Met:** the session layer remains the only canonical state owner; MCP and HTTP are thin
+  mappings and the experiment artifact is content-addressed output, not state (M6-A7, A10,
+  A26).
+- **Met:** FR-API-002 and FR-API-003 are **Implemented** for the documented transport scope in
+  [functional requirements](../requirements/functional.md), with FR-API-001 updated and
+  FR-API-004 still `Planned` for Stage 8.
 
 ### Deferred and follow-ups
 
-- The GUI is [M7](#m7--gui); additional systems are [M8](#m8--multi-backend).
-- Any network surface follows the repository security constraints: no telemetry and no
-  upload path without explicit design approval.
+M6 is closed for the documented scope; the following are tracked and do not reopen it. The
+GUI is [M7](#m7--gui) and additional systems are [M8](#m8--multi-backend).
+
+- **M6-FU1:** debug, trace, script and TAS operations over transport. They stay CLI-local in
+  M6 because they are large, sandbox-sensitive surfaces; the catalog is deliberately curated
+  and no transport claims them.
+- **M6-FU2:** durable per-principal ownership (the M6 storage format carries no owner) and
+  restart-persistent live sessions. Ownership is process-local today and lost on daemon
+  restart; closed sessions are retained for the process lifetime and keep counting toward
+  `max_sessions`.
+- **M6-FU3:** TLS, token rotation/expiry, an audit log and multi-node deployment. Tokens are
+  coarse and static, the HTTP server is HTTP/1.1 without TLS or keep-alive, and comparison is
+  not claimed constant-time. Any network surface still follows the repository security
+  constraints: no telemetry and no upload path without explicit design approval.
+- **M6-FU4:** SSE/streaming, MCP resources/prompts/logging/completion and `Mcp-Session-Id`.
+  `POST /mcp` is stateless JSON-only; there are no server-initiated messages. Revisit only
+  with a real streaming consumer.
+- Recorded precision limits: `io_timeout` is verified at process level but has no automated
+  timeout test; `internal_error` is table-tested but never produced by an operation; no
+  performance claim is made (the bounds are correctness/DoS limits); verification ran on the
+  Linux/WSL acceptance platform only.
 
 ## M7 — GUI
 
 - **Roadmap stage:** [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui)
-- **Status:** `Planned`
-- **Integration state:** not started
-- **Objective:** optional human-facing windows for observing and controlling sessions
-  without owning canonical state.
-- **Depends on:** M6 (attach/detach transport) and
-  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80) (video and audio to present).
-- **Evidence:** none yet. The scope is [Stage 7](roadmap.md#stage-7--human-facing-gui);
-  capability status is FR-GUI-001 in
-  [functional requirements](../requirements/functional.md).
+- **Status:** `Complete with integration pending`
+- **Integration state:** verified on the **uncommitted** worktree at branch `agent/m7-gui`,
+  HEAD and base `origin/main` `93d47ed308874be0e8e7060641c238c7f6809e31` (with the
+  verified M6 snapshot). **No local commit, merge, push or publication was authorized in
+  the task that produced this verification**, so M7 is not on `main`.
+- **Objective:** provide optional human-facing presentation surfaces for observing and
+  controlling sessions without owning canonical state.
+- **Depends on:** M6 (attach/detach transport). Real video and audio to present depend on
+  [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80) and are **not delivered**: the
+  pipeline is capability-gated and honestly reports `rendering=unavailable` /
+  `audio=unavailable` until a real source/sink exists.
+- **Evidence:** final independent verification **PASS4 (2026-11-17)**, after the round-1
+  FAIL (F1–F4), the FAIL3 round (M7-A24 as written) and the repairs; the final independent
+  review **REVIEW5** returned **PASS** with no new finding and no regression. All
+  M7-A1–M7-A30 rows are `executed - passed` in the [M7 acceptance
+  plan](../quality/m7-gui-acceptance.md); the dated gate record is the 2026-11-17 M7 block
+  in [quality gates](../quality/quality-gates.md) — `./scripts/check.sh` exit 0; the dated
+  block records the target/passed counts against the M6 baseline, and both demos are 3/3
+  byte-identical with the frozen M6 crates unchanged. Contracts are
+  [ADR-0013](../adr/0013-human-facing-gui.md) and the [GUI
+  architecture](../architecture/gui.md); requirements are FR-GUI-001 and FR-EXEC-007 in
+  [functional requirements](../requirements/functional.md). Raw evidence is under the
+  ignored `.agents/notes/m7/verify/final2/` tree (`PASS4.md`, `rows/`, `rows/process/`,
+  `gate/`, `demos/`, `audit/`), with the independent review in
+  `.agents/notes/m7/review/REVIEW5.md`; earlier rounds are preserved in the same ignored
+  tree.
+- **Repairs recorded during verification (pinned by tests, not silent):** the `detach`
+  block field order now matches the implementation and test; the frame title uses single
+  spaces; `gui --help` on an unwritable stdout is one typed `channel` diagnostic instead of
+  a panic; the empty `events` fallback is documented as a formatter fallback and unit
+  tested; the attach/detach tests cover hidden-panel equality and the single visible
+  `events` line separately; the CLI GUI test harness tolerates only `BrokenPipe` on a child
+  that exits before reading the whole script (100 KB regression test); `SystemClock` is
+  documented as a library capability with `ManualClock`/`pulse` as the only v1 process
+  path; `PanelState` is visibility-only; the test-only `expect_used` exception and the
+  duplicated bounded/token reader are registered with owner **M7** and a revisit condition.
 
 ### Work items
 
-- [ ] Video presentation decoupled from canonical state.
-- [ ] Audio presentation decoupled from canonical state.
-- [ ] Frame pacing and a host-time run loop.
-- [ ] Debugger panels, memory viewers, hardware inspectors and TAS timelines.
-- [ ] Single-session and multi-session window/mosaic layouts.
-- [ ] Remote observation and human/agent control handoff.
-- [ ] Attach/detach tests proving unchanged emulation results.
+- [x] Video presentation decoupled from canonical state (M7-A12, A18, A20; a
+      capability-gated `Presentation<VideoSource>` pipeline that never fabricates frames
+      and reports `unavailable` in every v1 process configuration).
+- [x] Audio presentation decoupled from canonical state (M7-A13, A18, A20; a
+      capability-gated `Presentation<AudioSink>` with deterministic chunks in the test
+      path and `unavailable` in every v1 process configuration).
+- [x] Frame pacing and a host-time run loop (M7-A14, A15; `Pacer` with injected
+      `HostClock`/`ManualClock`, `advance_elapsed` catch-up/drop accounting, the pause gate
+      and the deterministic `pulse` command).
+- [x] Debugger panels, memory viewers, hardware inspectors and TAS timelines (M7-A5–A8,
+      A11, A23; eight-panel availability matrix, read-only bounded memory view, inspector
+      reasons including `M6-FU1`, and the read-only `.cfmovie` timeline with unchanged
+      movie bytes).
+- [x] Single-session and multi-session window/mosaic layouts (M7-A5, A9; pane allocation,
+      focus, `single`/`mosaic` layouts and deterministic fixed-size frame grids).
+- [x] Remote observation and human/agent control handoff (M7-A16, A17, A21, A22; lease
+      state machine, local H→A→H flow, real-daemon observation and second-process agent
+      handoff).
+- [x] Attach/detach tests proving unchanged emulation results (M7-A6, A7, A28; process and
+      crate tests plus the frozen-layer audit).
 
 ### Exit criteria
 
-- The GUI attaches to and detaches from sessions without changing emulation results.
-- Presentation never owns or mutates canonical state.
-- Human/agent control handoff is observable and deterministic.
+- **Met:** the GUI attaches to and detaches from sessions without changing emulation
+  results (M7-A6, A7 — the only by-design frame difference is the visible `events` log
+  line; the state hash and tick are unchanged; A21/A22 confirm it against a real daemon).
+- **Met:** presentation never owns or mutates canonical state (M7-A1 dependency graph:
+  `chronofork-gui` depends on core and service only; A2/A3/A4 show the GUI issues only the
+  curated read/create/run operations; A28 shows the canonical artifacts unchanged).
+- **Met:** human/agent control handoff is observable and deterministic (M7-A16, A17, A22;
+  generation/sequence counters, typed `control_denied`, byte-identical process output).
+- **Met:** FR-GUI-001 is **Implemented** for the documented text/HTML presentation scope and
+  FR-EXEC-007 is **Implemented** for the verified library pacing/run loop plus rewind in
+  [functional requirements](../requirements/functional.md); the process surface
+  deliberately exposes only the deterministic `pulse` and no native window.
 
 ### Deferred and follow-ups
 
-- Frame pacing is intentionally here rather than in M5: it is a presentation-cadence concern
-  and depends on [H2](#h2--video-vdp-and-dma) for video.
-- Rendering and audio depth stay in H2/H3; scripting is delivered in M5 and HTTP/MCP in M6.
+M7 is closed for the documented deterministic presentation scope; the following are tracked
+and do not reopen it.
+
+- **No commit or merge:** M7 is verified on the uncommitted `agent/m7-gui` worktree and
+  remains integration-pending; landing it is a separate, explicitly authorized task.
+- **Native toolkit frontend (follow-up after H2/H3):** v1 presents text and a static HTML
+  document only — no native window, no picture and no sound. The GUI is a presentation
+  crate with no third-party toolkit dependency.
+- **Real video and audio sources/sinks (H2/H3):** the capability-gated pipeline is the seam;
+  the `Available` path is exercised only by test-pattern/recording doubles. No rendering,
+  audio-output or performance claim is made.
+- **Inspector and trace panel content (M6-FU1):** VDP/bus/disassembly/trace content stays
+  absent because those operations are not exposed over transport; the panel matrix reports
+  `unavailable:not_exposed_by_transport`.
+- **Live host-time playback:** `SystemClock` and `advance_elapsed` are verified library
+  capabilities, but no v1 CLI process builds the host clock; playback is the deterministic
+  `pulse`. Wiring real host time remains a follow-up.
+- **Other non-goals:** GUI input injection, GUI state persistence, multi-window/
+  multi-display, fork/snapshot/restore/close/compare/store from the window, browser/JS
+  frontend and streaming transport. The controller lease is cooperative, not a lock, and
+  the acceptance evidence is Linux/WSL single-platform only.
 
 ## M8 — Multi-backend
 
 - **Roadmap stage:** [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion)
-- **Status:** `Planned`
+- **Status:** `Next`
 - **Integration state:** not started
 - **Objective:** integrate a second system behind the same capability model without changing
   session, storage or transport semantics.

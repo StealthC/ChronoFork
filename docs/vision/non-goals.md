@@ -9,8 +9,9 @@ These are deliberate boundaries, not missing features that will be silently adde
 - **Not a reskin of another emulator.** Upstream projects may inform architecture,
   but ChronoFork must have its own identity, contracts and documentation. Origin of
   reused code must always be disclosed.
-- **Not a GUI-first emulator.** A GUI is planned, but emulation and sessions must
-  work headless and must never depend on a display owning canonical state.
+- **Not a GUI-first emulator.** A GUI exists as an optional presentation layer, but
+  emulation and sessions must work headless and must never depend on a display owning
+  canonical state.
 - **Not a single-backend product.** The host must not reduce every backend to the
   least capable one, nor expose unsupported capabilities.
 - **Not an AI-only tool.** Agent-native interfaces are a feature, not the core

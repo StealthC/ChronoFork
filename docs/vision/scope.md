@@ -1,6 +1,6 @@
 # Scope
 
-## Delivered scope (M0–M5)
+## Delivered scope (M0–M7)
 
 Bootstrap foundation (M0) delivered:
 
@@ -43,21 +43,33 @@ Delivered after the bootstrap:
   sandbox and a byte-deterministic report (`chronofork script`). M5 is complete and merged
   to `main` at `0c4e9f0` (PR #4) after independent verification on
   `agent/m5-tracing-scripting` at base `84f1476` (final T12 PASS, 2026-11-16). No
-  host-language engine is embedded; hardware trace sources, TSV import, GUI/MCP transport
-  and process isolation remain deferred.
+  host-language engine is embedded; hardware trace sources, TSV import and process
+  isolation remain deferred.
+- **Agent-native interfaces (M6).** A transport-agnostic `chronofork-service` (16-operation
+  catalog, canonical JSON, token/scope/ownership policy and the manager-lock/writer-lease
+  boundary), bounded HTTP/1.1 and stateless MCP adapters with a typed client
+  (`chronofork-transport`), `chronofork serve`/`api`/`mcp`/`experiment run` and canonical
+  `chronofork.experiment.v1` artifacts. Independently verified on the uncommitted
+  `agent/m6-agent-interfaces` worktree at base `93d47ed` (pass-2 PASS, 2026-11-17);
+  integration-pending.
+- **Human-facing GUI (M7).** A presentation-only `chronofork-gui` crate (canonical views,
+  pane/mosaic model, panels, deterministic plain/ANSI and HTML renderers, pacing/run loop,
+  capability-gated video/audio pipelines and the cooperative human/agent controller lease)
+  and the `chronofork gui run` local/remote process surface, with attach/detach proven
+  non-perturbative. Independently verified on the uncommitted `agent/m7-gui` worktree at
+  base `93d47ed` (final PASS4 and REVIEW5 PASS, 2026-11-17); integration-pending. Video and
+  audio remain unavailable in v1 (H2/H3).
 
 Milestone status and integration state are recorded once in the
 [milestone status table](../roadmap/milestones.md); this page does not duplicate
 them.
 
-## Next capability scope (not yet delivered)
+## Next capability scope
 
-- **Agent-native interfaces (M6).** HTTP and MCP over the same application
-  services, with a typed tool surface, ownership and permissions.
-- **Human-facing GUI (M7).** Video, audio, frame pacing and debugger/TAS panels
-  that attach to and detach from sessions without owning canonical state.
-- **Multi-backend expansion (M8).** A second backend behind the same capability
-  model, with honest capability differences and cross-backend differential tests.
+- **Multi-backend expansion (M8, not yet delivered).** A second backend behind the same
+  capability model, with honest capability differences and cross-backend differential
+  tests.
+
 
 ## Hardware-depth tracks (parallel, not stages)
 

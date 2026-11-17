@@ -1,0 +1,16 @@
+[package]
+name = "chronofork-transport"
+description = "Bounded HTTP/1.1 and MCP Streamable HTTP adapters for ChronoFork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-service.workspace = true
+
+[dev-dependencies]
+chronofork-test-backend.workspace = true
+
+[lints]
+workspace = true

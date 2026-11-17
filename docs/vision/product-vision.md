@@ -76,10 +76,12 @@ accepted the staged hybrid on 2026-11-13, and the Sega Mega Drive / Genesis is t
 first real system. Milestones M0–M5 are complete and merged to `main` (M4 at
 `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 at `0c4e9f0`,
 PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`, final T12 PASS
-2026-11-16), and M6 (agent-native interfaces) is next.
+2026-11-16). M6 (agent-native interfaces) and M7 (human-facing GUI) are implemented and
+independently verified on the uncommitted worktrees `agent/m6-agent-interfaces` and
+`agent/m7-gui` at base `93d47ed`, and both are integration-pending; M8 is next.
 The machine model itself is still narrow, and that gap is tracked in the parallel
-hardware-depth tracks H1–H5 rather than in the capability stages. Multi-system
-support, the GUI, HTTP/MCP transports and hardware trace sources are roadmap items, not
-current features; the host trace surface and the sandboxed deterministic script DSL are
-delivered for the documented minimal-slice scope. See the [milestone status
+hardware-depth tracks H1–H5 rather than in the capability stages. Multi-system support and
+hardware trace sources are roadmap items, not current features; the host trace surface, the
+sandboxed deterministic script DSL, the HTTP/MCP service surfaces and the text/HTML GUI
+presentation are delivered for the documented scope. See the [milestone status
 table](../roadmap/milestones.md) for the canonical status and integration state.

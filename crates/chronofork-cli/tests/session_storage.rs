@@ -269,9 +269,9 @@ fn session_usage_requires_explicit_root() {
     // A missing value and unknown or misplaced flags are rejected, not ignored.
     let stderr = session_fail(&["save", "--root"]);
     assert!(stderr.contains("requires a value"), "{stderr}");
-    let stderr = session_fail(&["save", "--root", path_str(&empty), "--json"]);
+    let stderr = session_fail(&["save", "--root", path_str(&empty), "--yaml"]);
     assert!(
-        stderr.contains("unknown `session save` option `--json`"),
+        stderr.contains("unknown `session save` option `--yaml`"),
         "{stderr}"
     );
     for parts in [
@@ -435,9 +435,14 @@ fn save_name_is_visible_after_new_process() {
     assert_eq!(field(&unnamed[1], "name"), "");
     assert_ne!(session_key(&unnamed[0]), named_key);
 
-    // Name rules are the storage layer's `InvalidName`, reported through the CLI.
+    // Name rules are the service catalog's validated `name` field, reported through
+    // the CLI. Moving validation to the shared service boundary changed the wording
+    // from the storage layer's `InvalidName` message to this typed rejection.
     let stderr = session_fail(&["save", "--root", path_str(&root), "--name", "bad\nname"]);
-    assert!(stderr.contains("invalid storage name"), "{stderr}");
+    assert!(
+        stderr.contains("`name` must not contain control characters"),
+        "{stderr}"
+    );
 }
 
 #[test]
