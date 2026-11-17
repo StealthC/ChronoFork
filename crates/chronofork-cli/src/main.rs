@@ -19,8 +19,9 @@ use std::sync::Arc;
 use chronofork_backend_api::{Backend, BackendFactory};
 use chronofork_core::InputFrame;
 use chronofork_megadrive::{
-    DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveFactory, RAM_BASE,
-    RAM_SIZE, SchedulerConfig, VideoStandard, demo_rom, interrupt_rom,
+    Cartridge, DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveConfig,
+    MegadriveFactory, RAM_BASE, RAM_SIZE, SchedulerConfig, TmssModel, VideoStandard, boot_marker,
+    demo_rom, interrupt_rom,
 };
 use chronofork_sessions::{SessionManager, Snapshot};
 use chronofork_test_backend::SyntheticBackendFactory;
@@ -124,12 +125,321 @@ fn run_megadrive(args: &[String]) -> Result<(), Box<dyn Error>> {
             run_megadrive_demo()
         }
         Some("trace") => run_megadrive_trace(&args[1..]),
-        None => Err(CliError("`megadrive` requires a subcommand: demo or trace".to_owned()).into()),
+        Some("cartridge") => run_megadrive_cartridge(&args[1..]),
+        Some("boot") => run_megadrive_boot(&args[1..]),
+        None => Err(CliError(
+            "`megadrive` requires a subcommand: demo, trace, cartridge or boot".to_owned(),
+        )
+        .into()),
         Some(other) => Err(CliError(format!(
-            "unknown `megadrive` subcommand `{other}`; expected demo or trace"
+            "unknown `megadrive` subcommand `{other}`; expected demo, trace, cartridge or boot"
         ))
         .into()),
     }
+}
+
+/// Options for `megadrive cartridge`.
+#[derive(Debug)]
+struct CartridgeOptions {
+    rom: PathBuf,
+    sram_in: Option<PathBuf>,
+    sram_out: Option<PathBuf>,
+}
+
+/// Parses `megadrive cartridge` arguments.
+///
+/// Returns `Ok(None)` when the caller should print the detailed help text.
+fn parse_cartridge_options(args: &[String]) -> Result<Option<CartridgeOptions>, Box<dyn Error>> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        ensure(
+            args.len() == 1,
+            "`megadrive cartridge --help` takes no other arguments",
+        )?;
+        return Ok(None);
+    }
+    let mut rom: Option<PathBuf> = None;
+    let mut sram_in: Option<PathBuf> = None;
+    let mut sram_out: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].clone();
+        match flag.as_str() {
+            "--rom" => set_once(
+                &mut rom,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            "--sram-in" => set_once(
+                &mut sram_in,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            "--sram-out" => set_once(
+                &mut sram_out,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            other => {
+                return Err(CliError(format!(
+                    "unknown `megadrive cartridge` option `{other}`; see `chronofork megadrive cartridge --help`"
+                ))
+                .into());
+            }
+        }
+        index += 1;
+    }
+    let rom =
+        rom.ok_or_else(|| CliError("`megadrive cartridge` requires `--rom <FILE>`".to_owned()))?;
+    if sram_in.is_some() && sram_in == sram_out {
+        return Err(
+            CliError("`--sram-in` and `--sram-out` must name different files".to_owned()).into(),
+        );
+    }
+    Ok(Some(CartridgeOptions {
+        rom,
+        sram_in,
+        sram_out,
+    }))
+}
+
+fn run_megadrive_cartridge(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let Some(options) = parse_cartridge_options(args)? else {
+        print_cartridge_help();
+        return Ok(());
+    };
+    let bytes = crate::tas::read_rom_file_with_limit(
+        &options.rom,
+        u64::try_from(chronofork_megadrive::MAX_IMAGE_SIZE)?,
+        "64 MiB mapper ceiling",
+    )?;
+    let mut cartridge = Cartridge::parse(bytes).map_err(|error| {
+        CliError(format!(
+            "invalid cartridge `{}`: {error}",
+            options.rom.display()
+        ))
+    })?;
+    if let Some(path) = &options.sram_in {
+        let data = std::fs::read(path).map_err(|error| {
+            CliError(format!("failed to read SRAM `{}`: {error}", path.display()))
+        })?;
+        cartridge.import_sram(&data).map_err(|error| {
+            CliError(format!(
+                "failed to import SRAM `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    let header = cartridge.header();
+    println!("system={}", header.system.as_str());
+    println!("region={}", header.region);
+    println!("serial={}", header.serial);
+    println!("domestic_name={}", header.domestic_name);
+    println!("overseas_name={}", header.overseas_name);
+    println!("rom_start=0x{:06X}", header.rom_start);
+    println!("rom_end=0x{:06X}", header.rom_end);
+    println!("checksum_stored=0x{:04X}", header.checksum_stored);
+    println!("checksum_computed=0x{:04X}", header.checksum_computed);
+    println!(
+        "checksum_ok={}",
+        header.checksum_stored == header.checksum_computed
+    );
+    println!("sram_declared={}", header.sram.is_some());
+    let banks = cartridge
+        .banks()
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    println!("mapper_banks={banks}");
+    if let Some(path) = &options.sram_out {
+        std::fs::write(path, cartridge.sram()).map_err(|error| {
+            CliError(format!(
+                "failed to write SRAM `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    }
+    println!("PASS");
+    Ok(())
+}
+
+fn print_cartridge_help() {
+    println!("chronofork {VERSION} — megadrive cartridge");
+    println!();
+    println!("Parses a Mega Drive cartridge header and reports its facts as");
+    println!("`key=value` lines, then `PASS`.");
+    println!();
+    println!("Usage:");
+    println!(
+        "  chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>] [--sram-out <FILE>]"
+    );
+    println!();
+    println!("Options:");
+    println!("  --rom <FILE>       Required cartridge image");
+    println!("  --sram-in <FILE>   Import exactly 65536 bytes of battery SRAM");
+    println!("  --sram-out <FILE>  Export the current 65536-byte battery SRAM");
+    println!("  --help             Show this help");
+    println!();
+    println!("Fields: system, region, serial, domestic_name, overseas_name, rom_start,");
+    println!("rom_end, checksum_stored, checksum_computed, checksum_ok, sram_declared,");
+    println!("mapper_banks. The checksum is the Mega Drive word sum over 0x200..");
+}
+
+/// Options for `megadrive boot`.
+#[derive(Debug)]
+struct BootOptions {
+    rom: PathBuf,
+    frames: u64,
+    tmss: TmssModel,
+}
+
+/// Default bounded frame budget for `megadrive boot`.
+const DEFAULT_BOOT_FRAMES: u64 = 2;
+
+/// Parses `megadrive boot` arguments.
+///
+/// Returns `Ok(None)` when the caller should print the detailed help text.
+fn parse_boot_options(args: &[String]) -> Result<Option<BootOptions>, Box<dyn Error>> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        ensure(
+            args.len() == 1,
+            "`megadrive boot --help` takes no other arguments",
+        )?;
+        return Ok(None);
+    }
+    let mut rom: Option<PathBuf> = None;
+    let mut frames: Option<u64> = None;
+    let mut tmss: Option<TmssModel> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].clone();
+        match flag.as_str() {
+            "--rom" => set_once(
+                &mut rom,
+                PathBuf::from(option_value(args, &mut index, &flag)?),
+                &flag,
+            )?,
+            "--frames" => {
+                let value = parse_u64(option_value(args, &mut index, &flag)?, &flag)?;
+                if value == 0 {
+                    return Err(CliError(
+                        "`--frames` must be at least 1 (the frame budget is bounded)".to_owned(),
+                    )
+                    .into());
+                }
+                set_once(&mut frames, value, &flag)?;
+            }
+            "--tmss" => set_once(
+                &mut tmss,
+                parse_tmss(option_value(args, &mut index, &flag)?)?,
+                &flag,
+            )?,
+            other => {
+                return Err(CliError(format!(
+                    "unknown `megadrive boot` option `{other}`; see `chronofork megadrive boot --help`"
+                ))
+                .into());
+            }
+        }
+        index += 1;
+    }
+    let rom = rom.ok_or_else(|| CliError("`megadrive boot` requires `--rom <FILE>`".to_owned()))?;
+    Ok(Some(BootOptions {
+        rom,
+        frames: frames.unwrap_or(DEFAULT_BOOT_FRAMES),
+        tmss: tmss.unwrap_or(TmssModel::Disabled),
+    }))
+}
+
+fn parse_tmss(value: &str) -> Result<TmssModel, CliError> {
+    match value {
+        "enabled" => Ok(TmssModel::Enabled),
+        "disabled" => Ok(TmssModel::Disabled),
+        other => Err(CliError(format!(
+            "`--tmss` expects `enabled` or `disabled`, got `{other}`"
+        ))),
+    }
+}
+
+fn run_megadrive_boot(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let Some(options) = parse_boot_options(args)? else {
+        print_boot_help();
+        return Ok(());
+    };
+    let bytes = crate::tas::read_rom_file_with_limit(
+        &options.rom,
+        u64::try_from(chronofork_megadrive::MAX_IMAGE_SIZE)?,
+        "64 MiB mapper ceiling",
+    )?;
+    let factory = MegadriveFactory::with_config(
+        bytes,
+        MegadriveConfig {
+            video: None,
+            tmss: options.tmss,
+        },
+    )?;
+    let mut machine = factory.create_machine()?;
+    let scheduler = machine.scheduler_config();
+    let budget = options
+        .frames
+        .saturating_mul(u64::from(scheduler.lines_per_frame()))
+        .saturating_mul(u64::from(scheduler.instructions_per_line()));
+    let marker = boot_marker();
+    let mut executed = 0_u64;
+    let mut reached = machine.cpu().pc() == marker;
+    while !reached && executed < budget {
+        machine.step(InputFrame::NEUTRAL)?;
+        executed += 1;
+        reached = machine.cpu().pc() == marker;
+    }
+    let inspection = machine.inspect()?;
+    println!("reached_marker={reached}");
+    println!("pc=0x{:08X}", machine.cpu().pc());
+    println!("tick={}", machine.tick().raw());
+    println!("state_hash={}", inspection.state_hash);
+    println!("frames={}", options.frames);
+    println!("instructions={executed}");
+    println!(
+        "tmss={}",
+        match options.tmss {
+            TmssModel::Enabled => "enabled",
+            TmssModel::Disabled => "disabled",
+        }
+    );
+    if !reached {
+        return Err(CliError(format!(
+            "boot marker 0x{marker:08X} not reached within {executed} instruction(s) ({}) frame(s)",
+            options.frames
+        ))
+        .into());
+    }
+    println!("PASS");
+    Ok(())
+}
+
+fn print_boot_help() {
+    println!("chronofork {VERSION} — megadrive boot");
+    println!();
+    println!("Steps a bounded frame budget and reports whether the synthetic boot");
+    println!("marker is reached. Exits non-zero when the marker is not reached.");
+    println!();
+    println!("Usage:");
+    println!("  chronofork megadrive boot --rom <FILE> [--frames <N>] [--tmss enabled|disabled]");
+    println!();
+    println!("Options:");
+    println!("  --rom <FILE>         Required cartridge image");
+    println!(
+        "  --frames <N>         Bounded frame budget, at least 1 (default {DEFAULT_BOOT_FRAMES})"
+    );
+    println!("  --tmss <mode>        enabled or disabled (default disabled)");
+    println!("  --help               Show this help");
+    println!();
+    println!("Fields: reached_marker, pc, tick, state_hash, frames, instructions, tmss.");
+    println!(
+        "The marker address is {:#08X} of the synthetic `cartridge_boot_rom`.",
+        boot_marker()
+    );
+    println!("The boot ROM is generated in code; no commercial image is needed.");
 }
 
 fn print_usage() {
@@ -146,6 +456,10 @@ fn print_usage() {
     println!(
         "  chronofork megadrive trace     Run a bounded instruction trace and write final state"
     );
+    println!(
+        "  chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>] [--sram-out <FILE>]"
+    );
+    println!("  chronofork megadrive boot --rom <FILE> [--frames <N>] [--tmss enabled|disabled]");
     println!("  chronofork trace capture [--rom <FILE>] [--steps <N>] ... --out <FILE>");
     println!("  chronofork trace info --file <FILE>");
     println!("  chronofork trace query --file <FILE> [--kind GROUP] [--limit <N>]");

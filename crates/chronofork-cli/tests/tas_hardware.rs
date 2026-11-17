@@ -534,7 +534,7 @@ fn missing_short_large_and_non_file_roms_fail_typed() -> TestResult {
         "--steps",
         "1",
     ])?;
-    assert!(stderr.contains("at least the reset vectors"), "{stderr}");
+    assert!(stderr.contains("512-byte header"), "{stderr}");
 
     // A sparse file larger than the 4 MiB window is rejected from metadata before
     // any read or factory allocation.

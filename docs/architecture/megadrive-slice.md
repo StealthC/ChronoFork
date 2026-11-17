@@ -11,7 +11,10 @@
   multiplexing, controller timing, analog/keyboard hardware and port 3 remain absent.
   M4 debugging depth (bounded non-canonical observation, views/disassembly and
   CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
-  slice (t5 PASS, 2026-11-16).
+  slice (t5 PASS, 2026-11-16). M8 phase 8.1 adds a modelled cartridge — header/region/
+  checksum, Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register — with
+  payload/state/config v3 (implemented, reviewed and verified 2026-11-17; booting a
+  commercial title is phase 8.6 evidence, not claimed here).
 - **Next:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is the milestone that completes this slice (full 68000/Z80, VDP rendering/DMA/timing,
   YM2612/PSG audio, cartridge, controllers and capture). This page remains the canonical
@@ -37,14 +40,19 @@ fixtures are independently authored synthetic data.
 
 | Region | Address | Behavior |
 |---|---|---|
-| Cartridge ROM | `0x000000..0x3FFFFF` | Immutable, big-endian; only the provided image length is valid |
+| Cartridge ROM | `0x000000..0x3FFFFF` | Immutable, big-endian; bank-mapped through the Sega mapper; only image bytes are valid |
+| Mapper registers | `0x00A130F0..0x00A130FF` | Write-only: `0xA130F1` is the SRAM control byte, odd registers `0xA130F3..0xA130FF` select the seven bank windows |
+| Battery SRAM | `0x00200000..0x0020FFFF` | 64 KiB, mapped over the ROM window while `0xA130F1` bit 0 is set; bit 1 write-protects it |
+| TMSS register | `0x00A14000..0x00A14003` | A long write whose bit 9 is set releases the enabled VDP-write lockout |
+| Version register | `0x00A10001` | Cartridge-reported export/PAL/no-disk/hardware byte |
 | Work RAM | `0xFF0000..0xFFFFFF` | 64 KiB, big-endian, mirrored by address bits 15–0 |
 | VDP ports | `0xC00000..0xC0000F` | Data port `0x00..0x03`, control/status port `0x04..0x07`, HV counter `0x08..0x0F` |
 | Controller data registers | `0x00A10003`, `0x00A10005` | Byte reads only, driven by the current step's `InputFrame` ports 0/1; see below |
 | Everything else | — | Explicit `UnmappedRead` / `UnmappedWrite` error |
 
 - Word and long accesses require even addresses.
-- ROM writes are rejected.
+- ROM writes are rejected; the mapper register file is write-only, so a read there is a
+  typed `UnmappedRead`.
 - Multi-byte and debugger writes validate the entire range before mutating RAM, so
   a failed write cannot leave partial state.
 - PSG (`0xC00011` and above), Z80 (`0xA00000`) and the rest of the controller
@@ -397,6 +405,56 @@ the deterministic minimal-slice scope and with the canonical Mega Drive state un
   (t5, 2026-11-16), and the ignored `.research/m3-hardware/verification/` artifacts. No
   controller, TH/6-button/Start, timing, commercial-ROM or accuracy claim is made.
 
+## Implemented: cartridge, region and TMSS (M8 phase 8.1)
+
+Phase 8.1 turns the immutable ROM blob into a modelled cartridge
+([design](../superpowers/specs/2026-11-17-8.1-cartridge-region-tmss-design.md),
+[plan](../superpowers/plans/2026-11-17-8.1-cartridge-region-tmss.md)). The
+`chronofork-megadrive` cartridge device owns the image, the parsed header, the Sega mapper
+register file, 64 KiB battery SRAM and the TMSS latch; the bus delegates every cartridge
+window to it.
+
+- **Header.** System signature at `0x100` (`SEGA MEGA DRIVE` / `SEGA GENESIS`; other
+  signatures rejected), bounded ASCII domestic/overseas names and serial, stored checksum
+  at `0x18E` with the computed Mega Drive **word sum over `0x200..`**, ROM start/end at
+  `0x1A0`/`0x1A4`, the SRAM specification (`RA` marker at `0x1B0`, start `0x1B4`, end
+  `0x1B8`) and the region bitfield at `0x1F0`. A missing or unknown region, a short image
+  and a declared end beyond the image are typed errors; a checksum mismatch is diagnostic
+  only.
+- **Sega mapper.** Always present and identity by default, so images up to 4 MiB read
+  linearly. Window 0 is fixed to bank 0; windows 1–6 at `0x080000 + i × 0x80000` use the
+  nine-bit registers `0xA130F3..0xA130FF`. A selected page beyond the image is a typed
+  `UnmappedRom`; odd word/long accesses and ROM-window writes are typed errors.
+- **Battery SRAM.** 64 KiB canonical state, zeroed at construction, mapped only while
+  `0xA130F1` bit 0 is set and write-protected by bit 1 (a rejected write mutates no byte).
+  `import_sram` is the explicit construction-time host save-file seam and requires exactly
+  64 KiB; the CLI imports and exports raw 64 KiB images.
+- **TMSS.** Modelled and **disabled by default**. `Enabled` blocks VDP writes until a long
+  write whose bit 9 is set reaches `0xA14000`; while locked a VDP write is acknowledged and
+  discarded, leaving the VDP registers and its address latch untouched. `0xA10001`
+  reports `(export << 7) | (pal << 6) | no-disk | tmss-capable`.
+- **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
+  explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
+  dumps. Both are configuration, never mutable state.
+- **State.** Payload v3 (`CFMD68K3`), state hash v3 (`CFMDSTATE3`) and configuration hash
+  v3 (`CFMDCONF3`). The snapshot adds the seven mapper banks, the SRAM control byte, 64 KiB
+  SRAM and the TMSS model/lock latch; v1 and v2 payloads are rejected, a payload carrying
+  another TMSS model is rejected even when its hash was recomputed, and a rejected restore
+  leaves the machine untouched. The configuration hash covers the ROM SHA-256, video
+  standard, TMSS model, a mapper/SRAM feature tag and the instruction quantum; SRAM bytes
+  are state and never configuration.
+- **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
+  and `tmss.locked` pseudo-registers.
+- **CLI.** `chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>]
+  [--sram-out <FILE>]` prints the parsed facts, and `chronofork megadrive boot --rom <FILE>
+  [--frames <N>] [--tmss enabled|disabled]` steps the synthetic boot cartridge to its
+  marker with a bounded frame budget (non-zero exit when the marker is not reached).
+- **Evidence.** The independently authored 2 MiB `cartridge_boot_rom()` unlocks TMSS,
+  enables SRAM, selects bank 2, writes SRAM and reaches `BOOT_MARKER`; the two curated
+  fixtures (Kid Chameleon, Chakan) are parsed and their system/region/serial/checksum
+  pinned when the ignored `.research/roms/` files are present. Booting a commercial title
+  to its main loop is **not** claimed here — that is phase 8.6.
+
 ## Not implemented
 
 - VDP rendering, planes, sprites, scrolling, CRAM/VSRAM, DMA and raster timing.
@@ -407,15 +465,18 @@ the deterministic minimal-slice scope and with the canonical Mega Drive state un
   register and TH-low phase, 6-button pad (X/Y/Z/Mode), controller timing/interrupts, port 3,
   and analog/keyboard hardware. The implemented data-register reads are described above and
   in [ADR-0009](../adr/0009-real-hardware-input-tas.md).
-- Cartridge mapper/SSF2, SRAM, region/TMSS behavior.
+- Cartridge mapper variants beyond the Sega banking above (interleaved dumps, 32X/Pico
+  hardware, images above the 64 MiB mapper ceiling) and SRAM banking schemes other than the
+  64 KiB window.
 - 68000 prefetch, bus-cycle timing, separate user/supervisor stacks, most
   addressing modes and most instructions.
 - Cycle accuracy. One executed instruction equals one ChronoFork tick in this
   slice; the scheduler maps instruction quanta to scanlines with configurable
   constants. This is deterministic but not hardware timing.
-- ROM header validation, checksum, region detection or a ROM database. The
-  `megadrive trace` and TAS `--rom` commands accept an explicitly supplied image; the demo
-  uses an independently authored synthetic ROM.
+- A ROM database, region-mismatch handling beyond the derived standard and its explicit
+  override, or any commercial-ROM boot. Header/checksum/region parsing and the Sega mapper
+  are implemented; the `megadrive trace` and TAS `--rom` commands accept an explicitly
+  supplied image, and the demo uses an independently authored synthetic ROM.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
@@ -492,7 +553,9 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
 
 ## Next increments
 
-1. ROM header/region/config identity and a cartridge loader (EPIC-0002 E2-11).
+1. Boot a curated commercial title to its main loop with video and audio, and record the
+   compatibility matrix (phase 8.6). The cartridge device, header identity, Sega mapper,
+   SRAM and TMSS landed in phase 8.1.
 2. More 68000 addressing modes, instructions and exception groups (EPIC-0002
    E2-13 continued), driven by differential tests.
 3. Broaden the differential corpus beyond the three synthetic ROMs while keeping

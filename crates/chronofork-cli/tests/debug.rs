@@ -25,19 +25,19 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "7dcab59e97446accafdd27a3fb5f6b4053579b0337af9fea1012670e97c31304";
+const RESET_STATE_HASH: &str = "66e4ab1f4bd15a62f4484b994ea2af48d6aac9431e5240bfbeb959ba94220b04";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "d354cb249fb3a38c1edde145b8183ebe9fe17e8497e6ed0cb966315b32d92c7b";
+    "d970b4717814e23d36717b09fa7d400d85f6d6b208d9c048a3bf2c79bcbb0ee0";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "2169870b821594b9b337aeb5cbff291c7ef38803670a3a4d32ca0da5bc192dea";
+    "0ab0ca0c14e4df22d1837fd2f29fc480245e16a8b8e39c437694eeba13c8a1ca";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "2d9e694e0be5e165ce373a6a2656a47f575be150ae48f20b192e589347fe5b4f";
+    "c26246491eacd1cff29a3704c4cbc86a0420477615e400ddc895ae0dc23a29bd";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "e7b647065f897cc3fa7bf5b86e1b57117483bc1e954e9aafcaa5609e71a819c4";
+    "9f3f2eb75a451cf2fa754609430468e255f6ee65aa18e846b046e38b6dc1ba7b";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -247,7 +247,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=d354cb249fb3a38c1edde145b8183ebe9fe17e8497e6ed0cb966315b32d92c7b\n\
+state_hash=d970b4717814e23d36717b09fa7d400d85f6d6b208d9c048a3bf2c79bcbb0ee0\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -567,7 +567,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "64"),
         (
             "state_hash",
-            "c2c2f67c49b3c7501609fd682991d9276e1db719d8a98f2302a4aa1ce7cb41a9",
+            "fefb6f9b7e3f6da60159187d37eae1e753f594d897b31c283ac6537d5fd77aa9",
         ),
         ("video", "ntsc"),
         ("instructions_per_line", "64"),
@@ -1164,7 +1164,7 @@ fn debug_command_rejects_invalid_input_with_typed_errors() {
     let stderr = run_fail(&["debug", "inspect", "--rom", path_str(&dir)]);
     assert!(stderr.contains("is not a regular file"), "{stderr}");
     let stderr = run_fail(&["debug", "inspect", "--rom", empty_path]);
-    assert!(stderr.contains("at least the reset vectors"), "{stderr}");
+    assert!(stderr.contains("512-byte header"), "{stderr}");
     let stderr = run_fail(&["debug", "inspect", "--rom", large_path]);
     assert!(stderr.contains("4 MiB"), "{stderr}");
     let stderr = run_fail(&["debug", "inspect", "--rom", ""]);

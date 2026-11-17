@@ -8,14 +8,13 @@
 //! Only the public crate API is used, exactly like the CLI that consumes it.
 
 use std::error::Error;
-use std::sync::Arc;
 
 use chronofork_core::hash_bytes;
 use chronofork_megadrive::{
-    BusView, CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, CpuView, DEFAULT_INSTRUCTIONS_PER_LINE,
-    InterruptLevel, InterruptScheduler, InterruptView, M68000, MegadriveBus, MegadriveFactory,
-    PendingInterruptView, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END, SchedulerConfig,
-    VDP_BASE, VDP_END, Vdp, VdpView, VideoStandard, demo_rom,
+    BusView, CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, Cartridge, CpuView,
+    DEFAULT_INSTRUCTIONS_PER_LINE, InterruptLevel, InterruptScheduler, InterruptView, M68000,
+    MegadriveBus, MegadriveFactory, PendingInterruptView, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE,
+    ROM_END, SchedulerConfig, VDP_BASE, VDP_END, Vdp, VdpView, VideoStandard, demo_rom,
     vdp::{AUTO_INCREMENT_REGISTER, CONTROL_PORT_OFFSET, DATA_PORT_OFFSET},
 };
 
@@ -28,7 +27,20 @@ fn program_rom(program: &[u8]) -> Vec<u8> {
     rom[0..4].copy_from_slice(&0x00FF_0000_u32.to_be_bytes());
     rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
     rom[0x200..0x200 + program.len()].copy_from_slice(program);
+    assert!(
+        chronofork_megadrive::test_support::stamp_header(&mut rom, "JUE"),
+        "the program image holds a header"
+    );
     rom
+}
+
+/// Builds a bus over a raw test image with a valid synthetic header.
+fn test_bus(mut rom: Vec<u8>) -> Result<MegadriveBus, chronofork_megadrive::CartridgeError> {
+    assert!(
+        chronofork_megadrive::test_support::stamp_header(&mut rom, "JUE"),
+        "the bus image holds a header"
+    );
+    Ok(MegadriveBus::new(Cartridge::parse(rom)?))
 }
 
 #[test]
@@ -39,7 +51,7 @@ fn cpu_view_decodes_sr_fields() -> TestResult {
         0x46, 0xFC, 0xA7, 0x1F, // MOVE.W #$A71F,SR
         0x46, 0xFC, 0x20, 0x00, // MOVE.W #$2000,SR
     ]);
-    let mut bus = MegadriveBus::new(Arc::from(rom.into_boxed_slice()));
+    let mut bus = test_bus(rom)?;
     let mut cpu = M68000::new();
     cpu.reset(&mut bus)?;
 
@@ -208,7 +220,7 @@ fn interrupt_view_matches_scheduler_state() -> TestResult {
 #[test]
 fn bus_view_lists_the_mapped_windows() -> TestResult {
     let rom = vec![0x4E_u8; 0x1000];
-    let bus = MegadriveBus::new(Arc::from(rom.into_boxed_slice()));
+    let bus = test_bus(rom)?;
     let view = BusView::new(&bus);
 
     assert_eq!(view.rom_len(), bus.rom().len());

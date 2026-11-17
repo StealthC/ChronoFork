@@ -43,6 +43,28 @@ fn demo_command_runs_and_prints_key_evidence() {
 }
 
 #[test]
+fn synthetic_demo_stdout_stays_byte_identical_to_the_baseline() {
+    // The synthetic backend demo is not part of the Mega Drive v3 state-format
+    // bump, so its complete stdout is pinned: 986 bytes with this SHA-256.
+    let output = run(&["demo"]);
+    assert!(output.status.success(), "demo failed");
+    assert!(
+        output.stderr.is_empty(),
+        "demo wrote to stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.stdout.len(),
+        986,
+        "the synthetic demo byte count must not drift"
+    );
+    assert_eq!(
+        chronofork_core::hash_bytes(&output.stdout).to_hex(),
+        "9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652"
+    );
+}
+
+#[test]
 fn backend_describe_reports_real_capabilities() {
     let output = run(&["backend", "describe"]);
     assert!(output.status.success());

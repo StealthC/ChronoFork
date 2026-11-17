@@ -22,6 +22,7 @@ use crate::bus::{
     CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, MegadriveBus, RAM_BASE, RAM_END, ROM_BASE,
     ROM_END, VDP_BASE, VDP_END,
 };
+use crate::cartridge::{Cartridge, CartridgeSystem, TmssModel};
 use crate::cpu::{M68000, interrupt_level_deliverable};
 use crate::interrupts::{InterruptLevel, InterruptScheduler, VideoStandard};
 use crate::vdp::{
@@ -525,5 +526,152 @@ impl BusView {
     #[must_use]
     pub const fn windows(&self) -> &[BusWindowView; 4] {
         &self.windows
+    }
+}
+
+/// Decoded cartridge header, mapper, SRAM and TMSS state.
+///
+/// Every field is copied from [`Cartridge`] accessors; constructing the view
+/// never mutates mapper or SRAM state. The view is debug data: it is not
+/// serialized, hashed or restored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CartridgeView {
+    system: CartridgeSystem,
+    region_bits: u8,
+    region_text: String,
+    domestic_name: String,
+    overseas_name: String,
+    serial: String,
+    checksum_stored: u16,
+    checksum_computed: u16,
+    rom_start: u32,
+    rom_end: u32,
+    sram_declared: bool,
+    banks: [u16; 7],
+    sram_visible: bool,
+    sram_write_protected: bool,
+    tmss_model: TmssModel,
+    tmss_locked: bool,
+}
+
+impl CartridgeView {
+    /// Decodes the current cartridge state without changing it.
+    #[must_use]
+    pub fn new(cartridge: &Cartridge) -> Self {
+        let header = cartridge.header();
+        Self {
+            system: header.system,
+            region_bits: header.region.bits(),
+            region_text: header.region.to_string(),
+            domestic_name: header.domestic_name.clone(),
+            overseas_name: header.overseas_name.clone(),
+            serial: header.serial.clone(),
+            checksum_stored: header.checksum_stored,
+            checksum_computed: header.checksum_computed,
+            rom_start: header.rom_start,
+            rom_end: header.rom_end,
+            sram_declared: header.sram.is_some(),
+            banks: cartridge.banks(),
+            sram_visible: cartridge.sram_visible(),
+            sram_write_protected: cartridge.sram_write_protected(),
+            tmss_model: cartridge.tmss().model(),
+            tmss_locked: cartridge.tmss().locked(),
+        }
+    }
+
+    /// Returns the console family declared by the signature.
+    #[must_use]
+    pub const fn system(&self) -> CartridgeSystem {
+        self.system
+    }
+
+    /// Returns the raw region bitfield.
+    #[must_use]
+    pub const fn region_bits(&self) -> u8 {
+        self.region_bits
+    }
+
+    /// Returns the region letters, for example `JUE`.
+    #[must_use]
+    pub fn region_text(&self) -> &str {
+        &self.region_text
+    }
+
+    /// Returns the trimmed domestic name.
+    #[must_use]
+    pub fn domestic_name(&self) -> &str {
+        &self.domestic_name
+    }
+
+    /// Returns the trimmed overseas name.
+    #[must_use]
+    pub fn overseas_name(&self) -> &str {
+        &self.overseas_name
+    }
+
+    /// Returns the trimmed product serial.
+    #[must_use]
+    pub fn serial(&self) -> &str {
+        &self.serial
+    }
+
+    /// Returns the checksum stored in the header.
+    #[must_use]
+    pub const fn checksum_stored(&self) -> u16 {
+        self.checksum_stored
+    }
+
+    /// Returns the checksum computed from the image.
+    #[must_use]
+    pub const fn checksum_computed(&self) -> u16 {
+        self.checksum_computed
+    }
+
+    /// Returns the declared ROM start offset.
+    #[must_use]
+    pub const fn rom_start(&self) -> u32 {
+        self.rom_start
+    }
+
+    /// Returns the declared ROM end offset.
+    #[must_use]
+    pub const fn rom_end(&self) -> u32 {
+        self.rom_end
+    }
+
+    /// Returns whether the header declares a battery-SRAM range.
+    #[must_use]
+    pub const fn sram_declared(&self) -> bool {
+        self.sram_declared
+    }
+
+    /// Returns the seven mapped bank registers.
+    #[must_use]
+    pub const fn banks(&self) -> [u16; 7] {
+        self.banks
+    }
+
+    /// Returns whether the SRAM window is mapped.
+    #[must_use]
+    pub const fn sram_visible(&self) -> bool {
+        self.sram_visible
+    }
+
+    /// Returns whether the SRAM window rejects writes.
+    #[must_use]
+    pub const fn sram_write_protected(&self) -> bool {
+        self.sram_write_protected
+    }
+
+    /// Returns the configured TMSS model.
+    #[must_use]
+    pub const fn tmss_model(&self) -> TmssModel {
+        self.tmss_model
+    }
+
+    /// Returns whether the TMSS lockout is still active.
+    #[must_use]
+    pub const fn tmss_locked(&self) -> bool {
+        self.tmss_locked
     }
 }

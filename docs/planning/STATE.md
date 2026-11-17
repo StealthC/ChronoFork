@@ -5,41 +5,43 @@
 ## Current Position
 
 - **Milestone:** 8 — Functional Mega Drive emulator
-- **Phase:** 8.1 — Cartridge, region, TMSS and boot
-- **Last completed task:** Redefined M8 as the functional Mega Drive emulator (full 68000/Z80/
-  VDP/audio/cartridge), moved the former multi-backend milestone to M9, created the milestone
-  design + planning state, and recorded the first two commercial ROM fixtures (Kid Chameleon
-  and Chakan) in the ignored `.research/roms/` directory with their hashes and headers in
-  [ROM fixtures](../quality/rom-fixtures.md). No phase plan file exists yet; phase 8.1 has not
-  started.
-- **Next task:** Design and plan phase 8.1 (`brainstorming` → `writing-plans`), then build it.
-  Phase 8.2 (cycle time model) is the foundational follow-up and should be planned immediately
-  after 8.1.
+- **Phase:** 8.1 — Cartridge, region, TMSS and boot (**complete** on branch
+  `agent/8.1-cartridge-region-tmss`, worktree `.agents/worktrees/8.1-cartridge-region-tmss`;
+  **not merged**)
+- **Last completed task:** Phase 8.1 was built by an Agent Teams implementer, reviewed
+  independently (round 1 `needs_revision` with findings F-01–F-05 plus lows, repair round, round
+  2 PASS), then integrated: the reviewer's advisory cleanups applied, the full gate re-run by
+  the lead (81 targets / 1,047 passed / 0 failed / 0 ignored; `./scripts/check.sh` exit 0; both
+  demos byte-identical or explained only by the v3 state-hash bump; `gui run` deterministic),
+  documentation promoted, and the phase closed locally in four commits: `70a4d0c` start,
+  `9710e6b` implementation, `cb3caaa` capability docs, `80b2f88` complete-phase.
+- **Next task:** Phase 8.2 — Complete 68000 and the cycle time model. Its design and plan are
+  already approved/groomed (`docs/superpowers/specs/2026-11-17-8.2-cpu-cycle-model-design.md`,
+  `docs/superpowers/plans/2026-11-17-8.2-cpu-cycle-model.md`), so a fresh session routes
+  `resume-work` → `start-next-phase` → `executing-plans`.
 
 ## Open Decisions
 
-- **Curated commercial ROM set** — starts with *Kid Chameleon (USA, Europe)* and *Chakan
-  (USA, Europe)*, both No-Intro-verified and recorded in
-  [ROM fixtures](../quality/rom-fixtures.md); the dumps are locally available under the ignored
-  `.research/roms/`. More titles may be added. Both fixtures are NTSC-U dumps; PAL/JP
-  validation is still open. ROMs are never committed.
-- **Audio differential tolerance** — exact sample equality against the Exodus oracle, or a
-  documented tolerance with ChronoFork-side hashes? Decide in phase 8.4.
-- **Port 3 / analog / keyboard** — inside M8 or recorded as H4 residual limits? Recommended:
-  residual limits, since the curated set uses ports 1–2.
-- **Native frontend dependencies** — `winit` + `softbuffer` + `cpal` in a separate crate, behind
-  an ADR that supersedes ADR-0013's no-toolkit constraint. Required before phase 8.8.
-- **M9 second system** — still undecided; it moves to phase 9.1 and is not blocking M8.
+- **Publication of phase 8.1.** Branch `agent/8.1-cartridge-region-tmss` is committed locally
+  only: no push, PR, merge or GitHub issue sync (#14) was authorized. Phase 8.2's plan builds
+  on phase 8.1 interfaces, so merge 8.1 first (or branch 8.2 from it) rather than starting 8.2
+  from `main` without the cartridge device.
+- **Plan corrections** — the header checksum is the hardware word sum over `0x200..` (not a
+  byte sum) and the SRAM specification is `RA`@`0x1B0`, start `0x1B4`, end `0x1B8`. Both are
+  recorded in the 8.1 plan's Execution notes and in the quality-gates evidence block.
+- **Audio differential tolerance** (phase 8.4), **port 3/analog/keyboard** as H4 residual
+  limits, **native frontend dependencies** (`winit`/`softbuffer`/`cpal` + ADR superseding
+  ADR-0013, required before 8.8) and the **M9 second system** remain open as before.
+- **Curated commercial ROM set** — Kid Chameleon and Chakan are the two recorded fixtures; boot
+  evidence for them is phase 8.6 work, not claimed by 8.1.
 
 ## Blockers
 
-- None. Lifecycle state, GitHub projection (M8/M9 milestones and phase issues) and the
-  consolidated skill lockfile are in place.
+- None for phase 8.1, which is complete locally. Its integration (merge) and the GitHub
+  projection await the owner's authorization.
 
 ## Recommended Next Step
 
-Resume with the lifecycle router (`start-next-phase`, or `groom-milestone` to design and plan
-the phases in one sitting), starting at phase 8.1. Do not implement phase 8.1 before its plan is
-approved; M8 stays `active` until `complete-milestone` runs after an audit. When the first phase
-starts, update the canonical milestone page's integration state instead of leaving `Next` and
-`active` to disagree silently.
+Resume with `resume-work` → `start-next-phase`. Because phase 8.2 builds on phase 8.1's
+interfaces, first decide with the owner whether `agent/8.1-cartridge-region-tmss` is merged or
+whether 8.2 branches from it. Do not implement 8.2 from `main` without the cartridge device.
