@@ -132,7 +132,7 @@ frame-level differential evidence.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #16
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.3-vdp.md)
 
 ### Phase 8.4: Z80, bus arbitration and audio [status: pending]
 
