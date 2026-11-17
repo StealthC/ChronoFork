@@ -141,7 +141,7 @@ six-channel FM and PSG, with deterministic mixing/resampling and audio different
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #17
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
 
 ### Phase 8.5: Timers, controllers and interrupts [status: pending]
 
