@@ -13,15 +13,20 @@
 > integration state changed.
 >
 > **Proportionality adaptations for this small repository.** The project already numbers its
-> stages M0–M8, so that numbering is kept instead of restarting at 1. Completed milestones
+> stages M0–M9, so that numbering is kept instead of restarting at 1. Completed milestones
 > are one-line records; their Definition of Done, work items and evidence stay on the
-> canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone.
-> M8 is marked active because it is the current milestone — its phases are still pending, so
-> the status does not mean implementation or merge is in progress. The canonical milestone page
-> calls M8 `Next` (not started) and remains authoritative for that; this file's `active` and
-> its `**Started:**` date record when the lifecycle layer took M8 as the current milestone,
-> not when implementation began. When phase 8.1 starts, update the milestone page's
-> integration state instead of silently leaving the two vocabularies to disagree.
+> canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone, but
+> M8 is the product milestone that sequences those tracks to completion. M8 is marked active
+> because it is the current milestone — its phases are still pending, so the status does not
+> mean implementation or merge is in progress. The canonical milestone page calls M8 `Next`
+> and M9 `Planned`; this file's `active` and `**Started:**` date record when the lifecycle
+> layer took M8 as the current milestone, not when implementation began.
+>
+> **Owner decision (2026-11-17).** M8 was redefined as the functional Mega Drive emulator;
+> the former multi-backend milestone moved to M9. The backend is considered complete only
+> when it interprets the whole 68000 and Z80 and emulates the VDP, audio, cartridge and
+> peripherals with executable evidence — see the
+> [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md).
 >
 > **GitHub projection.** Milestone and Issue numbers below are written by `init-github-sync`
 > and reconciled by `sync-github` (one-way: this file → GitHub). Edit this file, never the
@@ -89,13 +94,98 @@ semantics.
 **Milestone:** 8
 **Record:** [M7](../roadmap/milestones.md#m7--gui)
 
-## Milestone 8: Multi-backend expansion [status: active]
+## Milestone 8: Functional Mega Drive emulator [status: active]
+
+**Goal:** Complete the Mega Drive backend — full 68000 and Z80, complete VDP with rendering
+and timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers — with a
+curated commercial ROM set playable through headless capture and an optional native window,
+and with emulated cycle time separated from host pacing.
+**Started:** 2026-11-17
+**Milestone:** 9
+**Design:** [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md)
+**Definition of Done:** [see MILESTONE.md](MILESTONE.md#definition-of-done) (authoritative;
+the GitHub milestone description is projected from it).
+
+### Phase 8.1: Cartridge, region, TMSS and boot [status: pending]
+
+**Goal:** Read the ROM header/region/TMSS/checksum, support images above 4 MiB, a banking
+mapper and SRAM, and boot a cartridge deterministically to its main loop.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #14
+**Plan:** _to be written_
+
+### Phase 8.2: Complete 68000 and the cycle time model [status: pending]
+
+**Goal:** Implement the full 68000 instruction set, addressing modes, privilege and exception
+groups with cycle accounting, defining canonical emulated time for the machine.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #15
+**Plan:** _to be written_
+
+### Phase 8.3: Complete VDP [status: pending]
+
+**Goal:** Implement CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
+256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge, with
+frame-level differential evidence.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #16
+**Plan:** _to be written_
+
+### Phase 8.4: Z80, bus arbitration and audio [status: pending]
+
+**Goal:** Implement the Z80 core and memory map, 68000/Z80/VDP bus arbitration, YM2612
+six-channel FM and PSG, with deterministic mixing/resampling and audio differential evidence.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #17
+**Plan:** _to be written_
+
+### Phase 8.5: Timers, controllers and interrupts [status: pending]
+
+**Goal:** Implement timer interrupts, the full TH latch and 3-/6-button protocol on ports 1–2,
+and integrate interrupt delivery with cycle timing.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #18
+**Plan:** _to be written_
+
+### Phase 8.6: Commercial compatibility, accuracy evidence and performance [status: pending]
+
+**Goal:** Drive a curated commercial ROM set to playable video+audio+input, record the
+compatibility matrix and H5 evidence, and reach measured interactive speed with the documented
+optimizations.
+**Surface:** Backend
+**HelpWanted:** no
+**Issue:** #19
+**Plan:** _to be written_
+
+### Phase 8.7: Execution modes, pacing and headless capture [status: pending]
+
+**Goal:** Implement `Unpaced`/`Paced`/`Manual` execution modes with run-to-target APIs, plus
+deterministic PNG frame and WAV audio capture that is identical across modes.
+**Surface:** Mixed
+**HelpWanted:** no
+**Issue:** #20
+**Plan:** _to be written_
+
+### Phase 8.8: Native windowed frontend [status: pending]
+
+**Goal:** Ship an optional native window (video, audio, keyboard/controller input,
+pause/step/save-state) paced at 60/50 fps, in a separate crate behind an accepted ADR that
+supersedes ADR-0013's no-toolkit constraint.
+**Surface:** UI
+**HelpWanted:** no
+**Issue:** #21
+**Plan:** _to be written_
+
+## Milestone 9: Multi-backend expansion [status: pending]
 
 **Goal:** Integrate a second system behind the same capability model without changing session,
 storage or transport core semantics, and report capability differences honestly.
-**Started:** 2026-11-17
-**Milestone:** 9
-**Design:** [roadmap design](../superpowers/specs/2026-11-17-roadmap-design.md)
+**Milestone:** 10
 **Definition of Done:**
 - [ ] A second system is integrated without changing session, storage or transport core semantics.
 - [ ] The capability matrix distinguishes what each backend really supports instead of normalizing differences away.
@@ -103,7 +193,7 @@ storage or transport core semantics, and report capability differences honestly.
 - [ ] FR-API-004 (external SDK contract and stability policy) is implemented or explicitly deferred with a recorded decision.
 - [ ] The full quality gate passes and the canonical docs/ADRs are updated.
 
-### Phase 8.1: Second-system decision and capability contract [status: pending]
+### Phase 9.1: Second-system decision and capability contract [status: pending]
 
 **Goal:** Choose the second system with the owner's approval and record the capability,
 versioning and compatibility contract in an accepted ADR.
@@ -112,7 +202,7 @@ versioning and compatibility contract in an accepted ADR.
 **Issue:** #7
 **Plan:** _to be written_
 
-### Phase 8.2: Second backend core behind the backend contract [status: pending]
+### Phase 9.2: Second backend core behind the backend contract [status: pending]
 
 **Goal:** Implement the minimal second backend — CPU subset, memory map, versioned snapshot
 payload and an honest capability report — behind the unchanged backend contract.
@@ -121,7 +211,7 @@ payload and an honest capability report — behind the unchanged backend contrac
 **Issue:** #8
 **Plan:** _to be written_
 
-### Phase 8.3: Backend-neutral shared layers and capability matrix [status: pending]
+### Phase 9.3: Backend-neutral shared layers and capability matrix [status: pending]
 
 **Goal:** Prove the shared session, TAS, trace, debug and service paths work for both
 backends, with differences surfaced in a capability matrix rather than normalized away.
@@ -130,7 +220,7 @@ backends, with differences surfaced in a capability matrix rather than normalize
 **Issue:** #9
 **Plan:** _to be written_
 
-### Phase 8.4: Cross-backend differential tests [status: pending]
+### Phase 9.4: Cross-backend differential tests [status: pending]
 
 **Goal:** Add an executable cross-backend differential corpus and record the evidence.
 **Surface:** Backend
@@ -138,7 +228,7 @@ backends, with differences surfaced in a capability matrix rather than normalize
 **Issue:** #10
 **Plan:** _to be written_
 
-### Phase 8.5: External SDK contract and stability policy [status: pending]
+### Phase 9.5: External SDK contract and stability policy [status: pending]
 
 **Goal:** Define the versioned external SDK and its stability/compatibility policy
 (FR-API-004).
@@ -150,7 +240,9 @@ backends, with differences surfaced in a capability matrix rather than normalize
 ## Parallel hardware-depth tracks (not milestones)
 
 Hardware completeness never becomes a milestone and never reopens a closed one. Status,
-work items and evidence are recorded once in the canonical milestone page.
+work items and evidence are recorded once in the canonical milestone page. **M8 is the
+product milestone that carries H1–H5 to completion**: the tracks remain the capability
+checkpoints, and their work items are the decomposition of M8's phases.
 
 - [H1 — CPU and instruction completeness](../roadmap/milestones.md#h1--cpu-and-instruction-completeness):
   broader 68000 coverage, privilege enforcement, user/supervisor stacks and the remaining
