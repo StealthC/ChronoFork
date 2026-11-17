@@ -7,16 +7,22 @@
 - **Milestone:** 8 — Functional Mega Drive emulator
 - **Phase:** 8.1 — Cartridge, region, TMSS and boot
 - **Last completed task:** Redefined M8 as the functional Mega Drive emulator (full 68000/Z80/
-  VDP/audio/cartridge), moved the former multi-backend milestone to M9, and created the
-  milestone design + planning state. No phase plan file exists yet; phase 8.1 has not started.
+  VDP/audio/cartridge), moved the former multi-backend milestone to M9, created the milestone
+  design + planning state, and recorded the first two commercial ROM fixtures (Kid Chameleon
+  and Chakan) in the ignored `.research/roms/` directory with their hashes and headers in
+  [ROM fixtures](../quality/rom-fixtures.md). No phase plan file exists yet; phase 8.1 has not
+  started.
 - **Next task:** Design and plan phase 8.1 (`brainstorming` → `writing-plans`), then build it.
   Phase 8.2 (cycle time model) is the foundational follow-up and should be planned immediately
   after 8.1.
 
 ## Open Decisions
 
-- **Curated commercial ROM set** — which titles define M8's playability proof, and which region
-  (NTSC-US, NTSC-J, PAL)? The owner selects this before phase 8.6. ROMs are never committed.
+- **Curated commercial ROM set** — starts with *Kid Chameleon (USA, Europe)* and *Chakan
+  (USA, Europe)*, both No-Intro-verified and recorded in
+  [ROM fixtures](../quality/rom-fixtures.md); the dumps are locally available under the ignored
+  `.research/roms/`. More titles may be added. Both fixtures are NTSC-U dumps; PAL/JP
+  validation is still open. ROMs are never committed.
 - **Audio differential tolerance** — exact sample equality against the Exodus oracle, or a
   documented tolerance with ChronoFork-side hashes? Decide in phase 8.4.
 - **Port 3 / analog / keyboard** — inside M8 or recorded as H4 residual limits? Recommended:

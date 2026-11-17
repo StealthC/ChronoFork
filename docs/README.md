@@ -238,6 +238,7 @@ status and integration state.
 | [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic, its delivered increments and the hardware-depth follow-ups |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
+| [ROM fixtures](quality/rom-fixtures.md) | Local-only commercial ROM fixtures: names, regions, hashes and acceptance scenarios (bytes never committed) |
 | [Quality gates](quality/quality-gates.md) | Commands that must pass |
 | [M2 durable-sessions acceptance](quality/m2-durable-sessions-acceptance.md) | Executed acceptance criteria, results and residual limits for durable sessions |
 | [M3 TAS/replay acceptance](quality/m3-tas-replay-acceptance.md) | Executed acceptance criteria, results and residual limits for the v1 movie, record/replay, first divergence, restart and CLI |

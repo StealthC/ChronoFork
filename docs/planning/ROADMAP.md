@@ -156,7 +156,8 @@ and integrate interrupt delivery with cycle timing.
 
 **Goal:** Drive a curated commercial ROM set to playable video+audio+input, record the
 compatibility matrix and H5 evidence, and reach measured interactive speed with the documented
-optimizations.
+optimizations. The fixtures start with Kid Chameleon and Chakan, recorded in
+[ROM fixtures](../quality/rom-fixtures.md).
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #19

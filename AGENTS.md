@@ -104,6 +104,7 @@ evidence. Lifecycle state and the next action live in
 | `.agents/notes/` | Ignored per-agent, per-task transient notes (when used) |
 | `.agents/worktrees/` | Preferred ignored location for task worktrees (when used) |
 | `.research/upstream/` | Ignored upstream clones; never commit |
+| `.research/roms/` | Ignored local-only commercial ROM fixtures for M8; never committed, shared across worktrees by absolute path |
 
 ## Technology stack
 

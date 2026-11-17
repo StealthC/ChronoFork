@@ -213,7 +213,7 @@ benchmarks remain deferred until the API and a real backend justify them.
 | M5 | Scripted protocol conformance over real transport | `session_test.py` | Same shape for ChronoFork CLI/session/JSON APIs: handshake/version, schema, guards, errors, state transitions, transport purity, accumulated checks |
 | M6 | Fail-fast layering | Standalone unit tests run first | `cargo test --lib` → contract suite → state/replay → CLI acceptance; cheap failures first |
 | M7 | Real-data round-trip | Hierarchical storage round-trip | Snapshot/serialization tests use real crate types and real session state, not only hand-built structs |
-| M8 | External artifacts with provenance | Test-ROM CI downloads; Mealybug readme+SHA-1 | Fixture manifest with source, revision, SPDX license, SHA-256; missing artifacts skip with a reason; never vendor commercial ROMs |
+| M8 | External artifacts with provenance | Test-ROM CI downloads; Mealybug readme+SHA-1 | Fixture manifest with source, revision, SPDX license, SHA-256; missing artifacts skip with a reason; never vendor commercial ROMs ([ROM fixtures](rom-fixtures.md)) |
 | M9 | Known-failure quarantine | Sorted known failures, opt-in run | A tracked quarantine list with issue links; default CI skips them; a separate job runs them and fails loudly if they unexpectedly pass |
 | M10 | Stability fixtures | `SerializationStabilityTests`, `CorePickerStabilityTests` | Golden serialized snapshot/session metadata for format version 1; any change requires an explicit version bump and migration test |
 | M11 | State-manager behavioural tests with a fake backend | Paged/Zwinder tests | Test session checkpoint selection, fork lineage and eviction with `chronofork-test-backend`, independent of a real emulator |

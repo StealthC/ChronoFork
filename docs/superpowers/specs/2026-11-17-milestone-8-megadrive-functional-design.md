@@ -111,6 +111,26 @@ This section is the contract every phase and the frontend must satisfy.
 - The Exodus headless oracle (`exodus-for-ais`, MIT, pinned) is the differential reference
   for 68000/Z80/VDP behaviour and audio; it is used as an external oracle, never vendored.
 
+## Reference Fixtures and Acceptance Scenarios
+
+The first two commercial fixtures are recorded in [ROM fixtures](../../quality/rom-fixtures.md):
+*Kid Chameleon (USA, Europe)* and *Chakan (USA, Europe)*, No-Intro-verified by CRC-32 and MD5.
+The bytes stay only under the ignored `.research/roms/` directory of the primary checkout and
+are shared with worktrees by absolute path; the tracked manifest records names, regions,
+headers and hashes, never the ROM itself.
+
+They drive three escalating scenarios:
+
+1. **Boot** — reset vectors, TMSS, header/region parse and the main loop, reached headlessly.
+2. **Intro** — the opening/attract sequence with **no input**; both titles present graphics and
+   music (GEMS driver), exercising VDP rendering, DMA, YM2612 and PSG before gameplay. Frames
+   and audio are captured deterministically and hash-pinned.
+3. **TAS movie** — replay a full-game input movie and verify convergence and completion; the
+   movie is an ignored local artifact, never the ROM.
+
+More titles may be added over time; the list stays curated and documented, never a "runs
+everything" claim.
+
 ## External Constraints
 
 - Commercial ROMs, BIOS/firmware and game assets are never committed; compatibility
@@ -138,8 +158,9 @@ This section is the contract every phase and the frontend must satisfy.
 
 ## Open Questions
 
-- Which commercial titles form the curated compatibility set (owner-selected), and which
-  region(s) must be supported (NTSC-US, NTSC-J, PAL)?
+- Which additional commercial titles join the curated compatibility set (the first two are
+  recorded in [ROM fixtures](../../quality/rom-fixtures.md)), and which region(s) must be
+  supported beyond the current NTSC-U dumps (NTSC-J, PAL)?
 - Acceptable audio differential tolerance: exact sample equality against the oracle, or a
   documented per-sample/per-frame tolerance with hashes on the ChronoFork side?
 - Should port 3 / analog / keyboard hardware be inside this milestone or recorded as H4
