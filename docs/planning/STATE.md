@@ -8,8 +8,9 @@
 - **Phase:** 8.1 — Second-system decision and capability contract
 - **Last completed task:** Adopted the `project-orchestration` lifecycle (no phase plan file
   exists yet; phase 8.1 has not started). Added committed `docs/planning/` state, the
-  approved roadmap design, the `skills-lock.json` pin for the skill, and the `AGENTS.md`
-  lifecycle/GitHub/development/harness-independence rules.
+  approved roadmap design, the `skills-lock.json` pin for the skill, the `AGENTS.md`
+  lifecycle/GitHub/development/harness-independence rules, and the GitHub projection:
+  native milestones 1–9 (M0–M7 closed, M8 open) and Issues #7–#11 for phases 8.1–8.5.
 - **Next task:** Design and plan phase 8.1 (`brainstorming` → `writing-plans`), then build it.
 
 ## Open Decisions
@@ -27,9 +28,9 @@
 
 ## Blockers
 
-- **First GitHub publication awaits explicit owner approval.** `init-github-sync` was run in
-  dry-run mode only on 2026-11-17; no label, milestone or issue was created. Local planning is
-  the source of truth until that approval.
+- None. The first GitHub publication was approved and completed on 2026-11-17: native
+  milestones 1–9 exist (M0–M7 closed, M8 open) and Issues #7–#11 track phases 8.1–8.5.
+  Future syncs are one-way (this directory → GitHub) and never block local state writes.
 
 ## Recommended Next Step
 
