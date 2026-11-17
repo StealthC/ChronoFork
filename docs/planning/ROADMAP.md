@@ -170,7 +170,7 @@ deterministic PNG frame and WAV audio capture that is identical across modes.
 **Surface:** Mixed
 **HelpWanted:** no
 **Issue:** #20
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.7-execution-modes-capture.md)
 
 ### Phase 8.8: Native windowed frontend [status: pending]
 
