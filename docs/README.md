@@ -70,6 +70,38 @@ Rhai/Luau/Lua/WASM/Python embedding; the sandbox is a deterministic capability b
 not process/OS isolation; TSV output is bounded by record count, not `MAX_TRACE_BYTES`;
 wall-time checks occur at statement and every-256-operation boundaries.
 
+**M6 (agent-native interfaces) is implemented and independently verified, and is `Complete
+with integration pending`: it was verified on the uncommitted worktree at branch
+`agent/m6-agent-interfaces` based on `origin/main` `93d47ed` and was not committed, merged or
+published.** The contract [ADR-0012](adr/0012-agent-native-interfaces.md) and the
+[agent interfaces architecture](architecture/agent-interfaces.md) are implemented: a
+transport-agnostic `chronofork-service` (one curated 16-operation catalog, a canonical
+strict-JSON codec, token-file authentication with `read`/`write`/`admin` scopes,
+per-principal session ownership and a manager lock plus per-session writer lease),
+`chronofork-transport` (a hand-rolled bounded HTTP/1.1 server, a stateless MCP JSON-RPC
+endpoint at protocol `2025-03-26` and a typed client — no new third-party dependency), the
+daemon and client shapes `chronofork serve`, `chronofork api health/tools/call`,
+`chronofork mcp tools/call` and `chronofork experiment run`, canonical
+`chronofork.experiment.v1` artifacts with a content-derived `artifact_id`, and byte-level
+direct/HTTP/MCP parity over all 16 operations. `chronofork session save/load/list/delete`
+were refactored onto the shared service and gained `--json` envelopes. All M6-A1–M6-A32 rows
+in the [M6 acceptance plan](quality/m6-agent-interfaces-acceptance.md) are
+`executed - passed` (independent pass-2 PASS, 2026-11-17, after the round-1
+`needs_revision` findings M6-R1–R10 and the repair; round-2 review pass). Behavior
+changes are pinned by tests rather than silent: `max_sessions` counts registered sessions
+including closed ones, the human `session list` adds an exact stderr truncation notice when
+the service reports `truncated:true` (stdout shape unchanged, `--json` keeps the field), and
+local/human failures
+use the base `chronofork: <message>` prefix with typed codes only in canonical envelopes;
+the invalid `--name` wording now comes from the service catalog.
+Limits: HTTP/1.1 only with no TLS, keep-alive, chunked bodies or SSE; stateless MCP with no
+`Mcp-Session-Id`, resources/prompts/logging or server-initiated messages; coarse static
+tokens with no rotation, expiry or audit log; ownership is process-local and lost on restart
+while durable objects have no per-principal owner; closed sessions are retained for the
+process lifetime and keep counting toward `max_sessions`; debug/trace/script/TAS operations
+stay CLI-local; one backend configuration per daemon; `io_timeout` is verified at process
+level only; no performance claim. Tracked as M6-FU1–M6-FU4. **M7 (GUI) is next.**
+
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
 and provides named metadata, deterministic listing, explicit non-cascading delete with
@@ -145,7 +177,8 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M5 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4); M6 (agent-native interfaces) is next. The parallel hardware-depth tracks H1–H5
+`0c4e9f0`, PR #4); M6 (agent-native interfaces) is verified and `Complete with integration
+pending`; M7 (GUI) is next. The parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The
 [milestone status table](roadmap/milestones.md) is the canonical record of milestone
@@ -165,6 +198,7 @@ status and integration state.
 | [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
 | [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice and debug trace |
 | [Tracing and scripting architecture](architecture/tracing-and-scripting.md) | Host trace and session capture layers, canonical trace/query/compare, script runtime/limits/sandbox and CLI ownership |
+| [Agent interfaces architecture](architecture/agent-interfaces.md) | Service/transport layers, canonical JSON profile, the 16-operation catalog, HTTP/MCP wire contract, authentication/ownership, concurrency, limits and the M6 non-goals |
 | [Requirements](requirements/functional.md) | Functional requirements and traceability |
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
@@ -182,6 +216,7 @@ status and integration state.
 | [M3 hardware acceptance](quality/m3-hardware-acceptance.md) | Executed acceptance criteria, results and evidence for Mega Drive controller reads, hardware record/play/verify/edit/studio, snapshot/fork/rewind, two-controller input, `--rom` selection and M1/M2/M3 non-regression (M3-A45–A53; t5 PASS 2026-11-16) |
 | [M4 debugging-depth acceptance](quality/m4-debugging-depth-acceptance.md) | Executed acceptance criteria, results and evidence for breakpoints, watchpoints, event breakpoints/logpoints, views/disassembly, Mega Drive inspectors and non-perturbation (M4-A1–A17; independent t5 PASS 2026-11-16) |
 | [M5 tracing/scripting acceptance](quality/m5-tracing-and-scripting-acceptance.md) | Executed acceptance criteria, results and evidence for the canonical trace format/capture/query/compare/TSV, the sandboxed script DSL and both CLI surfaces (M5-A1–A39; final T12 PASS 2026-11-16) |
+| [M6 agent-interfaces acceptance](quality/m6-agent-interfaces-acceptance.md) | Executed acceptance criteria, results and evidence for the service/transport split, canonical JSON/auth/ownership/concurrency, HTTP and MCP wire contracts, experiment artifacts, CLI parity and non-regression (M6-A1–A32; independent pass-2 PASS 2026-11-17) |
 | [Anti-slop policy](quality/anti-slop-policy.md) | Agent execution playbook: pre-flight, baseline-first, design rules, verification loop, review checklist |
 | [Anti-slop refactor evidence](quality/anti-slop-refactor-evidence.md) | Verifier-owned baseline/after proof for the anti-slop refactor; §8 is the final PASS |
 | [AGENTS.md](../AGENTS.md) | Mandatory repository instructions for coding agents, including the anti-slop workflow |
@@ -198,6 +233,7 @@ status and integration state.
 | [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
 | [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 promotion audit PASS 2026-11-16 |
 | [ADR-0011: tracing and scripting](adr/0011-tracing-and-scripting.md) | **Accepted** (owner-approved 2026-11-16 by the explicit Stage 5 directive); implemented and independently verified for the documented minimal-slice scope (final T12 PASS 2026-11-16; merged to `main` at `0c4e9f0`, PR #4): host trace surface, `CFTRACE1` v1, queries/comparison/TSV and the sandboxed deterministic DSL |
+| [ADR-0012: agent-native interfaces](adr/0012-agent-native-interfaces.md) | **Accepted** (owner-approved 2026-11-17 by the explicit Stage 6 implementation directive); implemented and independently verified on the uncommitted `agent/m6-agent-interfaces` worktree at base `93d47ed` (pass-2 PASS 2026-11-17; round-2 review pass): transport-agnostic service, bounded HTTP/1.1 + MCP adapters, ownership/concurrency boundary and experiment artifacts; `Complete with integration pending` |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

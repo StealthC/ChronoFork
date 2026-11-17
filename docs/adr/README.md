@@ -26,6 +26,7 @@ documentation, not meeting notes.
 | [0009](0009-real-hardware-input-tas.md) | Real-hardware input TAS — controller-port reads and Mega Drive backend selection | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16; M3 complete, t6 promotion, t7 promotion audit PASS 2026-11-16) |
 | [0010](0010-debugging-depth.md) | Debugging depth — breakpoints, watchpoints, views, disassembly and event observation | **Accepted** (owner-approved 2026-11-16 by the explicit M4 implementation directive); implemented and independently verified for the minimal slice (t5 PASS, 2026-11-16) |
 | [0011](0011-tracing-and-scripting.md) | Tracing and scripting — host trace surface and sandboxed script runtime | **Accepted** (owner-approved 2026-11-16 by the explicit Stage 5 implementation directive); implemented and independently verified for the documented minimal-slice scope (final T12 PASS, 2026-11-16; merged to `main` at `0c4e9f0`, PR #4) |
+| [0012](0012-agent-native-interfaces.md) | Agent-native interfaces — one service, HTTP and MCP adapters | **Accepted** (owner-approved 2026-11-17 by the explicit Stage 6 implementation directive); implemented and independently verified on the uncommitted `agent/m6-agent-interfaces` worktree at base `93d47ed` (pass-2 PASS 2026-11-17 after the M6-R1–R10 repair; round-2 review pass). M6 is `Complete with integration pending` — not committed, merged or published |
 
 ## Template
 

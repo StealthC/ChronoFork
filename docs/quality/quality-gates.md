@@ -4,11 +4,14 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** the latest dated block is the [2026-11-16 M5 tracing and scripting
-verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
-(57 targets / 662 passed, 0 failed, 0 ignored, both demos unchanged, M5 acceptance rows
-`executed - passed`), which verifies the implementation worktree as executed by T12; the
-T8 documentation promotion followed without a code change. For the earlier anti-slop
+**Current status:** the latest dated block is the [2026-11-17 M6 agent-native interfaces
+verification](#2026-11-17--m6-agent-native-interfaces-independent-pass-2-verification-pass)
+(67 targets / 800 passed, 0 failed, 0 ignored, both demos unchanged, M6 acceptance rows
+`executed - passed`), which verifies the uncommitted worktree on branch
+`agent/m6-agent-interfaces` at base `93d47ed`; no commit or merge was authorized, so the
+milestone is `Complete with integration pending`. Before it, the [2026-11-16 M5 tracing and
+scripting verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
+recorded 57 targets / 662 passed on the M5 worktree. For the earlier anti-slop
 refactor's implementation bytes, the authoritative recorded run is
 [anti-slop refactor evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting):
 `./scripts/check.sh` exit 0 with all gates clean, both demos byte-identical to the
@@ -722,6 +725,114 @@ Raw evidence is in the ignored `.agents/notes/m5/t12/` tree
 gate record; M5 is verified for the deterministic synthetic backend and the minimal Mega
 Drive slice on Linux and is merged to `main` at `0c4e9f0` (PR #4); it is not released.
 
+## 2026-11-17 — M6 agent-native interfaces (independent pass-2 verification PASS)
+
+The independent verifier executed the [M6 acceptance
+plan](m6-agent-interfaces-acceptance.md) on the **uncommitted** worktree
+`/home/stealthc/projects/ChronoFork/.agents/worktrees/m6-agent-interfaces`, branch
+`agent/m6-agent-interfaces`, HEAD and base `origin/main`
+`93d47ed308874be0e8e7060641c238c7f6809e31`. At verification time the implementation was
+complete and uncommitted (tracked diff: `Cargo.lock`, `Cargo.toml`, the CLI `Cargo.toml`,
+`src/main.rs` and `tests/session_storage.rs`; untracked: the two new crates, the CLI
+`src/agent/` module, `src/session.rs`, `tests/m6.rs` and three M6 documents). **This block
+verifies that worktree only: no commit, merge, push or publication was authorized for the
+task, so M6 is `Complete with integration pending` and is not on `main`.** The round-1 review
+returned `needs_revision` with findings M6-R1–M6-R10; the repair closed the code-side
+findings and added seven tests, and the **pass-2** re-execution returned **PASS**
+(2026-11-17 02:27–02:40). A round-2 review then returned pass with no regression. The round-1
+row executions (`ROWS.md`) remain round-1 evidence only; the promotion basis is pass 2.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Exit 0 |
+| Compilation | `cargo check --workspace` | Exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0 |
+| Tests | `cargo test --workspace` | 67 targets (57 binaries + 10 doc-tests), 800 passed, 0 failed, 0 ignored |
+| Full script | `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` | Exit 0 (`CHECK_EXIT=0`) |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Exit 0 |
+| Thread safety | `cargo test -p chronofork-service --test service app_service_is_send_and_sync -- --exact` | 1 passed — `AppService: Send + Sync` |
+| Demo | `cargo run -p chronofork-cli -- demo` ×3 | Exit 0, 3/3 byte-identical, SHA-256 `9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652`, empty stderr |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` ×3 | Exit 0, 3/3 byte-identical, SHA-256 `912a5bb6f5597179d76eca94f673112b6084e1357ff151eaac0368da30348996`, empty stderr |
+
+**Non-regression accounting.** The pre-M6 baseline was **57 targets / 662 passed / 0 failed /
+0 ignored**; the M6 tree has 67 targets and every pre-existing target is still present. The 57
+pre-existing targets contribute exactly **662 passed** (unchanged baseline) and the 10 new M6
+targets contribute **138** (service lib 45, service `tests/service.rs` 22, transport lib 9,
+client 10, http 21, mcp 17, parity 3, cli `tests/m6.rs` 11), so 662 + 138 = 800. The repair
+added exactly seven tests over round 1 (793 → 800). The executed test set is a strict
+superset (+7, −0); no pre-existing test was deleted and per-file `#[test]` counts match HEAD.
+Two assertions in `crates/chronofork-cli/tests/session_storage.rs` were re-pointed as a
+consequence of the documented CLI changes (`--json` became a valid flag, and the invalid
+`--name` diagnostic now comes from the service catalog); that file stays at 18 green tests and
+the change is commented in the test. Both demos are 3/3 byte-identical to the baseline with
+empty stderr. No `#[ignore]` exists in the tree and no new third-party dependency was added
+(`Cargo.lock` grows 40 → 42 packages, only the two new workspace crates); there is no
+`unsafe`.
+
+**Byte-level parity and canonical outputs.** Direct/HTTP/MCP parity is three tests in
+`crates/chronofork-transport/tests/parity.rs`: the documented **23-step scenario** covering all
+16 operations is byte-identical on the direct, HTTP and MCP surfaces
+(`the_documented_scenario_is_byte_identical_on_direct_http_and_mcp`) and reproduces
+identically on a fresh run, and `error_scenarios_agree_across_the_three_surfaces` compares
+**seven error sections** across the applicable surfaces (unknown session, invalid input,
+unknown operation versus MCP `-32602`, foreign session, unknown token, unknown route/wrong
+content type, body too large). The **19-case rejection matrix** is a different test and
+belongs to the HTTP wire contract (M6-A12, `crates/chronofork-transport/tests/http.rs`); it is
+not a parity result and is not claimed as one. The live `capabilities` body is 1506 bytes with
+SHA-256
+`d5f8282e03c9eec75d0568a2829bb1790174f6e2762acfe0765d6676eee73a74` on both HTTP and MCP;
+the experiment artifact `artifact_id`
+`1da41a1f4f2b63be537bde55b8896fca510085ca15c7a5cf8d8f0387c6590de1` equals the SHA-256 of
+the canonical artifact bytes and of the CLI `--out` file, with checkpoints
+`[(0,0),(2,2),(4,4)]` and final step/tick `4`; the two-daemon restart scenario returns
+`session_key=1`, `snapshot_key=1`, `tick=5`, `state_hash=a3b2e28f…b66fdb` from both the saving
+and the reloading process, with `session.list` empty after restart as documented. All of these
+values are identical to round 1.
+
+**Intentional behavior changes recorded by the repair (pinned by tests).** `max_sessions`
+counts all registered sessions including closed ones (closed sessions stay unlisted and
+non-mutatable and keep occupying the bound, while `session_count()` reports live sessions
+only); the human `session list` prints exactly
+`chronofork: storage listing truncated at 256 entries` on stderr when the service reports
+`truncated:true` (stdout record shape unchanged, `--json` keeps the envelope field); locally
+produced and human-facing failures use the base `chronofork: <message>` prefix, with typed
+codes only in canonical `chronofork.error.v1` envelopes. Contract-text corrections: the four
+HTTP framing codes are documented as transport-owned and encoded through the single service
+envelope builder, and `store.delete` is documented as mutating with no cascade.
+
+**Anti-slop exception record (R10, broadened).** The new service and transport test binaries
+follow the repository-wide test convention: unit-test modules use the documented
+`#![cfg_attr(test, allow(clippy::expect_used))]` pattern and integration test binaries use the
+process-test `expect` header, consistent with
+[testing strategy](testing-strategy.md#8-initial-quality-gates) ("`expect_used` is allowed for
+test diagnostics but must not appear in production library paths"). `crates/chronofork-cli/
+tests/m6.rs` additionally carries the anti-slop policy §10 exception record naming its owner,
+the single-binary scope and the expiry condition. No production `allow` was added, the only
+pre-existing `#[allow]` remains `megadrive/interrupts.rs`, and `clippy -D warnings` exits 0.
+
+**Recorded precision limits (no repair action required).** `io_timeout` is enforced and
+verified at process level (an idle connection closed after 5.24 s with 0 bytes while the
+daemon kept serving) but no automated test asserts the timeout expiry; `internal_error` is
+covered by the status-table unit test but is never produced by an operation; the HTTP server
+is HTTP/1.1 with no TLS, keep-alive, chunked bodies or SSE and `POST /mcp` is stateless
+(no `Mcp-Session-Id`, resources/prompts/logging); tokens are coarse and static with no
+rotation, expiry or audit log; ownership is process-local and lost on restart, durable
+objects have no per-principal owner, and closed sessions are retained for the process
+lifetime; debug/trace/script/TAS stay CLI-local; one backend configuration per daemon; no
+performance claim is made. These are recorded as M6-FU1–M6-FU4 in the
+[milestone](../roadmap/milestones.md#m6--agent-interfaces) rather than reopened.
+
+Raw evidence is in the ignored `.agents/notes/m6/verify/` tree: `PASS2.md`,
+`TREE-STATE-PASS2.md`, `rows2/` (every row command), `gate/check-sh-pass2.log`,
+`gate/per-target-pass2.txt`, `demos2/`, `parity/*-pass2.log`, `audit/*-pass2*` and
+`audit/a27-honesty.txt`, with the preserved round-1 `ROWS.md`, `rows/`, `gate/`, `demos/`,
+`parity/` and `audit/`. This block is the M6 gate record. **Backend coverage:** the service,
+parity, HTTP, MCP, client and CLI rows run against the **deterministic synthetic backend**;
+the minimal Mega Drive backend is exercised only through `serve --rom` composition and its
+capability report (M6-A20) — no Mega Drive transport behavior, and no Mega Drive
+service/parity claim, is made. Verification ran on Linux/WSL and M6 remains
+integration-pending.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.
@@ -753,7 +864,8 @@ passed without a command and an exit code recorded there or in your own run.
 | Fuzz testing | Planned |
 | Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); full emulator differential remains planned |
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
-| Concurrency tests | Planned (no concurrent execution yet) |
+| Concurrency tests | Implemented: M6 service manager lock and per-session writer lease (typed retryable `conflict`, reads allowed during a mutation) |
+| Transport/wire tests | Implemented: M6 bounded HTTP/1.1 and MCP wire contracts, rejection matrices, server bounds, typed client and direct/HTTP/MCP byte parity |
 | Serialization compatibility | Implemented for v1/v2 rejection (payload version tests) plus round-trip property tests |
 | Cross-platform CI | Partial: Windows/macOS compile check; runtime tests are Linux-only |
 

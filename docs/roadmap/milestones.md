@@ -46,8 +46,8 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M3 | [Stage 3 — TAS and deterministic replay](roadmap.md#stage-3--tas-and-deterministic-replay) | `Complete` | merged to `main` at `e816d79` |
 | M4 | [Stage 4 — Debugging depth](roadmap.md#stage-4--debugging-depth) | `Complete` | merged to `main` at `4c595a2` (PR #2); verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
-| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Next` | not started |
-| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Planned` | not started |
+| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete with integration pending` | verified on `agent/m6-agent-interfaces` at base `93d47ed`; uncommitted worktree, not merged |
+| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Next` | not started |
 | M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -62,11 +62,15 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M6 — Agent-native interfaces is `Next`.** M5 is complete and merged to `main` at
-`0c4e9f0` (PR #4) after being independently verified on `agent/m5-tracing-scripting` at
-base `84f1476`; M6 is the first unblocked milestone that has not started. M0–M4 are merged
-to `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
-`agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
+**M7 — Human-facing GUI is `Next`.** M6 is `Complete with integration pending`: it was
+independently verified on the uncommitted worktree `agent/m6-agent-interfaces` at base
+`origin/main` `93d47ed` after the M6-R1–R10 repair and a round-2 review pass (2026-11-17),
+but no local commit, merge or publication was authorized, so it is not on `main` yet. M5 was
+merged to `main` at `0c4e9f0` (PR #4) after being independently verified on
+`agent/m5-tracing-scripting` at base `84f1476`. M7 is the first unblocked milestone that has
+not started, and it depends on M6's attach/detach transport. M0–M5 are merged to `main`; M4
+was merged at `4c595a2` (PR #2) after its verification on `agent/m4-debugging-depth` at
+`6d30243`. H1–H5 proceed in parallel.
 
 ## M0 — Bootstrap foundation
 
@@ -494,45 +498,98 @@ M5 is closed; the following are tracked elsewhere and do not reopen it:
 ## M6 — Agent interfaces
 
 - **Roadmap stage:** [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces)
-- **Status:** `Next`
-- **Integration state:** not started
+- **Status:** `Complete with integration pending`
+- **Integration state:** verified on the **uncommitted** worktree at branch
+  `agent/m6-agent-interfaces`, HEAD and base `origin/main`
+  `93d47ed308874be0e8e7060641c238c7f6809e31`. **No local commit, merge, push or publication
+  was authorized in the task that produced this verification**, so M6 is not on `main`.
 - **Objective:** expose the same services to humans, scripts and agents through CLI, HTTP
   and MCP with identical semantics.
 - **Depends on:** the M2–M5 services; transport types must not enter core, backend or session
   APIs.
-- **Evidence:** none yet. The scope is
-  [Stage 6](roadmap.md#stage-6--agent-native-interfaces); capability status is FR-API-002,
-  FR-API-003 and FR-API-004 in
-  [functional requirements](../requirements/functional.md).
+- **Evidence:** independent pass 2 **PASS (2026-11-17)** after the round-1 review returned
+  `needs_revision` with findings M6-R1–M6-R10 and the repair closed them; the round-2 review
+  returned pass with no regression. All M6-A1–M6-A32 rows are `executed - passed` in the
+  [M6 acceptance plan](../quality/m6-agent-interfaces-acceptance.md); the dated gate record
+  is the 2026-11-17 M6 block in [quality gates](../quality/quality-gates.md); the gate
+  result, target accounting, demo hashes and non-regression comparison are recorded there and
+  are not duplicated here. Contracts are
+  [ADR-0012](../adr/0012-agent-native-interfaces.md) and the [agent interfaces
+  architecture](../architecture/agent-interfaces.md); requirements are FR-API-001,
+  FR-API-002 and FR-API-003 in [functional requirements](../requirements/functional.md).
+  Raw evidence is under the ignored `.agents/notes/m6/verify/` tree (`PASS2.md`,
+  `TREE-STATE-PASS2.md`, `rows2/`, `gate/`, `demos2/`, `parity/`, `audit/`, plus the
+  preserved round-1 `ROWS.md` and its directories).
+- **Verified behavior changes during the repair (pinned by tests, not silent):**
+  `max_sessions` counts all registered sessions including closed ones (closed sessions stay
+  unlisted and non-mutatable); the human `session list` prints exactly
+  `chronofork: storage listing truncated at 256 entries` on stderr when the service reports
+  `truncated:true` (stdout shape unchanged, `--json` keeps the field); locally produced and
+  human-facing failures use the base `chronofork: <message>` prefix, with typed codes only
+  in canonical envelopes; the invalid `--name` wording now comes from the service catalog.
 
 ### Work items
 
-- [ ] HTTP API over the existing application services.
-- [ ] MCP over Streamable HTTP, backed by the same services.
-- [ ] Typed tool surface instead of hundreds of loose endpoints.
-- [ ] Session ownership, permissions and concurrency controls at the transport boundary.
-- [ ] Machine-consumable experiment artifacts.
-- [ ] CLI reimplemented as a first-class client of the shared services.
-- [ ] Semantic parity tests across CLI, HTTP and MCP.
-- [ ] Daemon/deployment shape for long-running sessions.
+- [x] HTTP API over the existing application services (M6-A11–A13, A16, A18–A21;
+      `GET /health`, `GET /v1/tools`, `POST /v1/ops`).
+- [x] MCP over Streamable HTTP, backed by the same services (M6-A14, A15, A22; stateless
+      JSON-RPC 2.0, protocol `2025-03-26`, tools subset).
+- [x] Typed tool surface instead of hundreds of loose endpoints (M6-A6, A11, A14; one
+      curated 16-operation catalog mapped identically onto HTTP and MCP).
+- [x] Session ownership, permissions and concurrency controls at the transport boundary
+      (M6-A3–A5, A8, A12, A31; token file, read/write/admin scopes, per-principal session
+      ownership, manager lock plus per-session writer lease).
+- [x] Machine-consumable experiment artifacts (M6-A10, A24; deterministic
+      `chronofork.experiment.v1`, content-derived `artifact_id`, `experiment run --out`).
+- [x] CLI reimplemented as a first-class client of the shared services (M6-A20–A25;
+      `serve`, `api`, `mcp`, `experiment run` and the `session` refactor onto the service).
+- [x] Semantic parity tests across CLI, HTTP and MCP (M6-A18, A19, A21–A23; byte-level
+      parity over all 16 operations and the error matrix).
+- [x] Daemon/deployment shape for long-running sessions (M6-A16, A20, A30; bounded worker
+      pool, graceful shutdown, durable store shared across restarts).
 
 ### Exit criteria
 
-- Identical operations through CLI, HTTP and MCP with identical semantics, proven by parity
-  tests.
-- No transport type appears in core, backend or session APIs.
-- The session layer remains the only canonical state owner.
+- **Met:** identical operations through CLI, HTTP and MCP with identical semantics, proven by
+  byte-level parity tests over all 16 operations and the documented error matrix (M6-A18,
+  M6-A19, M6-A21–A23).
+- **Met:** no transport type appears in core, backend or session APIs (M6-A26 audit; the
+  dependency direction is `core ← backend-api ← sessions ← service ← transport`).
+- **Met:** the session layer remains the only canonical state owner; MCP and HTTP are thin
+  mappings and the experiment artifact is content-addressed output, not state (M6-A7, A10,
+  A26).
+- **Met:** FR-API-002 and FR-API-003 are **Implemented** for the documented transport scope in
+  [functional requirements](../requirements/functional.md), with FR-API-001 updated and
+  FR-API-004 still `Planned` for Stage 8.
 
 ### Deferred and follow-ups
 
-- The GUI is [M7](#m7--gui); additional systems are [M8](#m8--multi-backend).
-- Any network surface follows the repository security constraints: no telemetry and no
-  upload path without explicit design approval.
+M6 is closed for the documented scope; the following are tracked and do not reopen it. The
+GUI is [M7](#m7--gui) and additional systems are [M8](#m8--multi-backend).
+
+- **M6-FU1:** debug, trace, script and TAS operations over transport. They stay CLI-local in
+  M6 because they are large, sandbox-sensitive surfaces; the catalog is deliberately curated
+  and no transport claims them.
+- **M6-FU2:** durable per-principal ownership (the M6 storage format carries no owner) and
+  restart-persistent live sessions. Ownership is process-local today and lost on daemon
+  restart; closed sessions are retained for the process lifetime and keep counting toward
+  `max_sessions`.
+- **M6-FU3:** TLS, token rotation/expiry, an audit log and multi-node deployment. Tokens are
+  coarse and static, the HTTP server is HTTP/1.1 without TLS or keep-alive, and comparison is
+  not claimed constant-time. Any network surface still follows the repository security
+  constraints: no telemetry and no upload path without explicit design approval.
+- **M6-FU4:** SSE/streaming, MCP resources/prompts/logging/completion and `Mcp-Session-Id`.
+  `POST /mcp` is stateless JSON-only; there are no server-initiated messages. Revisit only
+  with a real streaming consumer.
+- Recorded precision limits: `io_timeout` is verified at process level but has no automated
+  timeout test; `internal_error` is table-tested but never produced by an operation; no
+  performance claim is made (the bounds are correctness/DoS limits); verification ran on the
+  Linux/WSL acceptance platform only.
 
 ## M7 — GUI
 
 - **Roadmap stage:** [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui)
-- **Status:** `Planned`
+- **Status:** `Next`
 - **Integration state:** not started
 - **Objective:** optional human-facing windows for observing and controlling sessions
   without owning canonical state.

@@ -11,12 +11,13 @@ branches and replayed exactly.
 The project is written in Rust and designed so that people, scripts and AI
 agents use the same services, not three different worlds.
 
-> **Project status:** the foundation is complete; milestones M0–M4 are complete and
-> merged to `main` (M4 merged at `4c595a2`), and M5 (tracing and scripting) is implemented
-> and independently verified on `agent/m5-tracing-scripting` but not yet merged. ChronoFork
-> is **not a finished Mega Drive emulator** and does not run commercial games. See [what
-> works today](#what-works-today) and [what comes next](#what-comes-next) for the honest
-> picture.
+> **Project status:** the foundation is complete; milestones M0–M5 are complete and
+> merged to `main` (M4 merged at `4c595a2`, M5 at `0c4e9f0` via PR #4). M6 (agent-native
+> interfaces) is implemented and independently verified on the uncommitted branch
+> `agent/m6-agent-interfaces` at base `93d47ed` and is **integration-pending** — it is not on
+> `main` yet. ChronoFork is **not a finished Mega Drive emulator** and does not run
+> commercial games. See [what works today](#what-works-today) and [what comes
+> next](#what-comes-next) for the honest picture.
 
 ## Why ChronoFork exists
 
@@ -41,7 +42,7 @@ The project is split into layers, each with one clear job:
 
 | Layer | Responsibility |
 |---|---|
-| **Interfaces** | A command-line tool today; HTTP, MCP and a GUI are planned. |
+| **Interfaces** | A command-line tool, plus HTTP and MCP daemon/client surfaces (M6). A GUI is planned. |
 | **Sessions and storage** | The heart of the platform: start, step, save, restore, fork, compare and persist. |
 | **Backend contract** | The rules and guarantees that any emulated machine must satisfy. |
 | **Backends** | The machines themselves: a synthetic one for validation and a growing Mega Drive slice. |
@@ -77,22 +78,25 @@ is in [milestones](docs/roadmap/milestones.md).
 | M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
 | M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
-| M6 — Agent interfaces | HTTP and MCP over the same services | Planned |
-| M7 — GUI | Presentation that never owns canonical state | Planned |
+| M6 — Agent interfaces | HTTP and MCP over the same services | Complete with integration pending; independently verified on `agent/m6-agent-interfaces` at base `93d47ed` (uncommitted, not merged) |
+| M7 — GUI | Presentation that never owns canonical state | Next |
 | M8 — More systems | A second backend behind the same contract | Planned |
 
 M0–M5 are merged to `main`; M4 was merged at `4c595a2` after being verified on
 `agent/m4-debugging-depth` at `6d30243`, and M5 was merged at `0c4e9f0` (PR #4) after being
 verified on `agent/m5-tracing-scripting` at base `84f1476` (final T12 PASS, 2026-11-16), so
 a current `main` checkout exposes the `chronofork debug`, `chronofork trace` and
-`chronofork script` surfaces. The
+`chronofork script` surfaces. M6 was verified on the uncommitted branch
+`agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17) and is not on `main`
+yet, so a `main` checkout does **not** have `chronofork serve`, `api`, `mcp` or
+`experiment`. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
 Hardware completeness is tracked in parallel tracks rather than stages: **H1**
 CPU and instruction coverage, **H2** video/VDP/DMA, **H3** audio/Z80, **H4**
 cartridge/controllers/timers and **H5** accuracy and evidence. A milestone can be
-complete while a hardware track is partial, so completing M5 does not claim a
+complete while a hardware track is partial, so completing M6 does not claim a
 complete Mega Drive.
 
 ## What works today
@@ -159,6 +163,23 @@ capability boundary and a byte-deterministic report. `chronofork script run` exp
 No Rhai, Luau, Lua, WASM or Python engine is embedded; the reasons are recorded in
 [ADR-0011](docs/adr/0011-tracing-and-scripting.md).
 
+**Agent-native interfaces (M6, integration-pending).** A transport-agnostic
+`chronofork-service` owns one curated 16-operation catalog, a strict canonical-JSON codec,
+token-file authentication with `read`/`write`/`admin` scopes, per-principal session
+ownership and an explicit concurrency boundary (one manager lock plus a per-session writer
+lease, so a second concurrent mutation of the same session fails immediately with a typed
+retryable `conflict`). `chronofork-transport` maps that catalog onto a hand-rolled bounded
+HTTP/1.1 server (`GET /health`, `GET /v1/tools`, `POST /v1/ops`) and a stateless MCP JSON-RPC
+endpoint at protocol `2025-03-26` (`initialize`, `ping`, `tools/list`, `tools/call`), with a
+typed client — and **no new third-party dependency**. `chronofork serve` hosts the daemon;
+`chronofork api` and `chronofork mcp` are clients; `chronofork session save/load/list/delete`
+now run through the same service and gained `--json`. `experiment run` produces a canonical
+`chronofork.experiment.v1` artifact with a content-derived `artifact_id` and no host time,
+path or principal, so the same request yields byte-identical bytes on every run and surface.
+Direct/HTTP/MCP parity is executed byte-for-byte over all 16 operations, including seven
+error sections compared across the surfaces; a separate 19-case rejection matrix covers the
+HTTP wire contract.
+
 **Quality gates.** `./scripts/check.sh` runs formatting, compilation, Clippy, the
 workspace tests and rustdoc as one local gate, and CI runs on every push and pull
 request.
@@ -187,11 +208,23 @@ Linux filesystems only: the writer lock is cooperative, retention is manual, and
 encryption, authentication and format migration are not implemented. No commercial ROMs,
 BIOS or firmware are included or required.
 
+The agent interfaces are deliberately narrow too. The HTTP server is HTTP/1.1 with one
+request per connection and **no TLS, keep-alive, chunked bodies or SSE**, so it suits
+loopback or sidecar use and needs a reverse proxy for anything else. `POST /mcp` is
+stateless: no `Mcp-Session-Id`, no server-initiated messages, no resources/prompts/logging.
+Tokens are coarse and static with no rotation, expiry or audit log. Session ownership and
+live sessions are process-local and lost on daemon restart, while durable store objects
+carry no per-principal owner. Closed sessions are retained for the process lifetime and keep
+counting toward the session bound. Debug, trace, script and TAS operations are **not**
+exposed over transport — they stay CLI-local. One backend configuration is chosen per
+daemon, and there is no performance claim.
+
 ## What comes next
 
-M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4). M6,
-agent-native interfaces, is the next unstarted milestone. Hardware depth runs in parallel,
-so the stage sequence does not wait for a complete machine model:
+M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4), and M6 is
+verified but integration-pending. M7, the human-facing GUI, is the next unstarted milestone.
+Hardware depth runs in parallel, so the stage sequence does not wait for a complete machine
+model:
 
 - **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
   rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
@@ -200,8 +233,10 @@ so the stage sequence does not wait for a complete machine model:
   checkpoint-reference movies and in-place/timeline editing are documented
   follow-ups, not delivered features; 6-button and analog controller hardware
   belongs to H4.
-- **Open up to agents (M6).** HTTP and MCP interfaces over the same services, with
-  a typed tool surface and permissions rather than a pile of loose endpoints.
+- **Integrate and extend the agent interfaces (M6).** Land the verified work, then the
+  recorded follow-ups: debug/trace/script/TAS over transport, durable per-principal
+  ownership and restart-persistent live sessions, TLS with token rotation/expiry and an
+  audit log, and SSE/streaming with the wider MCP surface.
 - **Build the GUI (M7).** Video, audio, frame pacing and debugger panels that
   attach to and detach from sessions without changing results.
 - **Grow beyond one system (M8).** A second backend behind the same contract, with

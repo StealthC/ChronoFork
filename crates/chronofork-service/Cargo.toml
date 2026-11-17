@@ -1,0 +1,19 @@
+[package]
+name = "chronofork-service"
+description = "Transport-agnostic application service for ChronoFork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chronofork-core.workspace = true
+chronofork-backend-api.workspace = true
+chronofork-sessions.workspace = true
+
+[dev-dependencies]
+chronofork-test-backend.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

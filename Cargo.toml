@@ -6,6 +6,8 @@ members = [
     "crates/chronofork-sessions",
     "crates/chronofork-trace",
     "crates/chronofork-script",
+    "crates/chronofork-service",
+    "crates/chronofork-transport",
     "crates/chronofork-debug",
     "crates/chronofork-test-backend",
     "crates/chronofork-megadrive",
@@ -24,6 +26,8 @@ chronofork-backend-api = { path = "crates/chronofork-backend-api" }
 chronofork-sessions = { path = "crates/chronofork-sessions" }
 chronofork-trace = { path = "crates/chronofork-trace" }
 chronofork-script = { path = "crates/chronofork-script" }
+chronofork-service = { path = "crates/chronofork-service" }
+chronofork-transport = { path = "crates/chronofork-transport" }
 chronofork-debug = { path = "crates/chronofork-debug" }
 chronofork-test-backend = { path = "crates/chronofork-test-backend" }
 chronofork-megadrive = { path = "crates/chronofork-megadrive" }

@@ -316,6 +316,17 @@ scope, exit criteria, dependencies and non-goals.
   HTTP and MCP with identical semantics.
 - **Milestone:** [M6 — Agent interfaces](milestones.md#m6--agent-interfaces).
 - **Depends on:** the M2–M5 services (sessions, movies, debug, tracing/scripting).
+- **Delivered:** a transport-agnostic service layer (`chronofork-service`: 16-operation typed
+  catalog, canonical JSON, token/scope/ownership policy and the documented concurrency
+  boundary), bounded HTTP/1.1 and stateless MCP adapters plus a typed client
+  (`chronofork-transport`), the daemon and client shapes (`chronofork serve`, `api`, `mcp`,
+  `experiment run`), canonical machine-consumable `chronofork.experiment.v1` artifacts and
+  byte-level direct/HTTP/MCP parity. No third-party HTTP, async-runtime or serialization
+  dependency was added. The implementation was independently verified on the uncommitted
+  worktree `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17, after the
+  M6-R1–R10 repair and a round-2 review pass); the milestone page is the single record of
+  status/integration and the [acceptance
+  plan](../quality/m6-agent-interfaces-acceptance.md) holds the executed rows and evidence.
 
 ### Scope and deliverables
 
@@ -336,7 +347,14 @@ scope, exit criteria, dependencies and non-goals.
 ### Non-goals and tracked elsewhere
 
 - The GUI is Stage 7; it consumes these services but never owns canonical state.
-- Additional systems are Stage 8.
+- Additional systems are Stage 8, and external SDKs (FR-API-004) remain Stage 8 scope.
+- Not delivered in Stage 6 and tracked as M6-FU1–M6-FU4 on the milestone page: debug, trace,
+  script and TAS operations over transport; durable per-principal ownership and
+  restart-persistent live sessions; TLS, token rotation/expiry, audit log and multi-node
+  deployment; SSE/streaming, MCP resources/prompts/logging/completion and `Mcp-Session-Id`.
+  [ADR-0012](../adr/0012-agent-native-interfaces.md) records the rejected alternatives
+  (REST-per-operation, `axum`/`hyper`/`tokio` + `serde`, SSE, MCP stdio, persisting ownership
+  in the storage format).
 
 ## Stage 7 — Human-facing GUI
 
