@@ -122,7 +122,7 @@ groups with cycle accounting, defining canonical emulated time for the machine.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #15
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.2-cpu-cycle-model.md)
 
 ### Phase 8.3: Complete VDP [status: pending]
 
