@@ -110,7 +110,7 @@ This is deterministic but **not** cycle-accurate hardware timing.
 | FR-API-003 | MCP over Streamable HTTP, not the source of truth | Implemented (tools subset, stateless JSON responses) | [ADR-0012](../adr/0012-agent-native-interfaces.md) is implemented and independently verified: `POST /mcp` is a stateless JSON-RPC 2.0 endpoint over the same service catalog at protocol version `2025-03-26`, supporting `initialize`, `notifications/initialized`, `ping`, `tools/list` (one MCP tool per operation) and `tools/call`; the `tools/call` text content is byte-identical to the direct service and HTTP envelopes, and MCP never owns canonical state (the session layer remains the only owner). Errors map to the documented JSON-RPC codes (-32602 unknown tool, -32600 batch, -32700 parse, -32601 unknown method) and `GET`/`DELETE`/`PUT /mcp` answer 405 with `Allow: POST`. Evidence: M6-A14, M6-A15, M6-A18, M6-A19 and M6-A22 `executed - passed` in the [M6 acceptance plan](../quality/m6-agent-interfaces-acceptance.md) (independent pass-2 PASS 2026-11-17), dated [quality gates](../quality/quality-gates.md). Limits: stateless JSON responses only — **no SSE stream, no `Mcp-Session-Id`, no server-initiated requests, no resources/prompts/logging/completion** (M6-FU4); the same authentication, ownership, TLS and no-transport-debug/trace/script limits as FR-API-002 apply; no stdio transport is claimed. |
 | FR-API-004 | External SDKs | Planned | Not implemented. A published client SDK is out of scope for M6: the delivered client is the in-tree typed `chronofork-transport` client used by the CLI and tests, not a versioned external SDK with a stability/compatibility policy. Owned by Stage 8 scope ([roadmap Stage 8](../roadmap/roadmap.md#stage-8--multi-backend-expansion)). |
 | FR-SCRIPT-001 | Sandboxed scripting with explicit limits | Implemented (purpose-built deterministic DSL; synthetic + minimal Mega Drive slice) | [ADR-0011](../adr/0011-tracing-and-scripting.md) is implemented and independently verified: a purpose-built, deterministic script language (`Int`/`Bool`/`Text`; `let`/`set`, `print`, `assert`, `if`/`else`, `repeat`, `while`; fixed typed builtins for sessions, forks, inspection, trace capture/export/compare, TAS verify/compare, reports and text) with checked errors, `ScriptLimits` (source, operations, loop iterations, variables, memory, report, steps, trace records, snapshots, wall time) enforced before the bounded work, an injected clock, a canonicalized `--sandbox` capability boundary and a byte-deterministic `ScriptRun` report. `Arc<dyn BackendFactory>` keeps the library free of concrete backends; `chronofork script run` exposes the surface. Evidence: M5-A19–A34 and M5-A39 `executed - passed` in the [M5 acceptance plan](../quality/m5-tracing-and-scripting-acceptance.md) (final T12 PASS, 2026-11-16), dated [quality gates](../quality/quality-gates.md). Limits: no user functions/arrays/maps/floats/imports/network/process/environment access, no Rhai/Luau/Lua/WASM/Python embedding; the sandbox is a capability boundary, not OS/process isolation or an audited hostile-code security boundary; wall-time checks are at statement/256-operation boundaries; diagnostic stderr may name paths while report/stdout do not. |
-| FR-GUI-001 | Optional GUI that does not own canonical state | Implemented (text/HTML presentation; deterministic synthetic backend; Linux/WSL) | [ADR-0013](../adr/0013-human-facing-gui.md) and the [GUI architecture](../architecture/gui.md) are implemented and independently verified: a presentation-only `chronofork-gui` crate (strict view decoders, pane/mosaic model, eight-panel availability matrix, deterministic plain/ANSI and self-contained HTML renderers, `HostClock`/`ManualClock` pacing with a host-time run loop and pause gate, capability-gated video/audio pipelines, cooperative human/agent controller lease) and the `chronofork gui run` stdin-driven process surface in local and remote modes (read-only `.cfmovie` timeline, `pulse`, blocks and exit codes). All M7-A1–M7-A30 rows are `executed - passed` in the [M7 acceptance plan](../quality/m7-gui-acceptance.md) (final PASS4 and REVIEW5 PASS, 2026-11-17, after the F1–F4/FAIL3 repairs), with the dated 2026-11-17 M7 block in [quality gates](../quality/quality-gates.md). Limits: no native toolkit window, browser/JS frontend, streaming transport, live audio output, GUI input injection, GUI state persistence or VDP/bus/disassembly/trace panel content (M6-FU1); real video/audio sources and sinks remain H2/H3, so the pipeline reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration; the controller lease is cooperative, not a lock; no performance or cross-platform claim is made. M7 is verified on the uncommitted `agent/m7-gui` worktree and remains integration-pending. |
+| FR-GUI-001 | Optional GUI that does not own canonical state | Implemented (text/HTML presentation; deterministic synthetic backend; Linux/WSL) | [ADR-0013](../adr/0013-human-facing-gui.md) and the [GUI architecture](../architecture/gui.md) are implemented and independently verified: a presentation-only `chronofork-gui` crate (strict view decoders, pane/mosaic model, eight-panel availability matrix, deterministic plain/ANSI and self-contained HTML renderers, `HostClock`/`ManualClock` pacing with a host-time run loop and pause gate, capability-gated video/audio pipelines, cooperative human/agent controller lease) and the `chronofork gui run` stdin-driven process surface in local and remote modes (read-only `.cfmovie` timeline, `pulse`, blocks and exit codes). All M7-A1–M7-A30 rows are `executed - passed` in the [M7 acceptance plan](../quality/m7-gui-acceptance.md) (final PASS4 and REVIEW5 PASS, 2026-11-17, after the F1–F4/FAIL3 repairs), with the dated 2026-11-17 M7 block in [quality gates](../quality/quality-gates.md). Limits: no native toolkit window, browser/JS frontend, streaming transport, live audio output, GUI input injection, GUI state persistence or VDP/bus/disassembly/trace panel content (M6-FU1); real video/audio sources and sinks remain H2/H3, so the pipeline reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration; the controller lease is cooperative, not a lock; no performance or cross-platform claim is made. M7 was verified on `agent/m7-gui` before the merge and is merged to `main` at `cb05836` (PR #6). |
 
 FR-TAS-001 is **Implemented**: v1/v2 input-sequence record/playback, replay verification,
 the increment-2 ranged replay/seek, forward single-tick advance, rewind by re-simulation
@@ -167,10 +167,9 @@ compatibility and cross-platform runtime evidence (H5). HTTP/MCP transport was M
 delivered by FR-API-002/FR-API-003; it does not expose trace or script operations
 (M6-FU1).
 
-M6 agent-native interfaces is **implemented and independently verified**, and is `Complete
-with integration pending`: it was verified on the uncommitted worktree at branch
-`agent/m6-agent-interfaces` based on `origin/main` `93d47ed` and was not committed, merged or
-published in that task. All M6-A1–M6-A32 rows are `executed - passed`; the final independent
+M6 agent-native interfaces is **implemented, independently verified and merged** to `main`
+at `cb05836` (PR #6): it was verified on `agent/m6-agent-interfaces` based on
+`origin/main` `93d47ed` before the merge. All M6-A1–M6-A32 rows are `executed - passed`; the final independent
 pass 2 (2026-11-17) followed the round-1 `needs_revision` findings M6-R1–M6-R10 and the
 repair, and the round-2 review returned pass. The delivered scope is the transport-agnostic
 `chronofork-service` (16-operation catalog, canonical JSON, token/scope/ownership policy,
@@ -182,10 +181,9 @@ per-principal ownership and restart-persistent live sessions, TLS/token
 rotation-expiry/audit-log/multi-node, and SSE/streaming/MCP resources-prompts-logging/
 `Mcp-Session-Id`. External SDKs (FR-API-004) remain Planned for Stage 8.
 
-M7 human-facing GUI is **implemented and independently verified**, and is `Complete with
-integration pending`: it was verified on the uncommitted worktree at branch `agent/m7-gui`
-based on `origin/main` `93d47ed` (with the verified M6 snapshot) and was not committed,
-merged or published in that task. All M7-A1–M7-A30 rows are `executed - passed`; the final
+M7 human-facing GUI is **implemented, independently verified and merged** to `main` at
+`cb05836` (PR #6): it was verified on `agent/m7-gui` based on `origin/main` `93d47ed` (with
+the verified M6 snapshot) before the merge. All M7-A1–M7-A30 rows are `executed - passed`; the final
 independent verification PASS4 (2026-11-17) followed the round-1 FAIL (findings F1–F4), the
 FAIL3 round and the repairs, and the final independent review REVIEW5 returned PASS with no
 new finding. The delivered scope is the presentation-only `chronofork-gui` crate (strict
@@ -195,8 +193,8 @@ pipelines, cooperative controller lease) and the `chronofork gui run` local/remo
 surface, with attach/detach proving unchanged canonical results and a deterministic
 human/agent handoff. Deferred: native toolkit frontend, real video/audio sources and sinks
 (H2/H3), VDP/bus/disassembly/trace panel content (M6-FU1), live host-clock playback, GUI
-input injection, GUI state persistence and multi-window/multi-display. No commit or merge
-was authorized, so M7 remains integration-pending; M8 is `Next`.
+input injection, GUI state persistence and multi-window/multi-display. M7 is merged to
+`main` at `cb05836` (PR #6); M8 is `Next`.
 
 ## Licensing and provenance
 

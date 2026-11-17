@@ -46,8 +46,8 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M3 | [Stage 3 — TAS and deterministic replay](roadmap.md#stage-3--tas-and-deterministic-replay) | `Complete` | merged to `main` at `e816d79` |
 | M4 | [Stage 4 — Debugging depth](roadmap.md#stage-4--debugging-depth) | `Complete` | merged to `main` at `4c595a2` (PR #2); verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
-| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete with integration pending` | verified on `agent/m6-agent-interfaces` at base `93d47ed`; uncommitted worktree, not merged |
-| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete with integration pending` | verified on `agent/m7-gui` at base `93d47ed`; uncommitted worktree, not merged |
+| M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
+| M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
 | M8 | [Stage 8 — Multi-backend expansion](roadmap.md#stage-8--multi-backend-expansion) | `Next` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -62,14 +62,13 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M8 — Multi-backend is `Next`.** M7 is `Complete with integration pending`: it was
-independently verified on the uncommitted worktree `agent/m7-gui` at base `origin/main`
-`93d47ed` (final verification PASS4 and final review REVIEW5, 2026-11-17), but no local
-commit, merge or publication was authorized, so it is not on `main` yet. M6 remains
-`Complete with integration pending` on `agent/m6-agent-interfaces` at the same base and is
-not reopened. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
+**M8 — Multi-backend is `Next`.** M7 is `Complete` and merged to `main` at `cb05836`
+(PR #6): it was independently verified on `agent/m7-gui` at base `origin/main` `93d47ed`
+(final verification PASS4 and final review REVIEW5, 2026-11-17) before the merge. M6 is
+also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-interfaces` at
+the same base. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
 verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
-milestone that has not started; it depends on the M2–M7 shared layers. M0–M5 are merged to
+milestone that has not started; it depends on the M2–M7 shared layers. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel.
 
@@ -499,11 +498,10 @@ M5 is closed; the following are tracked elsewhere and do not reopen it:
 ## M6 — Agent interfaces
 
 - **Roadmap stage:** [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces)
-- **Status:** `Complete with integration pending`
-- **Integration state:** verified on the **uncommitted** worktree at branch
+- **Status:** `Complete`
+- **Integration state:** merged to `main` at `cb05836` (PR #6). It was verified on
   `agent/m6-agent-interfaces`, HEAD and base `origin/main`
-  `93d47ed308874be0e8e7060641c238c7f6809e31`. **No local commit, merge, push or publication
-  was authorized in the task that produced this verification**, so M6 is not on `main`.
+  `93d47ed308874be0e8e7060641c238c7f6809e31` before the merge.
 - **Objective:** expose the same services to humans, scripts and agents through CLI, HTTP
   and MCP with identical semantics.
 - **Depends on:** the M2–M5 services; transport types must not enter core, backend or session
@@ -590,11 +588,10 @@ GUI is [M7](#m7--gui) and additional systems are [M8](#m8--multi-backend).
 ## M7 — GUI
 
 - **Roadmap stage:** [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui)
-- **Status:** `Complete with integration pending`
-- **Integration state:** verified on the **uncommitted** worktree at branch `agent/m7-gui`,
-  HEAD and base `origin/main` `93d47ed308874be0e8e7060641c238c7f6809e31` (with the
-  verified M6 snapshot). **No local commit, merge, push or publication was authorized in
-  the task that produced this verification**, so M7 is not on `main`.
+- **Status:** `Complete`
+- **Integration state:** merged to `main` at `cb05836` (PR #6). It was verified on
+  `agent/m7-gui`, HEAD and base `origin/main` `93d47ed308874be0e8e7060641c238c7f6809e31`
+  (with the verified M6 snapshot) before the merge.
 - **Objective:** provide optional human-facing presentation surfaces for observing and
   controlling sessions without owning canonical state.
 - **Depends on:** M6 (attach/detach transport). Real video and audio to present depend on
@@ -670,8 +667,6 @@ GUI is [M7](#m7--gui) and additional systems are [M8](#m8--multi-backend).
 M7 is closed for the documented deterministic presentation scope; the following are tracked
 and do not reopen it.
 
-- **No commit or merge:** M7 is verified on the uncommitted `agent/m7-gui` worktree and
-  remains integration-pending; landing it is a separate, explicitly authorized task.
 - **Native toolkit frontend (follow-up after H2/H3):** v1 presents text and a static HTML
   document only — no native window, no picture and no sound. The GUI is a presentation
   crate with no third-party toolkit dependency.

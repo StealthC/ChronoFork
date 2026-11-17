@@ -3,8 +3,8 @@
 - **Status:** **Accepted and implemented** (owner-approved 2026-11-17 by the explicit Stage 7
   implementation directive, "implemente completamente o stage 7 do roadmap"; implementation
   independently verified 2026-11-17 — final PASS4 and review REVIEW5 PASS, see
-  [§7](#7-verification-and-evidence)). M7 is `Complete with integration pending`: verified
-  on the uncommitted `agent/m7-gui` worktree and not committed, merged or published.
+  [§7](#7-verification-and-evidence)). M7 is `Complete` and merged to `main` at `cb05836`
+  (PR #6); it was verified on `agent/m7-gui` before the merge.
 - **Date:** 2026-11-17.
 - **Milestone:** [M7 — GUI](../roadmap/milestones.md#m7--gui).
 - **Roadmap stage:** [Stage 7 — Human-facing GUI](../roadmap/roadmap.md#stage-7--human-facing-gui).
@@ -447,8 +447,9 @@ Limits stated honestly:
 Follow-ups (each a new task, never an implied permission): native toolkit frontend after
 H2/H3; real video/audio sources and sinks (H2/H3); VDP/bus/disassembly inspector content
 when M6-FU1 exposes it; GUI input injection; multi-window/multi-display; GUI trace viewers
-(Stage 7 scope, blocked on the same transport gap). No local commit, merge, push or release
-is authorized by this ADR; M7 is verified on its worktree and remains integration-pending.
+(Stage 7 scope, blocked on the same transport gap). No commit, merge, push or release is
+authorized by this ADR itself; M7 was merged to `main` at `cb05836` (PR #6) after the
+verification.
 
 ## 4. Alternatives considered and rejected
 

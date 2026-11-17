@@ -3,7 +3,7 @@
 - **Status:** **Executed and independently verified.** Every row M7-A1–M7-A30 is
   `executed - passed`. The promotion basis is the **final independent verification
   PASS4** (2026-11-17 13:50–13:54 America/Fortaleza) on the stable, fully repaired
-  uncommitted worktree; the **final independent review REVIEW5** then returned **PASS**
+  then-uncommitted worktree; the **final independent review REVIEW5** then returned **PASS**
   with no finding and no regression. The earlier rounds are preserved as history:
   independent verification FAIL (four documentation/surface-contract findings F1–F4),
   repair, verification FAIL3 (M7-A24 as written plus three low residuals), review rounds
@@ -15,8 +15,8 @@
   normative `chronofork gui run` grammar; the [GUI architecture](../architecture/gui.md)
   holds the module map, block field order and numeric limits. This plan defines how that
   contract is proven.
-- **Milestone:** [M7 — GUI](../roadmap/milestones.md#m7--gui) (`Complete with integration
-  pending`); roadmap stage [Stage 7 — Human-facing
+- **Milestone:** [M7 — GUI](../roadmap/milestones.md#m7--gui) (`Complete`; merged to `main`
+  at `cb05836`, PR #6); roadmap stage [Stage 7 — Human-facing
   GUI](../roadmap/roadmap.md#stage-7--human-facing-gui).
 - **Related:** [architecture overview](../architecture/overview.md), [agent interfaces
   architecture](../architecture/agent-interfaces.md), [M6 acceptance
@@ -41,8 +41,8 @@
 > `demos/`, `audit/`); the independent review is
 > `.agents/notes/m7/review/REVIEW5.md`. The dated gate record is the
 > [2026-11-17 M7 block](quality-gates.md#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4).
-> M7 is verified on that worktree and remains **integration-pending** (no commit or
-> merge): the milestone is `Complete with integration pending`.
+> The work was subsequently merged to `main` at `cb05836` (PR #6); the milestone is
+> `Complete`.
 
 ## 1. Status rules
 
@@ -107,8 +107,8 @@
     (`crates/chronofork-gui/`, `crates/chronofork-cli/src/gui.rs`,
     `crates/chronofork-cli/tests/gui.rs`, `docs/adr/0013-human-facing-gui.md`,
     `docs/architecture/gui.md`, `docs/quality/m7-gui-acceptance.md`).
-  No local commit, merge or publication is authorized; M7 is verified on that worktree and
-  remains integration-pending.
+  No local commit, merge or publication was authorized at verification time; the work was
+  subsequently merged to `main` at `cb05836` (PR #6).
 - The **documentation promotion** (2026-11-17, after PASS4 and REVIEW5) adds M7 edits to
   the listed `docs/` paths (`docs/README.md`, `docs/adr/README.md`,
   `docs/architecture/overview.md`, `docs/architecture/gui.md`,
@@ -829,8 +829,8 @@ zero tests would have failed the row.
   documentation index, overview, roadmap, milestone, requirement status (FR-GUI-001 and
   FR-EXEC-007), quality gates (dated M7 block) and the ADR index line, and every promoted
   sentence is traceable to an `executed - passed` row; the milestone and requirement
-  promotion is consistent with what was actually verified and states the integration
-  status (verified on the worktree, integration pending).
+  promotion is consistent with what was actually verified and records the merge at
+  `cb05836` (PR #6).
 - **Evidence:** `.agents/notes/m7/verify/final2/PASS4.md` (verifier half),
   `.agents/notes/m7/review/REVIEW5.md` (independent review PASS), the dated
   [2026-11-17 M7 block](quality-gates.md#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)

@@ -16,12 +16,11 @@ platform built primarily in Rust. It treats emulated execution as deterministic,
 independent, forkable sessions that humans, scripts and AI agents can inspect and
 replay.
 
-**Current status:** bootstrap + partial real-hardware slice. Milestones M0–M5 are
+**Current status:** bootstrap + partial real-hardware slice. Milestones M0–M7 are
 complete and merged to `main` (M4 merged at `4c595a2`, verified on
 `agent/m4-debugging-depth` at `6d30243`; M5 merged at `0c4e9f0`, PR #4, verified on
-`agent/m5-tracing-scripting` at base `84f1476`); M6 and M7 are verified and
-`Complete with integration pending` on the uncommitted branches
-`agent/m6-agent-interfaces` and `agent/m7-gui` at base `origin/main` `93d47ed`; and the
+`agent/m5-tracing-scripting` at base `84f1476`; M6 and M7 merged at `cb05836`, PR #6,
+verified on `agent/m6-agent-interfaces` and `agent/m7-gui` at base `93d47ed`); and the
 hardware-depth tracks H1–H5 are partial or planned. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with a 68000
 subset, ROM/RAM, a VDP status/control/VRAM port window and a deterministic
@@ -37,9 +36,9 @@ The M6 agent interfaces add a transport-agnostic service layer (`chronofork-serv
 hand-rolled bounded HTTP/1.1 + MCP adapters with a typed client (`chronofork-transport`),
 exposed by `chronofork serve`, `chronofork api`, `chronofork mcp` and
 `chronofork experiment run`, with canonical machine-consumable experiment artifacts and
-byte-level direct/HTTP/MCP parity. M6 was verified on the uncommitted worktree
-`agent/m6-agent-interfaces` at base `93d47ed` and is **integration-pending**: no commit or
-merge was authorized, there is **no TLS**, no SSE/streaming, no keep-alive or chunked bodies,
+byte-level direct/HTTP/MCP parity. M6 was verified on
+`agent/m6-agent-interfaces` at base `93d47ed` and is merged to `main` at `cb05836` (PR #6);
+there is **no TLS**, no SSE/streaming, no keep-alive or chunked bodies,
 and debug/trace/script/TAS operations are not exposed over transport (those remain CLI-local
 and are tracked as M6-FU1–M6-FU4).
 The M7 GUI adds a presentation-only `chronofork-gui` crate (strict view decoders, pane/
@@ -48,8 +47,8 @@ renderers, `HostClock`/`ManualClock` pacing with a host-time run loop, capabilit
 video/audio pipelines and a cooperative human/agent controller lease) and the
 `chronofork gui run` stdin-driven process surface in local and remote modes, with a
 read-only `.cfmovie` timeline and attach/detach proven non-perturbative. M7 was verified on
-the uncommitted worktree `agent/m7-gui` at base `93d47ed` (PASS4 + review REVIEW5 PASS,
-2026-11-17) and is **integration-pending**: no commit or merge was authorized. v1 presents
+`agent/m7-gui` at base `93d47ed` (PASS4 + review REVIEW5 PASS,
+2026-11-17) and is merged to `main` at `cb05836` (PR #6). v1 presents
 **text and a static HTML document only** — no native toolkit window, no picture, no sound;
 real video/audio sources and sinks remain H2/H3, so the pipeline honestly reports both as
 unavailable in every v1 process configuration, and no CLI process builds the host clock

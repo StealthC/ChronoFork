@@ -9,13 +9,14 @@ machine and the limits. It is how the presentation layer is built; the
 [ADR-0013 §3.9](../adr/0013-human-facing-gui.md#39-the-chronofork-gui-run-process-surface-normative).
 This page adds the type-level mapping, the block field order and the numeric bounds.
 
-- **Status:** **Implemented and independently verified** (2026-11-17). The final independent
-  verification PASS4 executed all 30 acceptance rows on the stable uncommitted worktree
-  `agent/m7-gui` at base `93d47ed` and the final independent review REVIEW5 returned PASS;
-  the dated result is the [2026-11-17 M7 block](../quality/quality-gates.md#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)
+- **Status:** **Implemented and independently verified** (2026-11-17), then merged to
+  `main` at `cb05836` (PR #6). The final independent verification PASS4 executed all 30
+  acceptance rows on the stable worktree `agent/m7-gui` at base `93d47ed` and the final
+  independent review REVIEW5 returned PASS; the dated result is the [2026-11-17 M7
+  block](../quality/quality-gates.md#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)
   in [quality gates](../quality/quality-gates.md), the executed rows are in the [M7
-  acceptance plan](../quality/m7-gui-acceptance.md), and the milestone is `Complete with
-  integration pending` (no commit, merge or publication was authorized). Evidence:
+  acceptance plan](../quality/m7-gui-acceptance.md), and the milestone is `Complete`.
+  Evidence:
   `.agents/notes/m7/verify/final2/PASS4.md` and `.agents/notes/m7/review/REVIEW5.md`
   (ignored). The decision and normative grammar are in
   [ADR-0013](../adr/0013-human-facing-gui.md).

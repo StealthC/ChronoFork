@@ -15,7 +15,7 @@
   directive). The [agent interfaces architecture](../architecture/agent-interfaces.md)
   is the exact wire contract; this plan defines how it is proven.
 - **Milestone:** [M6 — Agent interfaces](../roadmap/milestones.md#m6--agent-interfaces)
-  (`Complete with integration pending`); roadmap stage [Stage 6 — Agent-native
+  (`Complete`; merged to `main` at `cb05836`, PR #6); roadmap stage [Stage 6 — Agent-native
   interfaces](../roadmap/roadmap.md#stage-6--agent-native-interfaces).
 - **Related:** [architecture overview](../architecture/overview.md), [session
   model](../architecture/session-model.md), [quality gates](quality-gates.md),
@@ -45,8 +45,8 @@
 > `gate/check-sh-pass2.log`, `gate/per-target-pass2.txt`, `demos2/`, `parity/*-pass2.log`
 > and the `audit/*-pass2*` files, with the round-1 record in `ROWS.md`, `rows/`, `gate/`,
 > `demos/`, `parity/` and `audit/`.
-> No local commit, merge or publication was authorized for this task; M6 is verified on that
-> worktree and remains **integration-pending**.
+> No local commit, merge or publication was authorized at verification time; the work was
+> subsequently merged to `main` at `cb05836` (PR #6).
 
 ## 1. Status rules
 
@@ -693,8 +693,8 @@ unchanged, plus the pass-2 change where one exists).
 After the pass-2 independent PASS (2026-11-17) and the round-2 review `pass`, the
 documentation owner promoted: the row statuses and verification record in this plan,
 [ADR-0012](../adr/0012-agent-native-interfaces.md) indexing,
-the [M6 milestone](../roadmap/milestones.md#m6--agent-interfaces) (`Complete with
-integration pending`), the [roadmap Stage 6](../roadmap/roadmap.md#stage-6--agent-native-interfaces)
+the [M6 milestone](../roadmap/milestones.md#m6--agent-interfaces) (`Complete`; merged to
+`main` at `cb05836`, PR #6), the [roadmap Stage 6](../roadmap/roadmap.md#stage-6--agent-native-interfaces)
 delivered paragraph, [functional requirements](../requirements/functional.md)
 (`FR-API-001` updated, `FR-API-002`/`FR-API-003` **Implemented**, `FR-API-004` still
 `Planned` for Stage 8), the [architecture overview](../architecture/overview.md) layer
@@ -704,10 +704,10 @@ architecture](../architecture/agent-interfaces.md) token-bound wording, the
 [AGENTS.md](../../AGENTS.md) and the dated [quality gates](quality-gates.md) block.
 
 Promotion records evidence links and known limits; it never rewrites a failed row, converts
-a planned test into a pass or claims a feature that was not executed. **The verified tree is
-the uncommitted worktree at branch `agent/m6-agent-interfaces` based on `origin/main`
-`93d47ed`; no commit, merge, push or publication was authorized in this task, so M6 is
-`Complete with integration pending`, not merged.**
+a planned test into a pass or claims a feature that was not executed. **The verified tree was
+the worktree at branch `agent/m6-agent-interfaces` based on `origin/main` `93d47ed`; no
+commit, merge, push or publication was authorized in this task at verification time. The
+work was subsequently merged to `main` at `cb05836` (PR #6); M6 is `Complete`.**
 
 **Documentation audit status.** The promotion above was produced by the documentation task,
 and the independent documentation audit subsequently returned findings **M6-DOC-1–M6-DOC-6**

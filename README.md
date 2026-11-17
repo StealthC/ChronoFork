@@ -11,13 +11,13 @@ branches and replayed exactly.
 The project is written in Rust and designed so that people, scripts and AI
 agents use the same services, not three different worlds.
 
-> **Project status:** the foundation is complete; milestones M0–M5 are complete and
-> merged to `main` (M4 merged at `4c595a2`, M5 at `0c4e9f0` via PR #4). M6 (agent-native
-> interfaces) and M7 (human-facing GUI) are implemented and independently verified on
-> uncommitted branches at base `93d47ed` — `agent/m6-agent-interfaces` and `agent/m7-gui` —
-> and both are **integration-pending**: they are not on `main` yet. ChronoFork is **not a
-> finished Mega Drive emulator** and does not run commercial games. See [what works
-> today](#what-works-today) and [what comes next](#what-comes-next) for the honest picture.
+> **Project status:** the foundation is complete; milestones M0–M7 are complete and
+> merged to `main` (M4 merged at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
+> `cb05836` via PR #6). M6 (agent-native interfaces) and M7 (human-facing GUI) were
+> independently verified on `agent/m6-agent-interfaces` and `agent/m7-gui` at base
+> `93d47ed` and are on `main`. ChronoFork is **not a finished Mega Drive emulator** and
+> does not run commercial games. See [what works today](#what-works-today) and
+> [what comes next](#what-comes-next) for the honest picture.
 
 ## Why ChronoFork exists
 
@@ -78,20 +78,19 @@ is in [milestones](docs/roadmap/milestones.md).
 | M3 — TAS and replay | Movie format, record/play/verify, rewind and branch editing | Complete for the documented deterministic minimal-slice scope; independently verified |
 | M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
-| M6 — Agent interfaces | HTTP and MCP over the same services | Complete with integration pending; independently verified on `agent/m6-agent-interfaces` at base `93d47ed` (uncommitted, not merged) |
-| M7 — GUI | Presentation that never owns canonical state | Complete with integration pending; independently verified on `agent/m7-gui` at base `93d47ed` (uncommitted, not merged) |
+| M6 — Agent interfaces | HTTP and MCP over the same services | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
+| M7 — GUI | Presentation that never owns canonical state | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
 | M8 — More systems | A second backend behind the same contract | Next |
 
-M0–M5 are merged to `main`; M4 was merged at `4c595a2` after being verified on
+M0–M7 are merged to `main`; M4 was merged at `4c595a2` after being verified on
 `agent/m4-debugging-depth` at `6d30243`, and M5 was merged at `0c4e9f0` (PR #4) after being
 verified on `agent/m5-tracing-scripting` at base `84f1476` (final T12 PASS, 2026-11-16), so
 a current `main` checkout exposes the `chronofork debug`, `chronofork trace` and
-`chronofork script` surfaces. M6 was verified on the uncommitted branch
-`agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17) and is not on `main`
-yet, so a `main` checkout does **not** have `chronofork serve`, `api`, `mcp` or
-`experiment`. M7 was verified on the uncommitted branch `agent/m7-gui` at the same base
-(final PASS4 and review REVIEW5 PASS, 2026-11-17), so a `main` checkout does **not** have
-`chronofork gui` either. The
+`chronofork script` surfaces. M6 was verified on `agent/m6-agent-interfaces` at base
+`93d47ed` (pass-2 PASS, 2026-11-17) and M7 on `agent/m7-gui` at the same base
+(final PASS4 and review REVIEW5 PASS, 2026-11-17); both are merged at `cb05836` (PR #6), so
+a current `main` checkout exposes `chronofork serve`, `api`, `mcp`, `experiment` and
+`chronofork gui`. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
@@ -165,7 +164,7 @@ capability boundary and a byte-deterministic report. `chronofork script run` exp
 No Rhai, Luau, Lua, WASM or Python engine is embedded; the reasons are recorded in
 [ADR-0011](docs/adr/0011-tracing-and-scripting.md).
 
-**Agent-native interfaces (M6, integration-pending).** A transport-agnostic
+**Agent-native interfaces (M6).** A transport-agnostic
 `chronofork-service` owns one curated 16-operation catalog, a strict canonical-JSON codec,
 token-file authentication with `read`/`write`/`admin` scopes, per-principal session
 ownership and an explicit concurrency boundary (one manager lock plus a per-session writer
@@ -182,7 +181,7 @@ Direct/HTTP/MCP parity is executed byte-for-byte over all 16 operations, includi
 error sections compared across the surfaces; a separate 19-case rejection matrix covers the
 HTTP wire contract.
 
-**Human-facing GUI (M7, integration-pending).** A presentation-only `chronofork-gui`
+**Human-facing GUI (M7).** A presentation-only `chronofork-gui`
 crate turns canonical service views into fixed-size text/ANSI frames and a self-contained
 HTML document. It never owns or mutates canonical state: `chronofork-gui` depends only on
 `chronofork-core` and `chronofork-service`, and the CLI is the only crate that composes the
@@ -248,8 +247,8 @@ Linux/WSL-only and makes no performance or cross-platform claim.
 
 ## What comes next
 
-M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4); M6 and M7 are
-verified but integration-pending. M8, multi-backend expansion, is the next unstarted
+M0–M7 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
+`cb05836` via PR #6). M8, multi-backend expansion, is the next unstarted
 milestone. Hardware depth runs in parallel, so the stage sequence does not wait for a
 complete machine model:
 

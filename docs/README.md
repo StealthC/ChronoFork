@@ -70,10 +70,9 @@ Rhai/Luau/Lua/WASM/Python embedding; the sandbox is a deterministic capability b
 not process/OS isolation; TSV output is bounded by record count, not `MAX_TRACE_BYTES`;
 wall-time checks occur at statement and every-256-operation boundaries.
 
-**M6 (agent-native interfaces) is implemented and independently verified, and is `Complete
-with integration pending`: it was verified on the uncommitted worktree at branch
-`agent/m6-agent-interfaces` based on `origin/main` `93d47ed` and was not committed, merged or
-published.** The contract [ADR-0012](adr/0012-agent-native-interfaces.md) and the
+**M6 (agent-native interfaces) is implemented, independently verified and merged to `main`
+at `cb05836` (PR #6). It was verified on `agent/m6-agent-interfaces` based on
+`origin/main` `93d47ed` before the merge.** The contract [ADR-0012](adr/0012-agent-native-interfaces.md) and the
 [agent interfaces architecture](architecture/agent-interfaces.md) are implemented: a
 transport-agnostic `chronofork-service` (one curated 16-operation catalog, a canonical
 strict-JSON codec, token-file authentication with `read`/`write`/`admin` scopes,
@@ -102,10 +101,9 @@ process lifetime and keep counting toward `max_sessions`; debug/trace/script/TAS
 stay CLI-local; one backend configuration per daemon; `io_timeout` is verified at process
 level only; no performance claim. Tracked as M6-FU1–M6-FU4.
 
-**M7 (human-facing GUI) is implemented and independently verified, and is `Complete with
-integration pending`: it was verified on the uncommitted worktree at branch `agent/m7-gui`
-based on `origin/main` `93d47ed` (with the verified M6 snapshot) and was not committed,
-merged or published.** The contract [ADR-0013](adr/0013-human-facing-gui.md) and the [GUI
+**M7 (human-facing GUI) is implemented, independently verified and merged to `main` at
+`cb05836` (PR #6). It was verified on `agent/m7-gui` based on `origin/main` `93d47ed`
+(with the verified M6 snapshot) before the merge.** The contract [ADR-0013](adr/0013-human-facing-gui.md) and the [GUI
 architecture](architecture/gui.md) are implemented: a presentation-only
 `chronofork-gui` crate (strict view decoders, window/pane/mosaic model, eight-panel
 availability matrix, deterministic fixed-size plain/ANSI and self-contained HTML
@@ -127,7 +125,7 @@ injection, no GUI state persistence and no VDP/bus/disassembly/trace panel conte
 reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration, and
 no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
 controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 remains integration-pending; M8 (multi-backend) is next.**
+made. **M7 is merged; M8 (multi-backend) is next.**
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -202,9 +200,8 @@ documented-only, and checkpoint-reference movie support remains deferred;
 none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities or
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
-controller timing. M0–M5 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4); M6 (agent-native interfaces) is verified and `Complete with integration
-pending`; M7 (GUI) is verified and `Complete with integration pending`; M8 is next. The
+controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
+`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 is next. The
 parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The
@@ -262,8 +259,8 @@ status and integration state.
 | [ADR-0008: rerecord and branch editing](adr/0008-rerecord-and-branch-editing.md) | **Accepted** (owner-approved 2026-11-15) functional input editing/truncation, deterministic suffix re-simulation, branch artifact identity/isolation and anchor policy; implemented and independently verified for the synthetic backend (t10 round-2 PASS, 2026-11-16) |
 | [ADR-0009: real-hardware input TAS](adr/0009-real-hardware-input-tas.md) | **Accepted** (owner-approved 2026-11-15T23:38:06-03:00); implemented and independently verified for the deterministic minimal-slice scope (t5 PASS 2026-11-16): stateless per-step Mega Drive controller reads, canonical-state non-change, transient wiring and `--rom` TAS backend selection; M3 complete, t7 promotion audit PASS 2026-11-16 |
 | [ADR-0011: tracing and scripting](adr/0011-tracing-and-scripting.md) | **Accepted** (owner-approved 2026-11-16 by the explicit Stage 5 directive); implemented and independently verified for the documented minimal-slice scope (final T12 PASS 2026-11-16; merged to `main` at `0c4e9f0`, PR #4): host trace surface, `CFTRACE1` v1, queries/comparison/TSV and the sandboxed deterministic DSL |
-| [ADR-0012: agent-native interfaces](adr/0012-agent-native-interfaces.md) | **Accepted** (owner-approved 2026-11-17 by the explicit Stage 6 implementation directive); implemented and independently verified on the uncommitted `agent/m6-agent-interfaces` worktree at base `93d47ed` (pass-2 PASS 2026-11-17; round-2 review pass): transport-agnostic service, bounded HTTP/1.1 + MCP adapters, ownership/concurrency boundary and experiment artifacts; `Complete with integration pending` |
-| [ADR-0013: human-facing GUI](adr/0013-human-facing-gui.md) | **Accepted and implemented** (owner-approved 2026-11-17 by the explicit Stage 7 implementation directive; implemented and independently verified 2026-11-17): presentation-only `chronofork-gui`, canonical views and renderers, pacing/run loop, capability-gated video/audio, attach/detach and human/agent handoff; verified on the uncommitted `agent/m7-gui` worktree at base `93d47ed` (PASS4 + REVIEW5 PASS); `Complete with integration pending` |
+| [ADR-0012: agent-native interfaces](adr/0012-agent-native-interfaces.md) | **Accepted** (owner-approved 2026-11-17 by the explicit Stage 6 implementation directive); implemented and independently verified on `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS 2026-11-17; round-2 review pass): transport-agnostic service, bounded HTTP/1.1 + MCP adapters, ownership/concurrency boundary and experiment artifacts; merged to `main` at `cb05836` (PR #6) |
+| [ADR-0013: human-facing GUI](adr/0013-human-facing-gui.md) | **Accepted and implemented** (owner-approved 2026-11-17 by the explicit Stage 7 implementation directive; implemented and independently verified 2026-11-17): presentation-only `chronofork-gui`, canonical views and renderers, pacing/run loop, capability-gated video/audio, attach/detach and human/agent handoff; verified on `agent/m7-gui` at base `93d47ed` (PASS4 + REVIEW5 PASS); merged to `main` at `cb05836` (PR #6) |
 | [ADR index](adr/README.md) | Architectural decisions and status |
 
 ## Research reports

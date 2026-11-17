@@ -49,16 +49,15 @@ Delivered after the bootstrap:
   catalog, canonical JSON, token/scope/ownership policy and the manager-lock/writer-lease
   boundary), bounded HTTP/1.1 and stateless MCP adapters with a typed client
   (`chronofork-transport`), `chronofork serve`/`api`/`mcp`/`experiment run` and canonical
-  `chronofork.experiment.v1` artifacts. Independently verified on the uncommitted
-  `agent/m6-agent-interfaces` worktree at base `93d47ed` (pass-2 PASS, 2026-11-17);
-  integration-pending.
+  `chronofork.experiment.v1` artifacts. Independently verified on `agent/m6-agent-interfaces`
+  at base `93d47ed` (pass-2 PASS, 2026-11-17) and merged to `main` at `cb05836` (PR #6).
 - **Human-facing GUI (M7).** A presentation-only `chronofork-gui` crate (canonical views,
   pane/mosaic model, panels, deterministic plain/ANSI and HTML renderers, pacing/run loop,
   capability-gated video/audio pipelines and the cooperative human/agent controller lease)
   and the `chronofork gui run` local/remote process surface, with attach/detach proven
-  non-perturbative. Independently verified on the uncommitted `agent/m7-gui` worktree at
-  base `93d47ed` (final PASS4 and REVIEW5 PASS, 2026-11-17); integration-pending. Video and
-  audio remain unavailable in v1 (H2/H3).
+  non-perturbative. Independently verified on `agent/m7-gui` at base `93d47ed` (final PASS4
+  and REVIEW5 PASS, 2026-11-17) and merged to `main` at `cb05836` (PR #6). Video and audio
+  remain unavailable in v1 (H2/H3).
 
 Milestone status and integration state are recorded once in the
 [milestone status table](../roadmap/milestones.md); this page does not duplicate

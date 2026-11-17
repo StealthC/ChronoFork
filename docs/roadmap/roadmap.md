@@ -322,10 +322,10 @@ scope, exit criteria, dependencies and non-goals.
   (`chronofork-transport`), the daemon and client shapes (`chronofork serve`, `api`, `mcp`,
   `experiment run`), canonical machine-consumable `chronofork.experiment.v1` artifacts and
   byte-level direct/HTTP/MCP parity. No third-party HTTP, async-runtime or serialization
-  dependency was added. The implementation was independently verified on the uncommitted
-  worktree `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17, after the
-  M6-R1–R10 repair and a round-2 review pass); the milestone page is the single record of
-  status/integration and the [acceptance
+  dependency was added. The implementation was independently verified on
+  `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17, after the
+  M6-R1–R10 repair and a round-2 review pass) and merged to `main` at `cb05836` (PR #6);
+  the milestone page is the single record of status/integration and the [acceptance
   plan](../quality/m6-agent-interfaces-acceptance.md) holds the executed rows and evidence.
 
 ### Scope and deliverables
@@ -360,7 +360,8 @@ scope, exit criteria, dependencies and non-goals.
 
 - **Goal:** provide optional human-facing presentation surfaces for viewing and controlling
   sessions without owning canonical state.
-- **Milestone:** [M7 — GUI](milestones.md#m7--gui) (`Complete with integration pending`).
+- **Milestone:** [M7 — GUI](milestones.md#m7--gui) (`Complete`; merged to `main` at
+  `cb05836`, PR #6).
 - **Depends on:** M6 (attach/detach transport). Real video and audio to present depend on
   [H2](#h2--video-vdp-and-dma)/[H3](#h3--audio-and-z80), which are still partial/planned;
   the delivered pipeline is capability-gated and reports both as unavailable until a real
@@ -372,12 +373,11 @@ scope, exit criteria, dependencies and non-goals.
   human/agent controller lease), the `chronofork gui run` stdin-driven process surface in
   the CLI (local and remote via the M6 channel, read-only `.cfmovie` timeline, `pulse`,
   blocks and exit codes), and attach/detach proof that canonical results do not change.
-  The implementation is independently verified on the uncommitted worktree
-  `agent/m7-gui` at base `93d47ed` (final PASS4 and REVIEW5 PASS, 2026-11-17, after the
-  F1–F4/FAIL3 repairs); the milestone page is the single record of status/integration and
-  the [acceptance plan](../quality/m7-gui-acceptance.md) holds the executed rows and
-  evidence. **No commit, merge or publication was authorized**, so M7 remains
-  integration-pending.
+  The implementation was independently verified on `agent/m7-gui` at base `93d47ed`
+  (final PASS4 and REVIEW5 PASS, 2026-11-17, after the F1–F4/FAIL3 repairs) and merged to
+  `main` at `cb05836` (PR #6); the milestone page is the single record of
+  status/integration and the [acceptance plan](../quality/m7-gui-acceptance.md) holds the
+  executed rows and evidence.
 
 ### Scope and deliverables
 

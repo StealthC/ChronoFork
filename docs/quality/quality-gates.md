@@ -7,11 +7,11 @@ toolchain or environment changes.
 **Current status:** the latest dated block is the [2026-11-17 M7 human-facing GUI
 verification](#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)
 (76 targets / 988 passed, 0 failed, 0 ignored, both demos byte-identical, M7 acceptance rows
-`executed - passed`), which verifies the uncommitted worktree on branch `agent/m7-gui` at
-base `93d47ed`; no commit or merge was authorized, so M7 is `Complete with integration
-pending`. Before it, the [2026-11-17 M6 agent-native interfaces
+`executed - passed`), which verified the worktree on branch `agent/m7-gui` at base
+`93d47ed`; that work was merged to `main` at `cb05836` (PR #6), so M7 is `Complete`. Before
+it, the [2026-11-17 M6 agent-native interfaces
 verification](#2026-11-17--m6-agent-native-interfaces-independent-pass-2-verification-pass)
-recorded 67 targets / 800 passed on the M6 worktree (also integration-pending), and the
+recorded 67 targets / 800 passed on the M6 worktree, also merged at `cb05836` (PR #6), and the
 [2026-11-16 M5 tracing and scripting
 verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
 recorded 57 targets / 662 passed on the M5 worktree. For the earlier anti-slop
@@ -738,8 +738,8 @@ plan](m6-agent-interfaces-acceptance.md) on the **uncommitted** worktree
 complete and uncommitted (tracked diff: `Cargo.lock`, `Cargo.toml`, the CLI `Cargo.toml`,
 `src/main.rs` and `tests/session_storage.rs`; untracked: the two new crates, the CLI
 `src/agent/` module, `src/session.rs`, `tests/m6.rs` and three M6 documents). **This block
-verifies that worktree only: no commit, merge, push or publication was authorized for the
-task, so M6 is `Complete with integration pending` and is not on `main`.** The round-1 review
+verifies that worktree only: no commit, merge, push or publication was authorized at
+verification time; the work was subsequently merged to `main` at `cb05836` (PR #6).** The round-1 review
 returned `needs_revision` with findings M6-R1–M6-R10; the repair closed the code-side
 findings and added seven tests, and the **pass-2** re-execution returned **PASS**
 (2026-11-17 02:27–02:40). A round-2 review then returned pass with no regression. The round-1
@@ -833,8 +833,8 @@ Raw evidence is in the ignored `.agents/notes/m6/verify/` tree: `PASS2.md`,
 parity, HTTP, MCP, client and CLI rows run against the **deterministic synthetic backend**;
 the minimal Mega Drive backend is exercised only through `serve --rom` composition and its
 capability report (M6-A20) — no Mega Drive transport behavior, and no Mega Drive
-service/parity claim, is made. Verification ran on Linux/WSL and M6 remains
-integration-pending.
+service/parity claim, is made. Verification ran on Linux/WSL; M6 is merged to `main` at
+`cb05836` (PR #6).
 
 ## 2026-11-17 — M7 human-facing GUI (independent final verification PASS4)
 
@@ -845,8 +845,8 @@ and base `origin/main` `93d47ed308874be0e8e7060641c238c7f6809e31`, carrying the 
 snapshot plus the M7 delta (28 uncommitted entries: 14 modified, 14 untracked). The tree was
 byte-stable across the run: 51 files hashed identically at 13:50:44 and 13:53:21, HEAD and
 the status set unchanged. **This block verifies that worktree only: no commit, merge, push or
-publication was authorized, so M7 is `Complete with integration pending` and is not on
-`main`.** Environment: `CARGO_HOME=/tmp/t7-cargo`, `CARGO_TERM_COLOR=never`, the worktree's
+publication was authorized at verification time; the work was subsequently merged to `main`
+at `cb05836` (PR #6).** Environment: `CARGO_HOME=/tmp/t7-cargo`, `CARGO_TERM_COLOR=never`, the worktree's
 own `target/` (no `CARGO_TARGET_DIR` override), cargo 1.100.0 / rustc 1.100.0. The
 promotion basis is the final **PASS4**; the [M7 acceptance
 plan](m7-gui-acceptance.md) §2.4 records the earlier rounds (round-1 **FAIL** with findings
@@ -923,7 +923,7 @@ Raw evidence is in the ignored `.agents/notes/m7/verify/final2/` tree — `PASS4
 the GUI, renderer, pacing, presentation, attach/detach and process rows run against the
 **deterministic synthetic backend**; the minimal Mega Drive backend appears only through
 local `--rom` composition and its capability report (M7-A18), so no Mega Drive rendering,
-audio or parity claim is made. M7 remains integration-pending.
+audio or parity claim is made. M7 is merged to `main` at `cb05836` (PR #6).
 
 ## Gate policy
 
