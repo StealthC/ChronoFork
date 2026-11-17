@@ -62,7 +62,10 @@ Hardware-depth track (parallel, not a stage):
 
 ## Next
 
-**M8 — Multi-backend is `Next`.** M7 is `Complete` and merged to `main` at `cb05836`
+**M8 — Multi-backend is `Next`.** Execution of M8 is tracked in the committed
+[planning lifecycle](../planning/ROADMAP.md) (phases 8.1–8.5); this page remains the
+canonical record of capability scope, its status vocabulary, evidence and follow-ups.
+M7 is `Complete` and merged to `main` at `cb05836`
 (PR #6): it was independently verified on `agent/m7-gui` at base `origin/main` `93d47ed`
 (final verification PASS4 and final review REVIEW5, 2026-11-17) before the merge. M6 is
 also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-interfaces` at

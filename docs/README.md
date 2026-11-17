@@ -2,7 +2,10 @@
 
 This directory is the durable, human- and agent-readable knowledge base for
 ChronoFork. Operational working memory lives in the ignored `.planning/` directory;
-it is never a substitute for these documents.
+it is never a substitute for these documents. Durable **lifecycle** state — the
+current milestone, its phases, the session handoff and the project conventions — is
+committed in [`planning/`](planning/ROADMAP.md), and design specs/plans live under
+[`superpowers/`](superpowers/specs/2026-11-17-roadmap-design.md).
 
 ## Status
 
@@ -228,6 +231,8 @@ status and integration state.
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
 | [Milestones](roadmap/milestones.md) | Canonical milestone status and integration state (M0–M8) plus the hardware-depth checkpoints H1–H5 |
+| [Planning lifecycle](planning/ROADMAP.md) | Committed execution state: current milestone and phases, session handoff (`STATE.md`) and project conventions (`CONVENTIONS.md`) |
+| [Roadmap design](superpowers/specs/2026-11-17-roadmap-design.md) | Approved whole-project design that established the lifecycle layer |
 | [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic, its delivered increments and the hardware-depth follow-ups |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |
