@@ -113,7 +113,7 @@ mapper and SRAM, and boot a cartridge deterministically to its main loop.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #14
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.1-cartridge-region-tmss.md)
 
 ### Phase 8.2: Complete 68000 and the cycle time model [status: pending]
 
