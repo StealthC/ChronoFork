@@ -180,7 +180,7 @@ supersedes ADR-0013's no-toolkit constraint.
 **Surface:** UI
 **HelpWanted:** no
 **Issue:** #21
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.8-native-frontend.md)
 
 ## Milestone 9: Multi-backend expansion [status: pending]
 
