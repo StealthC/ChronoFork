@@ -17,7 +17,11 @@
 > are one-line records; their Definition of Done, work items and evidence stay on the
 > canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone.
 > M8 is marked active because it is the current milestone — its phases are still pending, so
-> the status does not mean implementation or merge is in progress.
+> the status does not mean implementation or merge is in progress. The canonical milestone page
+> calls M8 `Next` (not started) and remains authoritative for that; this file's `active` and
+> its `**Started:**` date record when the lifecycle layer took M8 as the current milestone,
+> not when implementation began. When phase 8.1 starts, update the milestone page's
+> integration state instead of silently leaving the two vocabularies to disagree.
 
 ## Milestone 0: Bootstrap foundation [status: complete]
 
