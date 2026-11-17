@@ -161,7 +161,7 @@ optimizations. The fixtures start with Kid Chameleon and Chakan, recorded in
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #19
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.6-commercial-compatibility.md)
 
 ### Phase 8.7: Execution modes, pacing and headless capture [status: pending]
 
