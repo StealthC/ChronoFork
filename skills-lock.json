@@ -6,6 +6,13 @@
       "sourceType": "github",
       "skillPath": "skills/planning-with-files/SKILL.md",
       "computedHash": "ddbf6d1fabf8af11e6ea8f0916d5083557747eb74b5fb09cf3a858ea77245c67"
+    },
+    "project-orchestration": {
+      "source": "MarcelRoozekrans/superpowers-extensions",
+      "commit": "c1f7e0e8e495a743769dd9867540f2f63aa94da5",
+      "sourceType": "github",
+      "skillPath": "plugins/project-orchestration/skills/project-orchestration/SKILL.md",
+      "computedHash": "e2f2c7b983376b04da575afccaa0aa7bd441f78de78d54e8b697904d5a4e799b"
     }
   }
 }
