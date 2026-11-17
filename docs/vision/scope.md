@@ -98,7 +98,8 @@ live in the [milestones](../roadmap/milestones.md) document.
 - A production GUI, installer or release pipeline.
 - Process isolation, copy-on-write forks or parallel session execution.
 - Any reuse of BizHawk code or GPL-incompatible components.
-- A final CI provider decision or remote repository publication.
+- A deployment target or hosted service. GitHub hosts the repository and runs CI
+  (`.github/workflows/ci.yml`); there is no release pipeline or deployment.
 
 ## Scope rules
 

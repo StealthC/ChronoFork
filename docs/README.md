@@ -228,6 +228,8 @@ status and integration state.
 | [Non-functional requirements](requirements/non-functional.md) | Determinism, quality, portability |
 | [Roadmap](roadmap/roadmap.md) | Long-term capability stages 0–8 |
 | [Milestones](roadmap/milestones.md) | Canonical milestone status and integration state (M0–M8) plus the hardware-depth checkpoints H1–H5 |
+| [Planning lifecycle](planning/ROADMAP.md) | Committed execution state: current milestone and phases, session handoff (`STATE.md`) and project conventions (`CONVENTIONS.md`) |
+| [Roadmap design](superpowers/specs/2026-11-17-roadmap-design.md) | Approved whole-project design that established the lifecycle layer |
 | [EPIC-0001](epics/EPIC-0001-foundation.md) | Foundation epic (complete) |
 | [EPIC-0002](epics/EPIC-0002-megadrive-slice.md) | Mega Drive 68000 slice epic, its delivered increments and the hardware-depth follow-ups |
 | [Testing strategy](quality/testing-strategy.md) | Test categories and fixtures |

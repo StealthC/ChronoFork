@@ -9,6 +9,12 @@ then plan, implement and verify. A task team normally shares one worktree; indep
 concurrent write tasks use separate worktrees. Publication and integration have separate
 authorization requirements (see [Git authorization](#git-authorization-and-integration)).
 
+Work is tracked through the `project-orchestration` lifecycle: the committed
+[`docs/planning/`](docs/planning/ROADMAP.md) directory holds the current plan and the session
+handoff, GitHub Issues and PRs are the trackable projection, and
+[Lifecycle and planning](#lifecycle-and-planning) is the index of rules. Read the project
+state before starting or resuming any task.
+
 ## Project purpose
 
 ChronoFork is an open-source, cross-platform emulation and reverse-engineering
@@ -59,6 +65,13 @@ analog/keyboard), privilege enforcement, other exception groups and cycle accura
 remain absent, and most 68000 instructions are not implemented. Do not present either
 backend as a complete emulator or claim game compatibility.
 
+**M8 (multi-backend expansion) is the active milestone.** Its phases are planned in
+[docs/planning/ROADMAP.md](docs/planning/ROADMAP.md) and none has started; M0–M7 are complete
+and merged. The second-system choice is an open decision owned by phase 8.1 — do not assume a
+console, and do not treat "active" as merged or implemented. Lifecycle state and the next
+action live in [docs/planning/](docs/planning/ROADMAP.md) and
+[docs/planning/STATE.md](docs/planning/STATE.md).
+
 ## Repository map
 
 | Path | Purpose |
@@ -77,12 +90,14 @@ backend as a complete emulator or claim game compatibility.
 | `crates/chronofork-cli/` | Minimal CLI demonstrating implemented features (`demo`, `megadrive`, `backend`, `session`, `tas`, `debug`, `trace`, `script`, `serve`, `api`, `mcp`, `experiment`, `gui`) |
 | `docs/` | Durable official documentation |
 | `docs/README.md` | Documentation index; start here |
+| `docs/planning/` | Committed lifecycle state — `ROADMAP.md`, `MILESTONE.md`, `STATE.md`, `CONVENTIONS.md` — maintained by `project-orchestration` |
+| `docs/superpowers/` | Approved design specs (`specs/`) and phase plans (`plans/`) produced by the lifecycle skills |
 | `docs/adr/` | Architectural decisions and status |
 | `docs/epics/` | EPIC-0001 foundation and EPIC-0002 Mega Drive slice |
 | `docs/research/` | Evidence-backed upstream research |
 | `scripts/check.sh` | Local quality gate |
 | `skills-lock.json` | Pinned agent-skill lockfile; `.agents/skills/` is ignored and restored from it |
-| `.planning/` | Ignored, worktree-local operational planning memory |
+| `.planning/` | Ignored, worktree-local scratch/evidence for the optional `planning-with-files` skill; never the lifecycle source of truth |
 | `.agents/notes/` | Ignored per-agent, per-task transient notes (when used) |
 | `.agents/worktrees/` | Preferred ignored location for task worktrees (when used) |
 | `.research/upstream/` | Ignored upstream clones; never commit |
@@ -172,11 +187,14 @@ More detail: [architecture overview](docs/architecture/overview.md),
 3. Read relevant ADRs in [docs/adr/](docs/adr/README.md). ADR-0002 is accepted;
    do not treat a still-`Proposed` decision as accepted.
 4. Identify the task, acceptance criteria, dependencies, write scope and required
-   Git permissions. For an independent write task, create or reuse the task worktree
-   **before** loading operational planning state or starting teammates.
+   Git permissions. Fetch `origin`, fast-forward local `main`, and create or reuse the
+   task worktree from the freshly fetched `origin/main` commit **before** loading
+   lifecycle state or starting teammates.
 5. Reconfirm repository root, branch, permissions and worktree after any directory
-   change. Then recover the selected planning state if the planning skill is installed;
-   do not invent a plan directory or silently reuse another task's plan.
+   change. Then read [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md) and
+   [STATE.md](docs/planning/STATE.md) and follow the lifecycle's resume routing
+   (`progress` / `resume-work` / `start-next-phase`); do not invent a plan directory
+   or silently reuse another task's plan.
 6. Identify the current epic in [docs/epics/](docs/epics/). EPIC-0002 tracks the
    Mega Drive slice; check for newer accepted scope before making assumptions.
 7. Inspect the existing implementation and evidence before editing; follow the
@@ -211,26 +229,30 @@ More detail: [architecture overview](docs/architecture/overview.md),
   occupied, resolve the ambiguity before proceeding. Never use `--force` to claim
   a worktree.
 - **A `main`-based task must start from freshly fetched `origin/main`, not this
-  checkout's local `main`.** When the approved base is `main`, run `git fetch origin`
-  first, resolve and record the actual commit with `git rev-parse origin/main`, and
-  create the task branch/worktree from that commit. Local `main` can point at an older
-  commit regardless of its name, and a stale local base silently starts the task from an
-  older tree. An explicit non-`main` approved base ref/commit remains authoritative under
-  the preceding rule.
+  checkout's local `main`.** At session start and before branching, run `git fetch origin`
+  and fast-forward local `main` to `origin/main` (never rewrite it); resolve and record the
+  actual base commit with `git rev-parse origin/main`, and create the task branch/worktree
+  from that commit. Local `main` can point at an older commit regardless of its name, and a
+  stale local base silently starts the task from an older tree. An explicit non-`main`
+  approved base ref/commit remains authoritative under the preceding rule.
 - For a task that needs a new worktree, this is a Git pattern (shown in POSIX shell syntax; adapt it for PowerShell)
   after confirming the root, base ref, branch name and ignore rule (placeholders
   are not literal commands to copy unchanged):
 
   ```sh
+  git fetch origin
+  git rev-parse origin/main
   git check-ignore -q .agents/worktrees/ || exit 1
   git worktree add -b 'agent/<task-id>-<slug>' \
-    '.agents/worktrees/<task-id>-<slug>' '<approved-base-ref>'
+    '.agents/worktrees/<task-id>-<slug>' "$(git rev-parse origin/main)"
   git -C '.agents/worktrees/<task-id>-<slug>' rev-parse --show-toplevel
   ```
 
   If the path is not ignored, configure an appropriate ignore rule first; do not
   create the nested worktree and hope Git will ignore it. A sibling-directory
   worktree uses the same `git worktree add` operation with an external path.
+  A worktree is always created from the freshly fetched `origin/main` commit (or the
+  explicitly approved base commit), never from a stale local `main` or another branch's tip.
 
 ### Select and verify the effective checkout
 
@@ -300,14 +322,51 @@ More detail: [architecture overview](docs/architecture/overview.md),
    deliberately; never `git worktree remove --force`, delete a branch or discard an
    active plan automatically. Request approval if any data might be lost.
 
-## Planning conventions
+## Lifecycle and planning
+
+`project-orchestration` is the primary project lifecycle mechanism. It is an Agent Skill
+(payload restored from `skills-lock.json`, see [Git hygiene](#git-hygiene)) and it is
+harness-independent: the same files and procedures work under any coding agent.
+
+- **Persistent lifecycle state lives in the committed
+  [`docs/planning/`](docs/planning/ROADMAP.md) directory.** `ROADMAP.md` records the
+  execution plan (active milestone and phases); `MILESTONE.md` defines the current milestone
+  and its Definition of Done; `STATE.md` is the session handoff written by `pause-work`;
+  `CONVENTIONS.md` records the invariant project conventions. Do not hand-edit the
+  `CONVENTIONS.md` fields the Commit & Release Protocol reads — re-run `init-conventions`.
+- **Before starting or resuming work, read the state**: this file, `docs/planning/`, the
+  canonical milestone page and the relevant ADRs. Use the lifecycle's `progress` /
+  `resume-work` / `start-next-phase` routing instead of asking where the project is or
+  jumping straight to code. If `docs/planning/` is absent, that is a setup gap to report, not
+  a licence to invent a plan directory.
+- **The lifecycle is not the capability record.** Execute through `docs/planning/`; capability
+  scope, milestone status/integration state, evidence and deferred follow-ups stay canonical
+  in [docs/roadmap/milestones.md](docs/roadmap/milestones.md) and
+  [docs/roadmap/roadmap.md](docs/roadmap/roadmap.md), and requirements status in
+  [docs/requirements/](docs/requirements/functional.md). Link to them; do not copy their
+  content (see the [anti-slop policy](docs/quality/anti-slop-policy.md)).
+- **New features and durable decisions are reflected in the artifact that owns them**: a
+  phase in `docs/planning/ROADMAP.md`, an approved design spec in `docs/superpowers/specs/`,
+  a plan in `docs/superpowers/plans/`, an ADR in [docs/adr/](docs/adr/README.md), or the
+  architecture/requirements pages. A decision that must survive the session never lives only
+  in chat or in ignored scratch.
+- **Design before build.** A phase gets an approved design spec and a plan before
+  implementation. Dispatch through `brainstorming` → `writing-plans` → `executing-plans`
+  (directly, by subagents or by Agent Teams); a small task may use a short design, but it is
+  not skipped.
+- **No parallel planning systems.** `docs/planning/` (tracked lifecycle) and `.planning/`
+  (ignored scratch) have different jobs. Ignored scratch never overrides accepted scope,
+  status or decisions.
+
+### Ignored scratch plans (`planning-with-files`)
 
 - Use an installed planning skill only after loading its actual `SKILL.md`; do not
   claim to use a skill you did not load. Otherwise use a concise task list and
   promote durable decisions to `docs/`.
-- `.planning/` is ignored, **operational memory local to a worktree**, not the
-  source of truth for accepted architecture or capabilities. Never share/copy its
-  mutable state or `.attestation` between independent worktrees or sessions.
+- `.planning/` is ignored, **scratch/evidence local to a worktree**, not the
+  source of truth for accepted architecture, capabilities, scope or status. Never
+  share/copy its mutable state or `.attestation` between independent worktrees or
+  sessions.
 - One designated plan owner per team (normally the lead) may modify the shared
   `task_plan.md`, `findings.md`, `progress.md` and attestation state. Teammates
   report through task-board messages or their own task-specific ignored notes,
@@ -328,6 +387,63 @@ More detail: [architecture overview](docs/architecture/overview.md),
   reading or updating it. If selection is ambiguous or points elsewhere, stop.
 - Before deleting/archiving a plan or worktree, extract durable findings into
   `docs/`, preserve any necessary evidence and verify no active session relies on it.
+
+## GitHub integration
+
+GitHub is the trackable projection of the lifecycle, not a second source of truth.
+
+- **Issues are the trackable activities.** Prefer one Issue per feature or fix. Reference the
+  Issue from the branch name and the commits, and open a PR that links it.
+- **Implementations land through PRs.** Do not modify a protected branch directly. `main` is
+  protected by project convention ([CONVENTIONS.md](docs/planning/CONVENTIONS.md)), and a
+  change arrives through a reviewed PR with green checks — even when the host does not
+  enforce the protection.
+- **Milestones and Issues can be synchronized by `project-orchestration`**
+  (`init-github-sync`, `sync-github`). Native sync is **one-way: local planning → GitHub**.
+  Never copy a GitHub-side title, label, milestone or state back into `docs/planning/`;
+  reconcile externally made changes consciously and re-run the sync afterwards.
+- **Do not create duplicate Issues or Milestones.** Check what exists first. A closed Issue
+  proves only that someone closed it: implementation is proven by code, executed tests and
+  review evidence, and the phase is closed locally with `complete-phase`.
+- **First-time publication needs explicit approval.** Prepare and dry-run the sync, present
+  the resources that would be created or changed, then publish only after the owner approves.
+- **GitHub Projects v2 is not part of the native integration.** Issues and Milestones are the
+  supported projection; Projects v2 may be configured later only by an explicit decision.
+
+## Development workflow
+
+- **Isolate work.** One independent write task = one branch and one worktree (see
+  [Concurrent work and Git worktrees](#concurrent-work-and-git-worktrees)). Read-only
+  investigation and small sequential tasks do not need one.
+- **Keep the base current.** Fetch `origin` and fast-forward local `main` to `origin/main`
+  before branching and at session start; always create a worktree from the freshly fetched
+  `origin/main` commit, never from a stale local `main`.
+- **Never modify a protected branch directly.** `main` is the integration branch; changes
+  arrive through a reviewed PR with green checks.
+- **Verify before calling a task done.** Run the applicable gates and report the actual
+  results ([Testing expectations](#testing-expectations)); a change is not complete because it
+  compiles.
+- **Record architectural changes in ADRs** and keep the technical documentation consistent
+  with the code. Update the one canonical capability home instead of duplicating it.
+- **Report delivery honestly.** Distinguish implemented, tested, committed locally, pushed,
+  under review and merged (see [Git authorization](#git-authorization-and-integration)).
+
+## Harness independence
+
+This repository must remain executable by any coding agent (DeepSeek Harness, Codex, Claude
+Code, OpenCode, others), by subagents and by humans.
+
+- **Prefer portable mechanisms**: the Agent Skills standard (`SKILL.md` plus the
+  `skills-lock.json` lockfile) and command-line tools (`git`, `gh`, `cargo`,
+  `./scripts/check.sh`) over harness-specific APIs, editors or slash commands.
+- **Do not write harness-specific instructions** (a particular harness's tools, commands or
+  hooks) when a portable alternative exists. Harness configuration belongs in that harness's
+  own settings, not in `AGENTS.md`.
+- **Allow any orchestrator; require none.** A phase may be executed directly, by subagents or
+  by Agent Teams; the plan and its evidence do not depend on which one ran.
+- **Avoid competing systems.** One lifecycle (`project-orchestration`), one capability record
+  (`docs/roadmap/`), one conventions file and one planning directory. Add tooling only when it
+  removes duplication rather than creating it.
 
 ## jev-cli as a second opinion
 
@@ -481,7 +597,8 @@ run, state exactly why.
 ## Git hygiene
 
 - `.research/upstream/` and `.planning/` must remain untracked/ignored.
-- `.agents/skills/` is ignored; commit `skills-lock.json`, not the installed payload.
+- `.agents/skills/` and `.claude/skills/` are ignored; commit `skills-lock.json`, not the
+  installed payload, and restore it with `npx skills install --frozen-lockfile`.
 - Ensure `.agents/worktrees/` and any transient `.agents/notes/` directory are
   ignored before using them. Do not assume an ignore rule exists; check with
   `git check-ignore`. Worktree-local ignored files do not travel with commits.
@@ -518,6 +635,9 @@ A task is done when:
   merge approvals. A task can be implementation-complete but integration-pending.
 - Operational plans/notes needed for recovery are preserved until safe handoff;
   durable decisions are consolidated in versioned documentation.
+- The lifecycle state reflects the outcome: the phase is closed (or left `active` with the
+  blocker in `STATE.md`), `docs/planning/ROADMAP.md` and `MILESTONE.md` agree, and the session
+  handoff is enough for a fresh session to resume without this conversation.
 
 ## Understanding current project state
 
@@ -525,11 +645,14 @@ Use these sources, in order:
 
 1. The effective checkout root, branch, `git status --short --branch`, linked
    worktrees and recent commits (never infer state from a different checkout).
-2. [docs/README.md](docs/README.md) and the relevant architecture/ADR pages.
-3. The active **worktree-local** planning files, if a planning skill is installed.
-4. The current [epic](docs/epics/EPIC-0002-megadrive-slice.md) and
+2. [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md) and
+   [docs/planning/STATE.md](docs/planning/STATE.md): the lifecycle state, the active
+   milestone and the last session handoff.
+3. [docs/README.md](docs/README.md) and the relevant architecture/ADR pages.
+4. Any worktree-local ignored scratch (`.planning/`) as context only — never as authority.
+5. The current [epic](docs/epics/EPIC-0002-megadrive-slice.md) and
    [milestones](docs/roadmap/milestones.md).
-5. `cargo test --workspace` output from the intended checkout, not assumptions.
+6. `cargo test --workspace` output from the intended checkout, not assumptions.
 
 If sources conflict, prefer code and executed tests for what *is*, and ADRs/docs
 for what *should be*. Report the conflict rather than silently choosing one.
