@@ -113,7 +113,7 @@ mapper and SRAM, and boot a cartridge deterministically to its main loop.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #14
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.1-cartridge-region-tmss.md)
 
 ### Phase 8.2: Complete 68000 and the cycle time model [status: pending]
 
@@ -122,7 +122,7 @@ groups with cycle accounting, defining canonical emulated time for the machine.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #15
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.2-cpu-cycle-model.md)
 
 ### Phase 8.3: Complete VDP [status: pending]
 
@@ -132,7 +132,7 @@ frame-level differential evidence.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #16
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.3-vdp.md)
 
 ### Phase 8.4: Z80, bus arbitration and audio [status: pending]
 
@@ -141,7 +141,7 @@ six-channel FM and PSG, with deterministic mixing/resampling and audio different
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #17
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
 
 ### Phase 8.5: Timers, controllers and interrupts [status: pending]
 
@@ -150,7 +150,7 @@ and integrate interrupt delivery with cycle timing.
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #18
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.5-timers-controllers.md)
 
 ### Phase 8.6: Commercial compatibility, accuracy evidence and performance [status: pending]
 
@@ -161,7 +161,7 @@ optimizations. The fixtures start with Kid Chameleon and Chakan, recorded in
 **Surface:** Backend
 **HelpWanted:** no
 **Issue:** #19
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.6-commercial-compatibility.md)
 
 ### Phase 8.7: Execution modes, pacing and headless capture [status: pending]
 
@@ -170,7 +170,7 @@ deterministic PNG frame and WAV audio capture that is identical across modes.
 **Surface:** Mixed
 **HelpWanted:** no
 **Issue:** #20
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.7-execution-modes-capture.md)
 
 ### Phase 8.8: Native windowed frontend [status: pending]
 
@@ -180,7 +180,7 @@ supersedes ADR-0013's no-toolkit constraint.
 **Surface:** UI
 **HelpWanted:** no
 **Issue:** #21
-**Plan:** _to be written_
+**Plan:** [plan](../superpowers/plans/2026-11-17-8.8-native-frontend.md)
 
 ## Milestone 9: Multi-backend expansion [status: pending]
 
