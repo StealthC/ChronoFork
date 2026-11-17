@@ -28,6 +28,13 @@ pub(crate) fn synthetic_rom() -> Vec<u8> {
         0x33, 0xC0, 0x00, 0xFF, 0x00, 0x00, // MOVE.W D0,(0x00FF0000).L
         0x4E, 0x71, // NOP
     ]);
+    // A valid Mega Drive header is required by the cartridge model. The header
+    // occupies 0x100..0x200, between the vector table and the program, so the
+    // executed bytes are unchanged.
+    assert!(
+        chronofork_megadrive::test_support::stamp_header(&mut rom, "JUE"),
+        "the synthetic CLI ROM holds a header"
+    );
     rom
 }
 

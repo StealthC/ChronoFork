@@ -822,7 +822,7 @@ mod tests {
     /// Executes one CPU step from the same bytes and proves the view matches it.
     fn cross_check(case: &Case) {
         let rom = program_rom(case.prefix, case.instruction);
-        let mut bus = MegadriveBus::new(Arc::clone(&rom));
+        let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom.to_vec()));
         if !case.stack.is_empty() {
             bus.write_memory(u64::from(INITIAL_STACK), case.stack)
                 .expect("stack setup");
@@ -897,7 +897,7 @@ mod tests {
             assert_eq!(decoded[0].length(), 2);
             assert_eq!(decoded[0].opcode(), *opcode);
 
-            let mut bus = MegadriveBus::new(Arc::clone(&rom));
+            let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom.to_vec()));
             let mut cpu = M68000::new();
             cpu.reset(&mut bus).expect("reset");
             assert!(
@@ -1077,7 +1077,7 @@ mod tests {
         // text, and disassembling a running machine's ROM does not change any
         // CPU or bus state.
         let rom = program_rom(&[], &[0x70, 0x01]);
-        let mut bus = MegadriveBus::new(Arc::clone(&rom));
+        let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom.to_vec()));
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).expect("reset");
         let pc_before = cpu.pc();

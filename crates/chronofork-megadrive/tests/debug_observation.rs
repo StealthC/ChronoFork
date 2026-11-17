@@ -134,6 +134,10 @@ fn byte_vdp_rom() -> Vec<u8> {
         0x12, 0x39, 0x00, 0xC0, 0x00, 0x08, // MOVE.B (0x00C00008).L,D1
         0x60, 0xFE, // BRA.S -2
     ]);
+    assert!(
+        chronofork_megadrive::test_support::stamp_header(&mut rom, "JUE"),
+        "the byte-VDP image holds a header"
+    );
     rom
 }
 

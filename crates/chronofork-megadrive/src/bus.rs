@@ -1,13 +1,16 @@
 //! Big-endian Mega Drive memory bus for the real-hardware slice.
 //!
-//! The cartridge ROM window, the 64 KiB work RAM window and the VDP port window
-//! at `0xC00000..=0xC0000F` are mapped. The two controller data registers at
+//! The cartridge windows (ROM, mapper registers, battery SRAM and TMSS), the
+//! 64 KiB work RAM window and the VDP port window at `0xC00000..=0xC0000F` are
+//! mapped and delegated to [`Cartridge`]. The version register
+//! at `0xA10001` reports the cartridge's header/region/video facts. The two
+//! controller data registers at
 //! `0xA10003` (port 1) and `0xA10005` (port 2) are mapped for **execution byte
 //! reads only**, and only while a step is executing: they return a TH-high
 //! 3-button subset derived from the current step's `InputFrame`. Every other
 //! controller/IO-window access, every controller write, and every debugger read of
 //! the window is an explicit typed error rather than silent open-bus behavior.
-//! PSG, Z80 and mapper windows remain deliberately absent from this slice.
+//! PSG and Z80 windows remain deliberately absent from this slice.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
@@ -28,12 +31,16 @@
 
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
 
 use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
 use chronofork_core::Tick;
 
+use crate::cartridge::{
+    Cartridge, CartridgeError, MAPPER_REGISTER_BASE, MAPPER_REGISTER_END, TMSS_REGISTER_BASE,
+    TMSS_REGISTER_END, Tmss, VERSION_REGISTER,
+};
 use crate::debug::DebugObserver;
+use crate::interrupts::VideoStandard;
 use crate::vdp::{Vdp, VdpError};
 
 /// First address of the cartridge ROM window.
@@ -98,6 +105,9 @@ pub enum BusError {
     },
     /// The VDP rejected a port access.
     Vdp(VdpError),
+    /// The cartridge device rejected an access that is not one of the mapped
+    /// read/write/protection errors above.
+    Cartridge(CartridgeError),
     /// A side-effect-free debugger read targeted a side-effecting device port.
     SideEffectingRead {
         /// Requested address.
@@ -125,6 +135,7 @@ impl fmt::Display for BusError {
                 "address overflow at 0x{address:06X} for {length} byte(s)"
             ),
             Self::Vdp(error) => write!(f, "VDP port access failed: {error}"),
+            Self::Cartridge(error) => write!(f, "cartridge access failed: {error}"),
             Self::SideEffectingRead { address } => write!(
                 f,
                 "side-effect-free read at 0x{address:06X} targets a side-effecting device port"
@@ -137,16 +148,21 @@ impl Error for BusError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Vdp(error) => Some(error),
+            Self::Cartridge(error) => Some(error),
             _ => None,
         }
     }
 }
 
-/// ROM + 64 KiB work RAM + the VDP port window, accessed big-endian like the
-/// 68000 bus.
+/// Cartridge device + 64 KiB work RAM + the VDP port window, accessed big-endian
+/// like the 68000 bus.
 #[derive(Clone, Debug)]
 pub struct MegadriveBus {
-    rom: Arc<[u8]>,
+    cartridge: Cartridge,
+    /// Video standard the machine presents, used by the cartridge version
+    /// register. This is configuration, not mutable state: it is covered by the
+    /// configuration hash and never serialized.
+    video: VideoStandard,
     ram: Vec<u8>,
     vdp: Vdp,
     /// Data-register bytes for controller ports 1 and 2 during the instruction
@@ -167,14 +183,26 @@ pub struct MegadriveBus {
 }
 
 impl MegadriveBus {
-    /// Creates a bus over an immutable cartridge image with a VDP in its
-    /// deterministic reset state.
+    /// Creates a bus over a parsed cartridge with a VDP in its deterministic
+    /// reset state.
     ///
-    /// The factory validates the image size before constructing a bus.
+    /// The video standard is derived from the cartridge header region.
     #[must_use]
-    pub fn new(rom: Arc<[u8]>) -> Self {
+    pub fn new(cartridge: Cartridge) -> Self {
+        let video = cartridge.derived_video_standard();
+        Self::with_video_standard(cartridge, video)
+    }
+
+    /// Creates a bus over a parsed cartridge with an explicit video standard.
+    ///
+    /// The factory uses this to apply a [`MegadriveConfig`](crate::MegadriveConfig)
+    /// override; the value feeds the version register and must match the
+    /// scheduler standard.
+    #[must_use]
+    pub fn with_video_standard(cartridge: Cartridge, video: VideoStandard) -> Self {
         Self {
-            rom,
+            cartridge,
+            video,
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
             controller_ports: [CONTROLLER_NEUTRAL; 2],
@@ -272,10 +300,28 @@ impl MegadriveBus {
         self.controller_ports = [CONTROLLER_NEUTRAL; 2];
     }
 
+    /// Returns the cartridge device.
+    #[must_use]
+    pub const fn cartridge(&self) -> &Cartridge {
+        &self.cartridge
+    }
+
+    /// Returns the cartridge device for snapshot restore and test/debug writes.
+    #[must_use]
+    pub const fn cartridge_mut(&mut self) -> &mut Cartridge {
+        &mut self.cartridge
+    }
+
+    /// Returns the TMSS latch owned by the cartridge.
+    #[must_use]
+    pub const fn tmss(&self) -> &Tmss {
+        self.cartridge.tmss()
+    }
+
     /// Returns the cartridge image.
     #[must_use]
     pub fn rom(&self) -> &[u8] {
-        &self.rom
+        self.cartridge.rom()
     }
 
     /// Returns the work RAM.
@@ -321,18 +367,21 @@ impl MegadriveBus {
     ///
     /// The VDP window is rejected because a read there can advance the VDP's
     /// internal address; use [`MegadriveBus::read8`] when emulated execution is
-    /// allowed to observe device side effects.
+    /// allowed to observe device side effects. Cartridge reads (ROM, mapper
+    /// registers, mapped SRAM and the version register) are side-effect free and
+    /// never mutate mapper or SRAM state.
     pub fn peek8(&self, address: u32) -> Result<u8, BusError> {
         if vdp_offset(address).is_some() {
             return Err(BusError::SideEffectingRead { address });
         }
-        if address < ROM_END {
-            let index = usize::try_from(address).map_err(|_| BusError::UnmappedRead { address })?;
-            return self
-                .rom
-                .get(index)
-                .copied()
-                .ok_or(BusError::UnmappedRead { address });
+        if controller_port(address).is_some() {
+            return Err(BusError::UnmappedRead { address });
+        }
+        if address == VERSION_REGISTER {
+            return Ok(self.cartridge.version_register(self.video));
+        }
+        if is_cartridge_address(address) {
+            return self.cartridge.read8(address).map_err(map_cartridge_read);
         }
         if (RAM_BASE..RAM_END).contains(&address) {
             // Masking to 16 bits proves the offset fits `usize` on every
@@ -418,10 +467,24 @@ impl MegadriveBus {
     }
 
     /// Writes one byte to a mapped window.
+    ///
+    /// While the enabled TMSS lockout is active a VDP write is acknowledged and
+    /// discarded: neither the VDP registers nor its address latch change.
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
         if let Some(offset) = vdp_offset(address) {
+            if !self.cartridge.tmss().vdp_writes_allowed() {
+                return Ok(());
+            }
             self.vdp.write8(offset, value).map_err(BusError::Vdp)?;
             self.observe_vdp_access(offset, address, u32::from(value), 1, true);
+            return Ok(());
+        }
+        if is_cartridge_address(address) {
+            self.cartridge
+                .write8(address, value)
+                .map_err(map_cartridge_write)?;
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
         }
         self.write_ram_byte(address, value)?;
@@ -451,8 +514,19 @@ impl MegadriveBus {
             return Err(BusError::OddAddress { address });
         }
         if let Some(offset) = vdp_offset(address) {
+            if !self.cartridge.tmss().vdp_writes_allowed() {
+                return Ok(());
+            }
             self.vdp.write16(offset, value).map_err(BusError::Vdp)?;
             self.observe_vdp_access(offset, address, u32::from(value), 2, true);
+            return Ok(());
+        }
+        if is_cartridge_address(address) {
+            self.cartridge
+                .write16(address, value)
+                .map_err(map_cartridge_write)?;
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 2);
             return Ok(());
         }
         self.ensure_ram_write_range(address, 2)?;
@@ -470,6 +544,9 @@ impl MegadriveBus {
             return Err(BusError::OddAddress { address });
         }
         if let Some(offset) = vdp_offset(address) {
+            if !self.cartridge.tmss().vdp_writes_allowed() {
+                return Ok(());
+            }
             let second_address = address
                 .checked_add(2)
                 .ok_or(BusError::AddressOverflow { address, length: 4 })?;
@@ -485,6 +562,14 @@ impl MegadriveBus {
                 .write16(second_offset, low)
                 .map_err(BusError::Vdp)?;
             self.observe_vdp_access(second_offset, second_address, u32::from(low), 2, true);
+            return Ok(());
+        }
+        if is_cartridge_address(address) {
+            self.cartridge
+                .write32(address, value)
+                .map_err(map_cartridge_write)?;
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, value, 4);
             return Ok(());
         }
         self.ensure_ram_write_range(address, 4)?;
@@ -507,9 +592,10 @@ impl MegadriveBus {
     fn debugger_window(&self, start: u32) -> Option<(&[u8], u32)> {
         // Only the first `ROM_END` bytes of the image are addressable on the
         // 68000 bus; a larger image never reaches the bus through this window.
-        let rom_len = self.rom.len().min(ROM_END as usize);
+        let rom = self.cartridge.rom();
+        let rom_len = rom.len().min(ROM_END as usize);
         if (start as usize) < rom_len {
-            return Some((&self.rom[..rom_len], ROM_BASE));
+            return Some((&rom[..rom_len], ROM_BASE));
         }
         if (RAM_BASE..RAM_END).contains(&start) {
             return Some((self.ram.as_slice(), RAM_BASE));
@@ -609,6 +695,37 @@ impl MegadriveBus {
     }
 }
 
+/// Returns whether `address` belongs to a cartridge-owned window.
+///
+/// This is the complete cartridge address surface: the ROM/SRAM window, the
+/// mapper register file and the TMSS register. The bus still rejects every other
+/// `0xA1xxxx` address as unmapped.
+fn is_cartridge_address(address: u32) -> bool {
+    address < ROM_END
+        || (MAPPER_REGISTER_BASE..MAPPER_REGISTER_END).contains(&address)
+        || (TMSS_REGISTER_BASE..=TMSS_REGISTER_END).contains(&address)
+}
+
+/// Maps a cartridge read failure to the bus contract.
+fn map_cartridge_read(error: CartridgeError) -> BusError {
+    match error {
+        CartridgeError::UnmappedRom { address } => BusError::UnmappedRead { address },
+        CartridgeError::OddAddress { address } => BusError::OddAddress { address },
+        CartridgeError::WriteProtected { address } => BusError::WriteProtected { address },
+        other => BusError::Cartridge(other),
+    }
+}
+
+/// Maps a cartridge write failure to the bus contract.
+fn map_cartridge_write(error: CartridgeError) -> BusError {
+    match error {
+        CartridgeError::UnmappedRom { address } => BusError::UnmappedWrite { address },
+        CartridgeError::OddAddress { address } => BusError::OddAddress { address },
+        CartridgeError::WriteProtected { address } => BusError::WriteProtected { address },
+        other => BusError::Cartridge(other),
+    }
+}
+
 fn vdp_offset(address: u32) -> Option<u8> {
     let offset = address.checked_sub(VDP_BASE)?;
     if offset < VDP_WINDOW_SIZE {
@@ -646,7 +763,7 @@ fn controller_data_byte(port: u32) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use crate::cartridge::Cartridge;
 
     use super::{BusError, MegadriveBus, RAM_BASE};
 
@@ -654,7 +771,12 @@ mod tests {
         let mut rom = vec![0_u8; 0x400];
         rom[0] = 0x12;
         rom[1] = 0x34;
-        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+        MegadriveBus::new(test_cartridge(rom))
+    }
+
+    /// Stamps a valid synthetic header on a raw test image.
+    fn test_cartridge(rom: Vec<u8>) -> Cartridge {
+        crate::cartridge::test_cartridge(rom)
     }
 
     fn set_vram_address(bus: &mut MegadriveBus, address: u16, first_word: u16) {
@@ -772,7 +894,10 @@ mod tests {
         // Every other address in the controller/IO window, and every write,
         // is a typed error rather than a silent skip.
         for address in super::CONTROLLER_WINDOW_BASE..super::CONTROLLER_WINDOW_END {
-            if address == super::CONTROLLER_PORT_1 || address == super::CONTROLLER_PORT_2 {
+            if address == super::CONTROLLER_PORT_1
+                || address == super::CONTROLLER_PORT_2
+                || address == super::VERSION_REGISTER
+            {
                 continue;
             }
             assert_eq!(
@@ -792,6 +917,9 @@ mod tests {
                 Err(BusError::UnmappedWrite { address })
             );
         }
+        // The version register is a side-effect-free cartridge read.
+        assert_eq!(bus.read8(super::VERSION_REGISTER), Ok(0xA1));
+        assert_eq!(bus.peek8(super::VERSION_REGISTER), Ok(0xA1));
 
         // The debugger path stays unmapped: a step-scoped value is not a machine
         // register and must not be presented as one.

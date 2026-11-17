@@ -8,13 +8,12 @@
 //! stay in `tests/snapshot_properties.rs`.
 
 use std::error::Error;
-use std::sync::Arc;
 
 use chronofork_backend_api::{Backend, BackendError};
 use chronofork_core::{InputFrame, hash_bytes};
 use chronofork_megadrive::{
-    CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, MegadriveBus, MegadriveFactory,
-    controller_rom,
+    CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, Cartridge, MegadriveBus,
+    MegadriveFactory, controller_rom,
 };
 
 /// Test result type: `?` keeps the target free of unwrap/expect helpers and
@@ -40,12 +39,16 @@ fn illegal_then_controller_rom() -> Vec<u8> {
     rom[0x202..0x208].copy_from_slice(&[0x10, 0x39, 0x00, 0xA1, 0x00, 0x03]); // MOVE.B (P1).L,D0
     rom[0x208..0x20E].copy_from_slice(&[0x13, 0xC0, 0x00, 0xFF, 0x00, 0x00]); // MOVE.B D0,(0xFF0000).L
     rom[0x20E..0x210].copy_from_slice(&[0x60, 0xFE]); // BRA.S self
+    assert!(
+        chronofork_megadrive::test_support::stamp_header(&mut rom, "JUE"),
+        "the controller image holds a header"
+    );
     rom
 }
 
 #[test]
 fn idle_bus_reports_neutral_controller_bytes_and_rejects_debugger_access() -> TestResult {
-    let mut bus = MegadriveBus::new(Arc::from(controller_rom().into_boxed_slice()));
+    let mut bus = MegadriveBus::new(Cartridge::parse(controller_rom())?);
     assert_eq!(bus.read8(CONTROLLER_PORT_1)?, CONTROLLER_NEUTRAL);
     assert_eq!(bus.read8(CONTROLLER_PORT_2)?, CONTROLLER_NEUTRAL);
 

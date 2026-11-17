@@ -6,18 +6,21 @@
 //! per-step 3-button controller data-register subset for ports 1 and 2, a
 //! deterministic instruction-quantum VBlank/HBlank interrupt scheduler whose
 //! delivery honours the 68000 `SR` interrupt-priority mask (level 7 always,
-//! otherwise strictly above the mask), versioned snapshots and session
-//! integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
+//! otherwise strictly above the mask), a modelled cartridge (header, region,
+//! Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register),
+//! versioned v3 snapshots and session integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
 //! bounded, execution-cross-checked 68000-subset disassembler are available
 //! without changing canonical state. **Not implemented:** rendering, audio, Z80,
 //! DMA, TH-latched and 6-button controller protocols (A/Start are not readable),
-//! mapper hardware, VDP interrupt-enable/acknowledge registers and cycle-accurate
-//! timing. This is real-hardware groundwork, not a playable emulator.
+//! SRAM banking schemes other than the Sega mapper, VDP interrupt-enable/
+//! acknowledge registers and cycle-accurate timing. This is real-hardware
+//! groundwork, not a playable emulator.
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 pub mod backend;
 pub mod bus;
+pub mod cartridge;
 pub mod cpu;
 mod debug;
 pub mod disasm;
@@ -27,13 +30,20 @@ pub mod trace;
 pub mod vdp;
 
 pub use backend::{
-    BACKEND_ID, HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-    VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
+    BACKEND_ID, BOOT_MARKER, BOOT_ROM_SIZE, CONFIG_MAGIC, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
+    MegadriveConfig, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, STATE_MAGIC,
+    VBLANK_VECTOR_ADDRESS, boot_marker, cartridge_boot_rom, controller_rom, demo_rom,
+    interrupt_rom,
 };
 pub use bus::{
     BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, CONTROLLER_WINDOW_BASE,
     CONTROLLER_WINDOW_END, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END, VDP_BASE,
     VDP_END, VDP_WINDOW_SIZE,
+};
+pub use cartridge::{
+    Cartridge, CartridgeError, CartridgeHeader, CartridgeSystem, MAPPER_REGISTER_BASE,
+    MAPPER_REGISTER_END, MAX_IMAGE_SIZE, Region, SRAM_BASE, SRAM_END, SRAM_SIZE, SramSpec,
+    TMSS_REGISTER_BASE, TMSS_REGISTER_END, Tmss, TmssModel, VERSION_REGISTER,
 };
 pub use cpu::{CpuError, M68000};
 pub use disasm::{
@@ -41,8 +51,8 @@ pub use disasm::{
     disassemble,
 };
 pub use inspect::{
-    BusView, BusWindowView, CpuView, InterruptCounterView, InterruptView, PendingInterruptView,
-    VdpView,
+    BusView, BusWindowView, CartridgeView, CpuView, InterruptCounterView, InterruptView,
+    PendingInterruptView, VdpView,
 };
 pub use interrupts::{
     DEFAULT_INSTRUCTIONS_PER_LINE, HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler,
@@ -50,3 +60,79 @@ pub use interrupts::{
 };
 pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};
+
+/// Test-only support for synthetic images and local commercial-ROM fixtures.
+///
+/// These helpers exist so the crate's synthetic ROM builders and the
+/// integration tests can stamp a valid header and resolve the ignored
+/// `.research/roms/` fixtures. They shape or locate ROM images before a machine
+/// is constructed; they never read or mutate canonical machine state, and the
+/// fixture files are never committed.
+pub mod test_support {
+    use std::path::PathBuf;
+
+    use crate::cartridge::compute_checksum;
+
+    /// Stamps a valid synthetic `SEGA MEGA DRIVE` header over `0x100..0x200`.
+    ///
+    /// `region` is written to the region field (`J`, `U`, `E` or a combination
+    /// such as `JUE`); a caller that needs different names, a different serial or
+    /// a deliberately mismatched ROM end overwrites those fields afterwards. The
+    /// checksum is computed over `0x200..`, so it is unaffected by header-only
+    /// edits. Returns `false` when `rom` cannot hold a full header.
+    ///
+    /// This is shared fixture support for the crate's synthetic ROM builders and
+    /// the integration tests; it shapes the image before a machine is
+    /// constructed and never touches canonical state.
+    pub fn stamp_header(rom: &mut [u8], region: &str) -> bool {
+        let end = match u32::try_from(rom.len()) {
+            Ok(length) if length >= 0x200 => length - 1,
+            _ => return false,
+        };
+        let checksum = compute_checksum(rom);
+        let Some(header) = rom.get_mut(0x100..0x200) else {
+            return false;
+        };
+        header.fill(0);
+        header[..16].copy_from_slice(b"SEGA MEGA DRIVE ");
+        header[0x20..0x30].copy_from_slice(b"CHRONOFORK TEST ");
+        header[0x50..0x60].copy_from_slice(b"CHRONOFORK TEST ");
+        header[0x80..0x8E].copy_from_slice(b"GM 00000000-00");
+        header[0x8E..0x90].copy_from_slice(&checksum.to_be_bytes());
+        header[0xA0..0xA4].copy_from_slice(&0_u32.to_be_bytes());
+        header[0xA4..0xA8].copy_from_slice(&end.to_be_bytes());
+        let region = region.as_bytes();
+        let length = region.len().min(0x10);
+        header[0xF0..0xF0 + length].copy_from_slice(&region[..length]);
+        true
+    }
+
+    /// Resolves a local-only ROM fixture by name.
+    ///
+    /// Lookup order: `$CHRONOFORK_ROM_DIR`, then
+    /// `$HOME/projects/ChronoFork/.research/roms/`, then the repository's
+    /// `.research/roms/` relative to the crate manifest. Returns `None` when the
+    /// file does not exist, so a fixture test can skip with an explicit reason.
+    #[must_use]
+    pub fn rom_path(name: &str) -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(dir) = std::env::var_os("CHRONOFORK_ROM_DIR") {
+            candidates.push(PathBuf::from(dir).join(name));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(
+                PathBuf::from(home)
+                    .join("projects/ChronoFork/.research/roms")
+                    .join(name),
+            );
+        }
+        if let Some(manifest) = std::env::var_os("CARGO_MANIFEST_DIR") {
+            candidates.push(
+                PathBuf::from(manifest)
+                    .join("../../.research/roms")
+                    .join(name),
+            );
+        }
+        candidates.into_iter().find(|path| path.is_file())
+    }
+}

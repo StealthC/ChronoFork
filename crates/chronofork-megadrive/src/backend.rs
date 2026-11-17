@@ -1,9 +1,11 @@
 //! ChronoFork's first real-hardware backend slice.
 //!
-//! It is a minimal 68000 + ROM/RAM + VDP-port machine with a deterministic
+//! It is a minimal 68000 + cartridge/RAM + VDP-port machine with a deterministic
 //! instruction-quantum interrupt scheduler, **not** a complete Mega Drive.
-//! Rendering, audio, Z80, DMA, cartridge mappers, TH-latched/6-button controller
-//! protocols and cycle-accurate timing are not implemented. Controller port
+//! The cartridge device models the header, region, Sega mapper, 64 KiB battery
+//! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
+//! v3. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
+//! cycle-accurate timing are not implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
 //! advertises only what it actually provides and uses an independently authored
@@ -114,8 +116,6 @@
 //! instructions per line. The default remains 64 instructions per line and is
 //! never changed implicitly.
 
-use std::sync::Arc;
-
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
     BackendId, BackendSnapshot, Capabilities, DebugAccess, DebugConfig, DebugEventKind,
@@ -125,8 +125,12 @@ use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
 use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
+use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
 use crate::cpu::{CpuError, M68000};
-use crate::interrupts::{InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError};
+use crate::interrupts::{
+    DEFAULT_INSTRUCTIONS_PER_LINE, InterruptLevel, InterruptScheduler, SchedulerConfig,
+    SchedulerError, VideoStandard,
+};
 use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
 
@@ -134,65 +138,99 @@ use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp}
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
 /// Payload format version.
 ///
-/// Version 2 adds the VDP and interrupt-scheduler snapshots after RAM. Version 1
+/// Version 3 adds the cartridge state: the seven mapper banks, the SRAM control
+/// byte, the 64 KiB battery SRAM and the TMSS model/lock latch. Version 1 and 2
 /// payloads are rejected instead of being reinterpreted.
-///
-/// E2-15's VINT-pending status bit does not bump this version: the bit is derived
-/// from the already-serialized and hashed scheduler pending state, not new
-/// canonical state. A payload written before the bit was wired restores to the
-/// same canonical machine state and recomputes the bit on restore.
-pub const PAYLOAD_VERSION: u16 = 2;
+pub const PAYLOAD_VERSION: u16 = 3;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K2";
-const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE2";
-const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF2";
+/// Snapshot payload magic for payload version 3.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K3";
+/// State-hash magic for state hash version 3.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE3";
+/// Configuration-hash magic for configuration hash version 3.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF3";
+
+/// Cartridge capability tag folded into the configuration hash.
+///
+/// Bumping the tag is how a mapper/SRAM model change invalidates old
+/// configuration hashes without touching the ROM identity.
+const CONFIG_FEATURE_TAG: &[u8; 16] = b"sega-mapper-sram";
+
+/// Configuration that selects how a cartridge is presented.
+///
+/// `video` overrides the header-derived standard; `tmss` selects the modelled
+/// lockout. Both are configuration, not mutable state: they are covered by the
+/// configuration hash and never serialized.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MegadriveConfig {
+    /// Explicit video standard; `None` derives it from the header region.
+    pub video: Option<VideoStandard>,
+    /// TMSS model; defaults to [`TmssModel::Disabled`].
+    pub tmss: TmssModel,
+}
 
 /// Factory for independent minimal Mega Drive machines.
 #[derive(Clone, Debug)]
 pub struct MegadriveFactory {
     descriptor: BackendDescriptor,
-    rom: Arc<[u8]>,
+    cartridge: Cartridge,
     config_hash: StateHash,
     scheduler_config: SchedulerConfig,
+    video: VideoStandard,
 }
 
 impl MegadriveFactory {
-    /// Creates a factory from an independently provided cartridge image using
-    /// the default NTSC scheduler configuration.
+    /// Creates a factory from an independently provided cartridge image.
     ///
-    /// The image must contain at least the reset vectors and must not exceed the
-    /// 68000 cartridge window. No ROM is bundled with this crate.
+    /// The header derives the video standard (PAL only for an `E`-only region)
+    /// and TMSS defaults to [`TmssModel::Disabled`]. The image must contain a
+    /// valid cartridge header and must not exceed the mapper's 64 MiB addressable
+    /// ceiling. No ROM is bundled with this crate.
     pub fn new(rom: Vec<u8>) -> Result<Self, BackendError> {
-        Self::with_scheduler_config(rom, SchedulerConfig::ntsc())
+        Self::with_config(rom, MegadriveConfig::default())
+    }
+
+    /// Creates a factory with an explicit cartridge configuration.
+    ///
+    /// An explicit `video` overrides the header-derived standard (for tests and
+    /// region-mismatched dumps) and `tmss` selects the lockout. Both are covered
+    /// by the configuration hash.
+    pub fn with_config(rom: Vec<u8>, config: MegadriveConfig) -> Result<Self, BackendError> {
+        let mut cartridge = Cartridge::parse(rom).map_err(map_cartridge_config)?;
+        cartridge.set_tmss_model(config.tmss);
+        let video = config
+            .video
+            .unwrap_or_else(|| cartridge.derived_video_standard());
+        let scheduler_config = SchedulerConfig::new(video, DEFAULT_INSTRUCTIONS_PER_LINE)
+            .map_err(|error| BackendError::InvalidConfiguration(error.to_string()))?;
+        Self::from_parts(cartridge, config.tmss, scheduler_config)
     }
 
     /// Creates a factory with an explicit interrupt-scheduler configuration.
     ///
-    /// The configuration is part of the configuration hash, so a snapshot made
-    /// with a different video standard or instruction quantum is rejected.
+    /// The scheduler standard is the machine's video standard and TMSS defaults
+    /// to [`TmssModel::Disabled`]. The configuration is part of the configuration
+    /// hash, so a snapshot made with a different video standard or instruction
+    /// quantum is rejected.
     pub fn with_scheduler_config(
         rom: Vec<u8>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, BackendError> {
-        if rom.len() < 8 {
-            return Err(BackendError::InvalidConfiguration(
-                "ROM must contain at least the reset vectors (8 bytes)".to_owned(),
-            ));
-        }
-        let max_rom = usize::try_from(ROM_END)
-            .map_err(|_| BackendError::InvalidConfiguration("ROM window overflow".to_owned()))?;
-        if rom.len() > max_rom {
-            return Err(BackendError::InvalidConfiguration(format!(
-                "ROM is {} bytes, exceeding the 4 MiB cartridge window",
-                rom.len()
-            )));
-        }
-        let rom: Arc<[u8]> = Arc::from(rom.into_boxed_slice());
-        let config_hash = config_hash_for(rom.as_ref(), scheduler_config);
+        let cartridge = Cartridge::parse(rom).map_err(map_cartridge_config)?;
+        Self::from_parts(cartridge, TmssModel::Disabled, scheduler_config)
+    }
+
+    fn from_parts(
+        cartridge: Cartridge,
+        tmss: TmssModel,
+        scheduler_config: SchedulerConfig,
+    ) -> Result<Self, BackendError> {
+        let video = scheduler_config.standard();
+        let config_hash = config_hash_for(cartridge.rom(), video, tmss, scheduler_config);
         let capabilities = Capabilities {
             execution: true,
             save_states: true,
@@ -216,16 +254,23 @@ impl MegadriveFactory {
                 capabilities,
                 false,
             ),
-            rom,
+            cartridge,
             config_hash,
             scheduler_config,
+            video,
         })
     }
 
     /// Returns the immutable cartridge image.
     #[must_use]
     pub fn rom(&self) -> &[u8] {
-        &self.rom
+        self.cartridge.rom()
+    }
+
+    /// Returns the video standard this factory configures.
+    #[must_use]
+    pub const fn video_standard(&self) -> VideoStandard {
+        self.video
     }
 
     /// Returns the configuration digest.
@@ -243,9 +288,9 @@ impl MegadriveFactory {
     /// Creates one concrete minimal Mega Drive machine.
     ///
     /// This is the same machine [`BackendFactory::create`] returns, but with the
-    /// concrete type available for VDP and scheduler inspection.
+    /// concrete type available for VDP, cartridge and scheduler inspection.
     pub fn create_machine(&self) -> Result<MegadriveBackend, BackendError> {
-        let mut bus = MegadriveBus::new(Arc::clone(&self.rom));
+        let mut bus = MegadriveBus::with_video_standard(self.cartridge.clone(), self.video);
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).map_err(map_cpu)?;
         Ok(MegadriveBackend {
@@ -308,6 +353,30 @@ impl MegadriveBackend {
     #[must_use]
     pub const fn vdp(&self) -> &Vdp {
         self.bus.vdp()
+    }
+
+    /// Returns the cartridge device.
+    #[must_use]
+    pub const fn cartridge(&self) -> &Cartridge {
+        self.bus.cartridge()
+    }
+
+    /// Returns the TMSS latch owned by the cartridge.
+    #[must_use]
+    pub const fn tmss(&self) -> &Tmss {
+        self.bus.tmss()
+    }
+
+    /// Writes one byte to a cartridge-controlled window.
+    ///
+    /// This is the test/debug accessor for mapper and SRAM writes. It maps the
+    /// cartridge's typed error to the backend execution error contract; emulated
+    /// code reaches the same windows through the CPU.
+    pub fn write_cartridge(&mut self, address: u32, value: u8) -> Result<(), BackendError> {
+        self.bus
+            .cartridge_mut()
+            .write8(address, value)
+            .map_err(|error| BackendError::Execution(error.to_string()))
     }
 
     /// Returns the current interrupt scheduler.
@@ -376,6 +445,11 @@ impl MegadriveBackend {
             tick: self.tick,
             ram: self.bus.ram(),
             vdp: &vdp,
+            banks: &self.bus.cartridge().banks(),
+            sram_control: self.bus.cartridge().sram_control(),
+            sram: self.bus.cartridge().sram(),
+            tmss_model: self.bus.tmss().model(),
+            tmss_locked: self.bus.tmss().locked(),
             scheduler: &scheduler,
         })
     }
@@ -400,6 +474,11 @@ impl MegadriveBackend {
             tick: self.tick,
             ram: self.bus.ram(),
             vdp: &vdp,
+            banks: &self.bus.cartridge().banks(),
+            sram_control: self.bus.cartridge().sram_control(),
+            sram: self.bus.cartridge().sram(),
+            tmss_model: self.bus.tmss().model(),
+            tmss_locked: self.bus.tmss().locked(),
             scheduler: &scheduler,
         })
     }
@@ -561,12 +640,28 @@ impl Backend for MegadriveBackend {
             tick: parsed.tick,
             ram: parsed.ram,
             vdp: parsed.vdp,
+            banks: &parsed.banks,
+            sram_control: parsed.sram_control,
+            sram: parsed.sram,
+            tmss_model: parsed.tmss_model,
+            tmss_locked: parsed.tmss_locked,
             scheduler: parsed.scheduler,
         });
         if actual != snapshot.state_hash() {
             return Err(BackendError::InvalidSnapshot(format!(
                 "state hash mismatch after restore: expected {}, got {actual}",
                 snapshot.state_hash()
+            )));
+        }
+
+        // The TMSS model is configuration (it is part of the configuration hash),
+        // so a payload that carries another model is rejected before anything is
+        // committed even when its state hash was recomputed consistently.
+        let configured_model = self.bus.tmss().model();
+        if parsed.tmss_model != configured_model {
+            return Err(BackendError::InvalidSnapshot(format!(
+                "payload TMSS model {parsed_model:?} does not match the configured model {configured_model:?}",
+                parsed_model = parsed.tmss_model
             )));
         }
 
@@ -582,6 +677,17 @@ impl Backend for MegadriveBackend {
         bus.vdp_mut().restore_bytes(parsed.vdp).map_err(|error| {
             BackendError::InvalidSnapshot(format!("invalid VDP state: {error}"))
         })?;
+        bus.cartridge_mut()
+            .restore_state(
+                parsed.banks,
+                parsed.sram_control,
+                parsed.sram,
+                parsed.tmss_model,
+                parsed.tmss_locked,
+            )
+            .map_err(|error| {
+                BackendError::InvalidSnapshot(format!("invalid cartridge state: {error}"))
+            })?;
         let mut scheduler = self.scheduler.clone();
         scheduler.restore_bytes(parsed.scheduler).map_err(|error| {
             BackendError::InvalidSnapshot(format!("invalid interrupt state: {error}"))
@@ -640,6 +746,50 @@ impl Backend for MegadriveBackend {
         registers.insert(
             "scheduler_line".to_owned(),
             u64::from(self.scheduler.line_in_frame()),
+        );
+        // Bounded cartridge pseudo-registers. The full serial text is exposed by
+        // `CartridgeView`; the register map is a canonical-range `u64`, so
+        // `cartridge.serial` carries the first six ASCII bytes big-endian (zero
+        // padded) and always fits the portable wire range.
+        let cartridge = self.bus.cartridge();
+        let header = cartridge.header();
+        registers.insert(
+            "cartridge.system".to_owned(),
+            match header.system {
+                crate::cartridge::CartridgeSystem::MegaDrive => 0,
+                crate::cartridge::CartridgeSystem::Genesis => 1,
+            },
+        );
+        registers.insert(
+            "cartridge.region".to_owned(),
+            u64::from(header.region.bits()),
+        );
+        registers.insert(
+            "cartridge.serial".to_owned(),
+            serial_fingerprint(&header.serial),
+        );
+        registers.insert(
+            "cartridge.checksum_stored".to_owned(),
+            u64::from(header.checksum_stored),
+        );
+        registers.insert(
+            "cartridge.checksum_computed".to_owned(),
+            u64::from(header.checksum_computed),
+        );
+        for (index, bank) in cartridge.banks().iter().enumerate() {
+            registers.insert(format!("mapper.bank{index}"), u64::from(*bank));
+        }
+        registers.insert(
+            "sram.visible".to_owned(),
+            u64::from(cartridge.sram_visible()),
+        );
+        registers.insert(
+            "sram.protected".to_owned(),
+            u64::from(cartridge.sram_write_protected()),
+        );
+        registers.insert(
+            "tmss.locked".to_owned(),
+            u64::from(cartridge.tmss().locked()),
         );
         Ok(MachineInspection {
             tick: self.tick,
@@ -763,8 +913,21 @@ fn map_memory_error(
         BusError::WriteProtected { .. }
         | BusError::OddAddress { .. }
         | BusError::Vdp(_)
+        | BusError::Cartridge(_)
         | BusError::SideEffectingRead { .. } => BackendError::Execution(error.to_string()),
     }
+}
+
+/// Packs the first six serial bytes big-endian for the `u64` register map.
+///
+/// Six bytes cover 48 bits, so the value always fits the portable service JSON
+/// integer range. The complete serial text is exposed by `CartridgeView`.
+fn serial_fingerprint(serial: &str) -> u64 {
+    let mut bytes = [0_u8; 8];
+    for (slot, byte) in bytes[2..].iter_mut().zip(serial.bytes()) {
+        *slot = byte;
+    }
+    u64::from_be_bytes(bytes)
 }
 
 fn vector_address(level: InterruptLevel) -> u32 {
@@ -796,13 +959,39 @@ fn map_scheduler(error: SchedulerError) -> BackendError {
     }
 }
 
-fn config_hash_for(rom: &[u8], scheduler_config: SchedulerConfig) -> StateHash {
-    let mut bytes = Writer::with_capacity(CONFIG_MAGIC.len() + rom.len() + 5);
+fn config_hash_for(
+    rom: &[u8],
+    video: VideoStandard,
+    tmss: TmssModel,
+    scheduler_config: SchedulerConfig,
+) -> StateHash {
+    let mut bytes = Writer::with_capacity(CONFIG_MAGIC.len() + 32 + 1 + 1 + 16 + 4);
     bytes.write_bytes(CONFIG_MAGIC);
-    bytes.write_bytes(rom);
-    bytes.write_u8(scheduler_config.standard().code());
+    // The ROM identity is a SHA-256 digest; SRAM bytes are state and are never
+    // part of the configuration.
+    bytes.write_bytes(hash_bytes(rom).as_bytes());
+    bytes.write_u8(video.code());
+    bytes.write_u8(tmss_model_code(tmss));
+    bytes.write_bytes(CONFIG_FEATURE_TAG);
     bytes.write_u32_be(scheduler_config.instructions_per_line());
     hash_bytes(&bytes.into_bytes())
+}
+
+/// Returns the one-byte configuration encoding of a TMSS model.
+const fn tmss_model_code(model: TmssModel) -> u8 {
+    match model {
+        TmssModel::Disabled => 0,
+        TmssModel::Enabled => 1,
+    }
+}
+
+/// Decodes the one-byte configuration/snapshot encoding of a TMSS model.
+fn tmss_model_from_code(code: u8) -> Option<TmssModel> {
+    match code {
+        0 => Some(TmssModel::Disabled),
+        1 => Some(TmssModel::Enabled),
+        _ => None,
+    }
 }
 
 /// The complete mutable state that a state hash covers.
@@ -815,6 +1004,11 @@ struct StateView<'a> {
     tick: Tick,
     ram: &'a [u8],
     vdp: &'a [u8],
+    banks: &'a [u16; 7],
+    sram_control: u8,
+    sram: &'a [u8],
+    tmss_model: TmssModel,
+    tmss_locked: bool,
     scheduler: &'a [u8],
 }
 
@@ -824,12 +1018,25 @@ struct StateView<'a> {
 /// Layout, in order: the eight data registers and eight address registers as
 /// big-endian `u32`s, `PC` as a big-endian `u32`, `SR` as a big-endian `u16`,
 /// one halted byte, the tick as a big-endian `u64`, 64 KiB of work RAM, the VDP
-/// snapshot and the interrupt-scheduler snapshot. The payload prefixes
+/// snapshot, the seven big-endian mapper bank registers, the SRAM control byte,
+/// the 64 KiB battery SRAM, the TMSS model and lock bytes, and finally the
+/// variable-length interrupt-scheduler snapshot. The payload prefixes
 /// [`PAYLOAD_MAGIC`] and [`PAYLOAD_VERSION`]; the state hash prefixes
 /// [`STATE_MAGIC`]. Both must consume these exact bytes.
 fn state_body(state: &StateView<'_>) -> Vec<u8> {
     let mut body = Writer::with_capacity(
-        32 + 32 + 4 + 2 + 1 + 8 + state.ram.len() + state.vdp.len() + state.scheduler.len(),
+        32 + 32
+            + 4
+            + 2
+            + 1
+            + 8
+            + state.ram.len()
+            + state.vdp.len()
+            + 14
+            + 1
+            + state.sram.len()
+            + 2
+            + state.scheduler.len(),
     );
     for value in state.d {
         body.write_u32_be(*value);
@@ -843,6 +1050,13 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
     body.write_u64_be(state.tick.raw());
     body.write_bytes(state.ram);
     body.write_bytes(state.vdp);
+    for bank in state.banks {
+        body.write_u16_be(*bank);
+    }
+    body.write_u8(state.sram_control);
+    body.write_bytes(state.sram);
+    body.write_u8(tmss_model_code(state.tmss_model));
+    body.write_u8(u8::from(state.tmss_locked));
     body.write_bytes(state.scheduler);
     body.into_bytes()
 }
@@ -876,6 +1090,11 @@ struct ParsedState<'a> {
     tick: Tick,
     ram: &'a [u8],
     vdp: &'a [u8],
+    banks: [u16; 7],
+    sram_control: u8,
+    sram: &'a [u8],
+    tmss_model: TmssModel,
+    tmss_locked: bool,
     scheduler: &'a [u8],
 }
 
@@ -906,6 +1125,23 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
     let tick = Tick::from_raw(reader.read_u64_be().map_err(payload_error)?);
     let ram = reader.read_exact(RAM_SIZE).map_err(payload_error)?;
     let vdp = reader.read_exact(VDP_SNAPSHOT_LEN).map_err(payload_error)?;
+    let mut banks = [0_u16; 7];
+    for bank in &mut banks {
+        *bank = reader.read_u16_be().map_err(payload_error)?;
+    }
+    let sram_control = reader.read_u8().map_err(payload_error)?;
+    let sram = reader.read_exact(SRAM_SIZE).map_err(payload_error)?;
+    let tmss_model = tmss_model_from_code(reader.read_u8().map_err(payload_error)?)
+        .ok_or_else(|| BackendError::InvalidSnapshot("invalid TMSS model tag".to_owned()))?;
+    let tmss_locked = match reader.read_u8().map_err(payload_error)? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(BackendError::InvalidSnapshot(
+                "invalid TMSS lock tag".to_owned(),
+            ));
+        }
+    };
     let remaining = reader.remaining();
     let scheduler = reader.read_exact(remaining).map_err(payload_error)?;
     Ok(ParsedState {
@@ -917,6 +1153,11 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
         tick,
         ram,
         vdp,
+        banks,
+        sram_control,
+        sram,
+        tmss_model,
+        tmss_locked,
         scheduler,
     })
 }
@@ -994,6 +1235,7 @@ pub fn demo_rom() -> Vec<u8> {
         0x52, 0x46, // ADDQ.W #1,D6
         0x60, 0xFE, // BRA.S -2
     ]);
+    stamp_synthetic_header(&mut rom);
     rom
 }
 
@@ -1080,6 +1322,7 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
         0x76, 0xFF, // MOVEQ #-1,D3
         0x4E, 0x73, // RTE
     ]);
+    stamp_synthetic_header(&mut rom);
     rom
 }
 
@@ -1135,7 +1378,70 @@ pub fn controller_rom() -> Vec<u8> {
         0x60, 0xD6,
     ];
     rom[0x200..0x200 + main.len()].copy_from_slice(&main);
+    stamp_synthetic_header(&mut rom);
     rom
+}
+
+/// Size of the synthetic boot cartridge image: 2 MiB, enough for bank 2's
+/// `0x100000..0x17FFFF` page to be mapped.
+pub const BOOT_ROM_SIZE: usize = 0x0020_0000;
+/// Address of the boot program's final self-loop.
+pub const BOOT_MARKER: u32 = 0x0000_0224;
+
+/// Returns the address of the synthetic boot program's final self-loop.
+#[must_use]
+pub const fn boot_marker() -> u32 {
+    BOOT_MARKER
+}
+
+/// Builds the independently authored synthetic boot cartridge.
+///
+/// The image carries a valid `SEGA MEGA DRIVE` header (region `JUE`, so the
+/// factory derives NTSC) and a 68000 program at `0x200` that:
+///
+/// 1. writes the `"SEGA"` long word to `0xA14000`, releasing the TMSS lockout;
+/// 2. enables the SRAM window through `0xA130F1`;
+/// 3. selects mapper bank 2 in the first bank window (`0xA130F3`);
+/// 4. writes `0xC7` to the first SRAM byte;
+/// 5. enters a `BRA.S -2` self-loop at [`boot_marker`].
+///
+/// The image is 2 MiB so the selected bank page is inside it. It contains no
+/// copyrighted data and is not a game.
+#[must_use]
+pub fn cartridge_boot_rom() -> Vec<u8> {
+    let mut rom = vec![0_u8; BOOT_ROM_SIZE];
+    for word in rom.chunks_exact_mut(2) {
+        word.copy_from_slice(&[0x4E, 0x71]); // NOP fill
+    }
+    rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+    rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+    let program: &[u8] = &[
+        0x20, 0x3C, 0x53, 0x45, 0x47, 0x41, // MOVE.L #$53454741,D0 ("SEGA")
+        0x23, 0xC0, 0x00, 0xA1, 0x40, 0x00, // MOVE.L D0,($00A14000).L
+        0x70, 0x01, // MOVEQ #1,D0
+        0x13, 0xC0, 0x00, 0xA1, 0x30, 0xF1, // MOVE.B D0,($00A130F1).L
+        0x70, 0x02, // MOVEQ #2,D0
+        0x13, 0xC0, 0x00, 0xA1, 0x30, 0xF3, // MOVE.B D0,($00A130F3).L
+        0x70, 0xC7, // MOVEQ #-57,D0 (low byte 0xC7)
+        0x13, 0xC0, 0x00, 0x20, 0x00, 0x00, // MOVE.B D0,($00200000).L
+        0x60, 0xFE, // BRA.S -2 (self-loop marker)
+    ];
+    rom[0x200..0x200 + program.len()].copy_from_slice(program);
+    stamp_synthetic_header(&mut rom);
+    rom
+}
+
+/// Stamps the shared synthetic `SEGA MEGA DRIVE` header with region `JUE`.
+fn stamp_synthetic_header(rom: &mut [u8]) {
+    assert!(
+        crate::test_support::stamp_header(rom, "JUE"),
+        "synthetic ROM images must be at least 512 bytes"
+    );
+}
+
+/// Maps a cartridge construction failure to the backend configuration contract.
+fn map_cartridge_config(error: CartridgeError) -> BackendError {
+    BackendError::InvalidConfiguration(format!("invalid cartridge: {error}"))
 }
 
 #[cfg(test)]
@@ -1193,6 +1499,7 @@ mod tests {
         rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
         rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
         rom[0x200..0x202].copy_from_slice(&[0x4A, 0xFC]);
+        super::stamp_synthetic_header(&mut rom);
         rom
     }
 
@@ -2819,25 +3126,26 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values captured from clean baseline commit c3e92d8 (six steps
-        // of the demo ROM with the default 64-instruction scheduler quantum).
+        // Golden values for payload v3 / state hash v3 / configuration hash v3
+        // (six steps of the demo ROM with the default scheduler quantum). The
+        // v3 bump is the documented cartridge-state format change.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 131_255);
+        assert_eq!(snapshot.payload().len(), 196_808);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "17e31db07ab62ae0ab59fce879199b6fc87dd005ba088a92d2937fee32df745f"
+            "1b524d1c960fefc0765c41968711913aedfbbffcd6b0f10e39a1152f27259d53"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "8872e443b384b78d7a742aea5f45cbd112be60627d8014b91e91e6759db72b16"
+            "170c3f1dc5ab27634f5c10b067c61e5568140511a1b1907cda6aa0409229773e"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "a8b7ffb061c23f9d8563f9a0220497bc4fab36f324a9b96b956cd1170907e2d8"
+            "dd737169e93124492ec087e8677bc48b68d815836378ee8d5b024e4a7e9a33f3"
         );
     }
 }

@@ -740,15 +740,28 @@ fn tas_compare(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Reads one Mega Drive ROM file through a single bounded, read-only path.
+/// Reads one Mega Drive ROM file through the 4 MiB 68000 cartridge-window bound.
 ///
-/// The file is opened read-only, must be a regular file and is read through the
-/// 4 MiB cartridge-window bound before any factory allocation. A file larger than
-/// the window is rejected from its metadata, so an oversized image never becomes
-/// an oversized allocation; [`MegadriveFactory`] still owns the remaining
-/// minimum-size and window validation. The ROM is never written, renamed or
-/// deleted, and its bytes never enter stdout.
+/// Commands that run the machine can only reach the first 4 MiB of the image on
+/// the bus, so they use this bound even though the mapper can address larger
+/// images.
 pub(crate) fn read_rom_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    read_rom_file_with_limit(path, u64::from(ROM_END), "4 MiB")
+}
+
+/// Reads one ROM file through a single bounded, read-only path.
+///
+/// The file is opened read-only, must be a regular file and is read through
+/// `limit` bytes before any factory allocation. A file larger than `limit` is
+/// rejected from its metadata, so an oversized image never becomes an oversized
+/// allocation; [`MegadriveFactory`] still owns the remaining header and image
+/// validation. The ROM is never written, renamed or deleted, and its bytes never
+/// enter stdout. `window` names the bound in the diagnostic.
+pub(crate) fn read_rom_file_with_limit(
+    path: &Path,
+    limit: u64,
+    window: &str,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let file = File::open(path)
         .map_err(|error| CliError(format!("failed to open ROM `{}`: {error}", path.display())))?;
     let metadata = file.metadata().map_err(|error| {
@@ -764,10 +777,9 @@ pub(crate) fn read_rom_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
         ))
         .into());
     }
-    let limit = u64::from(ROM_END);
     if metadata.len() > limit {
         return Err(CliError(format!(
-            "ROM `{}` is {} bytes, exceeding the {limit}-byte (4 MiB) cartridge window",
+            "ROM `{}` is {} bytes, exceeding the {limit}-byte ({window})",
             path.display(),
             metadata.len()
         ))
@@ -779,7 +791,7 @@ pub(crate) fn read_rom_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
         .map_err(|error| CliError(format!("failed to read ROM `{}`: {error}", path.display())))?;
     if bytes.len() as u64 > limit {
         return Err(CliError(format!(
-            "ROM `{}` exceeds the {limit}-byte (4 MiB) cartridge window",
+            "ROM `{}` exceeds the {limit}-byte ({window})",
             path.display()
         ))
         .into());

@@ -970,8 +970,6 @@ impl Default for M68000 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::{CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask};
     use crate::bus::{BusError, MegadriveBus};
     use crate::trace::TraceError;
@@ -984,7 +982,7 @@ mod tests {
         let mut rom = vec![0_u8; 0x400];
         rom[0..4].copy_from_slice(&0x00FF_0000_u32.to_be_bytes());
         rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
-        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+        MegadriveBus::new(crate::cartridge::test_cartridge(rom))
     }
 
     /// Builds a bus whose reset vectors load `program` at address 0x200.
@@ -993,7 +991,7 @@ mod tests {
         rom[0..4].copy_from_slice(&INITIAL_STACK.to_be_bytes());
         rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
         rom[0x200..0x200 + program.len()].copy_from_slice(program);
-        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+        MegadriveBus::new(crate::cartridge::test_cartridge(rom))
     }
 
     fn cpu_at_program(program: &[u8]) -> (M68000, MegadriveBus) {
@@ -1011,7 +1009,7 @@ mod tests {
         rom[0x200..0x202].copy_from_slice(&[0x4E, 0x71]);
         let start = vector_address as usize;
         rom[start..start + 4].copy_from_slice(&target.to_be_bytes());
-        MegadriveBus::new(Arc::from(rom.into_boxed_slice()))
+        MegadriveBus::new(crate::cartridge::test_cartridge(rom))
     }
 
     fn cpu_with_vector(vector_address: u32, target: u32) -> (M68000, MegadriveBus) {
@@ -1037,7 +1035,7 @@ mod tests {
         rom[handler_start..handler_start + handler.len()].copy_from_slice(handler);
         let start = vector_address as usize;
         rom[start..start + 4].copy_from_slice(&target.to_be_bytes());
-        let mut bus = MegadriveBus::new(Arc::from(rom.into_boxed_slice()));
+        let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom));
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).expect("reset");
         (cpu, bus)
@@ -1068,7 +1066,7 @@ mod tests {
         rom[0..4].copy_from_slice(&0x00FF_0000_u32.to_be_bytes());
         rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
         rom[0x200..0x206].copy_from_slice(&[0x70, 0x01, 0x72, 0x02, 0xD0, 0x41]);
-        let mut bus = MegadriveBus::new(Arc::from(rom.into_boxed_slice()));
+        let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom));
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).expect("reset");
         cpu.step(&mut bus).expect("moveq 1");
