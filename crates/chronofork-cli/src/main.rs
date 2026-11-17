@@ -27,6 +27,7 @@ use chronofork_test_backend::SyntheticBackendFactory;
 
 mod agent;
 mod debug;
+mod gui;
 mod script;
 mod session;
 mod studio;
@@ -93,6 +94,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("api") => agent::run_api(&args[1..]),
         Some("mcp") => agent::run_mcp(&args[1..]),
         Some("experiment") => agent::run_experiment(&args[1..]),
+        Some("gui") => gui::run(&args[1..]),
         Some("session") => session::run(&args[1..]),
         Some("tas") => tas::run(&args[1..]),
         Some("trace") => trace::run(&args[1..]),
@@ -177,6 +179,9 @@ fn print_usage() {
     println!("                   [--tool <NAME>] [--arguments <JSON>]");
     println!("  chronofork experiment run --steps <N> [--buttons <U32>]");
     println!("                             [--checkpoints <a,b,c>] [--out <FILE>]");
+    println!("  chronofork gui run [--remote <URL> --token-file <FILE>] [--rom <FILE>]");
+    println!("                     [--width <N>] [--height <N>] [--ansi] [--html <OUT>]");
+    println!("                     [--movie <FILE>] [--fps <N>]");
     println!("  chronofork session save --root <DIR> [--session <KEY>] [--name <NAME>]");
     println!("                            [--steps <N>] [--input <U32>] [--json]");
     println!("  chronofork session load --root <DIR> --session <KEY> [--snapshot <KEY>]");
@@ -222,6 +227,13 @@ fn print_usage() {
     println!("`serve --help`, `api --help`, `mcp --help` and `experiment --help` document their");
     println!("flags, output policy and exit codes. Daemons and clients only accept tokens from");
     println!("a `chronofork.tokens.v1` file, never from the command line or environment.");
+    println!();
+    println!("`chronofork gui run` is the Stage 7 terminal/HTML presentation surface: it reads");
+    println!("line commands from stdin and prints blocks, frames or an HTML document to stdout.");
+    println!("It reuses the same service and transport surfaces (remote mode talks to a");
+    println!("`chronofork serve` daemon; local mode hosts an in-process service) and never owns");
+    println!("canonical emulated state. `chronofork gui --help` documents its flags, grammar,");
+    println!("block fields, limits and the unavailable rendering/audio paths.");
     println!();
     println!("TAS movies record one backend input sequence (the deterministic synthetic test");
     println!("backend by default, or the minimal Mega Drive slice with `--rom <FILE>`) and");

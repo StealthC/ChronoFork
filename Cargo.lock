@@ -43,6 +43,7 @@ dependencies = [
  "chronofork-backend-api",
  "chronofork-core",
  "chronofork-debug",
+ "chronofork-gui",
  "chronofork-megadrive",
  "chronofork-script",
  "chronofork-service",
@@ -68,6 +69,14 @@ dependencies = [
  "chronofork-core",
  "chronofork-megadrive",
  "chronofork-test-backend",
+]
+
+[[package]]
+name = "chronofork-gui"
+version = "0.1.0"
+dependencies = [
+ "chronofork-core",
+ "chronofork-service",
 ]
 
 [[package]]

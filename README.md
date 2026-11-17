@@ -13,11 +13,11 @@ agents use the same services, not three different worlds.
 
 > **Project status:** the foundation is complete; milestones M0–M5 are complete and
 > merged to `main` (M4 merged at `4c595a2`, M5 at `0c4e9f0` via PR #4). M6 (agent-native
-> interfaces) is implemented and independently verified on the uncommitted branch
-> `agent/m6-agent-interfaces` at base `93d47ed` and is **integration-pending** — it is not on
-> `main` yet. ChronoFork is **not a finished Mega Drive emulator** and does not run
-> commercial games. See [what works today](#what-works-today) and [what comes
-> next](#what-comes-next) for the honest picture.
+> interfaces) and M7 (human-facing GUI) are implemented and independently verified on
+> uncommitted branches at base `93d47ed` — `agent/m6-agent-interfaces` and `agent/m7-gui` —
+> and both are **integration-pending**: they are not on `main` yet. ChronoFork is **not a
+> finished Mega Drive emulator** and does not run commercial games. See [what works
+> today](#what-works-today) and [what comes next](#what-comes-next) for the honest picture.
 
 ## Why ChronoFork exists
 
@@ -42,7 +42,7 @@ The project is split into layers, each with one clear job:
 
 | Layer | Responsibility |
 |---|---|
-| **Interfaces** | A command-line tool, plus HTTP and MCP daemon/client surfaces (M6). A GUI is planned. |
+| **Interfaces** | A command-line tool, HTTP and MCP daemon/client surfaces (M6), and a presentation GUI over the same services (M7). |
 | **Sessions and storage** | The heart of the platform: start, step, save, restore, fork, compare and persist. |
 | **Backend contract** | The rules and guarantees that any emulated machine must satisfy. |
 | **Backends** | The machines themselves: a synthetic one for validation and a growing Mega Drive slice. |
@@ -54,7 +54,7 @@ knows which machine is behind it, and no presentation layer owns the canonical
 emulated state.
 
 ```text
-interfaces      CLI today; HTTP, MCP and GUI planned
+interfaces      CLI, HTTP/MCP daemon and clients, GUI (presentation only)
      │
 sessions        lifecycle, checkpoints, forks, storage
      │
@@ -79,8 +79,8 @@ is in [milestones](docs/roadmap/milestones.md).
 | M4 — Debugging | Breakpoints, watchpoints, views/disassembly and hardware inspectors | Complete; merged to `main` at `4c595a2`; verified on `agent/m4-debugging-depth` at `6d30243` |
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Complete with integration pending; independently verified on `agent/m6-agent-interfaces` at base `93d47ed` (uncommitted, not merged) |
-| M7 — GUI | Presentation that never owns canonical state | Next |
-| M8 — More systems | A second backend behind the same contract | Planned |
+| M7 — GUI | Presentation that never owns canonical state | Complete with integration pending; independently verified on `agent/m7-gui` at base `93d47ed` (uncommitted, not merged) |
+| M8 — More systems | A second backend behind the same contract | Next |
 
 M0–M5 are merged to `main`; M4 was merged at `4c595a2` after being verified on
 `agent/m4-debugging-depth` at `6d30243`, and M5 was merged at `0c4e9f0` (PR #4) after being
@@ -89,7 +89,9 @@ a current `main` checkout exposes the `chronofork debug`, `chronofork trace` and
 `chronofork script` surfaces. M6 was verified on the uncommitted branch
 `agent/m6-agent-interfaces` at base `93d47ed` (pass-2 PASS, 2026-11-17) and is not on `main`
 yet, so a `main` checkout does **not** have `chronofork serve`, `api`, `mcp` or
-`experiment`. The
+`experiment`. M7 was verified on the uncommitted branch `agent/m7-gui` at the same base
+(final PASS4 and review REVIEW5 PASS, 2026-11-17), so a `main` checkout does **not** have
+`chronofork gui` either. The
 [milestone status table](docs/roadmap/milestones.md) is the canonical record of
 milestone status and integration state.
 
@@ -180,6 +182,20 @@ Direct/HTTP/MCP parity is executed byte-for-byte over all 16 operations, includi
 error sections compared across the surfaces; a separate 19-case rejection matrix covers the
 HTTP wire contract.
 
+**Human-facing GUI (M7, integration-pending).** A presentation-only `chronofork-gui`
+crate turns canonical service views into fixed-size text/ANSI frames and a self-contained
+HTML document. It never owns or mutates canonical state: `chronofork-gui` depends only on
+`chronofork-core` and `chronofork-service`, and the CLI is the only crate that composes the
+HTTP/MCP transport. `chronofork gui run` is a stdin-driven, deterministic process surface
+(`create`, `attach`, `focus`, `layout`, `panel`, `step`, `run`, `pulse`, `pause`, `handoff`,
+`frame`, `html`, `detach`, `quit`) in local and remote modes, with a read-only `.cfmovie`
+timeline, the eight documented panels, single/mosaic layouts, a built-in 60 fps pacer whose
+host-time loop is testable through an injected clock, and a cooperative human/agent
+controller lease. Attach/detach is proven non-perturbative, and every block, frame and
+document is byte-identical across runs. Video and audio stay honestly `unavailable` in v1:
+the pipeline is capability-gated and the backends still report `rendering=false` and
+`audio=false`.
+
 **Quality gates.** `./scripts/check.sh` runs formatting, compilation, Clippy, the
 workspace tests and rustdoc as one local gate, and CI runs on every push and pull
 request.
@@ -219,12 +235,23 @@ counting toward the session bound. Debug, trace, script and TAS operations are *
 exposed over transport — they stay CLI-local. One backend configuration is chosen per
 daemon, and there is no performance claim.
 
+The GUI is deliberately narrow. v1 presents **text and a static HTML document only**: there
+is no native toolkit window, no picture and no sound, no browser/JS frontend, no streaming
+transport, no live audio output, no GUI input injection, no GUI state persistence and no
+VDP/bus/disassembly/trace panel content (those inspector operations are not exposed over
+transport, M6-FU1). Real video and audio sources/sinks wait for the H2/H3 hardware tracks,
+so the capability-gated pipeline reports both as unavailable in every v1 process
+configuration. The CLI never builds the host clock: frame playback is the deterministic
+`pulse`, and live host-time playback remains a follow-up; the controller lease is
+cooperative and window-scoped, not an authorization mechanism. The evidence is
+Linux/WSL-only and makes no performance or cross-platform claim.
+
 ## What comes next
 
-M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4), and M6 is
-verified but integration-pending. M7, the human-facing GUI, is the next unstarted milestone.
-Hardware depth runs in parallel, so the stage sequence does not wait for a complete machine
-model:
+M0–M5 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4); M6 and M7 are
+verified but integration-pending. M8, multi-backend expansion, is the next unstarted
+milestone. Hardware depth runs in parallel, so the stage sequence does not wait for a
+complete machine model:
 
 - **Deepen the Mega Drive model (H1–H5).** Broader 68000 and exception coverage,
   rendering/VDP/DMA, audio and the Z80, ROM identity and a cartridge loader,
@@ -237,8 +264,10 @@ model:
   recorded follow-ups: debug/trace/script/TAS over transport, durable per-principal
   ownership and restart-persistent live sessions, TLS with token rotation/expiry and an
   audit log, and SSE/streaming with the wider MCP surface.
-- **Build the GUI (M7).** Video, audio, frame pacing and debugger panels that
-  attach to and detach from sessions without changing results.
+- **Integrate and extend the GUI (M7).** Land the verified presentation crate, then the
+  recorded follow-ups: a native toolkit frontend after H2/H3, real video/audio sources and
+  sinks, live host-time playback, GUI input editing/settings and the inspector/trace panel
+  content once M6-FU1 exposes those operations over transport.
 - **Grow beyond one system (M8).** A second backend behind the same contract, with
   capability differences reported honestly.
 
@@ -282,6 +311,9 @@ cargo run -p chronofork-cli -- trace compare --left ./demo.cftrace --right ./dem
 # Run a sandboxed deterministic experiment report
 printf 'let n = 3\nrepeat n { print n }\nreport("ok", true)\n' > ./demo.cfscript
 cargo run -p chronofork-cli -- script run --file ./demo.cfscript
+
+# Drive the presentation surface: create, attach, pulse, frame, quit
+printf 'create\nattach 1\npulse 3\nframe\nquit\n' | cargo run -p chronofork-cli -- gui run
 ```
 
 ## What guides the project

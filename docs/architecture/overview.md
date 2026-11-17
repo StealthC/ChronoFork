@@ -21,7 +21,7 @@ backends; layer 4 must not own canonical emulated state.
 ```text
 ┌────────────────────────────────────────────────────────────────────┐
 │ presentation / automation (never owns canonical state)             │
-│ chronofork-cli  ·  HTTP client (chronofork api)  ·  MCP client     │
+│ chronofork-cli  ·  chronofork-gui  ·  HTTP/MCP clients             │
 ├────────────────────────────────────────────────────────────────────┤
 │ chronofork-transport                                               │
 │ bounded HTTP/1.1 server · MCP JSON-RPC over HTTP · typed client    │
@@ -65,6 +65,15 @@ transport type may flow back into core, backend, sessions or service, and the se
 stays the single owner of canonical emulated state
 ([ADR-0012](../adr/0012-agent-native-interfaces.md),
 [agent interfaces](agent-interfaces.md)).
+
+`chronofork-gui` (M7) is the presentation layer: strict decoders of the canonical service
+views, a window/pane/mosaic model, eight panels, deterministic plain/ANSI and self-contained
+HTML renderers, a `HostClock`-driven pacer/run loop, capability-gated video/audio pipelines
+and a cooperative human/agent controller lease. It depends only on core and service and
+never on transport, sessions or a backend, so it can reach canonical state only through the
+catalog; the CLI composes the local or remote channel and is the only crate that touches
+transport ([ADR-0013](../adr/0013-human-facing-gui.md), [GUI
+architecture](gui.md), [M7 acceptance](../quality/m7-gui-acceptance.md)).
 
 ## Data flow
 
@@ -128,8 +137,12 @@ mutable state with its source.
   backend and never on `chronofork-transport`.
 - `chronofork-transport` may depend on `chronofork-service` (and through it the lower
   layers); nothing below it may depend on `chronofork-transport`.
-- CLI/HTTP/MCP/GUI adapters may depend on sessions and a concrete backend selected
-  by composition, but the session model must not depend on them.
+- `chronofork-gui` may depend only on `chronofork-core` and `chronofork-service`; it must not
+  depend on transport, sessions, backend-api or a backend, and nothing depends on it except
+  the CLI.
+- CLI/HTTP/MCP adapters may depend on sessions and a concrete backend selected by
+  composition, but the session model must not depend on them; the GUI reaches canonical
+  state only through the service catalog.
 - Transport types (HTTP, MCP JSON, sockets, JSON-RPC) must not appear in core,
   backend-api, sessions or service. `chronofork-service` has its own canonical JSON value
   type and knows nothing about the wire framing.
@@ -167,7 +180,7 @@ mutable state with its source.
 | TH-high 3-button controller-read subset (ports 1–2) | Implemented for the minimal slice — see [Mega Drive slice](megadrive-slice.md) |
 | VDP rendering/DMA, audio, Z80, controller protocol beyond TH-high 3-button, mapper/SRAM | Not implemented |
 | `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege not enforced; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
-| HTTP/MCP/GUI | GUI not implemented (Stage 7). HTTP and MCP **implemented** for the documented transport scope (M6) — see [agent interfaces](agent-interfaces.md), [ADR-0012](../adr/0012-agent-native-interfaces.md) and [M6 acceptance](../quality/m6-agent-interfaces-acceptance.md) |
+| HTTP/MCP/GUI | **Implemented** for the documented scope: HTTP and MCP (M6) — see [agent interfaces](agent-interfaces.md), [ADR-0012](../adr/0012-agent-native-interfaces.md) and [M6 acceptance](../quality/m6-agent-interfaces-acceptance.md); GUI presentation (M7) — see [GUI architecture](gui.md), [ADR-0013](../adr/0013-human-facing-gui.md) and [M7 acceptance](../quality/m7-gui-acceptance.md). The GUI is text/HTML only (no native toolkit, picture or sound); M6/M7 are verified on uncommitted worktrees and integration-pending |
 | Transport-agnostic service + bounded HTTP/1.1 and MCP adapters | Implemented (M6): 16-operation catalog, canonical JSON, token/scope/ownership, manager lock + writer leases, daemon and typed client; HTTP/1.1 loopback/sidecar scope with **no TLS, SSE, keep-alive or chunked bodies** |
 | Debug/trace/script/TAS operations over transport | Not implemented (M6-FU1): those surfaces stay CLI-local |
 | Durable per-principal ownership, restart-persistent live sessions, TLS, token rotation/expiry, audit log, multi-node, MCP resources/prompts/logging/`Mcp-Session-Id` | Not implemented (M6-FU2–M6-FU4) |

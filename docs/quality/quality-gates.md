@@ -4,13 +4,16 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** the latest dated block is the [2026-11-17 M6 agent-native interfaces
+**Current status:** the latest dated block is the [2026-11-17 M7 human-facing GUI
+verification](#2026-11-17--m7-human-facing-gui-independent-final-verification-pass4)
+(76 targets / 988 passed, 0 failed, 0 ignored, both demos byte-identical, M7 acceptance rows
+`executed - passed`), which verifies the uncommitted worktree on branch `agent/m7-gui` at
+base `93d47ed`; no commit or merge was authorized, so M7 is `Complete with integration
+pending`. Before it, the [2026-11-17 M6 agent-native interfaces
 verification](#2026-11-17--m6-agent-native-interfaces-independent-pass-2-verification-pass)
-(67 targets / 800 passed, 0 failed, 0 ignored, both demos unchanged, M6 acceptance rows
-`executed - passed`), which verifies the uncommitted worktree on branch
-`agent/m6-agent-interfaces` at base `93d47ed`; no commit or merge was authorized, so the
-milestone is `Complete with integration pending`. Before it, the [2026-11-16 M5 tracing and
-scripting verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
+recorded 67 targets / 800 passed on the M6 worktree (also integration-pending), and the
+[2026-11-16 M5 tracing and scripting
+verification](#2026-11-16--m5-tracing-and-scripting-independent-verification-pass)
 recorded 57 targets / 662 passed on the M5 worktree. For the earlier anti-slop
 refactor's implementation bytes, the authoritative recorded run is
 [anti-slop refactor evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting):
@@ -833,6 +836,95 @@ capability report (M6-A20) — no Mega Drive transport behavior, and no Mega Dri
 service/parity claim, is made. Verification ran on Linux/WSL and M6 remains
 integration-pending.
 
+## 2026-11-17 — M7 human-facing GUI (independent final verification PASS4)
+
+The independent verifier executed the [M7 acceptance
+plan](m7-gui-acceptance.md) on the **uncommitted** worktree
+`/home/stealthc/projects/ChronoFork/.agents/worktrees/m7-gui`, branch `agent/m7-gui`, HEAD
+and base `origin/main` `93d47ed308874be0e8e7060641c238c7f6809e31`, carrying the verified M6
+snapshot plus the M7 delta (28 uncommitted entries: 14 modified, 14 untracked). The tree was
+byte-stable across the run: 51 files hashed identically at 13:50:44 and 13:53:21, HEAD and
+the status set unchanged. **This block verifies that worktree only: no commit, merge, push or
+publication was authorized, so M7 is `Complete with integration pending` and is not on
+`main`.** Environment: `CARGO_HOME=/tmp/t7-cargo`, `CARGO_TERM_COLOR=never`, the worktree's
+own `target/` (no `CARGO_TARGET_DIR` override), cargo 1.100.0 / rustc 1.100.0. The
+promotion basis is the final **PASS4**; the [M7 acceptance
+plan](m7-gui-acceptance.md) §2.4 records the earlier rounds (round-1 **FAIL** with findings
+F1–F4, then **FAIL3** with M7-A24 false as written) and the repairs, and the final
+independent review `REVIEW5` returned **PASS** with no new finding. The documentation
+promotion that followed (2026-11-17) edited only tracked documentation — the promotion
+targets listed in the acceptance plan plus three durable vision/scope statements that still
+called the GUI undelivered — so the verified 28-entry code/doc set became 31 uncommitted
+entries with no code, test, manifest, lockfile or acceptance-evidence change.
+
+| Gate | Command | Result |
+|---|---|---|
+| Formatting | `cargo fmt --all -- --check` | Exit 0 |
+| Compilation | `cargo check --workspace` | Exit 0 |
+| Lints | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0 |
+| Tests | `cargo test --workspace` | 76 targets (65 test binaries + 11 doc-test targets), 988 passed, 0 failed, 0 ignored |
+| Full script | `CARGO_HOME=/tmp/t7-cargo ./scripts/check.sh` | Exit 0 |
+| Docs | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Exit 0 |
+| Demo | `cargo run -p chronofork-cli -- demo` ×3 | Exit 0, 3/3 byte-identical, 986 B, SHA-256 `9b4dd564081e792ed44f92eed562f2e63a355ccca7e973682c1f7537d9b84652`, empty stderr |
+| Mega Drive demo | `cargo run -p chronofork-cli -- megadrive demo` ×3 | Exit 0, 3/3 byte-identical, 1582 B, SHA-256 `912a5bb6f5597179d76eca94f673112b6084e1357ff151eaac0368da30348996`, empty stderr |
+
+**Non-regression accounting.** The M6 baseline was **67 targets / 800 passed / 0 failed / 0
+ignored**; every pre-existing target is still present and no per-target count changed, so
+the baseline contributes exactly 800. The **nine added targets** are the `chronofork-gui`
+lib + six integration test binaries (`command` 21, `control` 8, `model` 10, `pacing` 9,
+`presentation` 8, `render` 16), the CLI `tests/gui.rs` (15) and the gui doc-test target; the
+crate's 101 library tests plus those 72 integration tests plus the CLI's 15 give **+188**
+(800 + 188 = 988). The extra test over the previous M7 run (987) is
+`harness_tolerates_a_child_that_stops_before_reading_the_whole_script`, the regression test
+for the child-`BrokenPipe` harness race. No baseline target is missing or below baseline,
+no test was deleted or ignored, and no new third-party dependency was added: the M7 delta
+adds exactly the `chronofork-gui` workspace package to `Cargo.lock` and no registry package.
+There is no `unsafe`; production code has no `#[allow]`, and the only added allowances are
+the repository's test-only `expect_used` exception (registered in M7-A1 with owner **M7**
+and a revisit condition) and the CLI GUI test harness pattern.
+
+**Acceptance rows.** All 30 rows M7-A1–M7-A30 were re-executed with their exact commands and
+pass; the non-zero exits inside row logs are the expected failure cases the rows assert
+(A17 denial, A18 bad flag, A19's 16 documented failures, A23 truncated movie). The evidence
+for each row is `.agents/notes/m7/verify/final2/rows/M7-A<n>.log`, with process-level
+stdout/stderr separated under `rows/process/`. Notable executed observations: attach/detach
+leaves the canonical tick/hash unchanged and the hidden-panel frames byte-identical (the
+only by-design visible difference is the `events` line, A6/A7); the eight-panel matrix, the
+pacer/pause gate, the capability-gated video/audio `Unavailable` paths and the lease
+counters match the contract (A8–A16); `pulse` prints the documented deterministic cadence
+(`frames=3 frame=3 tick=3 elapsed_nanos=60000000`, `frames=1 frame=4
+elapsed_nanos=80000000`, A15); local and remote process runs are byte-identical (A20); the
+real M6 daemon serves read-only observation and second-process handoff (A21/A22); the
+`.cfmovie` is unchanged (A23); and the targeted token-material grep prints `none` while the
+reader-token process test passes (A24).
+
+**Claims and documents.** The audit resolved **72 links / 15 anchors with 0 problems** and
+reviewed the 10 claim-grep hits: no rendering, audio, native-window, browser, streaming,
+performance or compatibility claim is made; `rendering=unavailable`/`audio=unavailable` are
+reported honestly and the `Available` pipeline path is exercised only with test doubles; the
+controller lease is stated as cooperative, not a lock; `M6-FU1` is named where inspector
+content is missing. The promotion (milestone/requirement/index/ADR statuses, this block) is
+traceable to the executed rows.
+
+**Recorded limits (no repair action required).** v1 presents text/ANSI and a static HTML
+document only: no native toolkit window, no picture and no sound, no browser/JS frontend, no
+streaming transport, no live audio output, no GUI input injection, no GUI state persistence
+and no VDP/bus/disassembly/trace panel content (M6-FU1). Real video/audio sources and sinks
+remain H2/H3. No v1 CLI process builds `SystemClock`: playback is the deterministic `pulse`
+and live host-time playback is a follow-up. The controller lease is cooperative and
+window-scoped. Verification ran on Linux/WSL only; no performance or cross-platform claim is
+made.
+
+Raw evidence is in the ignored `.agents/notes/m7/verify/final2/` tree — `PASS4.md`,
+`rows/`, `rows/process/`, `gate/check-sh.log`, `gate/check-sh.exit`,
+`gate/check-sh.time.log`, `gate/per-target.log`, `gate/per-target.json`, `demos/` and
+`audit/` — with the earlier rounds preserved in the same tree and the review in
+`.agents/notes/m7/review/REVIEW5.md`. This block is the M7 gate record. **Backend coverage:**
+the GUI, renderer, pacing, presentation, attach/detach and process rows run against the
+**deterministic synthetic backend**; the minimal Mega Drive backend appears only through
+local `--rom` composition and its capability report (M7-A18), so no Mega Drive rendering,
+audio or parity claim is made. M7 remains integration-pending.
+
 ## Gate policy
 
 1. Do not claim a gate passed without the actual command and result.
@@ -866,6 +958,7 @@ passed without a command and an exit code recorded there or in your own run.
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Implemented: M6 service manager lock and per-session writer lease (typed retryable `conflict`, reads allowed during a mutation) |
 | Transport/wire tests | Implemented: M6 bounded HTTP/1.1 and MCP wire contracts, rejection matrices, server bounds, typed client and direct/HTTP/MCP byte parity |
+| GUI/presentation tests | Implemented: M7 deterministic fixed-size renderers (plain/ANSI/HTML), panel/layout model, pacing and pause gate, capability-gated video/audio pipelines, attach/detach non-perturbation, handoff lease and the `chronofork gui run` process surface (synthetic backend; Linux/WSL) |
 | Serialization compatibility | Implemented for v1/v2 rejection (payload version tests) plus round-trip property tests |
 | Cross-platform CI | Partial: Windows/macOS compile check; runtime tests are Linux-only |
 
