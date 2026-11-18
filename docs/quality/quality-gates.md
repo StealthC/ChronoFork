@@ -943,9 +943,11 @@ header writer, TMSS unlock width and missing restore paths); the implementer rep
 round 2 returned **PASS** with every round-1 code finding verified resolved. This block is the
 integrator's own re-run after applying the reviewer's advisory cleanups (three unreferenced
 public accessors removed, two doc corrections) and the phase documentation; **no behavioural
-change was made after the PASS**. The work is committed locally on the branch; **no push,
-PR or merge was authorized**. Environment: `CARGO_HOME=/tmp/t7-cargo`, the worktree's own
-`target/`, cargo 1.100.0 / rustc 1.100.0.
+change was made after the PASS**. The work was committed on the branch, pushed, opened as
+PR #25 and merged to `main` at `f024b7b` after every CI job passed (format, check/clippy, test,
+rustdoc, deterministic demos, release build/tests, MSRV 1.85.0 and the Windows/macOS build
+checks; issue #14 closed by the merge). Environment: `CARGO_HOME=/tmp/t7-cargo`, the
+worktree's own `target/`, cargo 1.100.0 / rustc 1.100.0.
 
 | Gate | Command | Result |
 |---|---|---|
