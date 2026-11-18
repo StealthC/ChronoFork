@@ -17,11 +17,12 @@ field. The harness compares that field with the pinned Exodus oracle's accumulat
 next oracle record, while ChronoFork's fourth field is the completed instruction
 cost. Absolute cycle bases and the oracle `time` column are not compared.
 
-The corpus has nine independently authored synthetic ROMs: the three existing
-ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and six later additions committed
+The corpus has ten independently authored synthetic ROMs: the three existing
+ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and seven later additions committed
 under [`scripts/fixtures/`](../../scripts/fixtures/): EA forms (`rom_ea`),
 shifts/rotates (`rom_shift`), BCD (`rom_bcd`), MOVEM/MOVEP (`rom_movem`),
-multiply/divide (`rom_muldiv`) and EXG/TAS/ADDX/SUBX (`rom_exg_tas`). `scripts/oracle-diff.py` generates every ROM from
+multiply/divide (`rom_muldiv`), EXG/TAS/ADDX/SUBX (`rom_exg_tas`) and the
+system/status-register forms (`rom_status_reg`). `scripts/oracle-diff.py` generates every ROM from
 its own assembler and checks that the committed fixture bytes match. All register
 setup uses explicit `MOVEA.L #imm,An` and the program clears `X` with `ADD.B
 D0,D0` before the measured section (see the reset-state note under limits).
@@ -31,7 +32,7 @@ D0,D0` before the measured section (see the reset-state note under limits).
 ```sh
 python3 scripts/oracle-diff.py --skip-build \
   --chronofork-bin target/debug/chronofork \
-  --out-dir .research/evidence/8.2-fix
+  --out-dir .research/evidence/8.2-fix-r4
 ```
 
 - Pinned oracle checkout: `.research/upstream/exodus-headless` at
@@ -40,22 +41,22 @@ python3 scripts/oracle-diff.py --skip-build \
   `07c56c54e855cd4fdba2cf12df17b8079ff4540e0f3ab95486a42ea4cf912557`) and
   `.research/oracle/build/exodus-mcpd`
   (`7da8dcb00bc678dca813f1e56aed0c0deaa814613a7ad8609ce92212049f3ff6`).
-- Raw artifacts: `.research/evidence/8.2-fix/` (`oracle-diff.json`,
+- Raw artifacts: `.research/evidence/8.2-fix-r4/` (`oracle-diff.json`,
   `oracle-diff.md`, per-ROM oracle/ChronoFork traces, projections and states).
   These are ignored research artifacts; the durable summary is this page.
 - Exit status of the recorded run: **0**.
 
 ## Results
 
-- **Address projections: 9/9 match.** Every projected executed-address sequence
+- **Address projections: 10/10 match.** Every projected executed-address sequence
   agrees with the oracle, every ChronoFork opcode word matches the ROM bytes, and
-  the address negative control passes 9/9.
-- **Per-instruction cycles: 9/9 match.** Every compared instruction's cost agrees
+  the address negative control passes 10/10.
+- **Per-instruction cycles: 10/10 match.** Every compared instruction's cost agrees
   with the oracle, with no first mismatch on any ROM. The cycle negative control
-  (first projected cost corrupted by one cycle) is detected 9/9.
-- **Selected final state: 9/9 match.** Registers, effective SR and the compared
+  (first projected cost corrupted by one cycle) is detected 10/10.
+- **Selected final state: 10/10 match.** Registers, effective SR and the compared
   64 work-RAM bytes agree on every ROM. The final-state negative control passes
-  9/9.
+  10/10.
 
 | ROM | projected instructions | oracle total records | cycles match | first cycle mismatch | final state |
 |---|---:|---:|---|---|---|
@@ -68,6 +69,7 @@ python3 scripts/oracle-diff.py --skip-build \
 | `rom_movem` | 22 | 2366 | **yes** | none | yes |
 | `rom_muldiv` | 26 | 2338 | **yes** | none | yes |
 | `rom_exg_tas` | 41 | 2370 | **yes** | none | yes |
+| `rom_status_reg` | 39 | 2360 | **yes** | none | yes |
 
 ### Forms corrected by this repair
 
@@ -113,6 +115,23 @@ special encodings that live inside another family's mask; the EXG-as-AND case is
 regression test that fails on the old classification. No documented encoding is
 left to fall through into a different instruction.
 
+### System/status-register forms corrected by the round-4 repair
+
+The previous corpus never exercised the status-register instructions, so the
+cycle table had four wrong system costs and one instruction-semantics bug. The
+new `rom_status_reg` ROM compares every corrected form against the oracle:
+
+| form | documented cost now implemented |
+|---|---|
+| `MOVE.W <ea>,SR` / `MOVE.W <ea>,CCR` | 12 + source EA (`Dn` 12, immediate 16, memory adds the word EA) |
+| `MOVE.W SR,<ea>` | 8 for `Dn`/`An`; 6 for memory destinations (the pinned oracle charges this flat, without a separate write-EA cost) |
+| `ORI`/`ANDI`/`EORI` to `CCR`/`SR` | 20 cycles, fixed |
+
+The ROM also exposed a real semantic defect: `ORI.W`/`ANDI.W`/`EORI.W` to `SR`
+masked the immediate to eight bits, so `ANDI.W #$2700,SR` cleared the supervisor
+bit and `EORI.W #$0100,SR` left user mode. The full 16-bit immediate is now used
+for the SR forms (the CCR forms still use the low byte), with unit tests.
+
 ## Honest limits
 
 - Functional 68000 prefetch is not cycle-modelled; instruction cost is added at
@@ -134,6 +153,13 @@ left to fall through into a different instruction.
   Drive's TAS read-modify-write write-back quirk is a bus/hardware behaviour, not
   a 68000-core behaviour, so comparing it would compare unrelated hardware. The
   register forms exercise the flag semantics against the oracle.
+- The pinned oracle's `MOVE.W SR,<ea>` model charges a flat 6 cycles for every
+  memory destination instead of the manual's write-EA table. ChronoFork matches
+  the oracle for the differential; the flat value is recorded here as an
+  oracle-model limit, not presented as a hardware-accuracy claim.
+- `MOVE from CCR` (0x42C0) is a 68010 extension outside the MC68000 set. It is
+  implemented for compatibility but has no MC68000 cycle-equivalence claim and
+  is not in the differential corpus.
 - The address stream, per-instruction cycle cost and selected final state are
   compared for these synthetic ROMs only; no game compatibility, Z80, audio,
   rendering or DMA claim follows.
@@ -153,5 +179,6 @@ left to fall through into a different instruction.
   remains historical.
 - The previous Phase 8.2 run recorded 1/8 cycle and 5/8 final-state matches as
   unresolved model gaps; the follow-up repair closed those. The 8-ROM run that
-  closed them is itself superseded by this 9-ROM run, which adds EXG/TAS/ADDX/SUBX
-  coverage; this page replaces those results rather than amending them.
+  closed them was superseded by the 9-ROM run (EXG/TAS/ADDX/SUBX), which is now
+  superseded by this 10-ROM run that adds the system/status-register forms; this
+  page replaces those results rather than amending them.

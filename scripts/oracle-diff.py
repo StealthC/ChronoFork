@@ -2,7 +2,7 @@
 """Oracle differential trace harness for the minimal Mega Drive 68000 slice.
 
 Phase 8.2 extends this harness with the master-cycle timeline and an
-nine-ROM per-instruction cycle differential. The instruction-quantum wording in
+ten-ROM per-instruction cycle differential. The instruction-quantum wording in
 the historical paragraphs below is superseded: canonical time is 3420 master
 cycles per scanline and ChronoFork records each instruction's 68000 cycle cost as
 the fourth trace field (`--cycles`). The cycle comparator reads the oracle's
@@ -775,6 +775,60 @@ def build_exg_tas_rom():
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF EXG TAS ROM"), asm.labels
 
 
+def build_status_reg_rom():
+    """System/status-register forms: MOVE to/from SR and CCR and the immediate
+    ORI/ANDI/EORI variants.
+
+    MOVE from SR exposes the raw SR word, whose unused upper bits differ between
+    the oracle (0x7FE0) and ChronoFork (0x2700). The program therefore masks the
+    register result to the CCR bits and clears the written RAM word before the
+    final-state comparison; the cycle comparison still covers the raw forms.
+    """
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+
+    # MOVE.W SR,<ea>: 8 cycles for Dn, 6 for each memory destination.
+    asm.emit16(0x40C0)  # MOVE.W SR,D0
+    asm.emit16(0x40D0)  # MOVE.W SR,(A0)
+    asm.emit16(0x40D8)  # MOVE.W SR,(A0)+
+    asm.emit16(0x40E0)  # MOVE.W SR,-(A0)
+    # Normalise the exposed raw-SR differences for the final-state comparison.
+    asm.emit16(0x0240)  # ANDI.W #$001F,D0 (CCR bits only)
+    asm.emit16(0x001F)
+    asm.moveq(0, 2)
+    asm.move_dn_abs("w", 2, 0x00FF1000)  # clear the word MOVE from SR wrote
+
+    # MOVE to CCR/SR: 12 + source EA (register 12, immediate 16).
+    asm.emit16(0x44C0)  # MOVE.W D0,CCR
+    asm.emit16(0x44FC)  # MOVE.W #0,CCR
+    asm.emit16(0x0000)
+    # ORI/ANDI/EORI to CCR and SR: 20 cycles each.
+    asm.emit16(0x003C)  # ORI.B #0,CCR
+    asm.emit16(0x0000)
+    asm.emit16(0x023C)  # ANDI.B #$FF,CCR
+    asm.emit16(0x00FF)
+    asm.emit16(0x0A3C)  # EORI.B #0,CCR
+    asm.emit16(0x0000)
+    asm.emit16(0x007C)  # ORI.W #$2700,SR
+    asm.emit16(0x2700)
+    asm.emit16(0x027C)  # ANDI.W #$2700,SR
+    asm.emit16(0x2700)
+    asm.emit16(0x0A7C)  # EORI.W #$0100,SR (mask 7 -> 6, S stays set)
+    asm.emit16(0x0100)
+    asm.emit16(0x007C)  # ORI.W #$2700,SR (restore mask 7)
+    asm.emit16(0x2700)
+    asm.move_imm_dn("w", 0x2700, 3)
+    asm.emit16(0x46C3)  # MOVE.W D3,SR
+    asm.emit16(0x46FC)  # MOVE.W #$2700,SR
+    asm.emit16(0x2700)
+
+    for dn in range(4):
+        asm.move_dn_abs("l", dn, 0x00FF0000 + dn * 4)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF STATUS REG ROM"), asm.labels
+
+
 # (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
 ROMS = (
     ("rom_alu", build_alu_rom, DIFF_QUANTUM, False),
@@ -786,6 +840,7 @@ ROMS = (
     ("rom_movem", build_movem_rom, None, False),
     ("rom_muldiv", build_muldiv_rom, None, False),
     ("rom_exg_tas", build_exg_tas_rom, None, False),
+    ("rom_status_reg", build_status_reg_rom, None, False),
 )
 
 
@@ -2390,7 +2445,7 @@ def main(argv):
         "--instructions-per-line flag are superseded. The ROMs keep SR mask 7 where they do not "
         "change it, so no interrupt handler runs in the measured window.",
         "This evidence compares instruction-address projection, per-instruction 68000 cycle cost "
-        "and a narrow selected final state for nine independently authored synthetic ROMs. It "
+        "and a narrow selected final state for ten independently authored synthetic ROMs. It "
         "does not establish full 68000 instruction-set conformance, general program behaviour, "
         "or game compatibility, and it makes no audio, Z80, controller or full-hardware claim.",
         "Instruction semantics beyond the compared observables are covered by the ROMs' "
