@@ -104,10 +104,10 @@ changing canonical state, restores the exact raw `SR` (IPM, `S`, CCR), restores 
 PC and advances A7 by six. `MOVE.W #imm,SR` (`0x46FC`) replaces the raw `SR` so a
 program can change its mask. Privileged operations (`MOVE` to `SR`, `STOP`, `RESET`,
 `RTE`, `MOVE` to/from `USP`) raise the privilege-violation exception (vector 8) in
-user mode. Guest exceptions are delivered for reset (1, via the reset vector),
-address error (3), illegal instruction (4), zero divide (5), `CHK` (6), `TRAPV`
-(7), privilege violation (8), autovector levels 4 and 6 (28/30) and `TRAP #n`
-(32+n); bus-error (2) and trace (9) exception delivery are not implemented.
+user mode. Guest exception vectors actually delivered are address error (3), illegal
+instruction (4), zero divide (5), `CHK` (6), `TRAPV` (7), privilege violation (8),
+autovector levels 4 and 6 (28/30) and `TRAP #n` (32+n); vector 1 is the reset
+vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 
 ### VDP status/control/VRAM slice
 
