@@ -7,8 +7,8 @@
 > scanline is exactly 3420 master cycles. See
 > [Mega Drive slice timing](megadrive-slice.md#deterministic-interrupt-scheduler)
 > and [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
-> The regenerated 10-ROM differential matches 10/10 address projections, per-instruction
-> cycle costs and selected final states, with 10/10 negative controls.
+> The regenerated 11-ROM differential matches 11/11 address projections, per-instruction
+> cycle costs and selected final states, with 11/11 negative controls.
 
 ## Virtual time
 
@@ -59,8 +59,9 @@ and verified for the deterministic minimal-slice scope. The backend reads the Me
 controller data registers `0xA10003`/`0xA10005` from `InputFrame` ports 0 and 1 with
 stateless per-step semantics: the input is visible only during the executed step, is
 cleared on every exit path including typed failures, and is never serialized into the
-snapshot or state hash. The canonical payload (`CFMD68K2` v2), state body, state hash and
-configuration hash are unchanged, so a restored machine uses the next step's input; the
+snapshot or state hash. The canonical payload is now `CFMD68K4` v4 (the M3 increment
+used v2; Phase 8.2 added the extended CPU and master-cycle scheduler state and rejects
+v1-v3), so a restored machine uses the next step's input; the
 differential probe, demos, M1 oracle/state probes and all existing M2/M3 movie fixtures are
 byte-identical to baseline. The verified subset is the TH-high 3-button phase
 (Up/Down/Left/Right/B/C, active-low; neutral `0x7F`) on ports 1–2; A, Start, TH/6-button
@@ -340,5 +341,5 @@ best-effort parse.
   claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
-  slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend
+  slice hash covers the extended CPU, RAM, VDP and scheduler state (`CFMDSTATE4`). A cross-backend
   canonicalization remains undefined.

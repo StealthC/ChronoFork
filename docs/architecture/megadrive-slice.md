@@ -3,8 +3,8 @@
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
-  timeline, with ten-ROM oracle differential evidence: address projections,
-  per-instruction cycle costs and selected final states all match 10/10); not a
+  timeline, with eleven-ROM oracle differential evidence: address projections,
+  per-instruction cycle costs and selected final states all match 11/11); not a
   complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
@@ -172,16 +172,17 @@ FIFO/access timing and H/V counters.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM and the scheduler configuration into `config_hash` (`CFMDCONF2`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF4`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K2`, payload version **2**, followed by the
-  68000 register file, `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete VDP
-  snapshot and the complete scheduler snapshot. Version 1 payloads are rejected
-  rather than reinterpreted.
-- The state hash (`CFMDSTATE2`) covers the 68000 state, tick, RAM, VDP snapshot and
-  scheduler snapshot, so pending interrupts and VRAM changes are part of
-  checkpoint identity.
+- Snapshot payload magic is `CFMD68K4`, payload version **4**, followed by the
+  68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
+  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete VDP snapshot
+  and the complete master-cycle scheduler snapshot. Versions 1-3 are rejected rather
+  than reinterpreted.
+- The state hash (`CFMDSTATE4`) covers the extended 68000 state, tick, RAM, VDP
+  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors and
+  VRAM changes are part of checkpoint identity.
 - Restore validates backend identity, backend version, envelope version, config
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
   recomputed state hash. The replacement bus and scheduler are built before they
@@ -241,13 +242,14 @@ FIFO/access timing and H/V counters.
 ### Oracle differential method and limits
 
 The reproducible harness `scripts/oracle-diff.py` compares the minimal core against
-a pinned Exodus headless oracle for three independently authored synthetic ROMs; the
-full numbers, commands and limitations are in
-[Oracle differential instruction-trace evidence](../research/oracle-differential-evidence.md).
+a pinned Exodus headless oracle for eleven independently authored synthetic ROMs; the
+full numbers, commands and limitations are in the
+[68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
 - Both sides produce an instruction trace; the harness projects each to the ordered
-  sequence of executed instruction **addresses** before a marker self-loop. The
-  oracle's `cycle` and `time` columns are ignored. Because the oracle renders
+  sequence of executed instruction **addresses** before a marker self-loop and
+  compares the per-instruction 68000 cycle cost (`cycle` column delta versus
+  ChronoFork's fourth trace field). Because the oracle renders
   opcodes as mnemonic+args while ChronoFork stores raw words, every ChronoFork
   projected opcode is checked against the ROM word at that address instead of being
   compared directly to the oracle column.
@@ -266,8 +268,8 @@ full numbers, commands and limitations are in
 - The ten synthetic ROMs are the three historical ones plus EA, shift, BCD,
   MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX and system/status-register fixtures under
   `scripts/fixtures/`. The regenerated repair run passes: address projections
-  10/10, per-instruction cycle comparisons 10/10, selected final states 10/10, and
-  address/cycle/final-state negative controls 10/10; the harness exits 0. No
+  11/11, per-instruction cycle comparisons 11/11, selected final states 11/11, and
+  address/cycle/final-state negative controls 11/11; the harness exits 0. No
   divergence remains in the compared observables and no expectation was edited to
   obtain the pass. Full numbers, commands and the pinned
   oracle revision `ec005615…` are in the
@@ -288,17 +290,20 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 - **Privilege is enforced for the implemented system instructions.** `MOVE` to
   `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
-  the exception framework provides vectors 1-9/24-31/32+n, short frames and the
-  documented 14-byte address-error frame. Trace exceptions and the remaining
-  unimplemented instructions are still absent.
+  the exception framework provides vectors 3-8/24-31/32+n, short frames and the
+  documented 14-byte address-error frame. The documented MC68000 instruction set
+  is implemented; guest bus-error (vector 2) and trace (vector 9) delivery,
+  automatic trace mode and the remaining exception-group edge cases are absent.
 - **Only VBlank (level 6) and HBlank (level 4) sources are modelled.** The "level 7
   is always deliverable" branch is a tested predicate rule in the shared
   68000/scheduler API, not a wired level-7 interrupt source. Other exception groups
-  (timers, Z80, bus-error recovery and trace) are absent; unmapped bus accesses
-  remain typed host errors, while odd/misaligned EA accesses, unrecognised/reserved
-  encodings and the implemented `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms use 68000
-  vectors. Host errors are reserved for host-level failures (bus, stack, vector
-  table), not for unrecognised guest instructions.
+  (timers, Z80, bus-error recovery and trace) are absent. Unmapped and
+  write-protected guest data accesses take the guest address-error exception
+  (vector 3) with the documented 14-byte frame and function code; odd/misaligned EA
+  accesses, unrecognised/reserved encodings and the implemented
+  `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms also use 68000 vectors. Host errors are
+  reserved for host-level failures (a frame or vector fetch that cannot complete,
+  stack/address overflow, trace capacity), not for guest data accesses.
 - **No interrupt-timing equivalence is claimed.** Delivery happens at instruction
   boundaries on the master-cycle timeline (cycle cost added at the boundary), at
   most one exception per boundary; the oracle differential does not compare delivery
@@ -370,10 +375,10 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 CLI integration tests cover deterministic trace and state files across two runs,
 `--stop-pc`, stdout trace mode, a zero instruction budget, option validation, help
-text, the default scheduler quantum staying 64 and never being hidden, explicit
-quantum recording, and deterministic `megadrive demo` output including masked
-HBlank/VBlank retention, VINT status, mask lowering, handler IPM, `RTE` restoration
-and no nested HBlank handler. The `tas_hardware.rs` CLI process target (13 tests) covers
+text, the master-cycle timeline and removed instruction-quantum flag, and
+deterministic `megadrive demo` output including masked HBlank/VBlank retention,
+VINT status, mask lowering, handler IPM, `RTE` restoration and no nested HBlank
+handler. The `tas_hardware.rs` CLI process target (13 tests) covers
 hardware record/play/verify/edit/studio with `--rom`, two-controller v2 input, the
 synthetic-default regression and the typed ROM/backend errors. `cargo test --workspace`
 is the source of truth for the current count.
@@ -436,14 +441,13 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State.** Payload v3 (`CFMD68K3`), state hash v3 (`CFMDSTATE3`) and configuration hash
-  v3 (`CFMDCONF3`). The snapshot adds the seven mapper banks, the SRAM control byte, 64 KiB
-  SRAM and the TMSS model/lock latch; v1 and v2 payloads are rejected, a payload carrying
-  another TMSS model is rejected even when its hash was recomputed, and a rejected restore
-  leaves the machine untouched. The configuration hash covers the ROM SHA-256, video
-  standard, TMSS model and a mapper/SRAM feature tag (the instruction quantum is
-  removed); SRAM bytes
-  are state and never configuration.
+- **State.** Payload v4 (`CFMD68K4`), state hash v4 (`CFMDSTATE4`) and configuration hash
+  v4 (`CFMDCONF4`). The snapshot adds the seven mapper banks, the SRAM control byte, 64 KiB
+  SRAM, the TMSS model/lock latch and the extended 68000/scheduler state; v1-v3 payloads
+  are rejected, a payload carrying another TMSS model is rejected even when its hash was
+  recomputed, and a rejected restore leaves the machine untouched. The configuration hash
+  covers the ROM SHA-256, video standard, TMSS model and a mapper/SRAM feature tag; SRAM
+  bytes are state and never configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
   and `tmss.locked` pseudo-registers.
 - **CLI.** `chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>]
@@ -491,7 +495,7 @@ window to it.
 - Differential evidence beyond the ten synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  full-hardware timing or game compatibility. The 10-ROM run matches instruction
+  full-hardware timing or game compatibility. The 11-ROM run matches instruction
   addresses, per-instruction cycle costs and selected final state; the masked-ROM
   run is negative gating evidence only.
 
@@ -510,8 +514,8 @@ timeline with the reset mask 7 it shows the first HBlank request pending at tick
 3472 with no handler, then demonstrates snapshot/fork/restore with the pending
 request preserved. A mask-7 interrupt ROM reaches masked VBlank with the VDP
 VBlank/VINT-pending status bits set and restored from a checkpoint. The mask-3
-interrupt ROM delays past two scanlines, lowers the mask at tick 7350, delivers the
-retained HBlank at tick 7378 with the handler at IPM 4, and `RTE` at tick 7546
+interrupt ROM delays past two scanlines, lowers the mask at tick 7378, delivers the
+retained HBlank at tick 7406 with the handler at IPM 4, and `RTE` at tick 7574
 returns to PC `0x000210` with raw `SR` `0x2300` (mask and CCR restored). VBlank is
 then entered at IPM 6 before the pending HBlank, so no HBlank handler nests before
 `RTE` restores the program mask; the checkpoint preserves the pending VBlank/VINT

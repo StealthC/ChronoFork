@@ -1,10 +1,10 @@
 //! ChronoFork's first real-hardware backend slice.
 //!
 //! It is a minimal 68000 + cartridge/RAM + VDP-port machine with a deterministic
-//! instruction-quantum interrupt scheduler, **not** a complete Mega Drive.
+//! master-cycle interrupt scheduler, **not** a complete Mega Drive.
 //! The cartridge device models the header, region, Sega mapper, 64 KiB battery
 //! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
-//! v3. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
+//! v4. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
 //! cycle-accurate timing are not implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
@@ -13,8 +13,9 @@
 //!
 //! # Interrupt policy
 //!
-//! One executed instruction advances one scheduler quantum. Before each
-//! instruction, **at most one** pending VBlank (level 6) or HBlank (level 4)
+//! Each executed instruction advances the scheduler by its 68000 cycle cost times
+//! seven master cycles (3420 master cycles per scanline). Before each instruction,
+//! **at most one** pending VBlank (level 6) or HBlank (level 4)
 //! request is delivered through [`M68000::interrupt`] using the 68000 autovector
 //! address (`0x78` or `0x70`); VBlank is delivered first when both are
 //! deliverable. Delivery is gated by the single 68000 rule exposed as
@@ -110,11 +111,10 @@
 //! machine or inspection. It is not serialized and not hashed; a restored machine
 //! uses the next caller-supplied frame. See ADR-0009.
 //!
-//! Differential runs that must remain interrupt-free can rely on the reset mask
-//! 7 (a program that never writes `SR` takes no VDP interrupt), or construct
-//! their machine with an explicit large scheduler quantum such as `1_000_000`
-//! instructions per line. The default remains 64 instructions per line and is
-//! never changed implicitly.
+//! Differential runs that must remain interrupt-free can rely on the reset mask 7
+//! (a program that never writes `SR` takes no VDP interrupt); there is no
+//! instruction-quantum knob and the master-cycle timeline is never changed
+//! implicitly.
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
@@ -213,8 +213,7 @@ impl MegadriveFactory {
     ///
     /// The scheduler standard is the machine's video standard and TMSS defaults
     /// to [`TmssModel::Disabled`]. The configuration is part of the configuration
-    /// hash, so a snapshot made with a different video standard or instruction
-    /// quantum is rejected.
+    /// hash, so a snapshot made with a different video standard is rejected.
     pub fn with_scheduler_config(
         rom: Vec<u8>,
         scheduler_config: SchedulerConfig,
@@ -1311,9 +1310,8 @@ pub fn demo_rom() -> Vec<u8> {
 /// The main program at `0x200`:
 ///
 /// 1. explicitly masks both VDP interrupt levels with `MOVE.W #$2700,SR`;
-/// 2. idles for six `NOP`s, so with a small scheduler quantum (for example four
-///    instructions per line) an HBlank request is raised and retained while it is
-///    masked;
+/// 2. idles for six `NOP`s, so the first HBlank request is raised and retained
+///    while it is masked;
 /// 3. installs the 68000 interrupt-priority mask `mask` with
 ///    `MOVE.W #(0x2000 | mask << 8),SR`, which is the mask-lowering step;
 /// 4. clears `D0` and enters a loop that reads the VDP status port into `D5` and
@@ -1329,10 +1327,9 @@ pub fn demo_rom() -> Vec<u8> {
 /// mask ([`M68000::interrupt`]): a HBlank handler runs with mask 4 and a VBlank
 /// handler with mask 6, so a pending lower-priority VDP request is not delivered
 /// while the handler runs. `RTE` restores the interrupted program's raw `SR`,
-/// after which a retained request can be delivered. With a quantum of four
-/// instructions per line, the first HBlank is raised while the mask is still 7,
-/// the lowering instruction executes at instruction 8, and the retained request
-/// is delivered at instruction 9.
+/// after which a retained request can be delivered. The first HBlank is raised
+/// while the mask is still 7, the lowering instruction executes at instruction 8,
+/// and the retained request is delivered at instruction 9.
 ///
 /// Passing `3` builds the delivery scenario: HBlank (level 4) and VBlank
 /// (level 6) are both above mask 3, so both are eventually delivered. Passing `7`

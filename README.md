@@ -80,7 +80,7 @@ is in [milestones](docs/roadmap/milestones.md).
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 — GUI | Presentation that never owns canonical state | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 — Functional Mega Drive | Complete 68000/Z80/VDP/audio and cartridge; playable commercial ROMs, headless capture and a native window | Next |
+| M8 — Functional Mega Drive | Complete 68000/Z80/VDP/audio and cartridge; playable commercial ROMs, headless capture and a native window | In progress (phase 8.2) |
 | M9 — More systems | A second backend behind the same contract | Planned |
 
 M0–M7 are merged to `main`; M4 was merged at `4c595a2` after being verified on
@@ -126,15 +126,15 @@ the exact first tick and state hash where it happened. Replay can start from the
 embedded checkpoint in a fresh process, with no storage root.
 
 **A first real-hardware slice.** The Mega Drive slice is the first machine that is
-not a test fixture. It runs a documented subset of the main 68000 processor
-against small synthetic programs, with ROM, work RAM, a basic video-chip port
-window and a deterministic interrupt scheduler. It covers interrupt priority
+not a test fixture. It runs the documented MC68000 instruction set against small
+synthetic programs, with ROM, work RAM, a basic video-chip port window and a
+master-cycle deterministic interrupt scheduler. It covers interrupt priority
 masking, the interrupt-return path and how the video chip holds and acknowledges
 an interrupt request, and includes CPU, video and scheduler state in checkpoints
 and forks. A bounded debug trace is available from the CLI, and an optional
-comparison harness checks three synthetic programs against a pinned Exodus
-reference: executed instruction addresses and selected final state match, and
-deliberately broken controls are caught.
+comparison harness checks eleven synthetic programs against a pinned Exodus
+reference: executed instruction addresses, per-instruction 68000-cycle costs and
+selected final state match, and deliberately broken controls are caught.
 
 **Controller input on the real slice.** The Mega Drive slice maps the controller
 data registers `0x00A10003`/`0x00A10005` (ports 1–2) to the per-step input frame,
@@ -205,11 +205,13 @@ request.
 
 **Honest limits.** The Mega Drive slice is deliberately narrow. Rendering, DMA,
 audio (YM2612/PSG), the Z80, timer interrupts, ROM header/region detection and
-cartridge mapping, privilege enforcement, most 68000 instructions and the other
-68000 exception groups are still missing. Controller input covers only the TH-high
+cartridge mapping, and several 68000 exception groups (guest bus error and trace,
+among others) are still missing; the documented MC68000 instruction set and
+privilege enforcement for the implemented system instructions are present. Controller input covers only the TH-high
 3-button subset on ports 1–2: A and Start, the TH/6-button multiplexing, controller
-timing, port 3 and analog or keyboard hardware are absent. Time moves in
-instruction-sized steps rather than real clock cycles. The synthetic backend is a
+timing, port 3 and analog or keyboard hardware are absent. Canonical time is the
+master-cycle timeline (each instruction adds its 68000-cycle cost times seven),
+without functional prefetch, bus contention or interrupt-latency modelling. The synthetic backend is a
 test fixture, not hardware emulation. TAS recording runs on the synthetic backend by
 default and on the minimal Mega Drive slice with `--rom`; neither path implies game
 compatibility.
@@ -252,9 +254,9 @@ Linux/WSL-only and makes no performance or cross-platform claim.
 ## What comes next
 
 M0–M7 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
-`cb05836` via PR #6). **M8 is the functional Mega Drive emulator** and is the next
-unstarted milestone; it deliberately sequences the hardware-depth tracks to completion
-instead of waiting for them in parallel:
+`cb05836` via PR #6). **M8 is the functional Mega Drive emulator** and is in progress
+(phase 8.2, the complete 68000/cycle model); it deliberately sequences the
+hardware-depth tracks to completion instead of waiting for them in parallel:
 
 - **Complete the Mega Drive model (M8, decomposed by H1–H5).** The full 68000 and Z80,
   rendering/VDP/DMA with timing, YM2612/PSG audio, ROM header/TMSS/mapper/SRAM, complete

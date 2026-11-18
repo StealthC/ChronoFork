@@ -31,15 +31,15 @@ pub const MASTER_CYCLES_PER_LINE: u64 = 3420;
 /// NTSC scanlines in one frame, including vertical blanking.
 ///
 /// Source: Sega Mega Drive hardware documentation (NTSC video timing);
-/// consistent with the existing instruction-quantum scheduler and the Exodus
-/// reference implementation.
+/// consistent with the master-cycle scheduler and the Exodus reference
+/// implementation.
 pub const NTSC_LINES_PER_FRAME: u16 = 262;
 
 /// PAL scanlines in one frame, including vertical blanking.
 ///
 /// Source: Sega Mega Drive hardware documentation (PAL video timing);
-/// consistent with the existing instruction-quantum scheduler and the Exodus
-/// reference implementation.
+/// consistent with the master-cycle scheduler and the Exodus reference
+/// implementation.
 pub const PAL_LINES_PER_FRAME: u16 = 313;
 
 /// NTSC active display scanlines.

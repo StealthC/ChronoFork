@@ -15,19 +15,20 @@ at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 merged at
 builds and tests a
 deterministic synthetic backend, the generic session layer, and a minimal 68000 +
 ROM/RAM Mega Drive backend with a VDP
-status/control/VRAM port window and a deterministic instruction-quantum interrupt
+status/control/VRAM port window and a master-cycle deterministic interrupt
 scheduler, including 68000 SR-mask interrupt gating (level 7 always admitted; other
 levels only when strictly above the mask), `RTE` handler return and VDP VINT
-pending/acknowledge. A bounded debug-only instruction trace and final oracle
-differential evidence now exist: three synthetic ROMs match the pinned Exodus
-oracle's projected address streams and selected final state, and all three negative
-controls pass. `rom_alu` and `rom_mem_vdp` use the explicit 1,000,000-instruction
-controlled window, while `rom_masked` uses the CLI default quantum 64 with the flag
-omitted (the pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain
-recorded, and the earlier two-ROM run is preserved as pre-E2-15 controlled-condition
-history). Remaining limits: privilege is not enforced; only HBlank level 4 / VBlank
-level 6 sources are modelled, with level 7 a predicate rule only; no interrupt-timing
-equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
+pending/acknowledge. It implements the documented MC68000 instruction set with
+privilege enforcement for the implemented system instructions. A bounded debug-only
+instruction trace and final oracle differential evidence now exist: eleven synthetic
+ROMs match the pinned Exodus oracle's projected address streams, per-instruction
+68000 cycle costs and selected final state, and all eleven negative controls pass.
+The pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain recorded, and the
+earlier two-ROM run is preserved as pre-E2-15 controlled-condition history. Remaining
+limits: only HBlank level 4 / VBlank level 6 sources are modelled, with level 7 a
+predicate rule only; guest bus-error (2) and trace (9) delivery are absent; no
+interrupt-timing equivalence is claimed; and VDP interrupt-enable/acknowledge logic
+is absent.
 Rendering, DMA, audio and Z80 are not implemented, and controller input covers only the
 TH-high 3-button subset. The final M3 increment — real-hardware input TAS on the minimal
 Mega Drive slice — is implemented and independently verified
@@ -128,7 +129,7 @@ injection, no GUI state persistence and no VDP/bus/disassembly/trace panel conte
 reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration, and
 no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
 controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 is merged; M8 (functional Mega Drive emulator) is next, with M9 multi-backend after it.**
+made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phase 8.2), with M9 multi-backend after it.**
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -204,7 +205,7 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is next, with M9 multi-backend after it. The
+`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phase 8.2), with M9 multi-backend after it. The
 parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The

@@ -5,23 +5,28 @@
 > per-ROM quantum/masked-boundary control described on this page are superseded by
 > the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 > The address-projection and final-state results below remain historical evidence;
-> they are not a cycle-timing claim. The regenerated 10-ROM Phase 8.2 differential
-> now passes 10/10 address projections, 10/10 per-instruction cycle comparisons and 10/10
-> selected final states.
+> they are not a cycle-timing claim. The current Phase 8.2 differential runs eleven
+> synthetic ROMs and passes 11/11 address projections, 11/11 per-instruction cycle
+> comparisons, 11/11 selected final states and 11/11 negative controls; see the
+> [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 
-- **Status:** Current evidence **PASS 3/3** against the pinned Exodus headless
-  oracle: three independently authored synthetic ROMs have identical projected
-  address streams, equal selected final state and passing negative controls. The
-  E2-15 addition `rom_masked` omits `--instructions-per-line`, runs at the CLI
-  default quantum of 64, crosses two HBlank boundaries while the 68000 SR
-  interrupt mask stays 7, and enters no interrupt handler. The earlier
-  pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect) is
-  preserved below as history and was fixed under
+- **Status:** Historical 3-ROM evidence **PASS 3/3** against the pinned Exodus
+  headless oracle: the three original independently authored synthetic ROMs have
+  identical projected address streams, equal selected final state and passing
+  negative controls. The E2-15 addition `rom_masked` omitted
+  `--instructions-per-line`, ran at the then-default quantum of 64, crossed two
+  HBlank boundaries while the 68000 SR interrupt mask stayed 7, and entered no
+  interrupt handler. This page is preserved history; the current harness and
+  result are the eleven-ROM master-cycle differential in the
+  [68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The
+  earlier pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect)
+  is preserved below as history and was fixed under
   [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md) E2-13.
-- **Scope:** instruction-address streams, opcode/ROM-byte consistency and selected
-  final architectural state for three synthetic ROMs, plus a negative gating
-  control on the masked ROM. **Not** cycle accuracy, interrupt timing, interrupt
-  delivery equivalence, rendering, audio, Z80, DMA or game compatibility.
+- **Scope (historical):** instruction-address streams, opcode/ROM-byte
+  consistency and selected final architectural state for the original three
+  synthetic ROMs, plus a negative gating control on the masked ROM. **Not** cycle
+  accuracy, interrupt timing, interrupt delivery equivalence, rendering, audio,
+  Z80, DMA or game compatibility.
 - **Related:** [Mega Drive 68000 slice](../architecture/megadrive-slice.md),
   [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
   [provenance](../licensing/provenance.md),
@@ -483,8 +488,10 @@ All of this is ignored by Git and is not distributed with ChronoFork:
 
 ## Evidence commands
 
-Harness (generates the ROMs, runs both tools twice per ROM, compares, checks the
-per-ROM quantum/gating control and writes the evidence files):
+Harness (the current script generates the eleven-ROM corpus, runs both tools twice
+per ROM, compares address streams, per-instruction cycles and final state, runs
+negative controls and writes the evidence files). The commands below are
+historical: they now run the current corpus, not the 3-ROM result on this page.
 
 ```sh
 python3 scripts/oracle-diff.py --out-dir .research/evidence
@@ -656,7 +663,7 @@ cp build/exodus-probe build/exodus-mcpd ../../oracle/build/
 cd ../../..
 cargo build -p chronofork-cli
 
-# 4. Run the differential harness with its own evidence directory.
+# 4. Run the current eleven-ROM differential harness with its own evidence directory.
 python3 scripts/oracle-diff.py --out-dir .research/evidence
 
 # 5. Inspect the recorded result and per-ROM artifacts.

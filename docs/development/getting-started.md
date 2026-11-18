@@ -71,8 +71,8 @@ Expected evidence for the Mega Drive slice:
   `0x78`) with the VDP VBlank and VINT status bits set, and the pending state
   survives a snapshot/restore round-trip;
 - the separate `interrupt_rom` scenario retains the HBlank at tick 3458 under mask
-  7, then lowers the mask with `MOVE.W #$2300,SR` at tick 7350; the retained HBlank
-  is delivered at IPM 4 at tick 7378 and `RTE` at tick 7546 restores `SR=0x2300`
+  7, then lowers the mask with `MOVE.W #$2300,SR` at tick 7378; the retained HBlank
+  is delivered at IPM 4 at tick 7406 and `RTE` at tick 7574 restores `SR=0x2300`
   and the interrupted PC; the demo's "HBlank delivered" lines refer to that later,
   mask-lowered scenario. A subsequent VBlank entry at IPM 6 blocks the still-pending
   HBlank (no nested handler) until its own `RTE`;
