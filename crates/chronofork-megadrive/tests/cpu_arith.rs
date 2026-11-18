@@ -303,3 +303,47 @@ fn addx_and_subx_have_sticky_z_for_multi_precision() -> Result<(), Box<dyn Error
     assert!(!flag(&cpu, FLAG_Z), "nonzero result clears Z");
     Ok(())
 }
+
+#[test]
+fn addx_and_subx_word_forms_set_signed_overflow() -> Result<(), Box<dyn Error>> {
+    // ADDX.W D0,D1: 0x7FFF + 0 + X=1 -> 0x8000, V and N set, no carry.
+    let (mut cpu, mut bus) = machine(&[0xD3, 0x40])?;
+    cpu.set_d(0, 0x0000_7FFF);
+    cpu.set_d(1, 0);
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x0000_8000));
+    assert!(flag(&cpu, FLAG_V), "0x7FFF + 1 overflows a signed word");
+    assert!(flag(&cpu, FLAG_N));
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(!flag(&cpu, FLAG_X));
+
+    // SUBX.W D0,D1: 0x8000 - 0x7FFF - X=1 -> 0 with signed overflow.
+    let (mut cpu, mut bus) = machine(&[0x93, 0x40])?;
+    cpu.set_d(0, 0x0000_7FFF);
+    cpu.set_d(1, 0x0000_8000);
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0));
+    assert!(flag(&cpu, FLAG_V));
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(!flag(&cpu, FLAG_X));
+    Ok(())
+}
+
+#[test]
+fn addx_word_memory_form_uses_the_word_width() -> Result<(), Box<dyn Error>> {
+    // ADDX.W -(A1),-(A0): destination 0x7FFF + source 0 + X=1 -> 0x8000.
+    let (mut cpu, mut bus) = machine(&[0xD1, 0x49])?;
+    cpu.set_a(0, 0x00FF_1006);
+    cpu.set_a(1, 0x00FF_2006);
+    bus.write16(0x00FF_1004, 0x7FFF)?;
+    bus.write16(0x00FF_2004, 0)?;
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.address_register(0), Some(0x00FF_1004));
+    assert_eq!(cpu.address_register(1), Some(0x00FF_2004));
+    assert_eq!(bus.read16(0x00FF_1004)?, 0x8000);
+    assert!(flag(&cpu, FLAG_V));
+    Ok(())
+}
