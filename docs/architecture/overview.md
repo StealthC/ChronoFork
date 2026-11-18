@@ -176,7 +176,7 @@ mutable state with its source.
 | Deterministic synthetic backend | Implemented |
 | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Implemented (partial hardware) |
 | VDP status/control/VRAM port window | Implemented (no rendering/DMA) |
-| Deterministic VBlank/HBlank interrupt scheduler | Implemented (instruction-quantum, not cycle-accurate) |
+| Deterministic VBlank/HBlank interrupt scheduler | Implemented on the master-cycle timeline (3420 master cycles per scanline; instruction-boundary costs, not full hardware cycle accuracy). The superseded instruction-quantum model is historical. |
 | TH-high 3-button controller-read subset (ports 1–2) | Implemented for the minimal slice — see [Mega Drive slice](megadrive-slice.md) |
 | VDP rendering/DMA, audio, Z80, controller protocol beyond TH-high 3-button, mapper/SRAM | Not implemented |
 | `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege enforced for the implemented system instructions; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
