@@ -2,7 +2,7 @@
 """Oracle differential trace harness for the minimal Mega Drive 68000 slice.
 
 Phase 8.2 extends this harness with the master-cycle timeline and an
-eight-ROM per-instruction cycle differential. The instruction-quantum wording in
+nine-ROM per-instruction cycle differential. The instruction-quantum wording in
 the historical paragraphs below is superseded: canonical time is 3420 master
 cycles per scanline and ChronoFork records each instruction's 68000 cycle cost as
 the fourth trace field (`--cycles`). The cycle comparator reads the oracle's
@@ -12,9 +12,10 @@ Task t3 (Phase 10, EPIC-0002 E2-12), extended under E2-15. This script is
 deliberately self-contained (Python 3 standard library only) and original code;
 it does not copy upstream Exodus source. It:
 
-1. generates three independently authored synthetic Mega Drive ROMs
-   deterministically (``rom_alu``, ``rom_mem_vdp`` and ``rom_masked``) and
-   records their SHA-256 digests;
+1. generates every independently authored synthetic Mega Drive ROM
+   deterministically (the original ``rom_alu``, ``rom_mem_vdp`` and ``rom_masked``
+   plus the EA, shift, BCD, MOVEM/MOVEP, mul/div and EXG/TAS/ADDX/SUBX fixtures)
+   and records their SHA-256 digests;
 2. runs the pinned ``exodus-probe`` oracle twice per ROM and records both trace
    dumps (``--frames N``, ``--trace-device "Main 68000"``, default module);
 3. runs ``chronofork megadrive trace`` twice per ROM. ``rom_alu`` and
@@ -2389,7 +2390,7 @@ def main(argv):
         "--instructions-per-line flag are superseded. The ROMs keep SR mask 7 where they do not "
         "change it, so no interrupt handler runs in the measured window.",
         "This evidence compares instruction-address projection, per-instruction 68000 cycle cost "
-        "and a narrow selected final state for eight independently authored synthetic ROMs. It "
+        "and a narrow selected final state for nine independently authored synthetic ROMs. It "
         "does not establish full 68000 instruction-set conformance, general program behaviour, "
         "or game compatibility, and it makes no audio, Z80, controller or full-hardware claim.",
         "Instruction semantics beyond the compared observables are covered by the ROMs' "

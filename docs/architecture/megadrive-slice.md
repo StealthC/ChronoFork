@@ -3,8 +3,8 @@
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
-  timeline, with eight-ROM oracle differential evidence: address projections,
-  per-instruction cycle costs and selected final states all match 8/8); not a
+  timeline, with nine-ROM oracle differential evidence: address projections,
+  per-instruction cycle costs and selected final states all match 9/9); not a
   complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
@@ -73,12 +73,12 @@ The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 
 | Group | Instructions |
 |---|---|
-| Data movement | `MOVE`/`MOVEA` (all documented source/destination modes), `MOVEQ`, `MOVEM`, `MOVEP`, `LEA`, `PEA`, `CLR`, `TST`, `EXT`, `SWAP` |
-| Arithmetic | `ADD`/`ADDA`/`ADDQ`/`ADDI`, `SUB`/`SUBA`/`SUBQ`/`SUBI`, `CMP`/`CMPA`/`CMPI`/`CMPM`, `NEG`, `NEGX`, `MULU`, `MULS`, `DIVU`, `DIVS` |
+| Data movement | `MOVE`/`MOVEA` (all documented source/destination modes), `MOVEQ`, `MOVEM`, `MOVEP`, `LEA`, `PEA`, `CLR`, `TST`, `EXT`, `SWAP`, `EXG` |
+| Arithmetic | `ADD`/`ADDA`/`ADDQ`/`ADDI`/`ADDX`, `SUB`/`SUBA`/`SUBQ`/`SUBI`/`SUBX`, `CMP`/`CMPA`/`CMPI`/`CMPM`, `NEG`, `NEGX`, `MULU`, `MULS`, `DIVU`, `DIVS` |
 | Logic | `AND`/`ANDI`, `OR`/`ORI`, `EOR`/`EORI`, `NOT` |
 | Shifts/rotates | `ASL`, `ASR`, `LSL`, `LSR`, `ROL`, `ROR`, `ROXL`, `ROXR` in register and memory forms |
 | BCD | `ABCD`, `SBCD`, `NBCD` |
-| Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number) |
+| Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number), `TAS` (register and memory) |
 | Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
 | System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to/from `SR` and `CCR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry |
 
@@ -256,12 +256,12 @@ full numbers, commands and limitations are in
   field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
   and the oracle `time` column are not compared. M3's per-ROM instruction quantum
   and masked-boundary control are superseded.
-- The eight synthetic ROMs are the three historical ones plus EA, shift, BCD,
-  MOVEM/MOVEP and mul/div fixtures under `scripts/fixtures/`. The regenerated repair
-  run passes: address projections 8/8, per-instruction cycle comparisons 8/8,
-  selected final states 8/8, and address/cycle/final-state negative controls 8/8;
-  the harness exits 0. No divergence remains in the compared observables and no
-  expectation was edited to obtain the pass. Full numbers, commands and the pinned
+- The nine synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP, mul/div and EXG/TAS/ADDX/SUBX fixtures under `scripts/fixtures/`.
+  The regenerated repair run passes: address projections 9/9, per-instruction
+  cycle comparisons 9/9, selected final states 9/9, and address/cycle/final-state
+  negative controls 9/9; the harness exits 0. No divergence remains in the
+  compared observables and no expectation was edited to obtain the pass. Full numbers, commands and the pinned
   oracle revision `ec005615…` are in the
   [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 - History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
@@ -465,6 +465,10 @@ window to it.
 - 68000 prefetch, bus-cycle timing, bus contention, DMA stalls and interrupt
   latency. The instruction set and documented addressing modes are implemented, and
   the register file carries separate user/supervisor stacks.
+- The Mega Drive TAS read-modify-write write-back quirk (some consoles suppress the
+  write-back phase) is a bus/hardware behaviour, not a 68000-core behaviour; the
+  core performs the documented write. The oracle fixture therefore exercises the
+  TAS register forms and the memory write is covered by unit tests.
 - Hardware cycle accuracy. Each instruction advances the master-cycle timeline by
   its documented 68000 cycle cost times seven; cost is added at the instruction
   boundary rather than distributed across internal microcycles. This is
@@ -476,10 +480,10 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond the eight synthetic ROMs, positive differential
+- Differential evidence beyond the nine synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  full-hardware timing or game compatibility. The 8-ROM run matches instruction
+  full-hardware timing or game compatibility. The 9-ROM run matches instruction
   addresses, per-instruction cycle costs and selected final state; the masked-ROM
   run is negative gating evidence only.
 
@@ -552,7 +556,7 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    SRAM and TMSS landed in phase 8.1.
 2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
    remaining exception-edge behaviour, driven by differential tests.
-3. Broaden the differential corpus beyond the eight synthetic ROMs while keeping
+3. Broaden the differential corpus beyond the nine synthetic ROMs while keeping
    instruction-address/cycle/state comparison distinct from hardware timing
    equivalence. A positive comparison of interrupt delivery or latency would need
    an oracle model of those semantics; the current masked-ROM pass is negative

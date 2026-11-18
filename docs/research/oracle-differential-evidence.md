@@ -5,8 +5,8 @@
 > per-ROM quantum/masked-boundary control described on this page are superseded by
 > the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 > The address-projection and final-state results below remain historical evidence;
-> they are not a cycle-timing claim. The regenerated 8-ROM Phase 8.2 differential
-> now passes 8/8 address projections, 8/8 per-instruction cycle comparisons and 8/8
+> they are not a cycle-timing claim. The regenerated 9-ROM Phase 8.2 differential
+> now passes 9/9 address projections, 9/9 per-instruction cycle comparisons and 9/9
 > selected final states.
 
 - **Status:** Current evidence **PASS 3/3** against the pinned Exodus headless

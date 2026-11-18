@@ -17,11 +17,11 @@ field. The harness compares that field with the pinned Exodus oracle's accumulat
 next oracle record, while ChronoFork's fourth field is the completed instruction
 cost. Absolute cycle bases and the oracle `time` column are not compared.
 
-The corpus has eight independently authored synthetic ROMs: the three existing
-ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and five later additions committed
+The corpus has nine independently authored synthetic ROMs: the three existing
+ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and six later additions committed
 under [`scripts/fixtures/`](../../scripts/fixtures/): EA forms (`rom_ea`),
-shifts/rotates (`rom_shift`), BCD (`rom_bcd`), MOVEM/MOVEP (`rom_movem`) and
-multiply/divide (`rom_muldiv`). `scripts/oracle-diff.py` generates every ROM from
+shifts/rotates (`rom_shift`), BCD (`rom_bcd`), MOVEM/MOVEP (`rom_movem`),
+multiply/divide (`rom_muldiv`) and EXG/TAS/ADDX/SUBX (`rom_exg_tas`). `scripts/oracle-diff.py` generates every ROM from
 its own assembler and checks that the committed fixture bytes match. All register
 setup uses explicit `MOVEA.L #imm,An` and the program clears `X` with `ADD.B
 D0,D0` before the measured section (see the reset-state note under limits).
@@ -47,15 +47,15 @@ python3 scripts/oracle-diff.py --skip-build \
 
 ## Results
 
-- **Address projections: 8/8 match.** Every projected executed-address sequence
+- **Address projections: 9/9 match.** Every projected executed-address sequence
   agrees with the oracle, every ChronoFork opcode word matches the ROM bytes, and
-  the address negative control passes 8/8.
-- **Per-instruction cycles: 8/8 match.** Every compared instruction's cost agrees
+  the address negative control passes 9/9.
+- **Per-instruction cycles: 9/9 match.** Every compared instruction's cost agrees
   with the oracle, with no first mismatch on any ROM. The cycle negative control
-  (first projected cost corrupted by one cycle) is detected 8/8.
-- **Selected final state: 8/8 match.** Registers, effective SR and the compared
+  (first projected cost corrupted by one cycle) is detected 9/9.
+- **Selected final state: 9/9 match.** Registers, effective SR and the compared
   64 work-RAM bytes agree on every ROM. The final-state negative control passes
-  8/8.
+  9/9.
 
 | ROM | projected instructions | oracle total records | cycles match | first cycle mismatch | final state |
 |---|---:|---:|---|---|---|
@@ -67,6 +67,7 @@ python3 scripts/oracle-diff.py --skip-build \
 | `rom_bcd` | 22 | 2372 | **yes** | none | yes |
 | `rom_movem` | 22 | 2366 | **yes** | none | yes |
 | `rom_muldiv` | 26 | 2338 | **yes** | none | yes |
+| `rom_exg_tas` | 41 | 2370 | **yes** | none | yes |
 
 ### Forms corrected by this repair
 
@@ -94,6 +95,24 @@ exceeds nine even if the binary result's low digit does not (`0x19 + 0x27` is
 `0x46`, not `0x40`). The BCD ROM now agrees with the oracle in register D1 and
 work RAM.
 
+### Forms added by the encoding-overlap repair
+
+The documented-instruction audit found three encodings that were not implemented
+and, for EXG and ADDX/SUBX, silently executed as a different instruction because
+they share the AND/ADD/SUB family masks. They are now their own decode families
+with unit tests and are covered by the new `rom_exg_tas` differential:
+
+| instruction | forms now implemented | oracle coverage |
+|---|---|---|
+| `EXG` | `Dx,Dy`, `Ax,Ay`, `Dx,Ay`; 6 cycles; no flag changes | three register-exchange forms, final state |
+| `ADDX`/`SUBX` | all sizes; `Dn,Dn` and `-(An),-(An)`; X folded into X/C/V, sticky Z | register forms in the ROM; memory forms unit-tested |
+| `TAS` | `Dn` and data-alterable memory; sets bit 7, N/Z from the value read, V/C clear, X preserved; 4 or 10 + EA cycles | three register flag outcomes |
+
+A decode-audit table now pins every documented MC68000 encoding family and the
+special encodings that live inside another family's mask; the EXG-as-AND case is a
+regression test that fails on the old classification. No documented encoding is
+left to fall through into a different instruction.
+
 ## Honest limits
 
 - Functional 68000 prefetch is not cycle-modelled; instruction cost is added at
@@ -111,6 +130,10 @@ work RAM.
 - No interrupt-latency equivalence, bus-contention, DMA-stall or VDP
   H/V-counter timing is claimed. The ROMs keep SR mask 7 where they do not
   change it, so no interrupt handler runs in the measured window.
+- `TAS` memory forms are unit-tested but kept out of the oracle ROM: the Mega
+  Drive's TAS read-modify-write write-back quirk is a bus/hardware behaviour, not
+  a 68000-core behaviour, so comparing it would compare unrelated hardware. The
+  register forms exercise the flag semantics against the oracle.
 - The address stream, per-instruction cycle cost and selected final state are
   compared for these synthetic ROMs only; no game compatibility, Z80, audio,
   rendering or DMA claim follows.
@@ -129,5 +152,6 @@ work RAM.
   for timing claims by this cycle differential; its address/final-state evidence
   remains historical.
 - The previous Phase 8.2 run recorded 1/8 cycle and 5/8 final-state matches as
-  unresolved model gaps. Those gaps are closed by the repair recorded here; this
-  page replaces that result rather than amending it.
+  unresolved model gaps; the follow-up repair closed those. The 8-ROM run that
+  closed them is itself superseded by this 9-ROM run, which adds EXG/TAS/ADDX/SUBX
+  coverage; this page replaces those results rather than amending them.
