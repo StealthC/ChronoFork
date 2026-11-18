@@ -46,7 +46,7 @@ pub use cartridge::{
     MAPPER_REGISTER_END, MAX_IMAGE_SIZE, Region, SRAM_BASE, SRAM_END, SRAM_SIZE, SramSpec,
     TMSS_REGISTER_BASE, TMSS_REGISTER_END, Tmss, TmssModel, VERSION_REGISTER,
 };
-pub use cpu::{CpuError, M68000};
+pub use cpu::{CpuError, Ea, M68000, Size, decode_ea, ea_address, read_ea, write_ea};
 pub use disasm::{
     DisasmError, DisasmInstruction, DisasmMemory, MAX_DISASSEMBLY_COUNT, RomMemory, WindowMemory,
     disassemble,

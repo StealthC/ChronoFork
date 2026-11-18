@@ -43,11 +43,15 @@ use std::fmt;
 use crate::bus::{BusError, MegadriveBus};
 use crate::trace::{InstructionTrace, TraceError};
 
-const FLAG_C: u16 = 0x0001;
-const FLAG_V: u16 = 0x0002;
-const FLAG_Z: u16 = 0x0004;
-const FLAG_N: u16 = 0x0008;
-const FLAG_X: u16 = 0x0010;
+pub mod ea;
+
+pub use ea::{Ea, Size, decode_ea, ea_address, read_ea, write_ea};
+
+pub(crate) const FLAG_C: u16 = 0x0001;
+pub(crate) const FLAG_V: u16 = 0x0002;
+pub(crate) const FLAG_Z: u16 = 0x0004;
+pub(crate) const FLAG_N: u16 = 0x0008;
+pub(crate) const FLAG_X: u16 = 0x0010;
 const SR_SUPERVISOR: u16 = 0x2000;
 const SR_INTERRUPT_MASK: u16 = 0x0700;
 const RESET_SR: u16 = SR_SUPERVISOR | SR_INTERRUPT_MASK;
@@ -147,31 +151,6 @@ impl Error for CpuError {
 impl From<BusError> for CpuError {
     fn from(error: BusError) -> Self {
         Self::Bus(error)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Size {
-    Byte,
-    Word,
-    Long,
-}
-
-impl Size {
-    const fn mask(self) -> u32 {
-        match self {
-            Self::Byte => 0x0000_00FF,
-            Self::Word => 0x0000_FFFF,
-            Self::Long => 0xFFFF_FFFF,
-        }
-    }
-
-    const fn sign_bit(self) -> u32 {
-        match self {
-            Self::Byte => 0x0000_0080,
-            Self::Word => 0x0000_8000,
-            Self::Long => 0x8000_0000,
-        }
     }
 }
 
@@ -425,6 +404,27 @@ impl M68000 {
     #[must_use]
     pub fn address_register(&self, register: usize) -> Option<u32> {
         self.a.get(register).copied()
+    }
+
+    /// Writes a data register.
+    ///
+    /// The register index is masked to `0..=7`, matching the internal data
+    /// register helpers; the 68000 has exactly eight data registers.
+    pub fn set_d(&mut self, register: usize, value: u32) {
+        self.d[register & 0x7] = value;
+    }
+
+    /// Writes an address register.
+    ///
+    /// The register index is masked to `0..=7`. Writing `A7` goes through
+    /// [`M68000::set_a7`], so the active supervisor or user stack pointer is
+    /// updated as well.
+    pub fn set_a(&mut self, register: usize, value: u32) {
+        if register & 0x7 == 7 {
+            self.set_a7(value);
+        } else {
+            self.a[register & 0x7] = value;
+        }
     }
 
     /// Returns a debugger-friendly register map.
@@ -933,14 +933,27 @@ impl M68000 {
     /// The 68000 has exactly eight data registers and every caller extracts the
     /// index with `& 0x7`, so the masked lookup is total: there is no
     /// out-of-range case to fall back from.
-    fn read_dn(&self, register: usize, size: Size) -> u32 {
+    pub(crate) fn read_dn(&self, register: usize, size: Size) -> u32 {
         self.d[register & 0x7] & size.mask()
+    }
+
+    /// Reads address register `register`.
+    pub(crate) const fn read_an(&self, register: usize) -> u32 {
+        self.a[register & 0x7]
+    }
+
+    /// Writes address register `register` without stack-pointer bookkeeping.
+    ///
+    /// Instruction paths use this for `An`; the active stack pointer is still
+    /// `A7` until exception entry selects `USP`/`SSP` in a later phase.
+    pub(crate) fn write_an(&mut self, register: usize, value: u32) {
+        self.a[register & 0x7] = value;
     }
 
     /// Writes the low `size` bytes of `value` into data register `register`.
     ///
     /// The index is masked for the same reason as in [`Self::read_dn`].
-    fn write_dn(&mut self, register: usize, value: u32, size: Size) {
+    pub(crate) fn write_dn(&mut self, register: usize, value: u32, size: Size) {
         let register = &mut self.d[register & 0x7];
         *register = match size {
             Size::Byte => (*register & 0xFFFF_FF00) | (value & 0xFF),
@@ -949,7 +962,7 @@ impl M68000 {
         };
     }
 
-    fn set_logic_flags(&mut self, value: u32, size: Size) {
+    pub(crate) fn set_logic_flags(&mut self, value: u32, size: Size) {
         let masked = value & size.mask();
         let negative = masked & size.sign_bit() != 0;
         let zero = masked == 0;
@@ -957,7 +970,7 @@ impl M68000 {
         self.set_ccr(false, false, zero, negative, extend);
     }
 
-    fn set_add_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
+    pub(crate) fn set_add_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
         let mask = size.mask();
         let destination = destination & mask;
         let source = source & mask;
@@ -977,14 +990,14 @@ impl M68000 {
         );
     }
 
-    fn set_sub_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
+    pub(crate) fn set_sub_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
         let (carry, overflow, zero, negative) =
             Self::subtract_condition_codes(destination, source, result, size);
         self.set_ccr(carry, overflow, zero, negative, carry);
     }
 
     /// Sets flags for `CMP`, which is a subtraction that leaves `X` untouched.
-    fn set_cmp_flags(&mut self, destination: u32, source: u32, size: Size) {
+    pub(crate) fn set_cmp_flags(&mut self, destination: u32, source: u32, size: Size) {
         let mask = size.mask();
         let result = (destination & mask).wrapping_sub(source & mask) & mask;
         let (carry, overflow, zero, negative) =
@@ -1008,7 +1021,14 @@ impl M68000 {
         (borrow, overflow, result == 0, result & size.sign_bit() != 0)
     }
 
-    fn set_ccr(&mut self, carry: bool, overflow: bool, zero: bool, negative: bool, extend: bool) {
+    pub(crate) fn set_ccr(
+        &mut self,
+        carry: bool,
+        overflow: bool,
+        zero: bool,
+        negative: bool,
+        extend: bool,
+    ) {
         let mut ccr = self.sr & 0xFF00;
         if carry {
             ccr |= FLAG_C;
@@ -1028,23 +1048,23 @@ impl M68000 {
         self.sr = ccr;
     }
 
-    fn flag(&self, flag: u16) -> bool {
+    pub(crate) fn flag(&self, flag: u16) -> bool {
         self.sr & flag != 0
     }
 
-    fn fetch_u16(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+    pub(crate) fn fetch_u16(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
         let value = bus.read16(self.pc)?;
         self.pc = self.pc.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         Ok(value)
     }
 
-    fn fetch_u32(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
+    pub(crate) fn fetch_u32(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
         let high = u32::from(self.fetch_u16(bus)?);
         let low = u32::from(self.fetch_u16(bus)?);
         Ok((high << 16) | low)
     }
 
-    fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
+    pub(crate) fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
         let stack = self.a[7].checked_sub(4).ok_or(CpuError::StackOverflow)?;
         bus.write32(stack, value)?;
         self.a[7] = stack;
