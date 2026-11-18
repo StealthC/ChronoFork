@@ -206,3 +206,24 @@ fn rte_in_user_mode_raises_vector_eight() -> Result<(), Box<dyn Error>> {
     assert_eq!(bus.read16(STACK - 6)?, 0x0700);
     Ok(())
 }
+
+#[test]
+fn ori_andi_eori_to_sr_use_the_full_word_immediate() -> Result<(), Box<dyn Error>> {
+    // ANDI.W #$2700,SR with the low byte set: the full word is masked.
+    let (mut cpu, mut bus) = machine(&[0x02, 0x7C, 0x27, 0x00], &[])?;
+    cpu.set_sr(0x2707);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.sr(), 0x2700);
+    assert_eq!(cpu.pc(), 0x204);
+
+    // ORI.W #$0001,SR sets the low bit without disturbing S or the mask.
+    let (mut cpu, mut bus) = machine(&[0x00, 0x7C, 0x00, 0x01], &[])?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.sr(), 0x2701);
+
+    // EORI.W #$0100,SR toggles the interrupt mask and keeps S set.
+    let (mut cpu, mut bus) = machine(&[0x0A, 0x7C, 0x01, 0x00], &[])?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.sr(), 0x2600);
+    Ok(())
+}

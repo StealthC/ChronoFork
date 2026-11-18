@@ -251,8 +251,25 @@ pub fn base_cycles(opcode: u16) -> Option<u16> {
             _ if (opcode & 0xFFF8) == 0x4E58 => 12,
             _ if (opcode & 0xFFF8) == 0x4E60 || (opcode & 0xFFF8) == 0x4E68 => 4,
             _ if (opcode & 0xF1C0) == 0x4180 => 10,
-            _ if matches!(opcode, 0x003C | 0x007C | 0x023C | 0x027C | 0x0A3C | 0x0A7C) => 8,
-            _ if matches!(opcode & 0xFFC0, 0x40C0 | 0x42C0 | 0x44C0 | 0x46C0) => 4,
+            _ if matches!(opcode, 0x003C | 0x007C | 0x023C | 0x027C | 0x0A3C | 0x0A7C) => 20,
+            _ if matches!(opcode & 0xFFC0, 0x40C0 | 0x42C0 | 0x44C0 | 0x46C0) => {
+                match opcode & 0xFFC0 {
+                    // MOVE from SR: 8 for Dn/An, 6 for memory destinations. The
+                    // pinned oracle charges the memory form as a flat 6 cycles.
+                    0x40C0 => {
+                        if mode == 0 || mode == 1 {
+                            8
+                        } else {
+                            6
+                        }
+                    }
+                    // MOVE from CCR is a 68010 extension, outside the MC68000
+                    // table; keep its existing nominal base.
+                    0x42C0 => 4,
+                    // MOVE to SR and MOVE to CCR: 12 + source EA.
+                    _ => 12,
+                }
+            }
             _ => 4,
         },
         InstructionClass::Other => return None,
@@ -510,8 +527,11 @@ pub(crate) fn instruction_cycles(opcode: u16) -> u16 {
             }
         }
         InstructionClass::System => {
-            let has_ea_operand = (opcode & 0xF1C0) == 0x4180
-                || matches!(opcode & 0xFFC0, 0x40C0 | 0x42C0 | 0x44C0 | 0x46C0);
+            // CHK and the MOVE-to-SR/CCR forms pay a source effective-address
+            // cost. MOVE from SR's documented memory cost is flat (6 cycles),
+            // and MOVE from CCR is the 68010 extension kept on its old model.
+            let has_ea_operand =
+                (opcode & 0xF1C0) == 0x4180 || matches!(opcode & 0xFFC0, 0x42C0 | 0x44C0 | 0x46C0);
             let ea = has_ea_operand
                 .then(|| super::decode_ea(mode, register, Size::Word))
                 .and_then(Result::ok);

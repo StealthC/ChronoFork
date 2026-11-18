@@ -352,3 +352,61 @@ fn exg_addx_subx_and_tas_use_documented_cycles() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn system_status_register_forms_use_the_documented_cycles() -> Result<(), Box<dyn Error>> {
+    // MOVE to SR/CCR: 12 + source EA (register 12, immediate 16, memory 16).
+    assert_eq!(
+        step_cycles(&[0x46, 0xC0], |cpu, _| cpu.set_d(0, 0x2700))?,
+        12,
+        "MOVE.W D0,SR"
+    );
+    assert_eq!(
+        step_cycles(&[0x46, 0xFC, 0x27, 0x00], |_, _| {})?,
+        16,
+        "MOVE.W #0x2700,SR"
+    );
+    assert_eq!(
+        step_cycles(&[0x46, 0xD0], |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+        16,
+        "MOVE.W (A0),SR: base 12 + word EA 4"
+    );
+    assert_eq!(
+        step_cycles(&[0x44, 0xC0], |cpu, _| cpu.set_d(0, 0))?,
+        12,
+        "MOVE.W D0,CCR"
+    );
+    assert_eq!(
+        step_cycles(&[0x44, 0xFC, 0x00, 0x00], |_, _| {})?,
+        16,
+        "MOVE.W #0,CCR"
+    );
+
+    // MOVE from SR: 8 for a register destination, 6 for memory destinations
+    // (the pinned oracle charges no separate write-EA cost in this model).
+    assert_eq!(step_cycles(&[0x40, 0xC0], |_, _| {})?, 8, "MOVE.W SR,D0");
+    assert_eq!(
+        step_cycles(&[0x40, 0xD0], |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+        6,
+        "MOVE.W SR,(A0)"
+    );
+    assert_eq!(
+        step_cycles(&[0x40, 0xD8], |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+        6,
+        "MOVE.W SR,(A0)+"
+    );
+    assert_eq!(
+        step_cycles(&[0x40, 0xE0], |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+        6,
+        "MOVE.W SR,-(A0)"
+    );
+
+    // ORI/ANDI/EORI to CCR and SR are fixed 20-cycle forms.
+    assert_eq!(step_cycles(&[0x00, 0x3C, 0x00, 0x00], |_, _| {})?, 20);
+    assert_eq!(step_cycles(&[0x00, 0x7C, 0x27, 0x00], |_, _| {})?, 20);
+    assert_eq!(step_cycles(&[0x02, 0x3C, 0x00, 0xFF], |_, _| {})?, 20);
+    assert_eq!(step_cycles(&[0x02, 0x7C, 0x27, 0x00], |_, _| {})?, 20);
+    assert_eq!(step_cycles(&[0x0A, 0x3C, 0x00, 0x00], |_, _| {})?, 20);
+    assert_eq!(step_cycles(&[0x0A, 0x7C, 0x01, 0x00], |_, _| {})?, 20);
+    Ok(())
+}

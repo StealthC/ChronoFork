@@ -211,8 +211,14 @@ fn logic_to_special(
             return Ok(cycles);
         }
     }
-    let immediate = cpu.fetch_u16(bus)? & 0x00FF;
-    let source = if to_sr { cpu.sr() } else { cpu.sr() & 0x00FF };
+    let immediate_word = cpu.fetch_u16(bus)?;
+    // The CCR forms carry a byte immediate in the low half of the extension
+    // word; the SR forms use the full 16-bit immediate.
+    let (source, immediate) = if to_sr {
+        (cpu.sr(), immediate_word)
+    } else {
+        (cpu.sr() & 0x00FF, immediate_word & 0x00FF)
+    };
     let result = match opcode & 0xFF00 {
         0x0000 => source | immediate,
         0x0200 => source & immediate,
