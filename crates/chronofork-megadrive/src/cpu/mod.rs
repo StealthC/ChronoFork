@@ -25,12 +25,16 @@
 //!   fetched address/opcode pair. It is disabled by default and is debug data:
 //!   it is not part of snapshots, state hashes or registers.
 //!
+//! The register file carries separate user and supervisor stack pointers
+//! (`USP`/`SSP`) selected by `SR` bit 13; the instruction paths in this slice
+//! do not yet select between them.
+//!
 //! Not implemented: effective-address modes beyond the listed forms, automatic
 //! interrupt-vector selection (the caller supplies the vector address), other
 //! exception groups, privilege enforcement (`RTE` and `MOVE.W #imm,SR` execute
-//! in either mode here), separate user/supervisor stack pointers, prefetch,
-//! cycle-accurate timing, and the rest of the instruction set. Unsupported
-//! opcodes are errors, never silently skipped.
+//! in either mode here), automatic stack switching on exception entry and
+//! `RTE`, prefetch, cycle-accurate timing, and the rest of the instruction set.
+//! Unsupported opcodes are errors, never silently skipped.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -178,7 +182,15 @@ pub struct M68000 {
     a: [u32; 8],
     pc: u32,
     sr: u16,
+    /// User stack pointer (`USP`), active while `SR` bit 13 is clear.
+    usp: u32,
+    /// Supervisor stack pointer (`SSP`), active while `SR` bit 13 is set.
+    ssp: u32,
     halted: bool,
+    /// Set when a `STOP` instruction suspends the processor.
+    stopped: bool,
+    /// 68000 cycle accumulator for the instruction timing layer.
+    cycles: u64,
     /// Debug-only instruction trace; never part of snapshots or state hashes.
     trace: Option<InstructionTrace>,
 }
@@ -192,7 +204,11 @@ impl M68000 {
             a: [0; 8],
             pc: 0,
             sr: RESET_SR,
+            usp: 0,
+            ssp: 0,
             halted: false,
+            stopped: false,
+            cycles: 0,
             trace: None,
         }
     }
@@ -206,9 +222,13 @@ impl M68000 {
         self.d = [0; 8];
         self.a = [0; 8];
         self.a[7] = bus.read32(0)?;
+        self.ssp = self.a[7];
         self.pc = bus.read32(4)?;
         self.sr = RESET_SR;
+        self.usp = 0;
         self.halted = false;
+        self.stopped = false;
+        self.cycles = 0;
         self.ensure_even_pc()
     }
 
@@ -281,6 +301,94 @@ impl M68000 {
     #[must_use]
     pub const fn sr(&self) -> u16 {
         self.sr
+    }
+
+    /// Replaces the status register and selects the matching active stack.
+    ///
+    /// This is [`M68000::apply_sr`]: the current stack pointer is saved and,
+    /// when the new value changes the supervisor bit, the other stack pointer
+    /// becomes active.
+    pub fn set_sr(&mut self, value: u16) {
+        self.apply_sr(value);
+    }
+
+    /// Writes the status register, preserving the inactive stack pointer.
+    ///
+    /// `SR` bit 13 (`S`) selects which saved stack pointer is the live `A7`:
+    /// with `S` set, `A7` is the supervisor stack pointer, and with `S` clear
+    /// it is the user stack pointer. The current `A7` is first saved into the
+    /// stack it belongs to; when the write changes `S`, the other saved stack
+    /// pointer is loaded into `A7`, so a mode switch never loses a stack.
+    pub fn apply_sr(&mut self, value: u16) {
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        if was_supervisor {
+            self.ssp = self.a[7];
+        } else {
+            self.usp = self.a[7];
+        }
+        self.sr = value;
+        let is_supervisor = value & SR_SUPERVISOR != 0;
+        if is_supervisor != was_supervisor {
+            self.a[7] = if is_supervisor { self.ssp } else { self.usp };
+        }
+    }
+
+    /// Returns the user stack pointer (`USP`).
+    ///
+    /// `USP` is active as `A7` while `SR` bit 13 is clear; while the processor
+    /// is in supervisor mode it holds the saved user stack.
+    #[must_use]
+    pub const fn usp(&self) -> u32 {
+        self.usp
+    }
+
+    /// Returns the supervisor stack pointer (`SSP`).
+    ///
+    /// `SSP` is active as `A7` while `SR` bit 13 is set (the reset state);
+    /// while the processor is in user mode it holds the saved supervisor stack.
+    #[must_use]
+    pub const fn ssp(&self) -> u32 {
+        self.ssp
+    }
+
+    /// Returns the active address register 7, the current stack pointer.
+    ///
+    /// This is `SSP` in supervisor mode and `USP` in user mode.
+    #[must_use]
+    pub const fn a7(&self) -> u32 {
+        self.a[7]
+    }
+
+    /// Sets the active address register 7, the current stack pointer.
+    ///
+    /// The value is written to `A7` and mirrored into the stack pointer that
+    /// `SR` bit 13 selects, so [`M68000::usp`] or [`M68000::ssp`] reports it
+    /// immediately. The inactive stack is left unchanged.
+    pub fn set_a7(&mut self, value: u32) {
+        self.a[7] = value;
+        if self.sr & SR_SUPERVISOR != 0 {
+            self.ssp = value;
+        } else {
+            self.usp = value;
+        }
+    }
+
+    /// Returns the accumulated 68000 cycle count.
+    ///
+    /// The value is accounted by the instruction timing layer; it is zero
+    /// until per-instruction cycle accounting is added.
+    #[must_use]
+    pub const fn cycles(&self) -> u64 {
+        self.cycles
+    }
+
+    /// Returns whether a `STOP` instruction has suspended the processor.
+    ///
+    /// No instruction sets this yet; it exists so the register file carries
+    /// the complete architectural state from the start of the CPU split.
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Returns the interrupt-priority mask currently encoded in `SR`.
@@ -401,6 +509,13 @@ impl M68000 {
         self.a = a;
         self.pc = pc;
         self.sr = sr;
+        // The snapshot layout does not carry USP/SSP yet; keep the mirror for
+        // the restored mode consistent with the restored active A7.
+        if sr & SR_SUPERVISOR != 0 {
+            self.ssp = a[7];
+        } else {
+            self.usp = a[7];
+        }
         self.halted = halted;
     }
 
