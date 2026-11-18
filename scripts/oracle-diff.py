@@ -726,6 +726,54 @@ def build_muldiv_rom():
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF MULDIV ROM"), asm.labels
 
 
+def build_exg_tas_rom():
+    """EXG, TAS and ADDX/SUBX forms added by the repair round.
+
+    EXG exercises the three register-exchange encodings; ADDX/SUBX exercise the
+    X fold in register form; TAS exercises the register form in all three
+    flag outcomes. TAS memory is covered by the unit tests but deliberately
+    kept out of the oracle ROM: the Mega Drive TAS write-back quirk is a bus
+    behaviour, not a 68000-core behaviour, and would compare unrelated hardware.
+    """
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+
+    # EXG D0,D1: 1,2 -> 2,1.
+    asm.moveq(1, 0)
+    asm.moveq(2, 1)
+    asm.emit16(0xC141)
+    # EXG A0,A1: 0x00FF1000,0x00FF1010 -> 0x00FF1010,0x00FF1000.
+    asm.emit16(0xC149)
+    # EXG D2,A2: D2=0x34, A2=0x00FF1020 -> D2=0x00FF1020, A2=0x34.
+    asm.moveq(0x34, 2)
+    asm.emit16(0xC58A)
+
+    # SUBQ.B #1,D3 sets X=C=1 (0 - 1 borrows).
+    asm.subq("b", 3, 1)
+    asm.moveq(0x0F, 4)
+    # ADDX.B D3,D4: 0x0F + 0xFF + X=1 -> 0x0F, C=X=1.
+    asm.emit16(0xD903)
+    # ADDX.L D5,D6: 0xFFFFFFFF + 1 + X=1 -> 1, C=X=1.
+    asm.move_imm_dn("l", 1, 5)
+    asm.move_imm_dn("l", 0xFFFFFFFF, 6)
+    asm.emit16(0xDD85)
+    # SUBX.W D0,D1: 1 - 2 - X=1 -> 0xFFFE, C=X=1.
+    asm.emit16(0x9340)
+    # SUBX.L D6,D7: 0 - 1 - X=1 -> 0xFFFFFFFE, C=X=1.
+    asm.emit16(0x9F86)
+
+    # TAS on a positive, negative and long-register low byte.
+    asm.emit16(0x4AC0)
+    asm.emit16(0x4AC1)
+    asm.emit16(0x4AC2)
+
+    for dn in range(8):
+        asm.move_dn_abs("l", dn, 0x00FF0000 + dn * 4)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF EXG TAS ROM"), asm.labels
+
+
 # (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
 ROMS = (
     ("rom_alu", build_alu_rom, DIFF_QUANTUM, False),
@@ -736,6 +784,7 @@ ROMS = (
     ("rom_bcd", build_bcd_rom, None, False),
     ("rom_movem", build_movem_rom, None, False),
     ("rom_muldiv", build_muldiv_rom, None, False),
+    ("rom_exg_tas", build_exg_tas_rom, None, False),
 )
 
 
