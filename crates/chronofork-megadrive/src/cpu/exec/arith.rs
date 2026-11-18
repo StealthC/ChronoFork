@@ -31,6 +31,12 @@ pub fn sub_flags(cpu: &mut M68000, destination: u32, source: u32, result: u32, s
 /// table (Task 14) lands.
 pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let instruction_pc = cpu.pc().saturating_sub(2);
+    if matches!(opcode & 0xF1F8, 0xC100 | 0xC108 | 0x8100 | 0x8108) {
+        return bcd(cpu, bus, opcode);
+    }
+    if (opcode & 0xFFC0) == 0x4800 {
+        return nbcd(cpu, bus, opcode);
+    }
     if matches!(opcode & 0xF1C0, 0xC0C0 | 0xC1C0 | 0x80C0 | 0x81C0) {
         return multiply_or_divide(cpu, bus, opcode);
     }
@@ -50,6 +56,104 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
         _ => {}
     }
     Err(illegal_opcode(instruction_pc, opcode))
+}
+
+fn bcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let subtract = opcode & 0xF000 == 0x8000;
+    let memory_form = opcode & 0x8 != 0;
+    let destination_register = usize::from((opcode >> 9) & 0x7);
+    let source_register = usize::from(opcode & 0x7);
+    let extend = u32::from(cpu.flag(FLAG_X));
+
+    let (source, destination, destination_address, source_address) = if memory_form {
+        let source_address = cpu
+            .read_an(source_register)
+            .checked_sub(1)
+            .ok_or(CpuError::StackOverflow)?;
+        let destination_address = cpu
+            .read_an(destination_register)
+            .checked_sub(1)
+            .ok_or(CpuError::StackOverflow)?;
+        let source = u32::from(bus.read8(source_address)?);
+        let destination = u32::from(bus.read8(destination_address)?);
+        (
+            source,
+            destination,
+            Some(destination_address),
+            Some(source_address),
+        )
+    } else {
+        (
+            cpu.read_dn(source_register, Size::Byte),
+            cpu.read_dn(destination_register, Size::Byte),
+            None,
+            None,
+        )
+    };
+
+    let (result, carry) = if subtract {
+        bcd_subtract(destination as u8, source as u8, extend as u8)
+    } else {
+        bcd_add(destination as u8, source as u8, extend as u8)
+    };
+    if let (Some(address), Some(source_address)) = (destination_address, source_address) {
+        bus.write8(address, result)?;
+        cpu.write_an(destination_register, address);
+        cpu.write_an(source_register, source_address);
+    } else {
+        cpu.write_dn(destination_register, u32::from(result), Size::Byte);
+    }
+    let zero = cpu.flag(FLAG_Z) && result == 0;
+    cpu.set_ccr(carry, false, zero, result & 0x80 != 0, carry);
+    Ok(0)
+}
+
+fn nbcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let destination = decode_ea(
+        ((opcode >> 3) & 0x7) as u8,
+        (opcode & 0x7) as u8,
+        Size::Byte,
+    )?;
+    if !is_data_alterable(destination) {
+        return Err(illegal_opcode(instruction_pc, opcode));
+    }
+    let extend = u32::from(cpu.flag(FLAG_X)) as u8;
+    let mut carry = false;
+    let (_, result) = modify_ea(cpu, bus, destination, Size::Byte, |value| {
+        let (result, borrowed) = bcd_subtract(0, value as u8, extend);
+        carry = borrowed;
+        u32::from(result)
+    })?;
+    let zero = cpu.flag(FLAG_Z) && result == 0;
+    cpu.set_ccr(carry, false, zero, result & 0x80 != 0, carry);
+    Ok(0)
+}
+
+fn bcd_add(destination: u8, source: u8, extend: u8) -> (u8, bool) {
+    let mut result = u16::from(destination) + u16::from(source) + u16::from(extend);
+    if result & 0x000F > 9 {
+        result += 6;
+    }
+    let mut carry = false;
+    if result > 0x99 {
+        result += 0x60;
+        carry = true;
+    }
+    ((result & 0xFF) as u8, carry)
+}
+
+fn bcd_subtract(destination: u8, source: u8, extend: u8) -> (u8, bool) {
+    let subtrahend = u16::from(source) + u16::from(extend);
+    let mut result = u16::from(destination).wrapping_sub(subtrahend);
+    if u16::from(destination) & 0x000F < subtrahend & 0x000F {
+        result = result.wrapping_sub(6);
+    }
+    let carry = subtrahend > u16::from(destination);
+    if carry {
+        result = result.wrapping_sub(0x60);
+    }
+    ((result & 0xFF) as u8, carry)
 }
 
 fn multiply_or_divide(

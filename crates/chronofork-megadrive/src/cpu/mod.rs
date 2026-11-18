@@ -693,7 +693,7 @@ impl M68000 {
             InstructionClass::Shift => {
                 exec::shift::execute(self, bus, opcode)?;
             }
-            InstructionClass::MulDiv => {
+            InstructionClass::MulDiv | InstructionClass::Bcd => {
                 exec::arith::execute(self, bus, opcode)?;
             }
             InstructionClass::Add

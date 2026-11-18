@@ -81,6 +81,8 @@ pub enum InstructionClass {
     Shift,
     /// `MULU`/`MULS`/`DIVU`/`DIVS`.
     MulDiv,
+    /// `ABCD`/`SBCD`/`NBCD`.
+    Bcd,
     /// `BRA`, `BSR` and the conditional branches.
     Branch,
     /// `NOP`.
@@ -171,6 +173,14 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             0x4A00 => return InstructionClass::Tst,
             _ => {}
         }
+    }
+
+    // ABCD/SBCD (-(Ay),-(Ax) or Dy,Dx) and NBCD.
+    if matches!(opcode & 0xF1F8, 0xC100 | 0xC108 | 0x8100 | 0x8108) {
+        return InstructionClass::Bcd;
+    }
+    if (opcode & 0xFFC0) == 0x4800 {
+        return InstructionClass::Bcd;
     }
 
     // MULU/MULS (1100 ddd 011 mmm rrr) and DIVU/DIVS (1000 ddd 011 mmm rrr).
