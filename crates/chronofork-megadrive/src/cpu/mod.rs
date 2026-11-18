@@ -586,6 +586,9 @@ impl M68000 {
             | InstructionClass::Not => {
                 exec::logic::execute(self, bus, opcode)?;
             }
+            InstructionClass::Shift => {
+                exec::shift::execute(self, bus, opcode)?;
+            }
             InstructionClass::Add
             | InstructionClass::Adda
             | InstructionClass::Addq

@@ -14,6 +14,7 @@ use super::{CpuError, M68000, Size};
 pub mod arith;
 pub mod logic;
 pub mod r#move;
+pub mod shift;
 
 /// Sets the condition codes for a logic result.
 ///

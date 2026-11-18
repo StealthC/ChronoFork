@@ -215,7 +215,7 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             }
         }
         0xE000 => {
-            if (opcode & 0xFFC0) == 0xE0C0 || size != 0x3 {
+            if (opcode & 0xF8C0) == 0xE0C0 || size != 0x3 {
                 InstructionClass::Shift
             } else {
                 InstructionClass::Other

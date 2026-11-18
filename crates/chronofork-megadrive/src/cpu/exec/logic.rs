@@ -7,7 +7,7 @@
 use crate::bus::MegadriveBus;
 
 use super::{illegal_opcode, set_logic_flags};
-use crate::cpu::ea::{Size, decode_ea, is_data_alterable, read_ea, write_ea};
+use crate::cpu::ea::{Size, decode_ea, is_data_alterable, modify_ea, read_ea};
 use crate::cpu::{CpuError, M68000};
 
 #[derive(Clone, Copy)]
@@ -78,9 +78,9 @@ fn binary(
             return Err(illegal_opcode(instruction_pc, opcode));
         }
         let source = cpu.read_dn(usize::from((opcode >> 9) & 0x7), size);
-        let destination_value = read_ea(cpu, bus, destination, size)?;
-        let result = operation.apply(destination_value, source) & size.mask();
-        write_ea(cpu, bus, destination, size, result)?;
+        let (_, result) = modify_ea(cpu, bus, destination, size, |value| {
+            operation.apply(value, source)
+        })?;
         set_logic_flags(cpu, result, size);
     }
     Ok(0)
@@ -100,9 +100,7 @@ fn eor(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
         return Err(illegal_opcode(instruction_pc, opcode));
     }
     let source = cpu.read_dn(usize::from((opcode >> 9) & 0x7), size);
-    let destination_value = read_ea(cpu, bus, destination, size)?;
-    let result = (destination_value ^ source) & size.mask();
-    write_ea(cpu, bus, destination, size, result)?;
+    let (_, result) = modify_ea(cpu, bus, destination, size, |value| value ^ source)?;
     set_logic_flags(cpu, result, size);
     Ok(0)
 }
@@ -120,9 +118,9 @@ fn immediate(
     if !is_data_alterable(destination) {
         return Err(illegal_opcode(instruction_pc, opcode));
     }
-    let destination_value = read_ea(cpu, bus, destination, size)?;
-    let result = operation.apply(destination_value, immediate) & size.mask();
-    write_ea(cpu, bus, destination, size, result)?;
+    let (_, result) = modify_ea(cpu, bus, destination, size, |value| {
+        operation.apply(value, immediate)
+    })?;
     set_logic_flags(cpu, result, size);
     Ok(0)
 }
@@ -134,9 +132,7 @@ fn not(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     if !is_data_alterable(destination) {
         return Err(illegal_opcode(instruction_pc, opcode));
     }
-    let value = read_ea(cpu, bus, destination, size)?;
-    let result = !value & size.mask();
-    write_ea(cpu, bus, destination, size, result)?;
+    let (_, result) = modify_ea(cpu, bus, destination, size, |value| !value)?;
     set_logic_flags(cpu, result, size);
     Ok(0)
 }

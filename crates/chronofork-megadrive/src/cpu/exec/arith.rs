@@ -9,7 +9,7 @@
 use crate::bus::MegadriveBus;
 
 use super::illegal_opcode;
-use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, read_ea, write_ea};
+use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, modify_ea, read_ea};
 use crate::cpu::{CpuError, FLAG_X, FLAG_Z, M68000};
 
 /// Sets the condition codes for an addition result.
@@ -108,14 +108,14 @@ fn add_or_sub(
         if !is_data_alterable(destination) {
             return Err(illegal_opcode(instruction_pc, opcode));
         }
-        let destination_value = read_ea(cpu, bus, destination, size)?;
         let source = cpu.read_dn(data_register, size);
-        let result = if add {
-            destination_value.wrapping_add(source)
-        } else {
-            destination_value.wrapping_sub(source)
-        };
-        write_ea(cpu, bus, destination, size, result)?;
+        let (destination_value, result) = modify_ea(cpu, bus, destination, size, |value| {
+            if add {
+                value.wrapping_add(source)
+            } else {
+                value.wrapping_sub(source)
+            }
+        })?;
         set_arithmetic_flags(cpu, add, destination_value, source, result, size);
         return Ok(0);
     }
@@ -137,13 +137,13 @@ fn immediate_arithmetic(
     if !is_data_alterable(destination) {
         return Err(illegal_opcode(instruction_pc, opcode));
     }
-    let destination_value = read_ea(cpu, bus, destination, size)?;
-    let result = if add {
-        destination_value.wrapping_add(immediate)
-    } else {
-        destination_value.wrapping_sub(immediate)
-    };
-    write_ea(cpu, bus, destination, size, result)?;
+    let (destination_value, result) = modify_ea(cpu, bus, destination, size, |value| {
+        if add {
+            value.wrapping_add(immediate)
+        } else {
+            value.wrapping_sub(immediate)
+        }
+    })?;
     set_arithmetic_flags(cpu, add, destination_value, immediate, result, size);
     Ok(0)
 }
@@ -179,13 +179,13 @@ fn addq_or_subq(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result
     if !is_data_alterable(destination) {
         return Err(illegal_opcode(instruction_pc, opcode));
     }
-    let destination_value = read_ea(cpu, bus, destination, size)?;
-    let result = if subtract {
-        destination_value.wrapping_sub(immediate)
-    } else {
-        destination_value.wrapping_add(immediate)
-    };
-    write_ea(cpu, bus, destination, size, result)?;
+    let (destination_value, result) = modify_ea(cpu, bus, destination, size, |value| {
+        if subtract {
+            value.wrapping_sub(immediate)
+        } else {
+            value.wrapping_add(immediate)
+        }
+    })?;
     set_arithmetic_flags(cpu, !subtract, destination_value, immediate, result, size);
     Ok(0)
 }
@@ -280,21 +280,22 @@ fn negate(
     if !is_data_alterable(destination) {
         return Err(illegal_opcode(instruction_pc, opcode));
     }
-    let value = read_ea(cpu, bus, destination, size)?;
     let extend = if extended {
         u32::from(cpu.flag(FLAG_X))
     } else {
         0
     };
-    let result = 0_u32.wrapping_sub(value).wrapping_sub(extend) & size.mask();
+    let previous_zero = cpu.flag(FLAG_Z);
+    let (value, result) = modify_ea(cpu, bus, destination, size, |value| {
+        0_u32.wrapping_sub(value).wrapping_sub(extend)
+    })?;
     let carry = value != 0 || extend != 0;
     let overflow = value & result & size.sign_bit() != 0;
     let zero = if extended {
-        cpu.flag(FLAG_Z) && result == 0
+        previous_zero && result == 0
     } else {
         result == 0
     };
-    write_ea(cpu, bus, destination, size, result)?;
     cpu.set_ccr(carry, overflow, zero, result & size.sign_bit() != 0, carry);
     Ok(0)
 }

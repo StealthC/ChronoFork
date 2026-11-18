@@ -354,3 +354,75 @@ fn index_value(cpu: &M68000, extension: u16) -> u32 {
         (value as u16 as i16) as i32 as u32
     }
 }
+
+/// Reads, updates and writes one effective-address operand, fetching any
+/// extension words exactly once.
+///
+/// Read-modify-write instructions (arithmetic, logic and memory shifts) need
+/// the operand's address resolved a single time: resolving it in the read and
+/// again in the write would consume a second extension word. This helper
+/// returns the pre-update and post-update values so the caller can still apply
+/// its flag rule.
+pub(crate) fn modify_ea<F>(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    ea: Ea,
+    size: Size,
+    update: F,
+) -> Result<(u32, u32), CpuError>
+where
+    F: FnOnce(u32) -> u32,
+{
+    match ea {
+        Ea::Dn(register) => {
+            let old = cpu.read_dn(usize::from(register), size);
+            let new = update(old) & size.mask();
+            cpu.write_dn(usize::from(register), new, size);
+            Ok((old, new))
+        }
+        Ea::An(register) => {
+            if size == Size::Byte {
+                return Err(CpuError::AddressError {
+                    address: cpu.read_an(usize::from(register)),
+                });
+            }
+            let old = cpu.read_an(usize::from(register));
+            let new = size.sign_extend(update(old));
+            cpu.write_an(usize::from(register), new);
+            Ok((old, new))
+        }
+        Ea::Indirect(register) => {
+            let address = cpu.read_an(usize::from(register));
+            let old = read_memory(bus, address, size)?;
+            let new = update(old) & size.mask();
+            write_memory(bus, address, size, new)?;
+            Ok((old, new))
+        }
+        Ea::PostInc(register) => {
+            let address = cpu.read_an(usize::from(register));
+            let old = read_memory(bus, address, size)?;
+            let new = update(old) & size.mask();
+            write_memory(bus, address, size, new)?;
+            cpu.write_an(usize::from(register), advance(address, size.bytes())?);
+            Ok((old, new))
+        }
+        Ea::PreDec(register) => {
+            let address = retreat(cpu.read_an(usize::from(register)), size.bytes())?;
+            let old = read_memory(bus, address, size)?;
+            let new = update(old) & size.mask();
+            write_memory(bus, address, size, new)?;
+            cpu.write_an(usize::from(register), address);
+            Ok((old, new))
+        }
+        Ea::Disp16(_) | Ea::Index(_) | Ea::Abs16 | Ea::Abs32 | Ea::PcDisp16 | Ea::PcIndex => {
+            let address = ea_address(cpu, bus, ea)?;
+            let old = read_memory(bus, address, size)?;
+            let new = update(old) & size.mask();
+            write_memory(bus, address, size, new)?;
+            Ok((old, new))
+        }
+        Ea::Imm => Err(CpuError::Unsupported(
+            "immediate operand cannot be a destination".to_owned(),
+        )),
+    }
+}
