@@ -80,18 +80,19 @@ The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 | BCD | `ABCD`, `SBCD`, `NBCD` |
 | Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number), `TAS` (register and memory) |
 | Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
-| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to `SR`/`CCR` and from `SR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry; `MOVE` from `CCR` is the 68010 extension noted below |
+| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to `SR`/`CCR` and from `SR` (MC68000), `MOVE` from `CCR` (68010 extension; see below), `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry |
 
 Every documented MC68000 instruction reports the instruction-boundary cycle cost
 used by the oracle-backed timing table (see the timing and differential sections
 below); effective-address cost is added exactly once per operand. One oracle-model
 difference is recorded rather than hidden: the pinned oracle charges a flat 6
 cycles for `MOVE from SR` to memory instead of a write-EA table, and ChronoFork
-matches the oracle for the differential. The 68010 `MOVE from CCR` extension is
-implemented for compatibility but is outside the MC68000 timing table and the
-differential corpus. Unrecognised and reserved encodings raise the guest
-illegal-instruction exception (vector 4) with the documented six-byte frame
-rather than a host error.
+matches the oracle for the differential. `MOVE to CCR` (`0x44C0`) is a documented
+MC68000 instruction and is exercised by the differential ROM; only `MOVE from CCR`
+(`0x42C0`) is the 68010 addition. `MOVE from CCR` is implemented for compatibility
+but is outside the MC68000 timing table and the differential corpus. Unrecognised
+and reserved encodings raise the guest illegal-instruction exception (vector 4)
+with the documented six-byte frame rather than a host error.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
@@ -515,6 +516,10 @@ returns to PC `0x000210` with raw `SR` `0x2300` (mask and CCR restored). VBlank 
 then entered at IPM 6 before the pending HBlank, so no HBlank handler nests before
 `RTE` restores the program mask; the checkpoint preserves the pending VBlank/VINT
 state. It prints `chronofork megadrive demo: PASS`.
+
+Timing note: the round-4 system-timing correction moved the interrupt ROM's
+retained-HBlank line from tick 3472 to tick 3458; the demo's first masked-HBlank
+line remains 3472.
 
 ## CLI instruction trace
 

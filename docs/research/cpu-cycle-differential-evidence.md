@@ -157,9 +157,10 @@ for the SR forms (the CCR forms still use the low byte), with unit tests.
   memory destination instead of the manual's write-EA table. ChronoFork matches
   the oracle for the differential; the flat value is recorded here as an
   oracle-model limit, not presented as a hardware-accuracy claim.
-- `MOVE from CCR` (0x42C0) is a 68010 extension outside the MC68000 set. It is
-  implemented for compatibility but has no MC68000 cycle-equivalence claim and
-  is not in the differential corpus.
+- `MOVE to CCR` (0x44C0) is a documented MC68000 instruction and is exercised by
+  `rom_status_reg` (12 + source EA). `MOVE from CCR` (0x42C0) is the 68010
+  addition outside the MC68000 set; it is implemented for compatibility but has
+  no MC68000 cycle-equivalence claim and is not in the differential corpus.
 - The address stream, per-instruction cycle cost and selected final state are
   compared for these synthetic ROMs only; no game compatibility, Z80, audio,
   rendering or DMA claim follows.
