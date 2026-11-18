@@ -558,7 +558,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
     assert_eq!(idle.field("counter_1_coalesced"), "0");
 
     // The fixture never writes SR, so the reset mask 7 keeps the HBlank request
-    // pending at the end of the first active line (quantum 64).
+    // pending at the end of the first active line on the master-cycle timeline.
     let stdout = stable(&["debug", "interrupts", "--rom", rom_path, "--steps", "120"]);
     let block = single_block(&stdout);
     let expected = [

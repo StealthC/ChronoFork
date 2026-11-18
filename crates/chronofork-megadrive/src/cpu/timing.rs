@@ -276,12 +276,6 @@ pub fn base_cycles(opcode: u16) -> Option<u16> {
     })
 }
 
-/// Returns the complete conditional-branch cost.
-///
-/// A taken `Bcc` costs 10 cycles for both displacement sizes; an untaken one
-/// costs 8 with an 8-bit displacement and 12 with a 16-bit displacement. `BRA`
-/// is always taken (10) and `BSR` costs 18.
-#[must_use]
 /// Returns the documented base cost of a bit operation, excluding the target
 /// effective-address cost.
 ///
@@ -330,6 +324,12 @@ pub fn dbcc_cycles(condition_true: bool, taken: bool) -> u16 {
     }
 }
 
+/// Returns the complete conditional-branch cost.
+///
+/// A taken `Bcc` costs 10 cycles for both displacement sizes; an untaken one
+/// costs 8 with an 8-bit displacement and 12 with a 16-bit displacement. `BRA`
+/// is always taken (10) and `BSR` costs 18.
+#[must_use]
 pub fn branch_cycles(opcode: u16, taken: bool) -> u16 {
     match (opcode >> 8) & 0xF {
         0x0 => 10,

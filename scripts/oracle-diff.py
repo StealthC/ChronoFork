@@ -539,7 +539,7 @@ def build_masked_rom():
     _init_registers(asm)
 
     # Ten-iteration recurrence. Repeated loop addresses make the projected
-    # stream comfortably longer than one default quantum of 64 instructions.
+    # stream comfortably longer than the historical default instruction quantum.
     asm.moveq(10, 0)  # D0 = iteration counter
     asm.moveq(0, 1)  # D1 = accumulated sum
     asm.moveq(5, 2)  # D2 = recurrence increment

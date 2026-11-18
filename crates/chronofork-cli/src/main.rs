@@ -1197,7 +1197,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         descriptor.version()
     );
     println!(
-        "scope: 68000 subset, ROM/RAM, VDP status/control/VRAM window, deterministic interrupt scheduler"
+        "scope: documented MC68000 instruction set, ROM/RAM, VDP status/control/VRAM window, master-cycle interrupt scheduler"
     );
     println!("limitations: no rendering, audio, Z80, DMA, controllers or cycle-accurate timing");
 
