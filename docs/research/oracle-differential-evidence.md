@@ -46,7 +46,7 @@ checks the instruction-quantum HBlank crossing and mask-7 gating control.
 | `rom_mem_vdp` | 1,000,000 (explicit) | 51/51 identical | `ba4f3948…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 25 caught, exit 1 |
 | `rom_masked` | **64 (CLI default, flag omitted)** | 155/155 identical | `02891e15…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 77 caught, exit 1 |
 
-Current summary: `status: pass`, 3/3 trace matches, 3/3 final-state matches,
+Historical 3-ROM summary: `status: pass`, 3/3 trace matches, 3/3 final-state matches,
 3/3 negative controls, 3/3 scheduler controls (masked gating 1/1), harness exit 0.
 `rom_masked` executed 155 instructions at quantum 64, completed two scanlines
 (boundaries at ticks 64 and 128) with the SR mask at 7 on both sides, executed no
@@ -210,7 +210,7 @@ stream.
    entry. Derived boundary counts are ChronoFork control quantities, not oracle
    timing comparisons.
 8. **Determinism.** Run the oracle probe twice and the ChronoFork trace twice per
-   ROM; require byte-identical trace files and states across runs. The current
+   ROM; require byte-identical trace files and states across runs. This historical
    evidence was also reproduced into fresh output directories (an ignored
    `.research/evidence/repro-e2-15/` directory and `/tmp/chronofork-e2-15-verify/`)
    with identical behavioral evidence.
@@ -283,7 +283,7 @@ encodings. The pre-repair evidence is preserved under
 `.research/evidence/before-repair/` (JSON, Markdown and artifacts); it was copied,
 not overwritten.
 
-## Current trace results (three ROMs)
+## Historical 3-ROM trace results (preserved)
 
 Projection = executed-address sequence up to but excluding the marker loop.
 
@@ -387,7 +387,7 @@ final-state comparisons. The pass is therefore **negative evidence for mask
 gating** — no handler executes while masked — not a positive comparison of
 interrupt delivery, acknowledge, nesting or interrupt timing.
 
-## Current final-state comparison
+## Historical 3-ROM final-state comparison (preserved)
 
 Method: after one frame, one MCP session per ROM reads `cpu.registers` for
 `Main 68000` and `cpu.read_memory` for 64 bytes at `0xFF0000`; ChronoFork writes the
@@ -439,7 +439,7 @@ match on registers, effective SR and 64 work-RAM bytes.
 
 The comparator is driven from the oracle projection; one projected record is
 corrupted in a copy and the comparator must exit 1 and report the corrupted index.
-All three current controls pass.
+All three historical controls passed.
 
 | ROM | Corrupted index | Reported index | Exit code | Status |
 |---|---:|---:|---:|---|

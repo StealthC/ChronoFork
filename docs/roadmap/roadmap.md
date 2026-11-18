@@ -40,7 +40,7 @@ scope, exit criteria, dependencies and non-goals.
 | Stage | Milestone | Focus |
 |---|---|---|
 | [Stage 0 — Bootstrap foundation](#stage-0--bootstrap-foundation) | [M0](milestones.md#m0--bootstrap-foundation) | Architecture, workspace, synthetic validator, docs, gates |
-| [Stage 1 — Real backend decision and minimal hardware core](#stage-1--real-backend-decision-and-minimal-hardware-core) | [M1](milestones.md#m1--backend-decision-and-minimal-hardware-slice) | ADR-0002, 68000 subset, ROM/RAM, VDP port window, interrupt scheduler, oracle differential |
+| [Stage 1 — Real backend decision and minimal hardware core](#stage-1--real-backend-decision-and-minimal-hardware-core) | [M1](milestones.md#m1--backend-decision-and-minimal-hardware-slice) | ADR-0002, documented 68000 set, ROM/RAM, VDP port window, interrupt scheduler, oracle differential |
 | [Stage 2 — Sessions, forks and save states at product quality](#stage-2--sessions-forks-and-save-states-at-product-quality) | [M2](milestones.md#m2--durable-sessions) | Durable checkpoints, metadata, compatibility, writer ownership |
 | [Stage 3 — TAS and deterministic replay](#stage-3--tas-and-deterministic-replay) | [M3](milestones.md#m3--tas-and-replay) | Movies, replay/seek, rewind, rerecord/edit, hardware input TAS |
 | [Stage 4 — Debugging depth](#stage-4--debugging-depth) | [M4](milestones.md#m4--debugging-depth) | Debug observation, breakpoints/watchpoints, views, inspectors, debug CLI |
@@ -92,8 +92,9 @@ scope, exit criteria, dependencies and non-goals.
 
 - Accepted [ADR-0002](../adr/0002-backend-boundaries.md) (Option E, Rust-native staged
   hybrid).
-- A documented 68000 subset with ROM/RAM map, reset vectors and a deterministic
-  instruction-quantum tick.
+- The documented MC68000 instruction set with ROM/RAM map, reset vectors and a
+  deterministic master-cycle tick (the M1 subset and instruction quantum are
+  superseded).
 - ROM identity (`config_hash`) and an independently authored synthetic ROM.
 - Snapshot/restore/fork on the real core, with slice state in snapshots and state hashes.
 - Minimal VDP status/control port window with 64 KiB VRAM.
@@ -101,8 +102,9 @@ scope, exit criteria, dependencies and non-goals.
   gating (level 7 always admitted, other levels only when strictly above the mask), `RTE`
   handler return and CPU-side VDP VINT pending/acknowledge.
 - Bounded debug-only instruction trace and the `megadrive trace` CLI.
-- Pinned-oracle differential evidence for three synthetic ROMs, including a default-quantum
-  masked-ROM negative gating control.
+- Pinned-oracle differential evidence for eleven synthetic ROMs on the master-cycle
+  timeline, with address, per-instruction cycle, final-state and negative-control
+  comparisons; the historical masked-ROM default-quantum control is preserved.
 
 ### Exit criteria
 
@@ -635,7 +637,7 @@ carrying an unchecked hardware box.
 
 #### Scope and deliverables
 
-- A broader differential corpus beyond the three synthetic ROMs.
+- A broader differential corpus beyond the current eleven synthetic ROMs.
 - Positive differential comparison of interrupt delivery and timing, which needs an oracle
   model of those semantics.
 - Cycle accuracy, including prefetch and bus timing, at a documented level.

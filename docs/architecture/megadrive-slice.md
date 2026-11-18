@@ -265,9 +265,9 @@ full numbers, commands and limitations are in the
   field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
   and the oracle `time` column are not compared. M3's per-ROM instruction quantum
   and masked-boundary control are superseded.
-- The ten synthetic ROMs are the three historical ones plus EA, shift, BCD,
-  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX and system/status-register fixtures under
-  `scripts/fixtures/`. The regenerated repair run passes: address projections
+- The eleven synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX, system/status-register and bit/DBcc
+  fixtures under `scripts/fixtures/`. The regenerated repair run passes: address projections
   11/11, per-instruction cycle comparisons 11/11, selected final states 11/11, and
   address/cycle/final-state negative controls 11/11; the harness exits 0. No
   divergence remains in the compared observables and no expectation was edited to
@@ -492,7 +492,7 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond the ten synthetic ROMs, positive differential
+- Differential evidence beyond the eleven synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
   full-hardware timing or game compatibility. The 11-ROM run matches instruction
@@ -572,7 +572,7 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    SRAM and TMSS landed in phase 8.1.
 2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
    remaining exception-edge behaviour, driven by differential tests.
-3. Broaden the differential corpus beyond the ten synthetic ROMs while keeping
+3. Broaden the differential corpus beyond the eleven synthetic ROMs while keeping
    instruction-address/cycle/state comparison distinct from hardware timing
    equivalence. A positive comparison of interrupt delivery or latency would need
    an oracle model of those semantics; the current masked-ROM pass is negative

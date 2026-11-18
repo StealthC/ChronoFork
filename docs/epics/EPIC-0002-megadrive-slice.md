@@ -4,9 +4,11 @@
   implemented; E2-13 absolute-long `MOVE` decoding repair landed; E2-15 SR-mask
   gating, `RTE` and VDP VINT pending/acknowledge implemented with backend, CLI and
   snapshot tests; the TH-high 3-button controller reads on ports 1–2 were added by
-  the M3 real-hardware input TAS increment; three-ROM oracle differential evidence
-  passes 3/3 including a default-quantum masked-ROM negative gating control. Broader
-  instruction/addressing coverage, E2-11 ROM identity and the remaining hardware are
+  the M3 real-hardware input TAS increment; the current Phase 8.2 harness covers
+  eleven synthetic ROMs and passes 11/11 address, per-instruction cycle, final-state
+  and negative-control comparisons, while the historical three-ROM 3/3 run and its
+  default-quantum masked-ROM negative gating control are preserved as history.
+  Broader addressing coverage, E2-11 ROM identity and the remaining hardware are
   still open, tracked in H1–H5 below)
 - **Milestone:** M1 (core slice, complete and merged); M3 delivered the controller
   input TAS extension and M4 added the debugging surface (merged to `main` at
@@ -27,20 +29,22 @@ the contract validator.
 
 ## Scope
 
-- `chronofork-megadrive` crate with a minimal documented 68000 subset.
+- `chronofork-megadrive` crate with the documented MC68000 instruction set.
 - Big-endian ROM window and 64 KiB work RAM.
 - Reset vectors, status register and a small flag model.
 - Minimal VDP status/control/VRAM port window behind the bus.
-- Deterministic instruction-quantum VBlank/HBlank interrupt scheduler and 68000
-  interrupt entry, including SR interrupt-priority-mask gating, `RTE` return and
-  VDP VINT pending/acknowledge wiring.
+- Deterministic master-cycle VBlank/HBlank interrupt scheduler and 68000 interrupt
+  entry, including SR interrupt-priority-mask gating, `RTE` return and VDP VINT
+  pending/acknowledge wiring.
 - Backend contract implementation with versioned snapshots, state hashing and
   device state (VDP + scheduler) in payloads and hashes.
 - Session integration: create, step, snapshot, fork, memory isolation, restore.
 - Independently authored synthetic ROMs and CLI demo.
 - Bounded, debug-only instruction trace and a `megadrive trace` CLI.
-- External-oracle differential evidence for independently authored synthetic ROMs,
-  including a default-quantum masked-ROM negative gating control.
+- External-oracle differential evidence for eleven independently authored synthetic
+  ROMs on the master-cycle timeline, including address, per-instruction cycle,
+  final-state and negative-control comparisons; the historical default-quantum
+  masked-ROM control is preserved.
 - Tests and documentation of exact limitations.
 
 ## Out of scope
@@ -73,7 +77,7 @@ the contract validator.
 | E2-09 | Add VDP status/control and a minimal VRAM window | Done |
 | E2-10 | Add deterministic interrupt/tick scheduler | Done |
 | E2-11 | Add ROM header/region/config identity and cartridge loader | Planned |
-| E2-12 | Add external-oracle differential traces | Done — post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extends the same harness to the masked-ROM control (current evidence PASS 3/3) |
+| E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
 | E2-13 | Expand instruction/addressing coverage with tests | In progress — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests; broader instruction/addressing coverage remains future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
 | E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` (privilege not enforced here) writes the raw SR for mask control; VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; CLI demo and masked default-quantum differential control pass. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
@@ -93,10 +97,11 @@ milestone has to be reopened:
 | E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
 | Broader differential corpus, positive interrupt-delivery evidence, cycle accuracy and cross-platform determinism | H5 |
 
-Delivered and not part of that open set: the modelled 68000 subset, ROM/RAM, the VDP
-port window and VRAM, the interrupt scheduler with SR-mask gating/`RTE`/VINT
-pending-acknowledge, the bounded debug trace, the three-ROM differential harness and
-the TH-high 3-button controller reads (M3). M4 later added the optional
+Delivered and not part of that open set: the documented MC68000 instruction set,
+ROM/RAM, the VDP port window and VRAM, the master-cycle interrupt scheduler with
+SR-mask gating/`RTE`/VINT pending-acknowledge, the bounded debug trace, the eleven-ROM
+differential harness and the TH-high 3-button controller reads (M3). The historical
+three-ROM differential run remains preserved as history. M4 later added the optional
 non-canonical debugging surface; it was verified on `agent/m4-debugging-depth` at
 `6d30243` and is merged to `main` at `4c595a2`.
 
@@ -138,8 +143,10 @@ Controlled conditions:
   stream; VDP data-port reads are excluded because oracle prefetch differs from the
   minimal VDP model.
 
-The current harness run is **PASS 3/3**: 3/3 projected address streams, 3/3 final
-states, 3/3 negative controls and 3/3 scheduler controls (masked gating 1/1), exit 0.
+The historical three-ROM harness run was **PASS 3/3**: 3/3 projected address streams,
+3/3 final states, 3/3 negative controls and 3/3 scheduler controls (masked gating
+1/1), exit 0. The current Phase 8.2 harness runs eleven synthetic ROMs and passes
+11/11 address, per-instruction cycle, final-state and negative controls.
 
 - `rom_alu`: 2375 oracle total / 99 projected records and 99/99 ChronoFork projected
   records, projection SHA-256
@@ -164,10 +171,10 @@ repaired the decoder (`0x1039`/`0x2039`/`0x3039` now decode; `0x1038`/`0x2038`/
 `0x3038` remain typed illegal) with regression tests. The earlier canonical
 two-ROM Phase-10 evidence at the explicit 1,000,000-instruction quantum is
 preserved unchanged under ignored `.research/evidence/before-e2-15/` as the
-controlled-condition history. This establishes instruction-address and
-selected-state agreement for three synthetic ROMs; it is **not** cycle, timing,
-interrupt-timing, interrupt-delivery, rendering, audio, Z80, DMA or
-game-compatibility equivalence.
+controlled-condition history. The historical three-ROM evidence establishes
+instruction-address and selected-state agreement; the current Phase 8.2 harness
+also compares per-instruction 68000 cycle costs. Neither is interrupt-timing,
+interrupt-delivery, rendering, audio, Z80, DMA or game-compatibility equivalence.
 
 ## Acceptance criteria for this slice
 
@@ -204,7 +211,7 @@ game-compatibility equivalence.
     request: set while pending (even when masked), cleared only on delivery, and
     never cleared by a status-port read. Snapshots/restores preserve pending
     requests and recompute the derived bit; state hashes include pending state.
-18. The differential harness reports PASS 3/3 for three synthetic ROMs, including
+18. The historical differential harness reported PASS 3/3 for three synthetic ROMs, including
     the masked ROM at the CLI default quantum 64 with two HBlank boundaries crossed
     at mask 7 and no handler execution, while the earlier explicit-1,000,000-quantum
     two-ROM evidence remains preserved as controlled-condition history.
@@ -216,13 +223,15 @@ errors" now applies to every other controller access. M4 added optional
 non-canonical debug observation ([ADR-0010](../adr/0010-debugging-depth.md)). Neither
 is part of this epic's exit criteria.
 
-Criteria 1–18 pass for the implemented slice; the epic remains open for E2-11, E2-13's
-broader instruction/addressing coverage and the remaining hardware/evidence gaps
-(rendering and frame timing, VDP data reads, DMA, audio, Z80, timers, the remaining
-controller protocol, other exception groups, privilege enforcement).
-E2-12's two-ROM differential run is done and E2-15 extends it to PASS 3/3 including
-the masked-ROM default-quantum negative gating control; the M1 differential-evidence
-milestone item is ticked on that evidence. E2-15's mask-gating, `RTE`, VINT
+Criteria 1–18 pass for the implemented slice; the epic remains open for E2-11, broader
+addressing coverage and the remaining hardware/evidence gaps (rendering and frame
+timing, VDP data reads, DMA, audio, Z80, timers, the remaining controller protocol and
+the guest bus-error/trace exception groups). Privilege enforcement and the documented
+MC68000 instruction set are delivered.
+E2-12's two-ROM differential run and E2-15's 3/3 masked-ROM control are historical;
+the current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address, cycle,
+final-state and negative controls, and the M1 differential-evidence item is ticked on
+that evidence. E2-15's mask-gating, `RTE`, VINT
 pending/acknowledge and privileged `MOVE.W #imm,SR` behavior is covered by Rust
 tests plus the CLI demo; the differential evidence remains negative gating evidence,
 not an interrupt-delivery or interrupt-timing comparison.
@@ -250,13 +259,13 @@ of truth for the current count.
 |---|---|---|
 | Subset mistaken for a complete emulator | Misleading users | Explicit naming, docs, capabilities and CLI text |
 | Wrong 68000 decoding | Silent bad execution | Unit tests plus the differential harness; the E2-13 absolute-long repair added regression tests for the `0x..39` loads and `0x..38` rejection, while broader decoding coverage remains future work |
-| Snapshot state missing future devices | Broken restore/fork | Versioned payload v2; device blobs validated before commit; pending interrupt state and the derived VINT latch are covered by tests |
-| Tick = instruction conflated with cycles | False timing claims | Documented; scheduler quantum is an explicit model parameter and the CLI records it; cycle accuracy is out of scope |
+| Snapshot state missing future devices | Broken restore/fork | Versioned payload v4; device blobs validated before commit; pending interrupt state and the derived VINT latch are covered by tests |
+| Tick = instruction conflated with cycles | False timing claims | Canonical time is the master-cycle timeline (instruction cost x 7); functional prefetch, bus contention and interrupt latency remain out of scope |
 | Mask gating mistaken for interrupt timing/delivery equivalence | False hardware-equivalence claims | Unit/backend tests cover the mask rule, pending retention, acknowledge-per-level, VBlank priority and no nesting; the differential masked-ROM pass is documented as negative gating evidence only |
-| Privilege not enforced | `MOVE.W #imm,SR`/`RTE` run in either mode | Documented limitation; privilege and user/supervisor stack separation remain future work |
+| Privilege enforcement incomplete | `MOVE.W #imm,SR`/`RTE` could run in either mode | Implemented for the documented system instructions; user/supervisor stack separation and RTE restore are covered by tests. |
 | VDP status overclaimed | Users expect rendering or full VINT control | Only VBlank, FIFO-empty and the scheduler-derived VINT-pending latch can change; VDP interrupt-enable registers, VDP-side acknowledge logic and other bits are documented constants |
-| Differential evidence overclaimed as hardware equivalence | False accuracy claims | Compare instruction addresses, ROM-byte consistency and selected state only; oracle cycle/time ignored; no interrupt-timing/delivery comparison; limits stated explicitly |
-| Differential evidence limited to three synthetic ROMs | Overgeneralized conformance claims | Keep scope explicit; the masked ROM is a negative gating control, not a positive interrupt comparison; broader instruction/addressing coverage remains future work beyond the E2-13 repair |
+| Differential evidence overclaimed as hardware equivalence | False accuracy claims | Compare instruction addresses, per-instruction 68000 cycle costs, ROM-byte consistency and selected state; the oracle's absolute cycle base, time column and interrupt timing are not compared; limits stated explicitly |
+| Differential evidence historically limited to three synthetic ROMs | Overgeneralized conformance claims | Keep scope explicit; the current harness covers eleven synthetic ROMs and the historical masked ROM remains a negative gating control, not a positive interrupt comparison; broader addressing/hardware coverage remains future work |
 
 ## Definition of Done (slice)
 
@@ -264,7 +273,8 @@ All acceptance criteria pass, docs state exact limits, no ROMs/upstream code are
 committed, the E2-12 pre- and post-repair evidence is recorded with its controlled
 conditions and negative controls, the E2-15 mask-gating/`RTE`/VINT behavior is
 covered by the backend, CLI and snapshot tests and demonstrated by the CLI demo, the
-current three-ROM differential evidence (including the default-quantum masked-ROM
-negative gating control) is recorded with every number/digest reproducible, the
-earlier explicit-1,000,000-quantum evidence is preserved as history, and the next
-increment is prioritized.
+the historical three-ROM differential evidence (including the default-quantum masked-ROM
+negative gating control) is recorded with every number/digest reproducible, the current
+eleven-ROM 11/11 master-cycle differential is recorded, the earlier
+explicit-1,000,000-quantum evidence is preserved as history, and the next increment is
+prioritized.

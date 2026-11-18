@@ -148,11 +148,12 @@ phases.
 - [x] Deterministic interrupt/tick scheduler with SR-mask gating, `RTE` return and
       CPU-side VINT pending/acknowledge.
 - [x] VDP and interrupt scheduler integrated into backend snapshots, state hashes and CLI.
-- [x] Differential trace evidence against the pinned Exodus oracle: three synthetic ROMs
-      match on projected address streams and selected final state, negative controls are
-      caught, and the masked-ROM default-quantum control crosses two HBlank boundaries with
-      the SR mask at 7 and no handler entry. Current run, controlled windows and pre-repair
-      history are in [oracle differential
+- [x] Differential trace evidence against the pinned Exodus oracle: the historical three
+      synthetic ROMs match on projected address streams and selected final state, and the
+      current Phase 8.2 harness covers eleven ROMs at 11/11 address, per-instruction cycle,
+      final-state and negative controls. The historical masked-ROM default-quantum control
+      crossed two HBlank boundaries with the SR mask at 7 and no handler entry. Current
+      evidence, controlled windows and pre-repair history are in [oracle differential
       evidence](../research/oracle-differential-evidence.md); the masked run is negative
       gating evidence, not interrupt-delivery or interrupt-timing equivalence.
 - [x] Capabilities report matches reality for the implemented slice.
@@ -405,7 +406,7 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
       record blocks, exit codes and typed errors.
 - [x] Non-perturbation evidence: the per-step observation off/on probe found zero canonical
       differences, demo and movie bytes were unchanged, and the pinned-oracle differential
-      stayed PASS 3/3.
+      stayed at its then-current PASS 3/3 (now superseded by the 11/11 run).
 - [x] Independent verification of every M4-A1–A17 row, the full gate, the demo/regression
       comparison and the claim audit (t5 PASS 2026-11-16 at `df98321`).
 - [x] Post-PASS capability-report/wording fix at `6b2a567` re-gated, then promotion audit
@@ -806,7 +807,7 @@ and do not reopen it.
 
 ### Work items
 
-- [x] Documented 68000 subset with reset vectors, flags and big-endian bus discipline.
+- [x] Documented MC68000 instruction set with reset vectors, flags and big-endian bus discipline.
 - [x] E2-13 absolute-long `MOVE` decoding repair, verified by differential evidence.
 - [ ] Broader instruction and addressing-mode coverage, driven by differential tests
       (EPIC-0002 E2-13 continued).
@@ -969,9 +970,11 @@ and do not reopen it.
 
 ### Work items
 
-- [x] Pinned-oracle differential for three synthetic ROMs, with negative controls and a
-      default-quantum masked-ROM negative gating control.
-- [ ] A broader differential corpus beyond the three synthetic ROMs.
+- [x] Pinned-oracle differential for the historical three synthetic ROMs, with negative
+      controls and a default-quantum masked-ROM negative gating control.
+- [x] A broader differential corpus beyond the historical three synthetic ROMs: eleven
+      synthetic ROMs on the master-cycle timeline at 11/11 address, cycle, final-state and
+      negative-control comparisons.
 - [ ] Positive differential comparison of interrupt delivery and timing, which needs an
       oracle model of those semantics.
 - [ ] Cycle accuracy including prefetch and bus timing, at a documented level.
