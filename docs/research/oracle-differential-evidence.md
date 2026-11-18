@@ -37,7 +37,7 @@ checks the instruction-quantum HBlank crossing and mask-7 gating control.
 
 | ROM | Quantum | Projected addresses | Projection SHA-256 | Final state | Negative control |
 |---|---|---|---|---|---|
-| `rom_alu` | 1,000,000 (explicit) | 910/109 identical | `2b6f191c…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 49 caught, exit 1 |
+| `rom_alu` | 1,000,000 (explicit) | 99/99 identical | `2b6f191c…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 49 caught, exit 1 |
 | `rom_mem_vdp` | 1,000,000 (explicit) | 51/51 identical | `ba4f3948…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 25 caught, exit 1 |
 | `rom_masked` | **64 (CLI default, flag omitted)** | 155/155 identical | `02891e15…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 77 caught, exit 1 |
 
@@ -59,8 +59,8 @@ Identical behavioral audit runs are under `.research/evidence/repro-e2-15/` and
 
 | Stage | `rom_alu` | `rom_mem_vdp` |
 |---|---|---|
-| Pre-repair (original evidence) | PASS, 910/109 | **FAIL** at projected index 28, PC `0x00027A`, opcode `0x2239` rejected as illegal |
-| Post-repair (E2-13 fix) | PASS, 910/109 | **PASS**, 51/51, first divergence none |
+| Pre-repair (original evidence) | PASS, 99/99 | **FAIL** at projected index 28, PC `0x00027A`, opcode `0x2239` rejected as illegal |
+| Post-repair (E2-13 fix) | PASS, 99/99 | **PASS**, 51/51, first divergence none |
 
 The divergence was a real pre-existing core decoding defect: the 68000 encodes a
 `MOVE.B/W/L (abs).L,Dn` **load** with source mode/register `111/001` (low byte
