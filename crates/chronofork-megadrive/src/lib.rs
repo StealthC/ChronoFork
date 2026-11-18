@@ -46,7 +46,11 @@ pub use cartridge::{
     MAPPER_REGISTER_END, MAX_IMAGE_SIZE, Region, SRAM_BASE, SRAM_END, SRAM_SIZE, SramSpec,
     TMSS_REGISTER_BASE, TMSS_REGISTER_END, Tmss, TmssModel, VERSION_REGISTER,
 };
-pub use cpu::{CpuError, Ea, M68000, Size, decode_ea, ea_address, read_ea, write_ea};
+pub use cpu::{
+    CpuError, Ea, ExceptionFrame, M68000, Size, VECTOR_ADDRESS_ERROR, VECTOR_BUS_ERROR, VECTOR_CHK,
+    VECTOR_ILLEGAL, VECTOR_IRQ_BASE, VECTOR_PRIVILEGE_VIOLATION, VECTOR_RESET, VECTOR_TRACE,
+    VECTOR_TRAP_BASE, VECTOR_TRAPV, VECTOR_ZERO_DIVIDE, decode_ea, ea_address, read_ea, write_ea,
+};
 pub use disasm::{
     DisasmError, DisasmInstruction, DisasmMemory, MAX_DISASSEMBLY_COUNT, RomMemory, WindowMemory,
     disassemble,

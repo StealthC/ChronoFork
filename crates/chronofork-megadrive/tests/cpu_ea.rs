@@ -133,7 +133,9 @@ fn post_increment_write_that_faults_leaves_the_pointer_untouched() -> Result<(),
     cpu.set_a(0, 0x00FF_FFFF);
     assert!(matches!(
         write_ea(&mut cpu, &mut bus, Ea::PostInc(0), Size::Word, 0xBEEF),
-        Err(CpuError::Bus(_))
+        Err(CpuError::AddressError {
+            address: 0x00FF_FFFF
+        })
     ));
     assert_eq!(cpu.address_register(0), Some(0x00FF_FFFF));
     Ok(())

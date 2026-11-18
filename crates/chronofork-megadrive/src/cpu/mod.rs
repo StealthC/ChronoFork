@@ -654,74 +654,95 @@ impl M68000 {
             trace.record(instruction_pc, opcode);
         }
 
-        match decode::classify(opcode) {
-            InstructionClass::Move
-            | InstructionClass::Moveq
-            | InstructionClass::Movem
-            | InstructionClass::Movep
-            | InstructionClass::Lea
-            | InstructionClass::Pea
-            | InstructionClass::Clr
-            | InstructionClass::Tst
-            | InstructionClass::Ext
-            | InstructionClass::Swap => {
-                exec::r#move::execute(self, bus, opcode)?;
-            }
-            InstructionClass::Branch
-            | InstructionClass::Dbra
-            | InstructionClass::Scc
-            | InstructionClass::Jmp
-            | InstructionClass::Jsr
-            | InstructionClass::Rts => {
-                exec::control::execute(self, bus, opcode)?;
-            }
-            InstructionClass::Nop => {}
-            InstructionClass::Rte => return self.execute_rte(bus),
-            InstructionClass::System => {
-                exec::system::execute(self, bus, opcode)?;
-            }
-            InstructionClass::And
-            | InstructionClass::Andi
-            | InstructionClass::Or
-            | InstructionClass::Ori
-            | InstructionClass::Eor
-            | InstructionClass::Eori
-            | InstructionClass::Not => {
-                exec::logic::execute(self, bus, opcode)?;
-            }
-            InstructionClass::Shift => {
-                exec::shift::execute(self, bus, opcode)?;
-            }
-            InstructionClass::MulDiv | InstructionClass::Bcd => {
-                exec::arith::execute(self, bus, opcode)?;
-            }
-            InstructionClass::Bit => {
-                exec::bit::execute(self, bus, opcode)?;
-            }
-            InstructionClass::Add
-            | InstructionClass::Adda
-            | InstructionClass::Addq
-            | InstructionClass::Addi
-            | InstructionClass::Sub
-            | InstructionClass::Suba
-            | InstructionClass::Subq
-            | InstructionClass::Subi
-            | InstructionClass::Cmp
-            | InstructionClass::Cmpa
-            | InstructionClass::Cmpi
-            | InstructionClass::Cmpm
-            | InstructionClass::Neg
-            | InstructionClass::Negx => {
-                exec::arith::execute(self, bus, opcode)?;
-            }
-            _ => {
-                return Err(CpuError::IllegalOpcode {
-                    pc: instruction_pc,
-                    opcode,
-                });
-            }
+        // RTE handles its own frame faults as host errors: those are not guest
+        // address errors, and a failed return must not try to enter another
+        // exception.
+        if decode::classify(opcode) == InstructionClass::Rte {
+            return self.execute_rte(bus);
         }
-        Ok(())
+
+        let outcome = (|| -> Result<(), CpuError> {
+            match decode::classify(opcode) {
+                InstructionClass::Move
+                | InstructionClass::Moveq
+                | InstructionClass::Movem
+                | InstructionClass::Movep
+                | InstructionClass::Lea
+                | InstructionClass::Pea
+                | InstructionClass::Clr
+                | InstructionClass::Tst
+                | InstructionClass::Ext
+                | InstructionClass::Swap => {
+                    exec::r#move::execute(self, bus, opcode)?;
+                }
+                InstructionClass::Branch
+                | InstructionClass::Dbra
+                | InstructionClass::Scc
+                | InstructionClass::Jmp
+                | InstructionClass::Jsr
+                | InstructionClass::Rts => {
+                    exec::control::execute(self, bus, opcode)?;
+                }
+                InstructionClass::Nop => {}
+                InstructionClass::System => {
+                    exec::system::execute(self, bus, opcode)?;
+                }
+                InstructionClass::And
+                | InstructionClass::Andi
+                | InstructionClass::Or
+                | InstructionClass::Ori
+                | InstructionClass::Eor
+                | InstructionClass::Eori
+                | InstructionClass::Not => {
+                    exec::logic::execute(self, bus, opcode)?;
+                }
+                InstructionClass::Shift => {
+                    exec::shift::execute(self, bus, opcode)?;
+                }
+                InstructionClass::MulDiv | InstructionClass::Bcd => {
+                    exec::arith::execute(self, bus, opcode)?;
+                }
+                InstructionClass::Bit => {
+                    exec::bit::execute(self, bus, opcode)?;
+                }
+                InstructionClass::Add
+                | InstructionClass::Adda
+                | InstructionClass::Addq
+                | InstructionClass::Addi
+                | InstructionClass::Sub
+                | InstructionClass::Suba
+                | InstructionClass::Subq
+                | InstructionClass::Subi
+                | InstructionClass::Cmp
+                | InstructionClass::Cmpa
+                | InstructionClass::Cmpi
+                | InstructionClass::Cmpm
+                | InstructionClass::Neg
+                | InstructionClass::Negx => {
+                    exec::arith::execute(self, bus, opcode)?;
+                }
+                _ => {
+                    return Err(CpuError::IllegalOpcode {
+                        pc: instruction_pc,
+                        opcode,
+                    });
+                }
+            }
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(CpuError::AddressError { address }) => {
+                self.raise_exception(
+                    bus,
+                    VECTOR_ADDRESS_ERROR,
+                    ExceptionFrame::AddressError { address, opcode },
+                )?;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Executes `RTE` (0x4E73).
@@ -1204,14 +1225,18 @@ mod tests {
     }
 
     #[test]
-    fn dbra_odd_target_is_an_address_error() {
-        // DBRA D0,-3 targets 0x201 after the two displacement bytes.
+    fn dbra_odd_target_delivers_an_address_error_exception() {
+        // DBRA D0,-3 targets 0x201 after the two displacement bytes. The ROM
+        // vector-3 entry is zero, so the exception handler target is 0.
         let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFD]);
         cpu.d[0] = 2;
-        assert_eq!(
-            cpu.step(&mut bus),
-            Err(CpuError::AddressError { address: 0x201 })
-        );
+        assert_eq!(cpu.step(&mut bus), Ok(()));
+        assert_eq!(cpu.pc(), 0);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 14));
+        assert_eq!(bus.read16(INITIAL_STACK - 14), Ok(0x2700));
+        assert_eq!(bus.read32(INITIAL_STACK - 12), Ok(0x204));
+        assert_eq!(bus.read32(INITIAL_STACK - 8), Ok(0x0000_0201));
+        assert_eq!(bus.read16(INITIAL_STACK - 4), Ok(0x51C8));
     }
 
     #[test]

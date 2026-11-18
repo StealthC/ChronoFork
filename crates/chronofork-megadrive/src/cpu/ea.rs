@@ -302,6 +302,9 @@ fn write_an(cpu: &mut M68000, register: u8, size: Size, value: u32) -> Result<()
 }
 
 fn read_memory(bus: &mut MegadriveBus, address: u32, size: Size) -> Result<u32, CpuError> {
+    if size != Size::Byte && address & 1 != 0 {
+        return Err(CpuError::AddressError { address });
+    }
     Ok(match size {
         Size::Byte => u32::from(bus.read8(address)?),
         Size::Word => u32::from(bus.read16(address)?),
@@ -315,6 +318,9 @@ fn write_memory(
     size: Size,
     value: u32,
 ) -> Result<(), CpuError> {
+    if size != Size::Byte && address & 1 != 0 {
+        return Err(CpuError::AddressError { address });
+    }
     match size {
         Size::Byte => bus.write8(address, value as u8)?,
         Size::Word => bus.write16(address, value as u16)?,
