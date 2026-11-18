@@ -577,6 +577,15 @@ impl M68000 {
                 self.sr = value;
             }
             InstructionClass::Dbra => return self.execute_dbra(bus, opcode),
+            InstructionClass::And
+            | InstructionClass::Andi
+            | InstructionClass::Or
+            | InstructionClass::Ori
+            | InstructionClass::Eor
+            | InstructionClass::Eori
+            | InstructionClass::Not => {
+                exec::logic::execute(self, bus, opcode)?;
+            }
             InstructionClass::Add
             | InstructionClass::Adda
             | InstructionClass::Addq

@@ -9,10 +9,19 @@
 //! its own operand fields (size, direction and effective address) once the
 //! classifier has selected it.
 
-use super::CpuError;
+use super::{CpuError, M68000, Size};
 
 pub mod arith;
+pub mod logic;
 pub mod r#move;
+
+/// Sets the condition codes for a logic result.
+///
+/// This is the single implementation of the logic flag rule: `N`/`Z` follow the
+/// result, `V`/`C` are cleared and `X` is preserved.
+pub fn set_logic_flags(cpu: &mut M68000, value: u32, size: Size) {
+    cpu.set_logic_flags(value, size);
+}
 
 /// Builds a typed illegal-opcode error.
 ///
