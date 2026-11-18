@@ -170,11 +170,12 @@ phases.
 - M1 has no follow-up scope: the hardware gaps it exposed are hardware depth, tracked in
   [H1](#h1--cpu-and-instruction-completeness) through [H5](#h5--accuracy-and-evidence), not
   as M1 items.
-- Limits carried by the modelled slice and owned by H: privilege is not enforced; only
-  HBlank level 4 and VBlank level 6 sources exist, with level 7 a predicate rule only; no
-  interrupt-timing equivalence is claimed; VDP interrupt-enable registers and VDP-side
-  acknowledge logic are not modelled; controller input is the TH-high 3-button subset on
-  ports 1–2 ([Mega Drive slice](../architecture/megadrive-slice.md#not-implemented)).
+- Limits carried by the modelled slice and owned by H: privilege is enforced for the
+  implemented system instructions; only HBlank level 4 and VBlank level 6 sources exist,
+  with level 7 a predicate rule only; guest bus-error/trace delivery and cycle accuracy
+  remain absent; no interrupt-timing equivalence is claimed; VDP interrupt-enable registers
+  and VDP-side acknowledge logic are not modelled; controller input is the TH-high 3-button
+  subset on ports 1–2 ([Mega Drive slice](../architecture/megadrive-slice.md#not-implemented)).
 - Reopening follows the [closed-milestone rule](#how-to-read-this-document).
 
 ## M2 — Durable sessions

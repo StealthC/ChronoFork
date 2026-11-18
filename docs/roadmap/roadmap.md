@@ -126,11 +126,12 @@ scope, exit criteria, dependencies and non-goals.
   privilege and cycle accuracy belong to the parallel
   [H1–H5](#hardware-depth-parallel-track-h1h5) track; Stage 1 stays complete for the
   modelled slice while that work continues.
-- The slice keeps its documented limits: privilege is not enforced; only HBlank level 4 and
-  VBlank level 6 sources exist, with level 7 a predicate rule only; no interrupt-timing
-  equivalence is claimed; VDP interrupt-enable registers and VDP-side acknowledge logic are
-  not modelled (the CPU-side pending/acknowledge path exists); controller input is the
-  TH-high 3-button subset on ports 1–2. See [Mega Drive
+- The slice keeps its documented limits: privilege is enforced for the implemented system
+  instructions; only HBlank level 4 and VBlank level 6 sources exist, with level 7 a
+  predicate rule only; guest bus-error/trace delivery and cycle accuracy remain absent; no
+  interrupt-timing equivalence is claimed; VDP interrupt-enable registers and VDP-side
+  acknowledge logic are not modelled (the CPU-side pending/acknowledge path exists);
+  controller input is the TH-high 3-button subset on ports 1–2. See [Mega Drive
   slice](../architecture/megadrive-slice.md#not-implemented).
 - Broader instruction/addressing coverage is [H1](#h1--cpu-and-instruction-completeness);
   the remaining controller protocol, cartridge identity and timers are
