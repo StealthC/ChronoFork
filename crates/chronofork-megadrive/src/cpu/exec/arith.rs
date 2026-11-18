@@ -1,4 +1,4 @@
-//! Arithmetic group: ADD/ADDA/ADDQ/ADDI, SUB/SUBA/SUBQ/SUBI,
+//! Arithmetic group: ADD/ADDA/ADDQ/ADDI/ADDX, SUB/SUBA/SUBQ/SUBI/SUBX,
 //! CMP/CMPA/CMPI/CMPM, NEG and NEGX.
 //!
 //! Carry and overflow are computed for each operand width. `ADD`/`SUB` (and
@@ -33,6 +33,16 @@ pub fn sub_flags(cpu: &mut M68000, destination: u32, source: u32, result: u32, s
 /// table (Task 14) lands.
 pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let instruction_pc = cpu.pc().saturating_sub(2);
+    // ADDX/SUBX use the ADD/SUB "Dn,<ea>" opmode with the An-direct mode field
+    // (mode 0 = Dn,Dn; mode 1 = -(An),-(An)).
+    let opmode = (opcode >> 6) & 0x7;
+    let mode = (opcode >> 3) & 0x7;
+    if matches!(opcode & 0xF000, 0xD000 | 0x9000)
+        && matches!(opmode, 4..=6)
+        && matches!(mode, 0 | 1)
+    {
+        return addx_or_subx(cpu, bus, opcode, opcode & 0xF000 == 0xD000);
+    }
     if matches!(opcode & 0xF1F8, 0xC100 | 0xC108 | 0x8100 | 0x8108) {
         return bcd(cpu, bus, opcode);
     }
@@ -248,6 +258,101 @@ fn size_from_bits(bits: u16) -> Option<Size> {
         2 => Some(Size::Long),
         _ => None,
     }
+}
+
+/// Executes `ADDX`/`SUBX` in the register form (`Dn,Dn`) or the predecrement
+/// memory form (`-(An),-(An)`).
+///
+/// Both forms fold the incoming `X` into the operation and set `X`/`C` from the
+/// carry or borrow. `Z` is sticky (`Z = old Z && result == 0`), which is the
+/// documented multi-precision behaviour; `N` follows the result and `V` is the
+/// signed overflow of the same operation.
+fn addx_or_subx(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+    add: bool,
+) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let size = match (opcode >> 6) & 0x7 {
+        4 => Size::Byte,
+        5 => Size::Word,
+        6 => Size::Long,
+        _ => return Err(illegal_opcode(instruction_pc, opcode)),
+    };
+    let first = usize::from((opcode >> 9) & 0x7);
+    let second = usize::from(opcode & 0x7);
+    let extend = u32::from(cpu.flag(FLAG_X));
+
+    let (destination, source, destination_address) = if (opcode >> 3) & 0x7 == 0 {
+        (cpu.read_dn(first, size), cpu.read_dn(second, size), None)
+    } else {
+        let bytes = size.bytes();
+        let source_address = cpu
+            .read_an(second)
+            .checked_sub(bytes)
+            .ok_or(CpuError::StackOverflow)?;
+        cpu.set_a(second, source_address);
+        let destination_address = cpu
+            .read_an(first)
+            .checked_sub(bytes)
+            .ok_or(CpuError::StackOverflow)?;
+        cpu.set_a(first, destination_address);
+        (
+            read_sized(bus, destination_address, size)?,
+            read_sized(bus, source_address, size)?,
+            Some(destination_address),
+        )
+    };
+
+    let size_mask = size.mask();
+    let result = if add {
+        destination.wrapping_add(source).wrapping_add(extend) & size_mask
+    } else {
+        destination.wrapping_sub(source).wrapping_sub(extend) & size_mask
+    };
+    let (carry, overflow) = if add {
+        (
+            u64::from(destination) + u64::from(source) + u64::from(extend) > u64::from(size_mask),
+            (!(destination ^ source) & (destination ^ result) & size.sign_bit()) != 0,
+        )
+    } else {
+        (
+            u64::from(destination) < u64::from(source) + u64::from(extend),
+            ((destination ^ source) & (destination ^ result) & size.sign_bit()) != 0,
+        )
+    };
+
+    if let Some(address) = destination_address {
+        write_sized(bus, address, size, result)?;
+    } else {
+        cpu.write_dn(first, result, size);
+    }
+    let zero = cpu.flag(FLAG_Z) && result == 0;
+    cpu.set_ccr(carry, overflow, zero, result & size.sign_bit() != 0, carry);
+    Ok(timing::instruction_cycles(opcode))
+}
+
+fn read_sized(bus: &mut MegadriveBus, address: u32, size: Size) -> Result<u32, CpuError> {
+    Ok(match size {
+        Size::Byte => u32::from(bus.read8(address)?),
+        Size::Word => u32::from(bus.read16(address)?),
+        Size::Long => bus.read32(address)?,
+    })
+}
+
+fn write_sized(
+    bus: &mut MegadriveBus,
+    address: u32,
+    size: Size,
+    value: u32,
+) -> Result<(), CpuError> {
+    match size {
+        Size::Byte => bus.write8(address, value as u8)?,
+        Size::Word => bus.write16(address, value as u16)?,
+        Size::Long => bus.write32(address, value)?,
+    }
+    Ok(())
 }
 
 fn add_or_sub(

@@ -1,40 +1,31 @@
-//! A deliberately small, documented subset of the Motorola 68000.
+//! The documented Motorola MC68000 instruction set with per-instruction cycle
+//! accounting.
 //!
-//! This is the first real-hardware slice of ChronoFork, not a complete 68000.
-//! It exists to prove reset-vector loading, big-endian execution, deterministic
-//! state, snapshots and session forking with an independently authored program.
+//! The opcode classifier in [`decode`] is the single dispatcher; the execution
+//! groups in [`exec`] implement data movement (including `EXG`, `MOVEM`, `MOVEP`
+//! and `TAS`), arithmetic (including `ADDX`/`SUBX` and multiply/divide), logic,
+//! shifts/rotates, BCD, bit operations, control flow and the privileged system
+//! instructions. Every executed instruction reports its documented 68000-cycle
+//! cost through [`InstructionOutcome::cycles`]; effective-address cost is added
+//! exactly once per operand.
 //!
-//! Implemented today:
-//!
-//! - `MOVEQ`, `MOVE.B/W/L` between `Dn`, immediate and absolute-long operands;
-//! - `ADD.B/W/L`/`SUB.B/W/L` between data registers, plus `ADDQ`/`SUBQ` word/long;
-//! - `CMP.B/W/L Dn,Dn`, `TST.B/W/L Dn`, `CLR.W/L`, `LEA (abs).L,An`, `PEA (abs).L`;
-//! - `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL`, `DBRA`,
-//!   `JMP`, `JSR`, `RTS`;
-//! - interrupt-priority-mask gating through [`interrupt_level_deliverable`]: an
-//!   interrupt at level 7 is always taken, and every other level is taken only
-//!   when it is strictly greater than the `SR` interrupt-priority mask. The
-//!   CPU exposes the same rule as [`M68000::accepts_interrupt_level`];
-//! - interrupt exception entry ([`M68000::interrupt`]) at an explicit accepted
-//!   level: the previous raw `SR` and return PC are pushed, `S` is set, the CCR
-//!   is preserved and the interrupt-priority mask becomes the accepted level;
-//!   `RTE` (0x4E73) restores the raw `SR` and program counter from that frame
-//!   and advances `A7` by six;
-//! - `MOVE.W #imm,SR` (0x46FC), so a program can change its interrupt mask;
-//! - an optional bounded instruction trace (see [`crate::trace`]) recording each
-//!   fetched address/opcode pair. It is disabled by default and is debug data:
-//!   it is not part of snapshots, state hashes or registers.
+//! Exceptions: interrupt-priority-mask gating through
+//! [`interrupt_level_deliverable`] (level 7 always, every other level only when
+//! strictly above the `SR` mask), interrupt and exception entry, the six-byte
+//! short and fourteen-byte address-error frames, privilege enforcement for the
+//! implemented system instructions, and guest illegal-instruction delivery for
+//! unrecognised or reserved encodings. `RTE` restores the raw `SR` and program
+//! counter from its frame and advances `A7` by six.
 //!
 //! The register file carries separate user and supervisor stack pointers
-//! (`USP`/`SSP`) selected by `SR` bit 13; the instruction paths in this slice
-//! do not yet select between them.
+//! (`USP`/`SSP`) selected by `SR` bit 13; exception entry and `RTE` do not yet
+//! perform the hardware stack switch between them.
 //!
-//! Not implemented: effective-address modes beyond the listed forms, automatic
-//! interrupt-vector selection (the caller supplies the vector address), other
-//! exception groups, privilege enforcement (`RTE` and `MOVE.W #imm,SR` execute
-//! in either mode here), automatic stack switching on exception entry and
-//! `RTE`, prefetch, cycle-accurate timing, and the rest of the instruction set.
-//! Unsupported opcodes are errors, never silently skipped.
+//! Not modelled: functional prefetch, bus-cycle contention, DMA stalls,
+//! interrupt latency, bus-error and trace exception delivery, and automatic
+//! stack switching. Unrecognised opcodes raise the guest illegal-instruction
+//! exception (vector 4); they are never silently executed as another
+//! instruction.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -706,7 +697,8 @@ impl M68000 {
             | InstructionClass::Clr
             | InstructionClass::Tst
             | InstructionClass::Ext
-            | InstructionClass::Swap => exec::r#move::execute(self, bus, opcode),
+            | InstructionClass::Swap
+            | InstructionClass::Exg => exec::r#move::execute(self, bus, opcode),
             InstructionClass::Branch
             | InstructionClass::Dbra
             | InstructionClass::Scc
@@ -726,7 +718,7 @@ impl M68000 {
             InstructionClass::MulDiv | InstructionClass::Bcd => {
                 exec::arith::execute(self, bus, opcode)
             }
-            InstructionClass::Bit => exec::bit::execute(self, bus, opcode),
+            InstructionClass::Bit | InstructionClass::Tas => exec::bit::execute(self, bus, opcode),
             InstructionClass::Add
             | InstructionClass::Adda
             | InstructionClass::Addq
@@ -735,6 +727,8 @@ impl M68000 {
             | InstructionClass::Suba
             | InstructionClass::Subq
             | InstructionClass::Subi
+            | InstructionClass::Addx
+            | InstructionClass::Subx
             | InstructionClass::Cmp
             | InstructionClass::Cmpa
             | InstructionClass::Cmpi

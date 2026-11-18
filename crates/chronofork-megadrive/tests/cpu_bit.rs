@@ -102,3 +102,50 @@ fn data_register_bit_numbers_mask_by_31() -> Result<(), Box<dyn Error>> {
     assert!(!flag(&cpu, FLAG_Z));
     Ok(())
 }
+
+#[test]
+fn tas_sets_bit_seven_from_the_value_read_and_clears_v_and_c() -> Result<(), Box<dyn Error>> {
+    // TAS D0 with a positive byte: write 0xFF, N/Z from 0x7F, V/C clear.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xC0])?;
+    cpu.set_d(0, 0x0000_007F);
+    cpu.set_sr(0x2717); // X, N, Z, V and C all set before the instruction.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(0), Some(0x0000_00FF));
+    assert!(!flag(&cpu, FLAG_N));
+    assert!(!flag(&cpu, FLAG_Z));
+    assert!(!flag(&cpu, FLAG_V));
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(flag(&cpu, FLAG_X), "TAS preserves X");
+
+    // TAS D1 with zero: write 0x80 and set Z from the value read.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xC1])?;
+    cpu.set_d(1, 0);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x0000_0080));
+    assert!(flag(&cpu, FLAG_Z));
+    assert!(!flag(&cpu, FLAG_N));
+
+    // TAS D2 with the sign bit already set: value stays 0x80, N set.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xC2])?;
+    cpu.set_d(2, 0x0000_0080);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(2), Some(0x0000_0080));
+    assert!(flag(&cpu, FLAG_N));
+    assert!(!flag(&cpu, FLAG_Z));
+    Ok(())
+}
+
+#[test]
+fn tas_memory_form_reads_and_writes_one_byte() -> Result<(), Box<dyn Error>> {
+    // TAS (A0) with 0x7F at 0x00FF1000.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xD0])?;
+    cpu.set_a(0, 0x00FF_1000);
+    bus.write8(0x00FF_1000, 0x7F)?;
+    cpu.step(&mut bus)?;
+    assert_eq!(bus.read8(0x00FF_1000)?, 0xFF);
+    assert!(!flag(&cpu, FLAG_N));
+    assert!(!flag(&cpu, FLAG_Z));
+    assert!(!flag(&cpu, FLAG_V));
+    assert!(!flag(&cpu, FLAG_C));
+    Ok(())
+}

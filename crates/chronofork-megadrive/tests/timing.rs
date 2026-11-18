@@ -316,3 +316,39 @@ fn exception_entry_reports_thirty_four_cycles_through_step() -> Result<(), Box<d
     assert_eq!(cpu.cycles(), 34);
     Ok(())
 }
+
+#[test]
+fn exg_addx_subx_and_tas_use_documented_cycles() -> Result<(), Box<dyn Error>> {
+    assert_eq!(step_cycles(&[0xC1, 0x41], |_, _| {})?, 6, "EXG D0,D1");
+    assert_eq!(step_cycles(&[0xD3, 0x00], |_, _| {})?, 4, "ADDX.B D0,D1");
+    assert_eq!(step_cycles(&[0xD3, 0x80], |_, _| {})?, 8, "ADDX.L D0,D1");
+    assert_eq!(
+        step_cycles(&[0xD1, 0x89], |cpu, _| {
+            cpu.set_a(0, 0x00FF_1008);
+            cpu.set_a(1, 0x00FF_2008);
+        })?,
+        30,
+        "ADDX.L -(A1),-(A0)"
+    );
+    assert_eq!(step_cycles(&[0x93, 0x40], |_, _| {})?, 4, "SUBX.W D0,D1");
+    assert_eq!(
+        step_cycles(&[0x91, 0x09], |cpu, _| {
+            cpu.set_a(0, 0x00FF_1008);
+            cpu.set_a(1, 0x00FF_2008);
+        })?,
+        18,
+        "SUBX.B -(A1),-(A0)"
+    );
+    assert_eq!(step_cycles(&[0x4A, 0xC0], |_, _| {})?, 4, "TAS D0");
+    assert_eq!(
+        step_cycles(&[0x4A, 0xD0], |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+        14,
+        "TAS (A0): base 10 + byte EA 4"
+    );
+    assert_eq!(
+        step_cycles(&[0x4A, 0xF9, 0x00, 0xFF, 0x10, 0x00], |_, _| {})?,
+        22,
+        "TAS (xxx).L: base 10 + byte EA 12"
+    );
+    Ok(())
+}

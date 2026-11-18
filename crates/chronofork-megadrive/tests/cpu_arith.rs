@@ -201,3 +201,105 @@ fn neg_and_negx_fold_extend_and_set_carry() -> Result<(), Box<dyn Error>> {
     assert!(!flag(&cpu, FLAG_Z));
     Ok(())
 }
+
+#[test]
+fn addx_folds_the_extend_and_sets_carry_extend() -> Result<(), Box<dyn Error>> {
+    // ADDX.B D0,D1 with 0x0F + 0x01 + X=1 -> 0x11, no carry.
+    let (mut cpu, mut bus) = machine(&[0xD3, 0x00])?;
+    cpu.set_d(0, 0x0000_000F);
+    cpu.set_d(1, 0x0000_0001);
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x11));
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(!flag(&cpu, FLAG_X));
+    assert!(!flag(&cpu, FLAG_Z));
+    assert!(!flag(&cpu, FLAG_N));
+
+    // ADDX.L D0,D1 with 0xFFFFFFFF + 1 + X=1 -> 1 with C=X=1. A plain ADD
+    // would ignore X and produce 0, so this also pins the X fold.
+    let (mut cpu, mut bus) = machine(&[0xD3, 0x80])?;
+    cpu.set_d(0, 0x0000_0001);
+    cpu.set_d(1, 0xFFFF_FFFF);
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x0000_0001));
+    assert!(flag(&cpu, FLAG_C));
+    assert!(flag(&cpu, FLAG_X));
+    assert!(!flag(&cpu, FLAG_Z));
+    Ok(())
+}
+
+#[test]
+fn addx_memory_form_predecrements_both_address_registers() -> Result<(), Box<dyn Error>> {
+    // ADDX.L -(A1),-(A0): destination 2 + source 1 + X=1 = 4.
+    let (mut cpu, mut bus) = machine(&[0xD1, 0x89])?;
+    cpu.set_a(0, 0x00FF_1008);
+    cpu.set_a(1, 0x00FF_2008);
+    bus.write32(0x00FF_1004, 2)?;
+    bus.write32(0x00FF_2004, 1)?;
+    cpu.set_sr(0x2714); // X=1 and Z=1: sticky Z must survive a zero result.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.address_register(0), Some(0x00FF_1004));
+    assert_eq!(cpu.address_register(1), Some(0x00FF_2004));
+    assert_eq!(bus.read32(0x00FF_1004)?, 4);
+    Ok(())
+}
+
+#[test]
+fn subx_folds_the_extend_and_borrows() -> Result<(), Box<dyn Error>> {
+    // SUBX.B D0,D1 with 0 - 1 - X=1 -> 0xFE, borrow.
+    let (mut cpu, mut bus) = machine(&[0x93, 0x00])?;
+    cpu.set_d(0, 0x0000_0001);
+    cpu.set_d(1, 0);
+    cpu.set_sr(0x2710);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x0000_00FE));
+    assert!(flag(&cpu, FLAG_C));
+    assert!(flag(&cpu, FLAG_X));
+    assert!(flag(&cpu, FLAG_N));
+    Ok(())
+}
+
+#[test]
+fn subx_memory_form_predecrements_both_address_registers() -> Result<(), Box<dyn Error>> {
+    // SUBX.L -(A1),-(A0): 2 - 1 - X=1 = 0 without borrow.
+    let (mut cpu, mut bus) = machine(&[0x91, 0x89])?;
+    cpu.set_a(0, 0x00FF_1008);
+    cpu.set_a(1, 0x00FF_2008);
+    bus.write32(0x00FF_1004, 2)?;
+    bus.write32(0x00FF_2004, 1)?;
+    cpu.set_sr(0x2714); // X=1 and Z=1: sticky Z must survive a zero result.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.address_register(0), Some(0x00FF_1004));
+    assert_eq!(cpu.address_register(1), Some(0x00FF_2004));
+    assert_eq!(bus.read32(0x00FF_1004)?, 0);
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(!flag(&cpu, FLAG_X));
+    assert!(flag(&cpu, FLAG_Z));
+    Ok(())
+}
+
+#[test]
+fn addx_and_subx_have_sticky_z_for_multi_precision() -> Result<(), Box<dyn Error>> {
+    // Z set + zero result keeps Z set.
+    let (mut cpu, mut bus) = machine(&[0xD3, 0x00])?;
+    cpu.set_d(0, 0x0000_0000);
+    cpu.set_d(1, 0x0000_00FF);
+    cpu.set_sr(0x2714); // X and Z set.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0));
+    assert!(flag(&cpu, FLAG_Z), "zero result keeps the incoming Z");
+    assert!(flag(&cpu, FLAG_C));
+    assert!(flag(&cpu, FLAG_X));
+
+    // A nonzero result clears the incoming Z (plain ADDZ would already be 0).
+    let (mut cpu, mut bus) = machine(&[0x93, 0x00])?;
+    cpu.set_d(0, 0x0000_0000);
+    cpu.set_d(1, 0x0000_0001);
+    cpu.set_sr(0x2704); // Z set, X clear.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(1));
+    assert!(!flag(&cpu, FLAG_Z), "nonzero result clears Z");
+    Ok(())
+}

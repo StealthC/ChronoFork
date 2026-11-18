@@ -240,3 +240,53 @@ fn movep_uses_alternating_byte_order_in_both_directions() -> Result<(), Box<dyn 
     assert_eq!(bus.read8(0x00FF_001A)?, 0x34);
     Ok(())
 }
+
+#[test]
+fn exg_data_registers_swaps_and_does_not_execute_as_and() -> Result<(), Box<dyn Error>> {
+    // The regression program: MOVEQ #1,D0; MOVEQ #2,D1; EXG D0,D1; NOP.
+    // The old decoder routed 0xC141 into AND.W D0,D1 (D1 becomes 0); EXG must
+    // swap the two registers and leave the condition codes alone.
+    let (mut cpu, mut bus) = machine(&[0x70, 0x01, 0x72, 0x02, 0xC1, 0x41, 0x4E, 0x71], &[])?;
+    cpu.step(&mut bus)?;
+    cpu.step(&mut bus)?;
+    let flags = cpu.sr();
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(0), Some(2));
+    assert_eq!(cpu.data_register(1), Some(1));
+    assert_eq!(cpu.sr(), flags, "EXG changes no condition codes");
+    assert_eq!(cpu.pc(), 0x206);
+    Ok(())
+}
+
+#[test]
+fn exg_address_registers_and_data_address_forms_swap_32_bit_values() -> Result<(), Box<dyn Error>> {
+    // EXG A0,A1.
+    let (mut cpu, mut bus) = machine(&[0xC1, 0x49], &[])?;
+    cpu.set_a(0, 0x1111_2222);
+    cpu.set_a(1, 0x3333_4444);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.address_register(0), Some(0x3333_4444));
+    assert_eq!(cpu.address_register(1), Some(0x1111_2222));
+
+    // EXG D0,A1.
+    let (mut cpu, mut bus) = machine(&[0xC1, 0x89], &[])?;
+    cpu.set_d(0, 0xAAAA_BBBB);
+    cpu.set_a(1, 0xCCCC_DDDD);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(0), Some(0xCCCC_DDDD));
+    assert_eq!(cpu.address_register(1), Some(0xAAAA_BBBB));
+    Ok(())
+}
+
+#[test]
+fn exg_with_a7_keeps_the_active_stack_pointer_mirror_consistent() -> Result<(), Box<dyn Error>> {
+    // EXG A0,A7: the exchange must go through the stack-pointer bookkeeping.
+    let (mut cpu, mut bus) = machine(&[0xC1, 0x4F], &[])?;
+    let initial_stack = cpu.a7();
+    cpu.set_a(0, 0x1234_5678);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.address_register(7), Some(0x1234_5678));
+    assert_eq!(cpu.ssp(), 0x1234_5678);
+    assert_eq!(cpu.address_register(0), Some(initial_stack));
+    Ok(())
+}

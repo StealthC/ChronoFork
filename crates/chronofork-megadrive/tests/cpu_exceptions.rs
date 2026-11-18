@@ -89,6 +89,25 @@ fn reserved_movem_destination_takes_vector_4() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn reserved_tas_address_register_form_takes_vector_4() -> Result<(), Box<dyn Error>> {
+    // TAS A0 is not a byte-addressable operand; it must raise the guest
+    // illegal-instruction exception rather than executing as TAS on the address.
+    let (mut cpu, mut bus) = machine(
+        &[0x4A, 0xC8, 0x4E, 0x71],
+        &[(4, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.set_a(0, 0x1234_5678);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(cpu.address_register(0), Some(0x1234_5678));
+    assert_eq!(bus.read32(STACK - 4)?, 0x202);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x202);
+    Ok(())
+}
+
+#[test]
 fn privilege_violation_reaches_a_user_written_handler() -> Result<(), Box<dyn Error>> {
     // NOP; MOVE.W #0,SR in user mode; handler RTE.
     let (mut cpu, mut bus) = machine(

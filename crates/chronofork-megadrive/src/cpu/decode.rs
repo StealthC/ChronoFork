@@ -51,6 +51,14 @@ pub enum InstructionClass {
     Subq,
     /// `SUBI`.
     Subi,
+    /// `ADDX` (extend add, register or predecrement memory form).
+    Addx,
+    /// `SUBX` (extend subtract, register or predecrement memory form).
+    Subx,
+    /// `EXG` (exchange registers).
+    Exg,
+    /// `TAS` (test and set byte).
+    Tas,
     /// `CMP` (effective address to a data register).
     Cmp,
     /// `CMPA` (effective address to an address register).
@@ -134,6 +142,22 @@ pub const fn classify(opcode: u16) -> InstructionClass {
 
     let size = (opcode >> 6) & 0x3;
     let mode = (opcode >> 3) & 0x7;
+    let opmode = (opcode >> 6) & 0x7;
+
+    // ADDX/SUBX use the ADD/SUB "Dn,<ea>" opmode with the An-direct mode field
+    // (mode 0 = Dn,Dn; mode 1 = -(An),-(An)). Those encodings are ADDX/SUBX,
+    // never ADD/SUB; dispatch them before the general families.
+    if (opcode & 0xF000) == 0xD000 && matches!(opmode, 4..=6) && matches!(mode, 0 | 1) {
+        return InstructionClass::Addx;
+    }
+    if (opcode & 0xF000) == 0x9000 && matches!(opmode, 4..=6) && matches!(mode, 0 | 1) {
+        return InstructionClass::Subx;
+    }
+
+    // EXG occupies three encodings inside the AND family's mask.
+    if matches!(opcode & 0xF1F8, 0xC140 | 0xC148 | 0xC188) {
+        return InstructionClass::Exg;
+    }
 
     // 00ss ddd mmm rrr: MOVE/MOVEA. The destination mode 001 selects MOVEA.
     if matches!(opcode & 0xF000, 0x1000 | 0x2000 | 0x3000) {
@@ -189,6 +213,11 @@ pub const fn classify(opcode: u16) -> InstructionClass {
     if opcode == 0x4AFC {
         return InstructionClass::System;
     }
+    // TAS: 0100 1010 11 mmm rrr. ILLEGAL (0x4AFC) is the one reserved word in
+    // this range and is handled above.
+    if (opcode & 0xFFC0) == 0x4AC0 {
+        return InstructionClass::Tas;
+    }
     if (opcode & 0xFFF8) == 0x4E50
         || (opcode & 0xFFF8) == 0x4E58
         || (opcode & 0xFFF8) == 0x4E60
@@ -242,7 +271,10 @@ pub const fn classify(opcode: u16) -> InstructionClass {
 
     match opcode & 0xF000 {
         0x8000 => InstructionClass::Or,
-        0x9000 => InstructionClass::Sub,
+        0x9000 => match (opcode >> 6) & 0x7 {
+            3 | 7 => InstructionClass::Suba,
+            _ => InstructionClass::Sub,
+        },
         0xB000 => match (opcode >> 6) & 0x7 {
             0..=2 => InstructionClass::Cmp,
             3 | 7 => InstructionClass::Cmpa,
@@ -256,7 +288,10 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             _ => InstructionClass::Other,
         },
         0xC000 => InstructionClass::And,
-        0xD000 => InstructionClass::Add,
+        0xD000 => match (opcode >> 6) & 0x7 {
+            3 | 7 => InstructionClass::Adda,
+            _ => InstructionClass::Add,
+        },
         0x5000 => {
             if size == 0x3 {
                 if (opcode & 0xF0F8) == 0x50C8 {
@@ -280,5 +315,154 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             }
         }
         _ => InstructionClass::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InstructionClass, classify};
+
+    /// One documented encoding and the family it must classify into.
+    ///
+    /// This is the audit table for the MC68000 encoding map: every documented
+    /// instruction family has a representative encoding, and the special
+    /// encodings that live inside another family's mask (EXG in AND, ADDX/SUBX
+    /// in ADD/SUB, TAS in the size-3 4Axx region, MOVE to/from SR/CCR,
+    /// CDBcc/Scc, MOVEM/EXT/SWAP/PEA) are pinned separately.
+    const DOCUMENTED: &[(u16, InstructionClass)] = &[
+        (0x7000, InstructionClass::Moveq),
+        (0x6002, InstructionClass::Branch),
+        (0x4E71, InstructionClass::Nop),
+        (0x4E73, InstructionClass::Rte),
+        (0x4E75, InstructionClass::Rts),
+        (0x4E70, InstructionClass::System),
+        (0x4E72, InstructionClass::System),
+        (0x4E76, InstructionClass::System),
+        (0x4E77, InstructionClass::System),
+        (0x4E40, InstructionClass::System),
+        (0x4E50, InstructionClass::System),
+        (0x4E58, InstructionClass::System),
+        (0x4E60, InstructionClass::System),
+        (0x4E68, InstructionClass::System),
+        (0x4AFC, InstructionClass::System),
+        (0x003C, InstructionClass::System),
+        (0x007C, InstructionClass::System),
+        (0x023C, InstructionClass::System),
+        (0x027C, InstructionClass::System),
+        (0x0A3C, InstructionClass::System),
+        (0x0A7C, InstructionClass::System),
+        (0x40C0, InstructionClass::System),
+        (0x42C0, InstructionClass::System),
+        (0x44C0, InstructionClass::System),
+        (0x46C0, InstructionClass::System),
+        (0x4180, InstructionClass::System),
+        (0x4EF9, InstructionClass::Jmp),
+        (0x4EC0, InstructionClass::Jmp),
+        (0x4EB9, InstructionClass::Jsr),
+        (0x4E80, InstructionClass::Jsr),
+        (0x1000, InstructionClass::Move),
+        (0x2000, InstructionClass::Move),
+        (0x3000, InstructionClass::Move),
+        (0x4880, InstructionClass::Ext),
+        (0x48C0, InstructionClass::Ext),
+        (0x4840, InstructionClass::Swap),
+        (0x4890, InstructionClass::Movem),
+        (0x48E0, InstructionClass::Movem),
+        (0x4CD8, InstructionClass::Movem),
+        (0x4848, InstructionClass::Pea),
+        (0x41C0, InstructionClass::Lea),
+        (0x0108, InstructionClass::Movep),
+        (0x0148, InstructionClass::Movep),
+        (0x0188, InstructionClass::Movep),
+        (0x01C8, InstructionClass::Movep),
+        (0x4000, InstructionClass::Negx),
+        (0x4200, InstructionClass::Clr),
+        (0x4400, InstructionClass::Neg),
+        (0x4600, InstructionClass::Not),
+        (0x4800, InstructionClass::Bcd),
+        (0x4A00, InstructionClass::Tst),
+        (0x0800, InstructionClass::Bit),
+        (0x0840, InstructionClass::Bit),
+        (0x0880, InstructionClass::Bit),
+        (0x08C0, InstructionClass::Bit),
+        (0x0100, InstructionClass::Bit),
+        (0xC100, InstructionClass::Bcd),
+        (0xC108, InstructionClass::Bcd),
+        (0x8100, InstructionClass::Bcd),
+        (0x8108, InstructionClass::Bcd),
+        (0xC0C0, InstructionClass::MulDiv),
+        (0xC1C0, InstructionClass::MulDiv),
+        (0x80C0, InstructionClass::MulDiv),
+        (0x81C0, InstructionClass::MulDiv),
+        (0x0000, InstructionClass::Ori),
+        (0x0200, InstructionClass::Andi),
+        (0x0400, InstructionClass::Subi),
+        (0x0600, InstructionClass::Addi),
+        (0x0A00, InstructionClass::Eori),
+        (0x0C00, InstructionClass::Cmpi),
+        (0x8000, InstructionClass::Or),
+        (0x9000, InstructionClass::Sub),
+        (0xB000, InstructionClass::Cmp),
+        (0xB0C0, InstructionClass::Cmpa),
+        (0xB108, InstructionClass::Cmpm),
+        (0xB140, InstructionClass::Eor),
+        (0xC000, InstructionClass::And),
+        (0xD000, InstructionClass::Add),
+        (0xD0C0, InstructionClass::Adda),
+        (0x5000, InstructionClass::Addq),
+        (0x5100, InstructionClass::Subq),
+        (0x50C8, InstructionClass::Dbra),
+        (0x50C0, InstructionClass::Scc),
+        (0xE000, InstructionClass::Shift),
+        (0xE0C0, InstructionClass::Shift),
+        (0xC140, InstructionClass::Exg),
+        (0xC148, InstructionClass::Exg),
+        (0xC188, InstructionClass::Exg),
+        (0xD100, InstructionClass::Addx),
+        (0xD140, InstructionClass::Addx),
+        (0xD180, InstructionClass::Addx),
+        (0xD108, InstructionClass::Addx),
+        (0xD148, InstructionClass::Addx),
+        (0xD188, InstructionClass::Addx),
+        (0x9100, InstructionClass::Subx),
+        (0x9140, InstructionClass::Subx),
+        (0x9180, InstructionClass::Subx),
+        (0x9108, InstructionClass::Subx),
+        (0x9148, InstructionClass::Subx),
+        (0x9188, InstructionClass::Subx),
+        (0x4AC0, InstructionClass::Tas),
+        (0x4AD0, InstructionClass::Tas),
+    ];
+
+    #[test]
+    fn documented_encodings_classify_into_their_own_families() {
+        for (opcode, expected) in DOCUMENTED {
+            assert_eq!(
+                classify(*opcode),
+                *expected,
+                "0x{opcode:04X} must classify as {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn special_encodings_never_fall_into_a_general_family() {
+        // The EXG-as-AND regression: 0xC141 is EXG D0,D1, not AND.W D0,D1.
+        assert_eq!(classify(0xC141), InstructionClass::Exg);
+        // ADDX/SUBX register and predecrement forms are not ADD/SUB.
+        assert_eq!(classify(0xD181), InstructionClass::Addx);
+        assert_eq!(classify(0x9181), InstructionClass::Subx);
+        // TAS is not TST or an unassigned word.
+        assert_eq!(classify(0x4AC0), InstructionClass::Tas);
+        // ILLEGAL remains an exception instruction, not TAS.
+        assert_eq!(classify(0x4AFC), InstructionClass::System);
+        // Unassigned regions stay Other (guest illegal at execution).
+        for opcode in [0xA000_u16, 0xF000, 0x7100, 0x4E74, 0x4E7A, 0x0E00] {
+            assert_eq!(
+                classify(opcode),
+                InstructionClass::Other,
+                "0x{opcode:04X} must stay unassigned"
+            );
+        }
     }
 }

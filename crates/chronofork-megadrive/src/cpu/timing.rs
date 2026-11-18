@@ -141,6 +141,23 @@ pub fn base_cycles(opcode: u16) -> Option<u16> {
                 12
             }
         }
+        InstructionClass::Addx | InstructionClass::Subx => {
+            if mode == 0 {
+                if opmode == 6 { 8 } else { 4 }
+            } else if opmode == 6 {
+                30
+            } else {
+                18
+            }
+        }
+        InstructionClass::Exg => 6,
+        InstructionClass::Tas => {
+            if mode == 0 {
+                4
+            } else {
+                10
+            }
+        }
         InstructionClass::Cmp => {
             if bits == 2 {
                 6
@@ -439,6 +456,13 @@ pub(crate) fn instruction_cycles(opcode: u16) -> u16 {
         InstructionClass::Scc => {
             if let Ok(ea) = super::decode_ea(mode, register, Size::Byte) {
                 cycles += ea_cycles(&ea, Size::Byte, false);
+            }
+        }
+        InstructionClass::Tas => {
+            if mode != 0 {
+                if let Ok(ea) = super::decode_ea(mode, register, Size::Byte) {
+                    cycles += ea_cycles(&ea, Size::Byte, false);
+                }
             }
         }
         InstructionClass::Bit => {

@@ -24,6 +24,9 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
     if (opcode & 0xF100) == 0x7000 {
         return moveq(cpu, opcode);
     }
+    if matches!(opcode & 0xF1F8, 0xC140 | 0xC148 | 0xC188) {
+        return exg(cpu, opcode);
+    }
     if matches!(opcode & 0xF000, 0x1000 | 0x2000 | 0x3000) {
         return move_form(cpu, bus, opcode);
     }
@@ -182,6 +185,41 @@ fn pea(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     )?;
     let address = ea_address(cpu, bus, ea)?;
     cpu.push_long(bus, address)?;
+    Ok(timing::instruction_cycles(opcode))
+}
+
+/// Executes `EXG` in its three documented forms.
+///
+/// All forms exchange two 32-bit registers and change no condition codes. The
+/// register pair is encoded by the opmode/mode fields:
+/// `01000` is `Dx,Dy`, `01001` is `Ax,Ay` and `10001` is `Dx,Ay`.
+fn exg(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
+    let first = usize::from((opcode >> 9) & 0x7);
+    let second = usize::from(opcode & 0x7);
+    match ((opcode >> 6) & 0x7, (opcode >> 3) & 0x7) {
+        (5, 0) => {
+            let first_value = cpu.read_dn(first, Size::Long);
+            let second_value = cpu.read_dn(second, Size::Long);
+            cpu.write_dn(first, second_value, Size::Long);
+            cpu.write_dn(second, first_value, Size::Long);
+        }
+        (5, 1) => {
+            let first_value = cpu.read_an(first);
+            let second_value = cpu.read_an(second);
+            cpu.set_a(first, second_value);
+            cpu.set_a(second, first_value);
+        }
+        (6, 1) => {
+            let data_value = cpu.read_dn(first, Size::Long);
+            let address_value = cpu.read_an(second);
+            cpu.write_dn(first, address_value, Size::Long);
+            cpu.set_a(second, data_value);
+        }
+        _ => {
+            let instruction_pc = cpu.pc().saturating_sub(2);
+            return Err(illegal_opcode(instruction_pc, opcode));
+        }
+    }
     Ok(timing::instruction_cycles(opcode))
 }
 
