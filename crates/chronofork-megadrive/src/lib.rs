@@ -22,6 +22,7 @@ pub mod backend;
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
+pub mod cycles;
 mod debug;
 pub mod disasm;
 pub mod inspect;
