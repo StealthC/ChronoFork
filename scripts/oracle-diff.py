@@ -61,6 +61,9 @@ Known scope limits (also written into the evidence):
   not a positive comparison of interrupt delivery;
 - a real divergence is reported as a finding and is never masked by editing the
   core or by weakening the comparison.
+- the ROMs clear X with ADD.B D0,D0 before the measured program because the oracle
+  powers up with X set (SR 0x7FE0 raw) while ChronoFork resets CCR clear; an
+  architecturally undefined reset flag must not masquerade as a state divergence.
 
 Exit status: 0 when every ROM matches, 1 when a trace or final-state comparison
 diverges, 2 on a harness/setup error.
@@ -1943,8 +1946,9 @@ def write_evidence_markdown(path, evidence):
     lines.append("the start of each instruction, so a projected instruction's cost is the difference")
     lines.append("to the next oracle record; ChronoFork's fourth trace column is its")
     lines.append("`InstructionOutcome.cycles`. Absolute cycle bases and the oracle `time` column are")
-    lines.append("not compared. Functional prefetch is not cycle-modelled, MUL/DIV use documented")
-    lines.append("worst-case costs and no interrupt-latency equivalence is claimed.")
+    lines.append("not compared. Functional prefetch is not cycle-modelled, MULU/MULS use the")
+    lines.append("documented operand-dependent early-out, DIVU/DIVS use the documented worst-case")
+    lines.append("base, and no interrupt-latency equivalence is claimed.")
     lines.append("")
     lines.append("| ROM | compared instructions | cycles match | first cycle mismatch |")
     lines.append("|---|---:|---|---|")
@@ -2324,8 +2328,9 @@ def main(argv):
         "Cycle comparison uses the oracle's accumulated cycle column only: an instruction's "
         "cost is the difference to the next record, compared with ChronoFork's fourth trace "
         "field (InstructionOutcome.cycles). Absolute cycle bases and the oracle time column are "
-        "not compared. Functional 68000 prefetch is not cycle-modelled, MUL/DIV use documented "
-        "worst-case cost and no interrupt-latency equivalence is claimed.",
+        "not compared. Functional 68000 prefetch is not cycle-modelled, MULU/MULS use the "
+        "documented operand-dependent early-out, DIVU/DIVS use the documented worst-case base, "
+        "and no interrupt-latency equivalence is claimed.",
         "VDP data-port reads are not compared: the oracle's VRAM read prefetch behaviour does not "
         "match the minimal VDP model. VDP control/data-port writes are executed and are part of "
         "the compared instruction stream. No rendering, DMA, CRAM/VSRAM or raster timing is claimed.",

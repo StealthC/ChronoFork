@@ -3,9 +3,9 @@
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
-  timeline, with eight-ROM oracle differential evidence: address projections match
-  all eight and per-instruction cycle comparison records both the matching BCD ROM
-  and the remaining divergences); not a complete emulator. Controller-port data-register reads for real-hardware
+  timeline, with eight-ROM oracle differential evidence: address projections,
+  per-instruction cycle costs and selected final states all match 8/8); not a
+  complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
   the canonical state, demos and M1 evidence unchanged. A/Start, TH/6-button/Start
@@ -69,41 +69,29 @@ fixtures are independently authored synthetic data.
 
 ### 68000 subset
 
-Implemented:
+The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 
-| Instruction | Forms |
+| Group | Instructions |
 |---|---|
-| `MOVEQ` | `#imm,Dn` |
-| `MOVE` | `B/W/L` between `Dn`, `#imm` and absolute-long operands |
-| `ADD` / `SUB` | `B/W/L` between data registers |
-| `ADDQ` / `SUBQ` | word/long, data-register destination |
-| `CMP` | `B/W/L`, data-register operands; `X` preserved |
-| `TST` | `B/W/L`, data-register operand |
-| `CLR` | `W/L`, data-register destination |
-| `LEA` | `(abs).L,An` |
-| `PEA` | `(abs).L` |
-| `NOP` | — |
-| `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL` | 8-bit displacement |
-| `DBRA` | `Dn,disp16` |
-| `JMP`, `JSR` | absolute-long operand |
-| `RTS` | — |
-| `RTE` | `0x4E73`; restores raw `SR` and PC from the six-byte frame, advances A7 |
-| `MOVE.W #imm,SR` | `0x46FC`; replaces raw `SR`, including the interrupt mask |
-| Interrupt exception entry | `M68000::interrupt(level, vector_address)`: pushes raw `SR` + PC, sets `S`, preserves CCR, loads the accepted level into the IPM |
+| Data movement | `MOVE`/`MOVEA` (all documented source/destination modes), `MOVEQ`, `MOVEM`, `MOVEP`, `LEA`, `PEA`, `CLR`, `TST`, `EXT`, `SWAP` |
+| Arithmetic | `ADD`/`ADDA`/`ADDQ`/`ADDI`, `SUB`/`SUBA`/`SUBQ`/`SUBI`, `CMP`/`CMPA`/`CMPI`/`CMPM`, `NEG`, `NEGX`, `MULU`, `MULS`, `DIVU`, `DIVS` |
+| Logic | `AND`/`ANDI`, `OR`/`ORI`, `EOR`/`EORI`, `NOT` |
+| Shifts/rotates | `ASL`, `ASR`, `LSL`, `LSR`, `ROL`, `ROR`, `ROXL`, `ROXR` in register and memory forms |
+| BCD | `ABCD`, `SBCD`, `NBCD` |
+| Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number) |
+| Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
+| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to/from `SR` and `CCR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry |
 
-Absolute-long `MOVE` loads use the real 68000 source mode/register `111/001`
-(`0x1039`/`0x2039`/`0x3039`) and fetch a 4-byte address. The absolute-*word* source
-forms (`0x1038`/`0x2038`/`0x3038`) are not in this subset and return the typed
-`IllegalOpcode` error instead of being executed with a 32-bit fetch. An earlier
-decoder accepted the `0x..38` load forms; EPIC-0002 E2-13 repaired it and regression
-tests cover byte/word/long `(abs).L,Dn` loads, rejection of the `0x..38` forms and
-the `Dn,(abs).L` store encodings.
+Every instruction reports its documented 68000-cycle cost (see the timing and
+differential sections below); effective-address cost is added exactly once per
+operand. Unrecognised and reserved encodings raise the guest illegal-instruction
+exception (vector 4) with the documented six-byte frame rather than a host error.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
 
-Flags implemented: `N`, `Z`, `V`, `C`, `X` for the listed arithmetic/logic
-operations. `SR` upper bits are preserved.
+Flags implemented: `N`, `Z`, `V`, `C`, `X` for the documented arithmetic, logic,
+shift, BCD and bit operations. `SR` upper bits are preserved.
 
 The interrupt entry API pushes a word raw `SR` and a long return `PC` (six bytes),
 sets the supervisor bit, preserves the CCR, loads the accepted interrupt level into
@@ -114,10 +102,12 @@ push leaves `SR`/`PC` untouched, while the six-byte frame can already be pushed
 before a later vector or target fault). `RTE` validates the complete frame before
 changing canonical state, restores the exact raw `SR` (IPM, `S`, CCR), restores the
 PC and advances A7 by six. `MOVE.W #imm,SR` (`0x46FC`) replaces the raw `SR` so a
-program can change its mask. On real hardware `MOVE.W #imm,SR`, `RTE`, `STOP` and
-other privileged operations require supervisor mode; **privilege is not enforced in
-this slice**. `STOP`, `ORI`/`ANDI`/`EORI` to `SR` and the other exception groups are
-not implemented.
+program can change its mask. Privileged operations (`MOVE` to `SR`, `STOP`, `RESET`,
+`RTE`, `MOVE` to/from `USP`) raise the privilege-violation exception (vector 8) in
+user mode. Guest exceptions are delivered for reset (1, via the reset vector),
+address error (3), illegal instruction (4), zero divide (5), `CHK` (6), `TRAPV`
+(7), privilege violation (8), autovector levels 4 and 6 (28/30) and `TRAP #n`
+(32+n); bus-error (2) and trace (9) exception delivery are not implemented.
 
 ### VDP status/control/VRAM slice
 
@@ -267,12 +257,12 @@ full numbers, commands and limitations are in
   and the oracle `time` column are not compared. M3's per-ROM instruction quantum
   and masked-boundary control are superseded.
 - The eight synthetic ROMs are the three historical ones plus EA, shift, BCD,
-  MOVEM/MOVEP and mul/div fixtures under `scripts/fixtures/`. Current result:
-  address projections 8/8, cycle comparison 1/8 fully matching (BCD) with the seven
-  first mismatches recorded, selected final state 5/8, address and cycle negative
-  controls 8/8. The harness exits 1 because the cycle/state divergences are
-  findings, never hidden by editing an expectation. Full numbers, commands and the
-  pinned oracle revision `ec005615…` are in the
+  MOVEM/MOVEP and mul/div fixtures under `scripts/fixtures/`. The regenerated repair
+  run passes: address projections 8/8, per-instruction cycle comparisons 8/8,
+  selected final states 8/8, and address/cycle/final-state negative controls 8/8;
+  the harness exits 0. No divergence remains in the compared observables and no
+  expectation was edited to obtain the pass. Full numbers, commands and the pinned
+  oracle revision `ec005615…` are in the
   [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 - History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
   remains recorded in the historical
@@ -297,9 +287,10 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
   is always deliverable" branch is a tested predicate rule in the shared
   68000/scheduler API, not a wired level-7 interrupt source. Other exception groups
   (timers, Z80, bus-error recovery and trace) are absent; unmapped bus accesses
-  remain typed host errors, while odd/misaligned EA accesses and the implemented
-  `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms use 68000 vectors. Unsupported opcodes remain
-  typed host errors.
+  remain typed host errors, while odd/misaligned EA accesses, unrecognised/reserved
+  encodings and the implemented `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms use 68000
+  vectors. Host errors are reserved for host-level failures (bus, stack, vector
+  table), not for unrecognised guest instructions.
 - **No interrupt-timing equivalence is claimed.** Delivery happens at instruction
   boundaries on the master-cycle timeline (cycle cost added at the boundary), at
   most one exception per boundary; the oracle differential does not compare delivery
@@ -313,11 +304,12 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 - **Pending requests are one per level.** A masked request is retained with its
   original issue tick and repeated requests of the same level coalesce (diagnostic
   counters record coalescing); there is no interrupt queue.
-- Reset CCR/X differs before ROM arithmetic: the oracle powers on with SR `0x7FFF`
-  (CCR `0x1F`, `X=1`), ChronoFork resets to `0x2700` (CCR `0`), and `MOVE` preserves
-  `X`. A MOVE-only differential window can therefore differ in `X` while
-  `N`/`Z`/`V`/`C` match; the harness ROMs clear `X` with arithmetic, so their
-  recorded final effective-SR equality remains valid.
+- Reset CCR/X is architecturally undefined: the oracle powers on with `X=1` and
+  unused raw-SR bits set (raw `SR 0x7FE0`), while ChronoFork resets to raw `SR
+  0x2700` (CCR `0`). Effective fields are compared and the harness ROMs clear `X`
+  explicitly with `ADD.B D0,D0` before the measured section, so an unwritten reset
+  flag cannot masquerade as a state divergence. Raw `SR` words are still not
+  compared.
 
 ### Tests
 
@@ -460,8 +452,9 @@ window to it.
 
 - VDP rendering, planes, sprites, scrolling, CRAM/VSRAM, DMA and raster timing.
 - YM2612, PSG or audio.
-- Z80, bus arbitration, timer/other interrupt sources, controller-port interrupt
-  acknowledge, other 68000 exception groups and privilege enforcement.
+- Z80, bus arbitration, timer/other interrupt sources and controller-port interrupt
+  acknowledge. Guest bus-error (vector 2) and trace (vector 9) exception delivery are
+  not implemented; privileges are enforced for the implemented system instructions.
 - Controller input beyond the TH-high 3-button subset: A and Start, the TH latch/direction
   register and TH-low phase, 6-button pad (X/Y/Z/Mode), controller timing/interrupts, port 3,
   and analog/keyboard hardware. The implemented data-register reads are described above and
@@ -469,11 +462,13 @@ window to it.
 - Cartridge mapper variants beyond the Sega banking above (interleaved dumps, 32X/Pico
   hardware, images above the 64 MiB mapper ceiling) and SRAM banking schemes other than the
   64 KiB window.
-- 68000 prefetch, bus-cycle timing, separate user/supervisor stacks, most
-  addressing modes and most instructions.
-- Cycle accuracy. One executed instruction equals one ChronoFork tick in this
-  slice; the scheduler maps instruction quanta to scanlines with configurable
-  constants. This is deterministic but not hardware timing.
+- 68000 prefetch, bus-cycle timing, bus contention, DMA stalls and interrupt
+  latency. The instruction set and documented addressing modes are implemented, and
+  the register file carries separate user/supervisor stacks.
+- Hardware cycle accuracy. Each instruction advances the master-cycle timeline by
+  its documented 68000 cycle cost times seven; cost is added at the instruction
+  boundary rather than distributed across internal microcycles. This is
+  deterministic instruction-level timing, not a bus-cycle model.
 - A ROM database, region-mismatch handling beyond the derived standard and its explicit
   override, or any commercial-ROM boot. Header/checksum/region parsing and the Sega mapper
   are implemented; the `megadrive trace` and TAS `--rom` commands accept an explicitly
@@ -481,14 +476,15 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond three synthetic ROMs, positive differential
+- Differential evidence beyond the eight synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  timing or game compatibility. The masked-ROM run is negative gating evidence
-  only.
+  full-hardware timing or game compatibility. The 8-ROM run matches instruction
+  addresses, per-instruction cycle costs and selected final state; the masked-ROM
+  run is negative gating evidence only.
 
-Unsupported opcodes and port accesses return errors; they are never silently
-skipped.
+Unrecognised and reserved opcodes raise the guest illegal-instruction exception;
+unmapped port accesses return typed errors. Neither is silently skipped.
 
 ## CLI demo
 
@@ -554,15 +550,15 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
 1. Boot a curated commercial title to its main loop with video and audio, and record the
    compatibility matrix (phase 8.6). The cartridge device, header identity, Sega mapper,
    SRAM and TMSS landed in phase 8.1.
-2. More 68000 addressing modes, instructions and exception groups (EPIC-0002
-   E2-13 continued), driven by differential tests.
-3. Broaden the differential corpus beyond the three synthetic ROMs while keeping
-   address/state comparison distinct from cycle/timing equivalence. A positive
-   comparison of interrupt delivery or timing would need an oracle model of those
-   semantics; the current masked-ROM pass is negative gating evidence only.
-4. Privilege enforcement and separate user/supervisor stacks; additional interrupt
-   sources (a wired level-7 source, timers, VDP interrupt-enable registers) if the
-   slice grows to model them.
+2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
+   remaining exception-edge behaviour, driven by differential tests.
+3. Broaden the differential corpus beyond the eight synthetic ROMs while keeping
+   instruction-address/cycle/state comparison distinct from hardware timing
+   equivalence. A positive comparison of interrupt delivery or latency would need
+   an oracle model of those semantics; the current masked-ROM pass is negative
+   gating evidence only.
+4. Additional interrupt sources (a wired level-7 source, timers, VDP
+   interrupt-enable registers) if the slice grows to model them.
 5. Deeper controller protocol (TH latch/TH-low phase, A/Start, 6-button pad, port 3) only
    if the slice grows to model it; the TH-high 3-button reads and `--rom` hardware TAS are
    implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).

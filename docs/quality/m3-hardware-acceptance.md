@@ -7,7 +7,9 @@
 > master-cycle timeline. Timing claims from rows M3-A51/A52 and the oracle
 > quantum control no longer apply; address/final-state evidence remains
 > historical. Current cycle evidence is
-> [cpu-cycle-differential-evidence.md](../research/cpu-cycle-differential-evidence.md).
+> [cpu-cycle-differential-evidence.md](../research/cpu-cycle-differential-evidence.md);
+> the regenerated 8-ROM Phase 8.2 run passes 8/8 address, cycle and final-state
+> comparisons.
 
 - **Status:** **Executed; every row M3-A45–M3-A53 is `executed - passed`** (independent
   t5 verification PASS, 2026-11-16). The hardware-TAS increment and the M3 completion audit

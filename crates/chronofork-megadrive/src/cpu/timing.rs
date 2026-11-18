@@ -11,7 +11,7 @@
 //! register shift's count, the source word of `MULU`/`MULS`, and the number of
 //! registers transferred by `MOVEM`. Those groups call the matching helper
 //! (`branch_cycles`, `shift_cycles`, `multiply_divide_cycles`, `movem_cycles`)
-//! with the observed value; [`instruction_cycles`] keeps a state-free fallback
+//! with the observed value; `instruction_cycles` keeps a state-free fallback
 //! for the remaining instructions.
 
 use super::decode::{self, InstructionClass};
