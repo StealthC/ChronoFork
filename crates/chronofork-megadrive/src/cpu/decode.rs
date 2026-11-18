@@ -83,6 +83,8 @@ pub enum InstructionClass {
     MulDiv,
     /// `ABCD`/`SBCD`/`NBCD`.
     Bcd,
+    /// `BTST`/`BCHG`/`BCLR`/`BSET` (static or dynamic bit number).
+    Bit,
     /// `BRA`, `BSR` and the conditional branches.
     Branch,
     /// `NOP`.
@@ -173,6 +175,11 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             0x4A00 => return InstructionClass::Tst,
             _ => {}
         }
+    }
+
+    // Bit operations: static 0000 1000 tt mmm rrr, dynamic 0000 rrr 1tt mmm rrr.
+    if (opcode & 0xF000) == 0 && ((opcode & 0x0F00) == 0x0800 || (opcode & 0x0100) != 0) {
+        return InstructionClass::Bit;
     }
 
     // ABCD/SBCD (-(Ay),-(Ax) or Dy,Dx) and NBCD.

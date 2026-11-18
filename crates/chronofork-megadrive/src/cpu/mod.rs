@@ -696,6 +696,9 @@ impl M68000 {
             InstructionClass::MulDiv | InstructionClass::Bcd => {
                 exec::arith::execute(self, bus, opcode)?;
             }
+            InstructionClass::Bit => {
+                exec::bit::execute(self, bus, opcode)?;
+            }
             InstructionClass::Add
             | InstructionClass::Adda
             | InstructionClass::Addq
@@ -847,6 +850,15 @@ impl M68000 {
             Size::Word => (*register & 0xFFFF_0000) | (value & 0xFFFF),
             Size::Long => value,
         };
+    }
+
+    /// Sets or clears one condition-code bit and leaves every other flag alone.
+    pub(crate) fn set_condition(&mut self, mask: u16, set: bool) {
+        if set {
+            self.sr |= mask;
+        } else {
+            self.sr &= !mask;
+        }
     }
 
     pub(crate) fn set_logic_flags(&mut self, value: u32, size: Size) {
