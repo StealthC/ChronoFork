@@ -656,31 +656,22 @@ impl M68000 {
             | InstructionClass::Swap => {
                 exec::r#move::execute(self, bus, opcode)?;
             }
-            InstructionClass::Branch => return self.execute_branch(bus, opcode),
+            InstructionClass::Branch
+            | InstructionClass::Dbra
+            | InstructionClass::Scc
+            | InstructionClass::Jmp
+            | InstructionClass::Jsr
+            | InstructionClass::Rts => {
+                exec::control::execute(self, bus, opcode)?;
+            }
             InstructionClass::Nop => {}
             InstructionClass::Rte => return self.execute_rte(bus),
-            InstructionClass::Rts => {
-                let pc = self.pop_long(bus)?;
-                return self.write_pc(pc);
-            }
-            InstructionClass::Jmp => {
-                let target = self.fetch_u32(bus)?;
-                return self.write_pc(target);
-            }
-            InstructionClass::Jsr => {
-                let target = self.fetch_u32(bus)?;
-                self.ensure_even(target)?;
-                let return_pc = self.pc;
-                self.push_long(bus, return_pc)?;
-                self.pc = target;
-            }
             InstructionClass::MoveToSr => {
                 // Privileged on real hardware; privilege is not enforced yet.
                 // The immediate word replaces the raw SR, including the mask.
                 let value = self.fetch_u16(bus)?;
                 self.sr = value;
             }
-            InstructionClass::Dbra => return self.execute_dbra(bus, opcode),
             InstructionClass::And
             | InstructionClass::Andi
             | InstructionClass::Or
@@ -723,56 +714,6 @@ impl M68000 {
             }
         }
         Ok(())
-    }
-
-    /// Executes `DBRA Dn,disp16` (the `DBcc` encoding with condition 1).
-    fn execute_dbra(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
-        let register = usize::from(opcode & 0x7);
-        let displacement = self.fetch_u16(bus)? as i16;
-        let counter = self.read_dn(register, Size::Word);
-        let decremented = counter.wrapping_sub(1) & Size::Word.mask();
-        self.write_dn(register, decremented, Size::Word);
-        if decremented == 0xFFFF {
-            return Ok(());
-        }
-        let target = self.relative_target(i32::from(displacement))?;
-        self.write_pc(target)
-    }
-
-    fn execute_branch(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
-        let displacement = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
-        let condition = (opcode >> 8) & 0xF;
-        let taken = match condition {
-            // BRA, and BSR which also pushes a return address.
-            0x0 | 0x1 => true,
-            // BCC/BCS.
-            0x4 => !self.flag(FLAG_C),
-            0x5 => self.flag(FLAG_C),
-            // BEQ/BNE.
-            0x6 => !self.flag(FLAG_Z),
-            0x7 => self.flag(FLAG_Z),
-            // BMI/BPL.
-            0xA => !self.flag(FLAG_N),
-            0xB => self.flag(FLAG_N),
-            _ => {
-                return Err(CpuError::Unsupported(format!(
-                    "branch condition 0x{condition:X} is not implemented"
-                )));
-            }
-        };
-        let target = if taken {
-            Some(self.relative_target(displacement)?)
-        } else {
-            None
-        };
-        if condition == 0x1 {
-            let return_pc = self.pc;
-            self.push_long(bus, return_pc)?;
-        }
-        match target {
-            Some(target) => self.write_pc(target),
-            None => Ok(()),
-        }
     }
 
     /// Executes `RTE` (0x4E73).

@@ -99,8 +99,10 @@ pub enum InstructionClass {
     Jsr,
     /// `MOVE.W #imm,SR`.
     MoveToSr,
-    /// `DBRA`.
+    /// `DBcc`.
     Dbra,
+    /// `Scc`.
+    Scc,
     /// An encoding no implemented group owns yet.
     Other,
 }
@@ -128,8 +130,6 @@ pub const fn classify(opcode: u16) -> InstructionClass {
         0x4E71 => return InstructionClass::Nop,
         0x4E73 => return InstructionClass::Rte,
         0x4E75 => return InstructionClass::Rts,
-        0x4EB9 => return InstructionClass::Jsr,
-        0x4EF9 => return InstructionClass::Jmp,
         _ => {}
     }
 
@@ -175,6 +175,14 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             0x4A00 => return InstructionClass::Tst,
             _ => {}
         }
+    }
+
+    // JMP/JSR take a control effective address.
+    if (opcode & 0xFFC0) == 0x4EC0 {
+        return InstructionClass::Jmp;
+    }
+    if (opcode & 0xFFC0) == 0x4E80 {
+        return InstructionClass::Jsr;
     }
 
     // Bit operations: static 0000 1000 tt mmm rrr, dynamic 0000 rrr 1tt mmm rrr.
@@ -227,8 +235,10 @@ pub const fn classify(opcode: u16) -> InstructionClass {
         0xD000 => InstructionClass::Add,
         0x5000 => {
             if size == 0x3 {
-                if (opcode & 0xFFF8) == 0x51C8 {
+                if (opcode & 0xF0F8) == 0x50C8 {
                     InstructionClass::Dbra
+                } else if mode != 1 {
+                    InstructionClass::Scc
                 } else {
                     InstructionClass::Other
                 }

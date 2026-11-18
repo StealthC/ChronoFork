@@ -13,6 +13,7 @@ use super::{CpuError, M68000, Size};
 
 pub mod arith;
 pub mod bit;
+pub mod control;
 pub mod logic;
 pub mod r#move;
 pub mod shift;
