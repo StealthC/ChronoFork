@@ -8,6 +8,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, modify_ea, read_ea};
 use crate::cpu::{CpuError, ExceptionFrame, FLAG_N, FLAG_X, FLAG_Z, M68000, VECTOR_ZERO_DIVIDE};
@@ -105,7 +107,7 @@ fn bcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     }
     let zero = cpu.flag(FLAG_Z) && result == 0;
     cpu.set_ccr(carry, false, zero, result & 0x80 != 0, carry);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn nbcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -127,7 +129,7 @@ fn nbcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cp
     })?;
     let zero = cpu.flag(FLAG_Z) && result == 0;
     cpu.set_ccr(carry, false, zero, result & 0x80 != 0, carry);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn bcd_add(destination: u8, source: u8, extend: u8) -> (u8, bool) {
@@ -182,7 +184,7 @@ fn multiply_or_divide(
         };
         cpu.set_d(register, value);
         cpu.set_ccr(false, false, value == 0, value & 0x8000_0000 != 0, extend);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
 
     let divisor = u32::from(source as u16);
@@ -194,10 +196,10 @@ fn multiply_or_divide(
         let dividend = dividend as i32;
         let divisor = dividend_divisor(source);
         let Some(quotient) = dividend.checked_div(divisor) else {
-            return set_divide_overflow(cpu, extend);
+            return set_divide_overflow(cpu, extend, opcode);
         };
         if !(-32_768..=32_767).contains(&quotient) {
-            return set_divide_overflow(cpu, extend);
+            return set_divide_overflow(cpu, extend, opcode);
         }
         let remainder = dividend % divisor;
         let value = ((remainder as u16 as u32) << 16) | (quotient as u16 as u32);
@@ -206,14 +208,14 @@ fn multiply_or_divide(
     } else {
         let quotient = dividend / divisor;
         if quotient > 0xFFFF {
-            return set_divide_overflow(cpu, extend);
+            return set_divide_overflow(cpu, extend, opcode);
         }
         let remainder = dividend % divisor;
         let value = (remainder << 16) | quotient;
         cpu.set_d(register, value);
         cpu.set_ccr(false, false, quotient == 0, quotient & 0x8000 != 0, extend);
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 const fn dividend_divisor(source: u32) -> i32 {
@@ -224,11 +226,11 @@ const fn dividend_divisor(source: u32) -> i32 {
 ///
 /// `V` is set, `C` is cleared and the other condition codes are left as they
 /// were; the destination register was never written.
-fn set_divide_overflow(cpu: &mut M68000, extend: bool) -> Result<u16, CpuError> {
+fn set_divide_overflow(cpu: &mut M68000, extend: bool, opcode: u16) -> Result<u16, CpuError> {
     let zero = cpu.flag(FLAG_Z);
     let negative = cpu.flag(FLAG_N);
     cpu.set_ccr(false, true, zero, negative, extend);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn size_from_bits(bits: u16) -> Option<Size> {
@@ -265,7 +267,7 @@ fn add_or_sub(
             destination.wrapping_sub(value)
         };
         cpu.write_an(data_register, result);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
 
     if let Some(size) = size_from_bits(opmode) {
@@ -279,7 +281,7 @@ fn add_or_sub(
         };
         cpu.write_dn(data_register, result, size);
         set_arithmetic_flags(cpu, add, destination, source, result, size);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
 
     if (4..=6).contains(&opmode) {
@@ -299,7 +301,7 @@ fn add_or_sub(
             }
         })?;
         set_arithmetic_flags(cpu, add, destination_value, source, result, size);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
 
     Err(illegal_opcode(instruction_pc, opcode))
@@ -327,7 +329,7 @@ fn immediate_arithmetic(
         }
     })?;
     set_arithmetic_flags(cpu, add, destination_value, immediate, result, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn addq_or_subq(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -354,7 +356,7 @@ fn addq_or_subq(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result
             destination.wrapping_add(immediate)
         };
         cpu.write_an(usize::from(register), result);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
 
     let destination = decode_ea(mode, register, size)?;
@@ -369,7 +371,7 @@ fn addq_or_subq(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result
         }
     })?;
     set_arithmetic_flags(cpu, !subtract, destination_value, immediate, result, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn compare(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -385,7 +387,7 @@ fn compare(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16,
             let source = read_ea(cpu, bus, decode_ea(mode, register, size)?, size)?;
             let destination = cpu.read_dn(usize::from((opcode >> 9) & 0x7), size);
             cpu.set_cmp_flags(destination, source, size);
-            Ok(0)
+            Ok(timing::instruction_cycles(opcode))
         }
         3 | 7 => compare_address(cpu, bus, opcode),
         4..=6 => {
@@ -416,7 +418,7 @@ fn compare_address(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Res
     let value = size.sign_extend(source);
     let destination = cpu.read_an(usize::from((opcode >> 9) & 0x7));
     cpu.set_cmp_flags(destination, value, Size::Long);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn compare_memory(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -428,7 +430,7 @@ fn compare_memory(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Resu
     let source = read_ea(cpu, bus, Ea::PostInc(source_register), size)?;
     let destination = read_ea(cpu, bus, Ea::PostInc(destination_register), size)?;
     cpu.set_cmp_flags(destination, source, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn compare_immediate(
@@ -446,7 +448,7 @@ fn compare_immediate(
     }
     let value = read_ea(cpu, bus, destination, size)?;
     cpu.set_cmp_flags(value, immediate, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn negate(
@@ -479,7 +481,7 @@ fn negate(
         result == 0
     };
     cpu.set_ccr(carry, overflow, zero, result & size.sign_bit() != 0, carry);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn set_arithmetic_flags(

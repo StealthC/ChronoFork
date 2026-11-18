@@ -6,6 +6,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::{illegal_opcode, set_logic_flags};
 use crate::cpu::ea::{Size, decode_ea, is_data_alterable, modify_ea, read_ea};
 use crate::cpu::{CpuError, M68000};
@@ -83,7 +85,7 @@ fn binary(
         })?;
         set_logic_flags(cpu, result, size);
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn eor(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -102,7 +104,7 @@ fn eor(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     let source = cpu.read_dn(usize::from((opcode >> 9) & 0x7), size);
     let (_, result) = modify_ea(cpu, bus, destination, size, |value| value ^ source)?;
     set_logic_flags(cpu, result, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn immediate(
@@ -122,7 +124,7 @@ fn immediate(
         operation.apply(value, immediate)
     })?;
     set_logic_flags(cpu, result, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn not(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -134,7 +136,7 @@ fn not(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     }
     let (_, result) = modify_ea(cpu, bus, destination, size, |value| !value)?;
     set_logic_flags(cpu, result, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn size_of(opcode: u16, instruction_pc: u32) -> Result<Size, CpuError> {

@@ -6,6 +6,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, modify_ea, read_ea};
 use crate::cpu::{CpuError, FLAG_Z, M68000};
@@ -55,7 +57,7 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
             };
             cpu.write_dn(usize::from(register), updated, Size::Long);
         }
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     if !is_data_alterable(ea) {
         return Err(illegal_opcode(instruction_pc, opcode));
@@ -64,7 +66,7 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
     if operation == BTST {
         let value = read_ea(cpu, bus, ea, Size::Byte)?;
         cpu.set_condition(FLAG_Z, value >> bit & 1 == 0);
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     let (previous, _) = modify_ea(cpu, bus, ea, Size::Byte, |value| {
         let mask = 1_u8 << bit;
@@ -76,5 +78,5 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
         }
     })?;
     cpu.set_condition(FLAG_Z, previous >> bit & 1 == 0);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }

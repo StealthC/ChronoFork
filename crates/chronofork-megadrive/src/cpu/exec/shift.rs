@@ -9,6 +9,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{Ea, Size, decode_ea, modify_ea};
 use crate::cpu::{CpuError, FLAG_X, M68000};
@@ -48,7 +50,7 @@ fn register_shift(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
         }
     };
     if count == 0 {
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     let register = usize::from(opcode & 0x7);
     let value = cpu.read_dn(register, size);
@@ -62,7 +64,7 @@ fn register_shift(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
         result & size.sign_bit() != 0,
         extend,
     );
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn memory_shift(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -92,7 +94,7 @@ fn memory_shift(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result
         result & size.sign_bit() != 0,
         extend,
     );
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn shift_value(

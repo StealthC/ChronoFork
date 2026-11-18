@@ -7,6 +7,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{Size, decode_ea, ea_address, is_data_alterable, write_ea};
 use crate::cpu::{CpuError, ExceptionFrame, M68000, VECTOR_ADDRESS_ERROR};
@@ -60,7 +62,7 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
     if opcode == 0x4E75 {
         let pc = cpu.pop_long(bus)?;
         cpu.write_pc(pc)?;
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     if (opcode & 0xFFC0) == 0x4EC0 {
         return jump(cpu, bus, opcode, false);
@@ -77,7 +79,7 @@ fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, 
     let displacement = i32::from((opcode & 0xFF) as u8 as i8);
     let taken = condition == 1 || cc_to_bool(cpu, condition);
     if !taken {
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     let target = cpu.relative_target(displacement)?;
     if condition == 1 {
@@ -85,7 +87,7 @@ fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, 
         cpu.push_long(bus, return_pc)?;
     }
     cpu.write_pc(target)?;
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn dbcc(
@@ -96,18 +98,18 @@ fn dbcc(
 ) -> Result<u16, CpuError> {
     let displacement = cpu.fetch_u16(bus)? as i16;
     if cc_to_bool(cpu, condition) {
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     let register = usize::from(opcode & 0x7);
     let counter = cpu.read_dn(register, Size::Word);
     let decremented = counter.wrapping_sub(1) & Size::Word.mask();
     cpu.write_dn(register, decremented, Size::Word);
     if decremented == 0xFFFF {
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     let target = cpu.relative_target(i32::from(displacement))?;
     cpu.write_pc(target)?;
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn scc(
@@ -127,7 +129,7 @@ fn scc(
     }
     let value = if cc_to_bool(cpu, condition) { 0xFF } else { 0 };
     write_ea(cpu, bus, destination, Size::Byte, value)?;
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn jump(
@@ -157,5 +159,5 @@ fn jump(
         cpu.push_long(bus, return_pc)?;
     }
     cpu.write_pc(target)?;
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }

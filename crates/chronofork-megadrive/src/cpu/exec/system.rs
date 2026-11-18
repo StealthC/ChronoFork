@@ -7,6 +7,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, read_ea, write_ea};
 use crate::cpu::{
@@ -22,10 +24,10 @@ const TRAPV: u16 = 0x4E76;
 /// table (Task 14) lands.
 pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     match opcode {
-        0x4E70 => return reset(cpu, bus),
-        0x4E72 => return stop(cpu, bus),
-        TRAPV => return trapv(cpu, bus),
-        0x4E77 => return rtr(cpu, bus),
+        0x4E70 => return reset(cpu, bus, opcode),
+        0x4E72 => return stop(cpu, bus, opcode),
+        TRAPV => return trapv(cpu, bus, opcode),
+        0x4E77 => return rtr(cpu, bus, opcode),
         0x4AFC => {
             return cpu.raise_exception(bus, VECTOR_ILLEGAL, ExceptionFrame::Short);
         }
@@ -71,33 +73,33 @@ fn supervisor(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<Option<u16>, C
         .map(Some)
 }
 
-fn reset(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+fn reset(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     if let Some(cycles) = supervisor(cpu, bus)? {
         return Ok(cycles);
     }
     // The slice has no reset-able external device; RESET is architecturally a
     // privileged no-op that only consumes its opcode word.
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
-fn stop(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+fn stop(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     if let Some(cycles) = supervisor(cpu, bus)? {
         return Ok(cycles);
     }
     let value = cpu.fetch_u16(bus)?;
     cpu.set_sr(value);
     cpu.stop();
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
-fn trapv(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+fn trapv(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     if cpu.flag(FLAG_V) {
         return cpu.raise_exception(bus, VECTOR_TRAPV, ExceptionFrame::Short);
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
-fn rtr(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+fn rtr(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let frame = cpu.a7();
     let pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
     let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
@@ -106,7 +108,7 @@ fn rtr(cpu: &mut M68000, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
     cpu.set_sr((cpu.sr() & 0xFF00) | (ccr & 0x00FF));
     cpu.write_pc(pc)?;
     cpu.set_a7(restored_a7);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn link(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -121,7 +123,7 @@ fn link(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cp
     }
     // Proven by the range check above.
     cpu.set_a7(stack as u32);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn unlk(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -129,7 +131,7 @@ fn unlk(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cp
     cpu.set_a7(cpu.read_an(register));
     let value = cpu.pop_long(bus)?;
     cpu.write_an(register, value);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn move_to_usp(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -138,7 +140,7 @@ fn move_to_usp(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
     }
     let register = usize::from(opcode & 0x7);
     cpu.set_usp(cpu.read_an(register));
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn move_from_usp(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -148,7 +150,7 @@ fn move_from_usp(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Resul
     let register = usize::from(opcode & 0x7);
     let value = cpu.usp();
     cpu.write_an(register, value);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn move_status(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -195,7 +197,7 @@ fn move_status(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
         }
         _ => return Err(illegal_opcode(instruction_pc, opcode)),
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn logic_to_special(
@@ -221,7 +223,7 @@ fn logic_to_special(
     } else {
         cpu.set_sr((cpu.sr() & 0xFF00) | (result & 0x00FF));
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn chk(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -240,7 +242,7 @@ fn chk(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     if value < 0 || value > bound {
         return cpu.raise_exception(bus, VECTOR_CHK, ExceptionFrame::Short);
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn is_status_source(ea: Ea) -> bool {

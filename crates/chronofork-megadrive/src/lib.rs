@@ -47,9 +47,10 @@ pub use cartridge::{
     TMSS_REGISTER_BASE, TMSS_REGISTER_END, Tmss, TmssModel, VERSION_REGISTER,
 };
 pub use cpu::{
-    CpuError, Ea, ExceptionFrame, M68000, Size, VECTOR_ADDRESS_ERROR, VECTOR_BUS_ERROR, VECTOR_CHK,
-    VECTOR_ILLEGAL, VECTOR_IRQ_BASE, VECTOR_PRIVILEGE_VIOLATION, VECTOR_RESET, VECTOR_TRACE,
-    VECTOR_TRAP_BASE, VECTOR_TRAPV, VECTOR_ZERO_DIVIDE, decode_ea, ea_address, read_ea, write_ea,
+    CpuError, Ea, ExceptionFrame, InstructionOutcome, M68000, Size, VECTOR_ADDRESS_ERROR,
+    VECTOR_BUS_ERROR, VECTOR_CHK, VECTOR_ILLEGAL, VECTOR_IRQ_BASE, VECTOR_PRIVILEGE_VIOLATION,
+    VECTOR_RESET, VECTOR_TRACE, VECTOR_TRAP_BASE, VECTOR_TRAPV, VECTOR_ZERO_DIVIDE, base_cycles,
+    decode_ea, ea_address, ea_cycles, read_ea, write_ea,
 };
 pub use disasm::{
     DisasmError, DisasmInstruction, DisasmMemory, MAX_DISASSEMBLY_COUNT, RomMemory, WindowMemory,

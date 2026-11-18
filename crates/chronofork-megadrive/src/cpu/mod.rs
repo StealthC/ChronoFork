@@ -46,10 +46,12 @@ use crate::trace::{InstructionTrace, TraceError};
 pub mod decode;
 pub mod ea;
 pub mod exec;
+pub mod timing;
 
 use decode::InstructionClass;
 
 pub use ea::{Ea, Size, decode_ea, ea_address, read_ea, write_ea};
+pub use timing::{InstructionOutcome, base_cycles, ea_cycles};
 
 pub(crate) const FLAG_C: u16 = 0x0001;
 pub(crate) const FLAG_V: u16 = 0x0002;
@@ -638,13 +640,14 @@ impl M68000 {
         self.halted = halted;
     }
 
-    /// Executes one instruction.
+    /// Executes one instruction and returns its documented cycle cost.
     ///
     /// When the instruction trace is enabled, the fetched instruction is recorded
     /// before decoding, so an instruction that fails as illegal or unsupported is
     /// still present in the trace. The opcode is classified exactly once by
-    /// [`decode::classify`]; the selected execution group performs the operation.
-    pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+    /// [`decode::classify`]; the selected execution group performs the operation
+    /// and reports the 68000-cycle cost from [`timing`].
+    pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<InstructionOutcome, CpuError> {
         if self.halted {
             return Err(CpuError::Halted);
         }
@@ -658,91 +661,73 @@ impl M68000 {
         // address errors, and a failed return must not try to enter another
         // exception.
         if decode::classify(opcode) == InstructionClass::Rte {
-            return self.execute_rte(bus);
+            let cycles = self.execute_rte(bus)?;
+            self.cycles += u64::from(cycles);
+            return Ok(InstructionOutcome { cycles });
         }
 
-        let outcome = (|| -> Result<(), CpuError> {
-            match decode::classify(opcode) {
-                InstructionClass::Move
-                | InstructionClass::Moveq
-                | InstructionClass::Movem
-                | InstructionClass::Movep
-                | InstructionClass::Lea
-                | InstructionClass::Pea
-                | InstructionClass::Clr
-                | InstructionClass::Tst
-                | InstructionClass::Ext
-                | InstructionClass::Swap => {
-                    exec::r#move::execute(self, bus, opcode)?;
-                }
-                InstructionClass::Branch
-                | InstructionClass::Dbra
-                | InstructionClass::Scc
-                | InstructionClass::Jmp
-                | InstructionClass::Jsr
-                | InstructionClass::Rts => {
-                    exec::control::execute(self, bus, opcode)?;
-                }
-                InstructionClass::Nop => {}
-                InstructionClass::System => {
-                    exec::system::execute(self, bus, opcode)?;
-                }
-                InstructionClass::And
-                | InstructionClass::Andi
-                | InstructionClass::Or
-                | InstructionClass::Ori
-                | InstructionClass::Eor
-                | InstructionClass::Eori
-                | InstructionClass::Not => {
-                    exec::logic::execute(self, bus, opcode)?;
-                }
-                InstructionClass::Shift => {
-                    exec::shift::execute(self, bus, opcode)?;
-                }
-                InstructionClass::MulDiv | InstructionClass::Bcd => {
-                    exec::arith::execute(self, bus, opcode)?;
-                }
-                InstructionClass::Bit => {
-                    exec::bit::execute(self, bus, opcode)?;
-                }
-                InstructionClass::Add
-                | InstructionClass::Adda
-                | InstructionClass::Addq
-                | InstructionClass::Addi
-                | InstructionClass::Sub
-                | InstructionClass::Suba
-                | InstructionClass::Subq
-                | InstructionClass::Subi
-                | InstructionClass::Cmp
-                | InstructionClass::Cmpa
-                | InstructionClass::Cmpi
-                | InstructionClass::Cmpm
-                | InstructionClass::Neg
-                | InstructionClass::Negx => {
-                    exec::arith::execute(self, bus, opcode)?;
-                }
-                _ => {
-                    return Err(CpuError::IllegalOpcode {
-                        pc: instruction_pc,
-                        opcode,
-                    });
-                }
+        let outcome: Result<u16, CpuError> = match decode::classify(opcode) {
+            InstructionClass::Move
+            | InstructionClass::Moveq
+            | InstructionClass::Movem
+            | InstructionClass::Movep
+            | InstructionClass::Lea
+            | InstructionClass::Pea
+            | InstructionClass::Clr
+            | InstructionClass::Tst
+            | InstructionClass::Ext
+            | InstructionClass::Swap => exec::r#move::execute(self, bus, opcode),
+            InstructionClass::Branch
+            | InstructionClass::Dbra
+            | InstructionClass::Scc
+            | InstructionClass::Jmp
+            | InstructionClass::Jsr
+            | InstructionClass::Rts => exec::control::execute(self, bus, opcode),
+            InstructionClass::Nop => Ok(4),
+            InstructionClass::System => exec::system::execute(self, bus, opcode),
+            InstructionClass::And
+            | InstructionClass::Andi
+            | InstructionClass::Or
+            | InstructionClass::Ori
+            | InstructionClass::Eor
+            | InstructionClass::Eori
+            | InstructionClass::Not => exec::logic::execute(self, bus, opcode),
+            InstructionClass::Shift => exec::shift::execute(self, bus, opcode),
+            InstructionClass::MulDiv | InstructionClass::Bcd => {
+                exec::arith::execute(self, bus, opcode)
             }
-            Ok(())
-        })();
+            InstructionClass::Bit => exec::bit::execute(self, bus, opcode),
+            InstructionClass::Add
+            | InstructionClass::Adda
+            | InstructionClass::Addq
+            | InstructionClass::Addi
+            | InstructionClass::Sub
+            | InstructionClass::Suba
+            | InstructionClass::Subq
+            | InstructionClass::Subi
+            | InstructionClass::Cmp
+            | InstructionClass::Cmpa
+            | InstructionClass::Cmpi
+            | InstructionClass::Cmpm
+            | InstructionClass::Neg
+            | InstructionClass::Negx => exec::arith::execute(self, bus, opcode),
+            _ => Err(CpuError::IllegalOpcode {
+                pc: instruction_pc,
+                opcode,
+            }),
+        };
 
-        match outcome {
-            Ok(()) => Ok(()),
-            Err(CpuError::AddressError { address }) => {
-                self.raise_exception(
-                    bus,
-                    VECTOR_ADDRESS_ERROR,
-                    ExceptionFrame::AddressError { address, opcode },
-                )?;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+        let cycles = match outcome {
+            Ok(cycles) => cycles,
+            Err(CpuError::AddressError { address }) => self.raise_exception(
+                bus,
+                VECTOR_ADDRESS_ERROR,
+                ExceptionFrame::AddressError { address, opcode },
+            )?,
+            Err(error) => return Err(error),
+        };
+        self.cycles += u64::from(cycles);
+        Ok(InstructionOutcome { cycles })
     }
 
     /// Executes `RTE` (0x4E73).
@@ -755,10 +740,9 @@ impl M68000 {
     /// `A7` untouched. On success the exact raw `SR` word is restored (IPM, `S`
     /// and CCR, with no implicit supervisor re-entry), the program counter is
     /// set to the restored value, and `A7` advances by six.
-    fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+    fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
         if self.sr & SR_SUPERVISOR == 0 {
-            self.raise_exception(bus, VECTOR_PRIVILEGE_VIOLATION, ExceptionFrame::Short)?;
-            return Ok(());
+            return self.raise_exception(bus, VECTOR_PRIVILEGE_VIOLATION, ExceptionFrame::Short);
         }
         let frame = self.a[7];
         let return_pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
@@ -773,7 +757,7 @@ impl M68000 {
         self.a[7] = restored_a7;
         self.halted = false;
         self.stopped = false;
-        Ok(())
+        Ok(20)
     }
 
     /// Computes a branch target from the current program counter and a signed
@@ -1230,7 +1214,7 @@ mod tests {
         // vector-3 entry is zero, so the exception handler target is 0.
         let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFD]);
         cpu.d[0] = 2;
-        assert_eq!(cpu.step(&mut bus), Ok(()));
+        assert!(cpu.step(&mut bus).is_ok());
         assert_eq!(cpu.pc(), 0);
         assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 14));
         assert_eq!(bus.read16(INITIAL_STACK - 14), Ok(0x2700));

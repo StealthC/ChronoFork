@@ -7,6 +7,8 @@
 
 use crate::bus::MegadriveBus;
 
+use crate::cpu::timing;
+
 use super::illegal_opcode;
 use crate::cpu::ea::{
     Ea, Size, add_signed, decode_ea, ea_address, is_data_alterable, read_ea, write_ea,
@@ -68,7 +70,7 @@ fn moveq(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
     let value = (opcode & 0xFF) as u8 as i8 as i32 as u32;
     cpu.set_d(register, value);
     cpu.set_logic_flags(value, Size::Long);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn move_form(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -91,7 +93,7 @@ fn move_form(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u1
         }
         let value = read_ea(cpu, bus, source, size)?;
         cpu.write_an(usize::from(destination_register), size.sign_extend(value));
-        return Ok(0);
+        return Ok(timing::instruction_cycles(opcode));
     }
     if destination_mode == 7 && destination_register > 1 {
         return Err(illegal_opcode(instruction_pc, opcode));
@@ -100,7 +102,7 @@ fn move_form(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u1
     let value = read_ea(cpu, bus, source, size)?;
     write_ea(cpu, bus, destination, size, value)?;
     cpu.set_logic_flags(value, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn ext(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
@@ -116,7 +118,7 @@ fn ext(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
         cpu.set_d(register, value);
         cpu.set_logic_flags(value, Size::Long);
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn swap(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
@@ -125,7 +127,7 @@ fn swap(cpu: &mut M68000, opcode: u16) -> Result<u16, CpuError> {
     let swapped = value.rotate_right(16);
     cpu.set_d(register, swapped);
     cpu.set_logic_flags(swapped, Size::Long);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn clear(
@@ -141,7 +143,7 @@ fn clear(
     }
     write_ea(cpu, bus, ea, size, 0)?;
     cpu.set_logic_flags(0, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn test(
@@ -157,7 +159,7 @@ fn test(
     }
     let value = read_ea(cpu, bus, ea, size)?;
     cpu.set_logic_flags(value, size);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn lea(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -169,7 +171,7 @@ fn lea(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     )?;
     let address = ea_address(cpu, bus, ea)?;
     cpu.write_an(destination, address);
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn pea(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -180,7 +182,7 @@ fn pea(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     )?;
     let address = ea_address(cpu, bus, ea)?;
     cpu.push_long(bus, address)?;
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn movep(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -218,7 +220,7 @@ fn movep(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
             bus.write8(address, *byte)?;
         }
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
@@ -299,7 +301,7 @@ fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
             cpu.write_an(usize::from(register), address);
         }
     }
-    Ok(0)
+    Ok(timing::instruction_cycles(opcode))
 }
 
 /// Returns the register list in transfer order for `MOVEM`.
