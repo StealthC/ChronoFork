@@ -446,6 +446,56 @@ mod tests {
     }
 
     #[test]
+    fn exg_addx_subx_and_tas_cover_every_documented_register_combination() {
+        for first in 0_u16..8 {
+            for second in 0_u16..8 {
+                for base in [0xC140_u16, 0xC148, 0xC188] {
+                    assert_eq!(
+                        classify(base | (first << 9) | second),
+                        InstructionClass::Exg,
+                        "0x{:04X}",
+                        base | (first << 9) | second
+                    );
+                }
+                for opmode in 4_u16..=6 {
+                    for base in [0xD000_u16, 0x9000] {
+                        let expected = if base == 0xD000 {
+                            InstructionClass::Addx
+                        } else {
+                            InstructionClass::Subx
+                        };
+                        // Register form (mode 0) and predecrement form (mode 1).
+                        for mode in [0_u16, 0x08] {
+                            let opcode = base | (first << 9) | (opmode << 6) | mode | second;
+                            assert_eq!(
+                                classify(opcode),
+                                expected,
+                                "0x{opcode:04X} must be {expected:?}"
+                            );
+                        }
+                        // Every other EA mode is still the general memory form.
+                        let opcode = base | (first << 9) | (opmode << 6) | 0x10 | second;
+                        let expected_memory = if base == 0xD000 {
+                            InstructionClass::Add
+                        } else {
+                            InstructionClass::Sub
+                        };
+                        assert_eq!(classify(opcode), expected_memory, "0x{opcode:04X}");
+                    }
+                }
+            }
+        }
+        for opcode in 0x4AC0_u16..=0x4AFF {
+            let expected = if opcode == 0x4AFC {
+                InstructionClass::System
+            } else {
+                InstructionClass::Tas
+            };
+            assert_eq!(classify(opcode), expected, "0x{opcode:04X}");
+        }
+    }
+
+    #[test]
     fn special_encodings_never_fall_into_a_general_family() {
         // The EXG-as-AND regression: 0xC141 is EXG D0,D1, not AND.W D0,D1.
         assert_eq!(classify(0xC141), InstructionClass::Exg);
