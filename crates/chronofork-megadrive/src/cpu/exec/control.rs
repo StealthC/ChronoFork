@@ -79,7 +79,7 @@ fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, 
     let displacement = i32::from((opcode & 0xFF) as u8 as i8);
     let taken = condition == 1 || cc_to_bool(cpu, condition);
     if !taken {
-        return Ok(timing::instruction_cycles(opcode));
+        return Ok(timing::branch_cycles(opcode, false));
     }
     let target = cpu.relative_target(displacement)?;
     if condition == 1 {
@@ -87,7 +87,7 @@ fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, 
         cpu.push_long(bus, return_pc)?;
     }
     cpu.write_pc(target)?;
-    Ok(timing::instruction_cycles(opcode))
+    Ok(timing::branch_cycles(opcode, true))
 }
 
 fn dbcc(

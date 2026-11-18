@@ -184,7 +184,7 @@ fn multiply_or_divide(
         };
         cpu.set_d(register, value);
         cpu.set_ccr(false, false, value == 0, value & 0x8000_0000 != 0, extend);
-        return Ok(timing::instruction_cycles(opcode));
+        return Ok(timing::multiply_divide_cycles(opcode, source as u16));
     }
 
     let divisor = u32::from(source as u16);
@@ -196,10 +196,10 @@ fn multiply_or_divide(
         let dividend = dividend as i32;
         let divisor = dividend_divisor(source);
         let Some(quotient) = dividend.checked_div(divisor) else {
-            return set_divide_overflow(cpu, extend, opcode);
+            return set_divide_overflow(cpu, extend, opcode, source as u16);
         };
         if !(-32_768..=32_767).contains(&quotient) {
-            return set_divide_overflow(cpu, extend, opcode);
+            return set_divide_overflow(cpu, extend, opcode, source as u16);
         }
         let remainder = dividend % divisor;
         let value = ((remainder as u16 as u32) << 16) | (quotient as u16 as u32);
@@ -208,14 +208,14 @@ fn multiply_or_divide(
     } else {
         let quotient = dividend / divisor;
         if quotient > 0xFFFF {
-            return set_divide_overflow(cpu, extend, opcode);
+            return set_divide_overflow(cpu, extend, opcode, source as u16);
         }
         let remainder = dividend % divisor;
         let value = (remainder << 16) | quotient;
         cpu.set_d(register, value);
         cpu.set_ccr(false, false, quotient == 0, quotient & 0x8000 != 0, extend);
     }
-    Ok(timing::instruction_cycles(opcode))
+    Ok(timing::multiply_divide_cycles(opcode, source as u16))
 }
 
 const fn dividend_divisor(source: u32) -> i32 {
@@ -226,11 +226,16 @@ const fn dividend_divisor(source: u32) -> i32 {
 ///
 /// `V` is set, `C` is cleared and the other condition codes are left as they
 /// were; the destination register was never written.
-fn set_divide_overflow(cpu: &mut M68000, extend: bool, opcode: u16) -> Result<u16, CpuError> {
+fn set_divide_overflow(
+    cpu: &mut M68000,
+    extend: bool,
+    opcode: u16,
+    source: u16,
+) -> Result<u16, CpuError> {
     let zero = cpu.flag(FLAG_Z);
     let negative = cpu.flag(FLAG_N);
     cpu.set_ccr(false, true, zero, negative, extend);
-    Ok(timing::instruction_cycles(opcode))
+    Ok(timing::multiply_divide_cycles(opcode, source))
 }
 
 fn size_from_bits(bits: u16) -> Option<Size> {

@@ -301,7 +301,7 @@ fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
             cpu.write_an(usize::from(register), address);
         }
     }
-    Ok(timing::instruction_cycles(opcode))
+    Ok(timing::movem_cycles(opcode, registers.len() as u16))
 }
 
 /// Returns the register list in transfer order for `MOVEM`.
