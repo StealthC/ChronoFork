@@ -43,7 +43,11 @@ use std::fmt;
 use crate::bus::{BusError, MegadriveBus};
 use crate::trace::{InstructionTrace, TraceError};
 
+pub mod decode;
 pub mod ea;
+pub mod exec;
+
+use decode::InstructionClass;
 
 pub use ea::{Ea, Size, decode_ea, ea_address, read_ea, write_ea};
 
@@ -523,7 +527,8 @@ impl M68000 {
     ///
     /// When the instruction trace is enabled, the fetched instruction is recorded
     /// before decoding, so an instruction that fails as illegal or unsupported is
-    /// still present in the trace.
+    /// still present in the trace. The opcode is classified exactly once by
+    /// [`decode::classify`]; the selected execution group performs the operation.
     pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
         if self.halted {
             return Err(CpuError::Halted);
@@ -534,210 +539,58 @@ impl M68000 {
             trace.record(instruction_pc, opcode);
         }
 
-        // 0111 rrr 0 dddddddd
-        if (opcode & 0xF100) == 0x7000 {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
-            self.d[register] = value as u32;
-            self.set_logic_flags(value as u32, Size::Long);
-            return Ok(());
-        }
-
-        // Branches and BSR.
-        if (opcode & 0xF000) == 0x6000 {
-            return self.execute_branch(bus, opcode);
-        }
-
-        match opcode {
-            0x46FC => {
-                // MOVE.W #imm,SR. Privileged on real hardware; privilege is not
-                // enforced in this slice. The immediate word replaces the raw
-                // SR, including the interrupt-priority mask.
-                let value = self.fetch_u16(bus)?;
-                self.sr = value;
-                Ok(())
+        match decode::classify(opcode) {
+            InstructionClass::Move
+            | InstructionClass::Moveq
+            | InstructionClass::Movem
+            | InstructionClass::Movep
+            | InstructionClass::Lea
+            | InstructionClass::Pea
+            | InstructionClass::Clr
+            | InstructionClass::Tst
+            | InstructionClass::Ext
+            | InstructionClass::Swap => {
+                exec::r#move::execute(self, bus, opcode)?;
             }
-            0x4E71 => Ok(()),
-            0x4E73 => self.execute_rte(bus),
-            0x4E75 => {
+            InstructionClass::Branch => return self.execute_branch(bus, opcode),
+            InstructionClass::Nop => {}
+            InstructionClass::Rte => return self.execute_rte(bus),
+            InstructionClass::Rts => {
                 let pc = self.pop_long(bus)?;
-                self.write_pc(pc)
+                return self.write_pc(pc);
             }
-            0x4EF9 => {
+            InstructionClass::Jmp => {
                 let target = self.fetch_u32(bus)?;
-                self.write_pc(target)
+                return self.write_pc(target);
             }
-            0x4EB9 => {
+            InstructionClass::Jsr => {
                 let target = self.fetch_u32(bus)?;
                 self.ensure_even(target)?;
                 let return_pc = self.pc;
                 self.push_long(bus, return_pc)?;
                 self.pc = target;
-                Ok(())
             }
-            _ => self.execute_other(bus, opcode, instruction_pc),
+            InstructionClass::MoveToSr => {
+                // Privileged on real hardware; privilege is not enforced yet.
+                // The immediate word replaces the raw SR, including the mask.
+                let value = self.fetch_u16(bus)?;
+                self.sr = value;
+            }
+            InstructionClass::Dbra => return self.execute_dbra(bus, opcode),
+            _ => return self.execute_legacy(bus, opcode, instruction_pc),
         }
+        Ok(())
     }
 
-    fn execute_other(
+    /// Executes the arithmetic and compare encodings that the arithmetic group
+    /// has not taken over yet (plan Task 5 removes the remaining branches).
+    fn execute_legacy(
         &mut self,
-        bus: &mut MegadriveBus,
+        _bus: &mut MegadriveBus,
         opcode: u16,
         instruction_pc: u32,
     ) -> Result<(), CpuError> {
-        // CLR.W / CLR.L Dn
-        if (opcode & 0xFFC0) == 0x4240 {
-            let register = usize::from(opcode & 0x7);
-            self.write_dn(register, 0, Size::Word);
-            self.set_logic_flags(0, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xFFC0) == 0x4280 {
-            let register = usize::from(opcode & 0x7);
-            self.d[register] = 0;
-            self.set_logic_flags(0, Size::Long);
-            return Ok(());
-        }
-
-        // LEA (abs).L,An. The absolute-long encoding ends in 0xF9; the
-        // absolute-word (0xF8) and PC-relative (0xFA/0xFB) forms are not
-        // implemented and must fall through to the illegal-opcode error.
-        if (opcode & 0xF1FF) == 0x41F9 {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            self.a[register] = address;
-            return Ok(());
-        }
-
-        // PEA (abs).L, whose full opcode is 0x4879. Do not accept the
-        // absolute-word (0x4878) or PC-relative (0x487A) encodings.
-        if opcode == 0x4879 {
-            let address = self.fetch_u32(bus)?;
-            self.push_long(bus, address)?;
-            return Ok(());
-        }
-
-        // TST.B/W/L Dn
-        if (opcode & 0xFFF8) == 0x4A00 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.read_dn(register, Size::Byte);
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x4A40 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.read_dn(register, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x4A80 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.d[register];
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-
-        // MOVE.W/L #imm,Dn
-        if (opcode & 0xF1FF) == 0x303C {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = u32::from(self.fetch_u16(bus)?);
-            self.write_dn(register, value, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x203C {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = self.fetch_u32(bus)?;
-            self.d[register] = value;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-
-        // MOVE.B/W/L Dn,Dm
-        if (opcode & 0x01C0) == 0 && (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            match opcode & 0xF000 {
-                0x1000 => {
-                    let value = self.read_dn(source, Size::Byte);
-                    self.write_dn(destination, value, Size::Byte);
-                    self.set_logic_flags(value, Size::Byte);
-                    return Ok(());
-                }
-                0x2000 => {
-                    let value = self.d[source];
-                    self.d[destination] = value;
-                    self.set_logic_flags(value, Size::Long);
-                    return Ok(());
-                }
-                0x3000 => {
-                    let value = self.read_dn(source, Size::Word);
-                    self.write_dn(destination, value, Size::Word);
-                    self.set_logic_flags(value, Size::Word);
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
-        // MOVE.B/W/L Dn,(abs).L
-        if (opcode & 0xFFF8) == 0x13C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.read_dn(source, Size::Byte);
-            bus.write8(address, value as u8)?;
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x23C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.d[source];
-            bus.write32(address, value)?;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x33C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.read_dn(source, Size::Word);
-            bus.write16(address, value as u16)?;
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-
-        // MOVE.B/W/L (abs).L,Dn. The 68000 encodes source mode/register
-        // 111/001 (absolute-long) as low byte 0x39. The absolute-word form
-        // (111/000, low byte 0x38) and the PC-relative forms are not in this
-        // subset and fall through to the illegal-opcode error rather than being
-        // executed with a 32-bit fetch.
-        if (opcode & 0xF1FF) == 0x1039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = u32::from(bus.read8(address)?);
-            self.write_dn(destination, value, Size::Byte);
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x2039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = bus.read32(address)?;
-            self.d[destination] = value;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x3039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = u32::from(bus.read16(address)?);
-            self.write_dn(destination, value, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-
-        // CMP.B/W/L Dn,Dn. As with ADD/SUB, the destination mode is bits 5-3
-        // and the size is bits 7-6; bit 8 distinguishes CMP from EOR.
+        // CMP.B/W/L Dn,Dn.
         if (opcode & 0xF100) == 0xB000 && (opcode & 0x0038) == 0 {
             let source = usize::from(opcode & 0x7);
             let destination = usize::from((opcode >> 9) & 0x7);
@@ -755,20 +608,6 @@ impl M68000 {
             let destination_value = self.read_dn(destination, size);
             self.set_cmp_flags(destination_value, source_value, size);
             return Ok(());
-        }
-
-        // DBRA Dn,disp16 (the DBcc encoding with condition 0x1).
-        if (opcode & 0xFFF8) == 0x51C8 {
-            let register = usize::from(opcode & 0x7);
-            let displacement = self.fetch_u16(bus)? as i16;
-            let counter = self.read_dn(register, Size::Word);
-            let decremented = counter.wrapping_sub(1) & Size::Word.mask();
-            self.write_dn(register, decremented, Size::Word);
-            if decremented == 0xFFFF {
-                return Ok(());
-            }
-            let target = self.relative_target(i32::from(displacement))?;
-            return self.write_pc(target);
         }
 
         // ADDQ / SUBQ (Dn only).
@@ -803,8 +642,7 @@ impl M68000 {
             return Ok(());
         }
 
-        // ADD/SUB Dn,Dn (byte/word/long). For this form the destination
-        // mode is bits 5-3; the size is bits 7-6.
+        // ADD/SUB Dn,Dn.
         if (opcode & 0x0038) == 0 {
             let source = usize::from(opcode & 0x7);
             let destination = usize::from((opcode >> 9) & 0x7);
@@ -831,6 +669,20 @@ impl M68000 {
             pc: instruction_pc,
             opcode,
         })
+    }
+
+    /// Executes `DBRA Dn,disp16` (the `DBcc` encoding with condition 1).
+    fn execute_dbra(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
+        let register = usize::from(opcode & 0x7);
+        let displacement = self.fetch_u16(bus)? as i16;
+        let counter = self.read_dn(register, Size::Word);
+        let decremented = counter.wrapping_sub(1) & Size::Word.mask();
+        self.write_dn(register, decremented, Size::Word);
+        if decremented == 0xFFFF {
+            return Ok(());
+        }
+        let target = self.relative_target(i32::from(displacement))?;
+        self.write_pc(target)
     }
 
     fn execute_branch(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
@@ -1237,25 +1089,34 @@ mod tests {
     }
 
     #[test]
-    fn absolute_word_and_pc_relative_forms_are_rejected_as_illegal() {
-        // These encodings are LEA/PEA, but not absolute-long: the old masks
-        // silently executed them with a 32-bit fetch. They must be errors.
-        for (bytes, opcode) in [
-            ([0x41, 0xF8], 0x41F8_u16), // LEA (abs).W,A0
-            ([0x48, 0x78], 0x4878),     // PEA (abs).W
-            ([0x41, 0xFA], 0x41FA),     // LEA (d16,PC),A0
-            ([0x48, 0x7A], 0x487A),     // PEA (d16,PC)
-        ] {
-            let (mut cpu, mut bus) = cpu_at_program(&bytes);
-            assert_eq!(
-                cpu.step(&mut bus),
-                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
-                "opcode 0x{opcode:04X} must not be executed as absolute-long"
-            );
-            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
-            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
-            assert_eq!(cpu.sr(), 0x2700);
-        }
+    fn absolute_word_and_pc_relative_control_forms_are_supported() {
+        // LEA (0x0300).W,A0; the absolute-short address sign-extends.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x41, 0xF8, 0x03, 0x00]);
+        cpu.step(&mut bus).expect("lea (abs).w");
+        assert_eq!(cpu.address_register(0), Some(0x0300));
+        assert_eq!(cpu.pc(), 0x204);
+
+        // PEA (0x0300).W pushes the absolute-short address.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x48, 0x78, 0x03, 0x00]);
+        cpu.step(&mut bus).expect("pea (abs).w");
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 4));
+        assert_eq!(
+            bus.read32(INITIAL_STACK - 4).expect("pushed address"),
+            0x0300
+        );
+
+        // LEA (d16,PC),A0: base 0x202 + 4 = 0x206.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x41, 0xFA, 0x00, 0x04]);
+        cpu.step(&mut bus).expect("lea (d16,pc)");
+        assert_eq!(cpu.address_register(0), Some(0x0206));
+
+        // PEA (d16,PC)
+        let (mut cpu, mut bus) = cpu_at_program(&[0x48, 0x7A, 0x00, 0x04]);
+        cpu.step(&mut bus).expect("pea (d16,pc)");
+        assert_eq!(
+            bus.read32(INITIAL_STACK - 4).expect("pushed address"),
+            0x0206
+        );
     }
 
     #[test]
@@ -1763,19 +1624,18 @@ mod tests {
     }
 
     #[test]
-    fn move_abs_word_load_encodings_are_illegal() {
-        // 0x..38 is source mode/register 111/000 (absolute-word), which is not in
-        // the subset; it must not be executed with a 32-bit address fetch.
+    fn move_abs_word_load_encodings_are_supported() {
+        // 0x..38 is source mode/register 111/000 (absolute-word). The address
+        // extension word selects 0x0300, which is zero-filled ROM.
         for opcode in [0x1038_u16, 0x1238, 0x2038, 0x2438, 0x3038, 0x3638] {
-            let (mut cpu, mut bus) = cpu_at_program(&opcode.to_be_bytes());
-            assert_eq!(
-                cpu.step(&mut bus),
-                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
-                "opcode 0x{opcode:04X} must be an illegal absolute-word form"
-            );
-            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
-            assert_eq!(cpu.sr(), 0x2700);
-            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+            let mut program = opcode.to_be_bytes().to_vec();
+            program.extend_from_slice(&0x0300_u16.to_be_bytes());
+            let (mut cpu, mut bus) = cpu_at_program(&program);
+            cpu.step(&mut bus).expect("move (abs).w source");
+            assert_eq!(cpu.pc(), 0x204);
+            assert_eq!(cpu.sr(), 0x2704, "zero source sets Z and clears V/C");
+            let destination = usize::from((opcode >> 9) & 0x7);
+            assert_eq!(cpu.data_register(destination), Some(0));
         }
     }
 

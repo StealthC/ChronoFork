@@ -875,18 +875,17 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_encodings_render_as_data_words_and_the_cpu_rejects_them() {
-        // Each pair is an opcode word the CPU does not execute and the error
-        // kind one step from the same bytes produces.
+    fn unsupported_encodings_render_as_data_words_and_reserved_encodings_are_rejected() {
+        // Encodings the disassembler does not render as instructions yet. The
+        // CPU implements a growing subset during phase 8.2 (the disassembler
+        // table catches up in its own task), so this list only pins the
+        // data-word fallback; it deliberately makes no claim about execution.
         let cases: &[(u16, &str)] = &[
             (0x4AFC, "DC.W $4AFC"), // ILLEGAL
-            (0x6200, "DC.W $6200"), // BHI: unsupported branch condition
-            (0x4878, "DC.W $4878"), // PEA (abs).W
-            (0x41F8, "DC.W $41F8"), // LEA (abs).W
-            (0x41FA, "DC.W $41FA"), // LEA (d16,PC)
+            (0x6200, "DC.W $6200"), // BHI
             (0x50C0, "DC.W $50C0"), // Scc-style ADDQ form with a size field
-            (0x4E74, "DC.W $4E74"), // RTR is not implemented
-            (0xE000, "DC.W $E000"), // ASR is not implemented
+            (0x4E74, "DC.W $4E74"), // RTR
+            (0xE000, "DC.W $E000"), // ASR
         ];
         for (opcode, text) in cases {
             let bytes = opcode.to_be_bytes();
@@ -896,13 +895,19 @@ mod tests {
             assert_eq!(decoded[0].text(), *text);
             assert_eq!(decoded[0].length(), 2);
             assert_eq!(decoded[0].opcode(), *opcode);
+        }
 
+        // Reserved and unassigned encodings stay typed errors: the CPU never
+        // silently executes a word no documented instruction owns.
+        for opcode in [0x4E7A_u16, 0xA000, 0xF000] {
+            let bytes = opcode.to_be_bytes();
+            let rom = program_rom(&[], &bytes);
             let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom.to_vec()));
             let mut cpu = M68000::new();
             cpu.reset(&mut bus).expect("reset");
             assert!(
                 cpu.step(&mut bus).is_err(),
-                "0x{opcode:04X} must not execute in this slice"
+                "0x{opcode:04X} must not execute"
             );
         }
     }

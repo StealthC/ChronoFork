@@ -312,7 +312,7 @@ fn retreat(address: u32, amount: u32) -> Result<u32, CpuError> {
     address.checked_sub(amount).ok_or(CpuError::StackOverflow)
 }
 
-fn add_signed(base: u32, displacement: i32) -> Result<u32, CpuError> {
+pub(crate) fn add_signed(base: u32, displacement: i32) -> Result<u32, CpuError> {
     let target = i64::from(base) + i64::from(displacement);
     if target < 0 || target > i64::from(u32::MAX) {
         return Err(CpuError::AddressOverflow);
