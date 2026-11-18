@@ -8,7 +8,7 @@
 > quantum control no longer apply; address/final-state evidence remains
 > historical. Current cycle evidence is
 > [cpu-cycle-differential-evidence.md](../research/cpu-cycle-differential-evidence.md);
-> the regenerated 9-ROM Phase 8.2 run passes 9/9 address, cycle and final-state
+> the regenerated 10-ROM Phase 8.2 run passes 10/10 address, cycle and final-state
 > comparisons.
 
 - **Status:** **Executed; every row M3-A45–M3-A53 is `executed - passed`** (independent

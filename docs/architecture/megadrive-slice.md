@@ -3,8 +3,8 @@
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
-  timeline, with nine-ROM oracle differential evidence: address projections,
-  per-instruction cycle costs and selected final states all match 9/9); not a
+  timeline, with ten-ROM oracle differential evidence: address projections,
+  per-instruction cycle costs and selected final states all match 10/10); not a
   complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
@@ -67,7 +67,7 @@ fixtures are independently authored synthetic data.
   Debugger reads (`read_memory`) are side-effect free: they use `peek8`, which
   rejects the side-effecting VDP window instead of changing device state.
 
-### 68000 subset
+### 68000 instruction set
 
 The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 
@@ -80,12 +80,14 @@ The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 | BCD | `ABCD`, `SBCD`, `NBCD` |
 | Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number), `TAS` (register and memory) |
 | Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
-| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to/from `SR` and `CCR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry |
+| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to `SR`/`CCR` and from `SR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry; `MOVE` from `CCR` is the 68010 extension noted below |
 
-Every instruction reports its documented 68000-cycle cost (see the timing and
-differential sections below); effective-address cost is added exactly once per
-operand. Unrecognised and reserved encodings raise the guest illegal-instruction
-exception (vector 4) with the documented six-byte frame rather than a host error.
+Every documented MC68000 instruction reports its documented 68000-cycle cost
+(see the timing and differential sections below); effective-address cost is added
+exactly once per operand. The 68010 `MOVE from CCR` extension is implemented for
+compatibility but is outside the MC68000 timing table and the differential corpus.
+Unrecognised and reserved encodings raise the guest illegal-instruction exception
+(vector 4) with the documented six-byte frame rather than a host error.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
@@ -256,12 +258,13 @@ full numbers, commands and limitations are in
   field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
   and the oracle `time` column are not compared. M3's per-ROM instruction quantum
   and masked-boundary control are superseded.
-- The nine synthetic ROMs are the three historical ones plus EA, shift, BCD,
-  MOVEM/MOVEP, mul/div and EXG/TAS/ADDX/SUBX fixtures under `scripts/fixtures/`.
-  The regenerated repair run passes: address projections 9/9, per-instruction
-  cycle comparisons 9/9, selected final states 9/9, and address/cycle/final-state
-  negative controls 9/9; the harness exits 0. No divergence remains in the
-  compared observables and no expectation was edited to obtain the pass. Full numbers, commands and the pinned
+- The ten synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX and system/status-register fixtures under
+  `scripts/fixtures/`. The regenerated repair run passes: address projections
+  10/10, per-instruction cycle comparisons 10/10, selected final states 10/10, and
+  address/cycle/final-state negative controls 10/10; the harness exits 0. No
+  divergence remains in the compared observables and no expectation was edited to
+  obtain the pass. Full numbers, commands and the pinned
   oracle revision `ec005615…` are in the
   [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 - History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
@@ -480,10 +483,10 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond the nine synthetic ROMs, positive differential
+- Differential evidence beyond the ten synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  full-hardware timing or game compatibility. The 9-ROM run matches instruction
+  full-hardware timing or game compatibility. The 10-ROM run matches instruction
   addresses, per-instruction cycle costs and selected final state; the masked-ROM
   run is negative gating evidence only.
 
@@ -502,8 +505,8 @@ timeline with the reset mask 7 it shows the first HBlank request pending at tick
 3472 with no handler, then demonstrates snapshot/fork/restore with the pending
 request preserved. A mask-7 interrupt ROM reaches masked VBlank with the VDP
 VBlank/VINT-pending status bits set and restored from a checkpoint. The mask-3
-interrupt ROM delays past two scanlines, lowers the mask at tick 7238, delivers the
-retained HBlank at tick 7266 with the handler at IPM 4, and `RTE` at tick 7434
+interrupt ROM delays past two scanlines, lowers the mask at tick 7350, delivers the
+retained HBlank at tick 7378 with the handler at IPM 4, and `RTE` at tick 7546
 returns to PC `0x000210` with raw `SR` `0x2300` (mask and CCR restored). VBlank is
 then entered at IPM 6 before the pending HBlank, so no HBlank handler nests before
 `RTE` restores the program mask; the checkpoint preserves the pending VBlank/VINT
@@ -556,7 +559,7 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    SRAM and TMSS landed in phase 8.1.
 2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
    remaining exception-edge behaviour, driven by differential tests.
-3. Broaden the differential corpus beyond the nine synthetic ROMs while keeping
+3. Broaden the differential corpus beyond the ten synthetic ROMs while keeping
    instruction-address/cycle/state comparison distinct from hardware timing
    equivalence. A positive comparison of interrupt delivery or latency would need
    an oracle model of those semantics; the current masked-ROM pass is negative

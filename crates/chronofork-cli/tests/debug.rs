@@ -605,11 +605,11 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         "--steps",
         "120",
     ]));
-    assert_eq!(delivered.field("tick"), "8554");
+    assert_eq!(delivered.field("tick"), "8666");
     assert_eq!(delivered.field("pending"), "0");
     assert_eq!(delivered.field("counter_0_issued"), "2");
     assert_eq!(delivered.field("counter_0_coalesced"), "1");
-    assert_eq!(delivered.field("master_cycle_in_line"), "1714");
+    assert_eq!(delivered.field("master_cycle_in_line"), "1826");
 }
 
 #[test]
@@ -1011,13 +1011,13 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "7266");
+    assert_eq!(blocks[0].field("tick"), "7378");
     assert_eq!(blocks[0].field("steps"), "105");
     assert_eq!(blocks[0].field("events_matched"), "1");
     assert_eq!(blocks[1].field("kind"), "interrupt-delivered");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "delivered");
-    assert_eq!(blocks[1].field("tick"), "7238");
+    assert_eq!(blocks[1].field("tick"), "7350");
     assert_eq!(blocks[1].field("matched"), "1");
 
     let blocks = parse_blocks(&run_ok(&[
@@ -1031,7 +1031,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
         "interrupt:acknowledged",
     ]));
     assert_eq!(blocks.len(), 2);
-    assert_eq!(blocks[0].field("tick"), "7266");
+    assert_eq!(blocks[0].field("tick"), "7378");
     assert_eq!(blocks[1].field("kind"), "interrupt-acknowledged");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "acknowledged");

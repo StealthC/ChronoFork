@@ -102,7 +102,7 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
         "interrupt: masked HBlank pending at tick 3472",
         "interrupt: masked VBlank pending level 6 vector 0x78",
         // Delivery after the ROM lowers the mask, handler execution and RTE.
-        "interrupt: HBlank delivered at tick 7266 with handler IPM 4; handler ran; RTE at tick 7434",
+        "interrupt: HBlank delivered at tick 7378 with handler IPM 4; handler ran; RTE at tick 7546",
         "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler)",
         // Fork/restore evidence is retained.
         "fork isolation:",
