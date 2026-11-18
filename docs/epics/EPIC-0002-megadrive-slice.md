@@ -68,7 +68,7 @@ the contract validator.
 |---|---|---|
 | E2-01 | Create crate and workspace wiring | Done |
 | E2-02 | Implement ROM/RAM big-endian bus with atomic writes | Done |
-| E2-03 | Implement documented 68000 subset and flags | Done |
+| E2-03 | Implement documented 68000 instruction coverage and flags | Done |
 | E2-04 | Implement reset vectors and SR initialization | Done |
 | E2-05 | Implement backend contract, snapshots and state hash | Done |
 | E2-06 | Integrate with sessions and prove fork/restore isolation | Done |
@@ -80,7 +80,7 @@ the contract validator.
 | E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
 | E2-13 | Expand instruction/addressing coverage with tests | In progress — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests; broader instruction/addressing coverage remains future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
-| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` (privilege not enforced here) writes the raw SR for mask control; VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; CLI demo and masked default-quantum differential control pass. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
+| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; CLI demo and masked default-quantum differential control pass. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
 
 ## Hardware-depth mapping (H1–H5)
 
@@ -91,7 +91,7 @@ milestone has to be reopened:
 
 | Open work | Track |
 |---|---|
-| E2-13 broader instruction/addressing coverage; the remaining 68000 exception groups; privilege enforcement and separate user/supervisor stacks | H1 |
+| E2-13 broader instruction/addressing coverage; the remaining 68000 exception groups (including guest bus error and trace) | H1 |
 | VDP rendering, planes, sprites and scrolling; CRAM/VSRAM; DMA; raster and H/V timing; VDP interrupt-enable/acknowledge and FIFO behaviour | H2 |
 | YM2612, PSG, the Z80 and bus arbitration | H3 |
 | E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
@@ -155,7 +155,8 @@ The historical three-ROM harness run was **PASS 3/3**: 3/3 projected address str
 - `rom_mem_vdp`: 2363 / 51 and 51/51, projection SHA-256
   `ba4f39489fa56b5fa068af4f4bd21e5aaf311a8138df22231f6c0e04bfe62b47` on both sides,
   negative control index 25.
-- `rom_masked`: 2388 / 155 and 155/155 at the CLI default quantum 64, projection
+- `rom_masked`: 2388 / 155 and 155/155 at the then-default instruction quantum
+  (superseded by the master-cycle timeline), projection
   SHA-256 `02891e15765a342496196564e17d1649f10d39a069b4494fa96d7fb11ca3cd11` on both
   sides, negative control index 77, SR mask 7 on both sides, 2 HBlank boundaries
   crossed and zero handler entries.
@@ -212,7 +213,7 @@ interrupt-delivery, rendering, audio, Z80, DMA or game-compatibility equivalence
     never cleared by a status-port read. Snapshots/restores preserve pending
     requests and recompute the derived bit; state hashes include pending state.
 18. The historical differential harness reported PASS 3/3 for three synthetic ROMs, including
-    the masked ROM at the CLI default quantum 64 with two HBlank boundaries crossed
+    the masked ROM at the then-default instruction quantum with two HBlank boundaries crossed
     at mask 7 and no handler execution, while the earlier explicit-1,000,000-quantum
     two-ROM evidence remains preserved as controlled-condition history.
 
@@ -249,8 +250,9 @@ Representative E2-15 tests: `interrupt_priority_mask_selects_only_levels_above_t
 `snapshot_excludes_the_derived_vint_latch`,
 `megadrive_demo_runs_the_minimal_68000_slice`,
 `megadrive_demo_output_is_deterministic`,
-`default_scheduler_quantum_is_still_64_and_is_never_hidden` and
-`explicit_quantum_is_still_recorded_in_state`. `cargo test --workspace` is the source
+`scheduler_config_is_video_only`,
+`default_master_cycle_timeline_is_reported` and
+`v4_snapshot_round_trips_master_cycles_stacks_and_cpu_cycles`. `cargo test --workspace` is the source
 of truth for the current count.
 
 ## Risks
@@ -262,7 +264,7 @@ of truth for the current count.
 | Snapshot state missing future devices | Broken restore/fork | Versioned payload v4; device blobs validated before commit; pending interrupt state and the derived VINT latch are covered by tests |
 | Tick = instruction conflated with cycles | False timing claims | Canonical time is the master-cycle timeline (instruction cost x 7); functional prefetch, bus contention and interrupt latency remain out of scope |
 | Mask gating mistaken for interrupt timing/delivery equivalence | False hardware-equivalence claims | Unit/backend tests cover the mask rule, pending retention, acknowledge-per-level, VBlank priority and no nesting; the differential masked-ROM pass is documented as negative gating evidence only |
-| Privilege enforcement incomplete | `MOVE.W #imm,SR`/`RTE` could run in either mode | Implemented for the documented system instructions; user/supervisor stack separation and RTE restore are covered by tests. |
+| Privilege enforcement regression | `MOVE.W #imm,SR`/`RTE` could run in the wrong mode | Implemented for the documented system instructions; `privileged_write_sr_faults_in_user_mode` and the RTE/stack tests cover the behaviour. |
 | VDP status overclaimed | Users expect rendering or full VINT control | Only VBlank, FIFO-empty and the scheduler-derived VINT-pending latch can change; VDP interrupt-enable registers, VDP-side acknowledge logic and other bits are documented constants |
 | Differential evidence overclaimed as hardware equivalence | False accuracy claims | Compare instruction addresses, per-instruction 68000 cycle costs, ROM-byte consistency and selected state; the oracle's absolute cycle base, time column and interrupt timing are not compared; limits stated explicitly |
 | Differential evidence historically limited to three synthetic ROMs | Overgeneralized conformance claims | Keep scope explicit; the current harness covers eleven synthetic ROMs and the historical masked ROM remains a negative gating control, not a positive interrupt comparison; broader addressing/hardware coverage remains future work |
@@ -273,7 +275,7 @@ All acceptance criteria pass, docs state exact limits, no ROMs/upstream code are
 committed, the E2-12 pre- and post-repair evidence is recorded with its controlled
 conditions and negative controls, the E2-15 mask-gating/`RTE`/VINT behavior is
 covered by the backend, CLI and snapshot tests and demonstrated by the CLI demo, the
-the historical three-ROM differential evidence (including the default-quantum masked-ROM
+historical three-ROM differential evidence (including the default-quantum masked-ROM
 negative gating control) is recorded with every number/digest reproducible, the current
 eleven-ROM 11/11 master-cycle differential is recorded, the earlier
 explicit-1,000,000-quantum evidence is preserved as history, and the next increment is
