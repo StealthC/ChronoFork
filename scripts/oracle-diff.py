@@ -1,50 +1,44 @@
 #!/usr/bin/env python3
 """Oracle differential trace harness for the minimal Mega Drive 68000 slice.
 
-Phase 8.2 extends this harness with the master-cycle timeline and an
-ten-ROM per-instruction cycle differential. The instruction-quantum wording in
-the historical paragraphs below is superseded: canonical time is 3420 master
-cycles per scanline and ChronoFork records each instruction's 68000 cycle cost as
-the fourth trace field (`--cycles`). The cycle comparator reads the oracle's
-accumulated `cycle` column and reports the first mismatch.
+Phase 8.2 runs this harness on the master-cycle timeline: canonical time is 3420
+master cycles per scanline and ChronoFork records each instruction's 68000 cycle
+cost as the fourth trace field (``--cycles``). The cycle comparator reads the
+oracle's accumulated ``cycle`` column and reports the first mismatch.
 
-Task t3 (Phase 10, EPIC-0002 E2-12), extended under E2-15. This script is
-deliberately self-contained (Python 3 standard library only) and original code;
-it does not copy upstream Exodus source. It:
+The script is deliberately self-contained (Python 3 standard library only) and
+original code; it does not copy upstream Exodus source. It:
 
 1. generates every independently authored synthetic Mega Drive ROM
    deterministically (the original ``rom_alu``, ``rom_mem_vdp`` and ``rom_masked``
-   plus the EA, shift, BCD, MOVEM/MOVEP, mul/div and EXG/TAS/ADDX/SUBX fixtures)
-   and records their SHA-256 digests;
+   plus the EA, shift, BCD, MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX,
+   status-register and bit/DBcc fixtures) and records their SHA-256 digests;
 2. runs the pinned ``exodus-probe`` oracle twice per ROM and records both trace
    dumps (``--frames N``, ``--trace-device "Main 68000"``, default module);
-3. runs ``chronofork megadrive trace`` twice per ROM. ``rom_alu`` and
-   ``rom_mem_vdp`` use an explicit 1,000,000-instruction scheduler quantum so no
-   interrupt is raised in their measured window. ``rom_masked`` omits
-   ``--instructions-per-line`` and therefore runs at the CLI default quantum of
-   64, crossing at least one instruction-quantum HBlank boundary while its SR
-   interrupt mask stays 7;
-4. projects both traces to the executed-address sequence up to the ROM marker
-   loop and compares record count and every address, printing the first
-   divergence with preceding context and exiting 1 on mismatch;
+3. runs ``chronofork megadrive trace`` twice per ROM on the master-cycle
+   timeline (there is no instruction-quantum flag), then projects both traces to
+   the executed-address sequence up to the ROM marker loop and compares record
+   count and every address, printing the first divergence with preceding context
+   and exiting 1 on mismatch;
+4. compares each instruction's 68000 cycle cost (the oracle cycle-column delta
+   versus ChronoFork's fourth trace field) and reports the first mismatch;
 5. queries the oracle's final CPU registers and work RAM through ``exodus-mcpd``
    (JSON-RPC) and compares them with the ChronoFork final-state file using
    effective SR fields (IPM, S, CCR), never the raw SR word;
-6. runs a negative control that corrupts one projected record and asserts the
-   comparator exits 1 at the corrupted index;
-7. audits the masked-ROM gating control: the recorded per-ROM scheduler quantum,
-   the HBlank boundaries derived from ChronoFork's tick/quantum, the SR mask on
-   both sides and the absence of any SR-writing opcode or handler entry. This is
-   negative evidence about mask gating (no handler executes), not a comparison of
-   interrupt delivery or timing;
+6. runs negative controls that corrupt one projected address, one cycle cost and
+   one final-state field, asserting the comparator exits 1 each time;
+7. records the master-cycle timeline metadata (tick, executed count, SR masks and
+   the supported interrupt sources) for information; the M3 instruction-quantum
+   gating control is superseded and is not a timing comparison;
 8. writes machine-readable ``<out-dir>/oracle-diff.json`` and human-readable
-   ``<out-dir>/oracle-diff.md`` with pinned revisions, binary/ROM hashes,
-   per-ROM quantum, record counts, projection digests, final state, commands and
-   observed values.
+   ``<out-dir>/oracle-diff.md`` with pinned revisions, binary/ROM hashes, record
+   counts, projection digests, cycle results, final state, commands and observed
+   values.
 
 The oracle trace format is ``cycle, address(hex), opcode, args, time`` after three
-``#`` header lines. Cycle and time are oracle-specific and are never compared.
-ChronoFork trace lines are ``index, pc(hex), opcode(hex)``.
+``#`` header lines. The cycle column's per-instruction delta is compared; the
+absolute cycle base and the wall-clock-like ``time`` column are not.
+ChronoFork trace lines are ``index, pc(hex), opcode(hex), cycles``.
 
 Known scope limits (also written into the evidence):
 - the oracle starts the 68000 with undefined D/A registers set to ``0xFFFFFFFF``
@@ -55,9 +49,10 @@ Known scope limits (also written into the evidence):
 - VDP data-port *read* behaviour is not compared (the oracle's VRAM read prefetch
   state does not match the minimal VDP model); VDP control/data *writes* are
   executed and compared as part of the instruction stream;
-- no cycle, interrupt-timing, rendering, audio, Z80, DMA or game-compatibility
-  equivalence is claimed; the address projection and selected final state of
-  synthetic ROMs are the only compared observables;
+- no interrupt-latency, hardware-cycle, rendering, audio, Z80, DMA or
+  game-compatibility equivalence is claimed; the address projection,
+  per-instruction 68000 cycle cost and selected final state of synthetic ROMs are
+  the compared observables;
 - the masked-ROM pass is negative evidence about mask gating (no handler runs),
   not a positive comparison of interrupt delivery;
 - a real divergence is reported as a finding and is never masked by editing the
@@ -66,8 +61,8 @@ Known scope limits (also written into the evidence):
   powers up with X set (SR 0x7FE0 raw) while ChronoFork resets CCR clear; an
   architecturally undefined reset flag must not masquerade as a state divergence.
 
-Exit status: 0 when every ROM matches, 1 when a trace or final-state comparison
-diverges, 2 on a harness/setup error.
+Exit status: 0 when every ROM matches, 1 when a trace, cycle or final-state
+comparison diverges, 2 on a harness/setup error.
 """
 
 import argparse
@@ -94,9 +89,6 @@ ORACLE_MODULE = "Data/Modules/Sega Mega Drive 1600.xml"
 TRACE_DEVICE = "Main 68000"
 DEFAULT_FRAMES = 1
 DEFAULT_INSTRUCTION_BUDGET = 10_000
-DIFF_QUANTUM = 1_000_000
-# CLI default scheduler quantum (one 68000 instruction per scheduler quantum).
-CLI_DEFAULT_QUANTUM = 64
 RAM_BYTES = 64
 PROJECTION_CONTEXT = 5
 ROM_SIZE = 0x1000
@@ -107,16 +99,6 @@ ORACLE_HEADER = "# exodus trace dump"
 # the CPU at a detectable address instead of running into the ROM header.
 MASKED_HANDLER_STUBS = (0x40, 0x48)
 MASKED_VECTOR_ENTRIES = (0x70, 0x78)
-MASKED_HANDLER_ADDRESSES = MASKED_HANDLER_STUBS + MASKED_VECTOR_ENTRIES
-ACTIVE_LINES = {"ntsc": 224, "pal": 240}
-LINES_PER_FRAME = {"ntsc": 262, "pal": 313}
-# 68000 instructions that can write the interrupt-priority mask (or the whole SR).
-SR_WRITE_OPCODES = {0x007C, 0x027C, 0x0A7C, 0x4E72, 0x4E73}
-
-
-def is_sr_write_opcode(opcode):
-    """Return True when the 68000 opcode word can write SR (and thus the IPM)."""
-    return (opcode & 0xFFC0) == 0x46C0 or opcode in SR_WRITE_OPCODES
 
 
 class HarnessError(RuntimeError):
@@ -829,18 +811,64 @@ def build_status_reg_rom():
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF STATUS REG ROM"), asm.labels
 
 
+def build_bits_dbcc_rom():
+    """Bit-operation forms and the three DBcc outcomes.
+
+    BTST/BCHG/BCLR/BSET are exercised with static and dynamic bit numbers on a
+    data register and on memory. The DBRA self-loop takes the branch while the
+    counter decrements and then expires; DBEQ with Z set covers the condition-true
+    path. The oracle's cycle column is compared for every record.
+    """
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+
+    def bit_op(operation, static_form, mode, register, dn=0, bit_number=1):
+        if static_form:
+            asm.emit16(0x0800 | (operation << 6) | (mode << 3) | register)
+            asm.emit16(bit_number)
+        else:
+            asm.emit16(0x0100 | (dn << 9) | (operation << 6) | (mode << 3) | register)
+
+    asm.moveq(1, 1)  # D1 = 1, the register target
+    # Dynamic and static forms on Dn: BTST, BCHG, BCLR, BSET.
+    for operation in range(4):
+        bit_op(operation, False, 0, 1)
+        bit_op(operation, True, 0, 1)
+    # Dynamic and static forms on (A0): the same four operations.
+    for operation in range(4):
+        bit_op(operation, False, 2, 0)
+        bit_op(operation, True, 2, 0)
+
+    # DBRA D2,self: 2 -> 1 (taken), 1 -> 0 (taken), 0 -> 0xFFFF (expired).
+    asm.moveq(2, 2)
+    asm.label("dbra")
+    asm.emit16(0x51C8)
+    asm.emit16(0xFFFC)  # target the DBRA opcode itself
+    # DBEQ D4,+2 with Z set by TST.W D3 (D3 remains zero).
+    asm.emit16(0x4A43)  # TST.W D3
+    asm.emit16(0x57CC)  # DBEQ D4,+2
+    asm.emit16(0x0002)
+
+    for dn in range(5):
+        asm.move_dn_abs("l", dn, 0x00FF0000 + dn * 4)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF BITS DBCC ROM"), asm.labels
+
+
 # (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
 ROMS = (
-    ("rom_alu", build_alu_rom, DIFF_QUANTUM, False),
-    ("rom_mem_vdp", build_mem_vdp_rom, DIFF_QUANTUM, False),
-    ("rom_masked", build_masked_rom, None, True),
-    ("rom_ea", build_ea_rom, None, False),
-    ("rom_shift", build_shift_rom, None, False),
-    ("rom_bcd", build_bcd_rom, None, False),
-    ("rom_movem", build_movem_rom, None, False),
-    ("rom_muldiv", build_muldiv_rom, None, False),
-    ("rom_exg_tas", build_exg_tas_rom, None, False),
-    ("rom_status_reg", build_status_reg_rom, None, False),
+    ("rom_alu", build_alu_rom),
+    ("rom_mem_vdp", build_mem_vdp_rom),
+    ("rom_masked", build_masked_rom),
+    ("rom_ea", build_ea_rom),
+    ("rom_shift", build_shift_rom),
+    ("rom_bcd", build_bcd_rom),
+    ("rom_movem", build_movem_rom),
+    ("rom_muldiv", build_muldiv_rom),
+    ("rom_exg_tas", build_exg_tas_rom),
+    ("rom_status_reg", build_status_reg_rom),
+    ("rom_bits_dbcc", build_bits_dbcc_rom),
 )
 
 
@@ -1428,109 +1456,7 @@ class McpSession:
 # ---------------------------------------------------------------------------
 
 
-def _rom_sr_writes(rom, start, end):
-    """Return '<address>:<opcode>' entries for SR-writing words in a ROM range."""
-    writes = []
-    for offset in range(start, min(end, len(rom)) - 1, 2):
-        word = int.from_bytes(rom[offset : offset + 2], "big")
-        if is_sr_write_opcode(word):
-            writes.append("0x{:06X}:0x{:04X}".format(offset, word))
-    return writes
-
-
-def scheduler_control(name, spec_quantum, require_gating, state, rom, labels,
-                      projected_records, oracle_final):
-    """Derive and check the per-ROM scheduler quantum and gating conditions.
-
-    HBlank/VBlank boundary counts are derived deterministically from the
-    recorded ChronoFork instruction-quantum tick, the per-ROM scheduler quantum
-    and the video standard, using the scheduler's documented model: completing
-    line ``l`` raises HBlank at tick ``(l + 1) * quantum`` while ``l`` is in the
-    active region, and raises VBlank when ``l + 1 == active_lines``. They are
-    ChronoFork-side control quantities, not oracle timing comparisons.
-    """
-    quantum = 3420
-    executed = state["executed"]
-    tick = state["tick"]
-    video = state.get("video", "ntsc")
-    active = ACTIVE_LINES.get(video)
-    frame_lines = LINES_PER_FRAME.get(video)
-    if active is None or frame_lines is None:
-        raise HarnessError("unknown video standard {!r} in ChronoFork state".format(video))
-    completed_lines = tick // quantum
-    hblank = min(completed_lines, active)
-    vblank = 0 if completed_lines < active else (completed_lines - active) // frame_lines + 1
-    expected_quantum = CLI_DEFAULT_QUANTUM if spec_quantum is None else spec_quantum
-    source = "cli-default" if spec_quantum is None else "explicit"
-    program_end = labels.get("program_end", len(rom))
-    executed_sr_writes = [
-        "0x{:06X}:0x{:04X}".format(record["pc"], record["opcode"])
-        for record in projected_records
-        if is_sr_write_opcode(record["opcode"])
-    ]
-    rom_sr_writes = _rom_sr_writes(rom, PROGRAM_AT, program_end)
-    handler_entries = [
-        "0x{:06X}".format(record["pc"])
-        for record in projected_records
-        if record["pc"] in MASKED_HANDLER_ADDRESSES
-    ]
-    chronofork_mask = effective_sr(state["sr"])["ipm"]
-    oracle_mask = effective_sr(oracle_final["sr"])["ipm"]
-
-    checks = {
-        "quantum_recorded": quantum > 0,
-        "quantum_as_expected": quantum == expected_quantum,
-        "tick_equals_executed": tick == executed,
-        "no_sr_writing_opcode_executed": not executed_sr_writes,
-        "no_sr_writing_opcode_in_program": not rom_sr_writes,
-    }
-    if require_gating:
-        checks.update(
-            {
-                "quantum_flag_omitted": spec_quantum is None,
-                "quantum_matches_cli_default": (
-                    source == "cli-default" and quantum == CLI_DEFAULT_QUANTUM
-                ),
-                "more_than_one_quantum": executed > quantum,
-                "hblank_boundary_crossed": hblank >= 1,
-                "sr_mask_seven_on_both_sides": chronofork_mask == 7 and oracle_mask == 7,
-                "no_handler_entry": not handler_entries,
-            }
-        )
-    return {
-        "gating_required": require_gating,
-        "default_cli_quantum": CLI_DEFAULT_QUANTUM,
-        "expected_quantum": expected_quantum,
-        "scheduler_quantum": quantum,
-        "quantum_source": source,
-        "quantum_flag_omitted": spec_quantum is None,
-        "executed": executed,
-        "tick": tick,
-        "video": video,
-        "active_lines": active,
-        "lines_per_frame": frame_lines,
-        "completed_lines": completed_lines,
-        "hblank_boundaries_crossed": hblank,
-        "vblank_boundaries_crossed": vblank,
-        "chronofork_sr_raw": "0x{:04X}".format(state["sr"]),
-        "chronofork_sr_mask": chronofork_mask,
-        "oracle_sr_raw": "0x{:04X}".format(oracle_final["sr"]),
-        "oracle_sr_mask": oracle_mask,
-        "sr_write_opcodes_executed": executed_sr_writes,
-        "sr_write_opcodes_in_program": rom_sr_writes,
-        "handler_stub_addresses": ["0x{:06X}".format(pc) for pc in MASKED_HANDLER_ADDRESSES],
-        "handler_entries": handler_entries,
-        "checks": checks,
-        "passed": all(checks.values()),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Per-ROM differential run
-# ---------------------------------------------------------------------------
-
-
-def run_rom(name, builder, spec_quantum, require_gating, options):
+def run_rom(name, builder, options):
     work = options.artifacts / name
     work.mkdir(parents=True, exist_ok=True)
     rom, labels = builder()
@@ -2285,12 +2211,12 @@ def main(argv):
     chronofork = chronofork_provenance(options)
 
     results = []
-    for name, builder, spec_quantum, require_gating in ROMS:
+    for name, builder in ROMS:
         print(
             "running {} (master-cycle timeline)...".format(name),
             flush=True,
         )
-        results.append(run_rom(name, builder, spec_quantum, require_gating, options))
+        results.append(run_rom(name, builder, options))
 
     controls = []
     for result in results:
