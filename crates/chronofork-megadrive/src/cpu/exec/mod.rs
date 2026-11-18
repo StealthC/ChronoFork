@@ -11,6 +11,7 @@
 
 use super::CpuError;
 
+pub mod arith;
 pub mod r#move;
 
 /// Builds a typed illegal-opcode error.

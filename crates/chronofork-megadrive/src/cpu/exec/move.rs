@@ -8,7 +8,9 @@
 use crate::bus::MegadriveBus;
 
 use super::illegal_opcode;
-use crate::cpu::ea::{Ea, Size, add_signed, decode_ea, ea_address, read_ea, write_ea};
+use crate::cpu::ea::{
+    Ea, Size, add_signed, decode_ea, ea_address, is_data_alterable, read_ea, write_ea,
+};
 use crate::cpu::{CpuError, M68000};
 
 /// Executes one data movement instruction selected by the decode table.
@@ -320,20 +322,6 @@ fn movem_registers(mask: u16, predecrement: bool) -> Vec<(bool, u8)> {
         }
     }
     registers
-}
-
-fn is_data_alterable(ea: Ea) -> bool {
-    matches!(
-        ea,
-        Ea::Dn(_)
-            | Ea::Indirect(_)
-            | Ea::PostInc(_)
-            | Ea::PreDec(_)
-            | Ea::Disp16(_)
-            | Ea::Index(_)
-            | Ea::Abs16
-            | Ea::Abs32
-    )
 }
 
 fn is_movem_source(ea: Ea) -> bool {

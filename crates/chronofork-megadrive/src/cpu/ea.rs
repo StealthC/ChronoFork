@@ -100,6 +100,25 @@ pub enum Ea {
     Imm,
 }
 
+/// Returns whether `ea` is a data-alterable addressing mode.
+///
+/// Data-alterable modes are the data register and every memory mode except the
+/// PC-relative forms and immediate; they are the valid destinations of `CLR`,
+/// `TST`, `NEG`, `NOT`, `ADD`, `SUB` and the immediate/quick arithmetic forms.
+pub(crate) fn is_data_alterable(ea: Ea) -> bool {
+    matches!(
+        ea,
+        Ea::Dn(_)
+            | Ea::Indirect(_)
+            | Ea::PostInc(_)
+            | Ea::PreDec(_)
+            | Ea::Disp16(_)
+            | Ea::Index(_)
+            | Ea::Abs16
+            | Ea::Abs32
+    )
+}
+
 /// Decodes the mode/register pair into an effective address.
 ///
 /// Byte-sized address-register direct operands are rejected here: the 68000

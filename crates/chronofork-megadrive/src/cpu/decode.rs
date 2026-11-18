@@ -187,20 +187,18 @@ pub const fn classify(opcode: u16) -> InstructionClass {
     match opcode & 0xF000 {
         0x8000 => InstructionClass::Or,
         0x9000 => InstructionClass::Sub,
-        0xB000 => {
-            let bit8 = opcode & 0x0100 != 0;
-            if bit8 {
+        0xB000 => match (opcode >> 6) & 0x7 {
+            0..=2 => InstructionClass::Cmp,
+            3 | 7 => InstructionClass::Cmpa,
+            4..=6 => {
                 if mode == 1 {
                     InstructionClass::Cmpm
                 } else {
                     InstructionClass::Eor
                 }
-            } else if mode == 1 {
-                InstructionClass::Cmpa
-            } else {
-                InstructionClass::Cmp
             }
-        }
+            _ => InstructionClass::Other,
+        },
         0xC000 => InstructionClass::And,
         0xD000 => InstructionClass::Add,
         0x5000 => {

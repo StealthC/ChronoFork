@@ -577,98 +577,30 @@ impl M68000 {
                 self.sr = value;
             }
             InstructionClass::Dbra => return self.execute_dbra(bus, opcode),
-            _ => return self.execute_legacy(bus, opcode, instruction_pc),
+            InstructionClass::Add
+            | InstructionClass::Adda
+            | InstructionClass::Addq
+            | InstructionClass::Addi
+            | InstructionClass::Sub
+            | InstructionClass::Suba
+            | InstructionClass::Subq
+            | InstructionClass::Subi
+            | InstructionClass::Cmp
+            | InstructionClass::Cmpa
+            | InstructionClass::Cmpi
+            | InstructionClass::Cmpm
+            | InstructionClass::Neg
+            | InstructionClass::Negx => {
+                exec::arith::execute(self, bus, opcode)?;
+            }
+            _ => {
+                return Err(CpuError::IllegalOpcode {
+                    pc: instruction_pc,
+                    opcode,
+                });
+            }
         }
         Ok(())
-    }
-
-    /// Executes the arithmetic and compare encodings that the arithmetic group
-    /// has not taken over yet (plan Task 5 removes the remaining branches).
-    fn execute_legacy(
-        &mut self,
-        _bus: &mut MegadriveBus,
-        opcode: u16,
-        instruction_pc: u32,
-    ) -> Result<(), CpuError> {
-        // CMP.B/W/L Dn,Dn.
-        if (opcode & 0xF100) == 0xB000 && (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let size = match opcode & 0x00C0 {
-                0x0000 => Size::Byte,
-                0x0040 => Size::Word,
-                0x0080 => Size::Long,
-                _ => {
-                    return Err(CpuError::Unsupported(
-                        "CMP only supports data-register operands".to_owned(),
-                    ));
-                }
-            };
-            let source_value = self.read_dn(source, size);
-            let destination_value = self.read_dn(destination, size);
-            self.set_cmp_flags(destination_value, source_value, size);
-            return Ok(());
-        }
-
-        // ADDQ / SUBQ (Dn only).
-        if (opcode & 0xF000) == 0x5000 {
-            let subtract = opcode & 0x0100 != 0;
-            let mut immediate = u32::from((opcode >> 9) & 0x7);
-            if immediate == 0 {
-                immediate = 8;
-            }
-            let mode = (opcode >> 3) & 0x7;
-            let size_bits = (opcode >> 6) & 0x3;
-            let destination = usize::from(opcode & 0x7);
-            if mode != 0 {
-                return Err(CpuError::Unsupported(
-                    "ADDQ/SUBQ only supports data-register destinations".to_owned(),
-                ));
-            }
-            let size = match size_bits {
-                1 => Size::Word,
-                2 => Size::Long,
-                _ => {
-                    return Err(CpuError::Unsupported(
-                        "ADDQ/SUBQ only supports word and long sizes".to_owned(),
-                    ));
-                }
-            };
-            if subtract {
-                self.subtract(destination, immediate, size);
-            } else {
-                self.add(destination, immediate, size);
-            }
-            return Ok(());
-        }
-
-        // ADD/SUB Dn,Dn.
-        if (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let size = match opcode & 0x00C0 {
-                0x0000 => Some(Size::Byte),
-                0x0040 => Some(Size::Word),
-                0x0080 => Some(Size::Long),
-                _ => None,
-            };
-            if let Some(size) = size {
-                let source_value = self.read_dn(source, size);
-                if (opcode & 0xF000) == 0xD000 {
-                    self.add(destination, source_value, size);
-                    return Ok(());
-                }
-                if (opcode & 0xF000) == 0x9000 {
-                    self.subtract(destination, source_value, size);
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(CpuError::IllegalOpcode {
-            pc: instruction_pc,
-            opcode,
-        })
     }
 
     /// Executes `DBRA Dn,disp16` (the `DBcc` encoding with condition 1).
@@ -762,22 +694,6 @@ impl M68000 {
         let target = target as u32;
         self.ensure_even(target)?;
         Ok(target)
-    }
-
-    fn add(&mut self, destination: usize, source: u32, size: Size) {
-        let destination_value = self.read_dn(destination, size);
-        let source_value = source & size.mask();
-        let result = destination_value.wrapping_add(source_value) & size.mask();
-        self.write_dn(destination, result, size);
-        self.set_add_flags(destination_value, source_value, result, size);
-    }
-
-    fn subtract(&mut self, destination: usize, source: u32, size: Size) {
-        let destination_value = self.read_dn(destination, size);
-        let source_value = source & size.mask();
-        let result = destination_value.wrapping_sub(source_value) & size.mask();
-        self.write_dn(destination, result, size);
-        self.set_sub_flags(destination_value, source_value, result, size);
     }
 
     /// Reads data register `register`, narrowed to `size`.

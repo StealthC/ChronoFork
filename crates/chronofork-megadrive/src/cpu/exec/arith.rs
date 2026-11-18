@@ -1,0 +1,315 @@
+//! Arithmetic group: ADD/ADDA/ADDQ/ADDI, SUB/SUBA/SUBQ/SUBI,
+//! CMP/CMPA/CMPI/CMPM, NEG and NEGX.
+//!
+//! Carry and overflow are computed for each operand width. `ADD`/`SUB` (and
+//! their immediate, quick and `NEG` forms) set `X` from the carry; the compare
+//! family leaves `X` unchanged. `ADDA`/`SUBA` and `ADDQ`/`SUBQ` to an address
+//! register use the full 32-bit register and do not touch the flags.
+
+use crate::bus::MegadriveBus;
+
+use super::illegal_opcode;
+use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, read_ea, write_ea};
+use crate::cpu::{CpuError, FLAG_X, FLAG_Z, M68000};
+
+/// Sets the condition codes for an addition result.
+///
+/// This is the shared helper the shift and BCD groups use as well; the
+/// destination and source are the pre-operation operands.
+pub fn add_flags(cpu: &mut M68000, destination: u32, source: u32, result: u32, size: Size) {
+    cpu.set_add_flags(destination, source, result, size);
+}
+
+/// Sets the condition codes for a subtraction result (`X` follows the carry).
+pub fn sub_flags(cpu: &mut M68000, destination: u32, source: u32, result: u32, size: Size) {
+    cpu.set_sub_flags(destination, source, result, size);
+}
+
+/// Executes one arithmetic instruction selected by the decode table.
+///
+/// Returns the instruction's 68000-cycle cost, which is zero until the timing
+/// table (Task 14) lands.
+pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    match opcode & 0xF000 {
+        0xD000 => return add_or_sub(cpu, bus, opcode, true),
+        0x9000 => return add_or_sub(cpu, bus, opcode, false),
+        0x5000 => return addq_or_subq(cpu, bus, opcode),
+        0xB000 => return compare(cpu, bus, opcode),
+        _ => {}
+    }
+    match opcode & 0xFF00 {
+        0x0600 => return immediate_arithmetic(cpu, bus, opcode, true),
+        0x0400 => return immediate_arithmetic(cpu, bus, opcode, false),
+        0x0C00 => return compare_immediate(cpu, bus, opcode),
+        0x4000 => return negate(cpu, bus, opcode, true),
+        0x4400 => return negate(cpu, bus, opcode, false),
+        _ => {}
+    }
+    Err(illegal_opcode(instruction_pc, opcode))
+}
+
+fn size_from_bits(bits: u16) -> Option<Size> {
+    match bits {
+        0 => Some(Size::Byte),
+        1 => Some(Size::Word),
+        2 => Some(Size::Long),
+        _ => None,
+    }
+}
+
+fn add_or_sub(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+    add: bool,
+) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let opmode = (opcode >> 6) & 0x7;
+    let mode = ((opcode >> 3) & 0x7) as u8;
+    let register = (opcode & 0x7) as u8;
+    let data_register = usize::from((opcode >> 9) & 0x7);
+
+    // ADDA/SUBA: opmode 011/111, destination An in bits 11-9, source EA in
+    // bits 5-0. The operand is sign-extended to 32 bits and no flags change.
+    if opmode == 3 || opmode == 7 {
+        let size = if opmode == 3 { Size::Word } else { Size::Long };
+        let source = read_ea(cpu, bus, decode_ea(mode, register, size)?, size)?;
+        let value = size.sign_extend(source);
+        let destination = cpu.read_an(data_register);
+        let result = if add {
+            destination.wrapping_add(value)
+        } else {
+            destination.wrapping_sub(value)
+        };
+        cpu.write_an(data_register, result);
+        return Ok(0);
+    }
+
+    if let Some(size) = size_from_bits(opmode) {
+        // ADD <ea>,Dn / SUB <ea>,Dn
+        let source = read_ea(cpu, bus, decode_ea(mode, register, size)?, size)?;
+        let destination = cpu.read_dn(data_register, size);
+        let result = if add {
+            destination.wrapping_add(source)
+        } else {
+            destination.wrapping_sub(source)
+        };
+        cpu.write_dn(data_register, result, size);
+        set_arithmetic_flags(cpu, add, destination, source, result, size);
+        return Ok(0);
+    }
+
+    if (4..=6).contains(&opmode) {
+        // ADD Dn,<ea> / SUB Dn,<ea>
+        let size =
+            size_from_bits(opmode - 4).ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+        let destination = decode_ea(mode, register, size)?;
+        if !is_data_alterable(destination) {
+            return Err(illegal_opcode(instruction_pc, opcode));
+        }
+        let destination_value = read_ea(cpu, bus, destination, size)?;
+        let source = cpu.read_dn(data_register, size);
+        let result = if add {
+            destination_value.wrapping_add(source)
+        } else {
+            destination_value.wrapping_sub(source)
+        };
+        write_ea(cpu, bus, destination, size, result)?;
+        set_arithmetic_flags(cpu, add, destination_value, source, result, size);
+        return Ok(0);
+    }
+
+    Err(illegal_opcode(instruction_pc, opcode))
+}
+
+fn immediate_arithmetic(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+    add: bool,
+) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let size = size_from_bits((opcode >> 6) & 0x3)
+        .ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+    let immediate = read_ea(cpu, bus, Ea::Imm, size)?;
+    let destination = decode_ea(((opcode >> 3) & 0x7) as u8, (opcode & 0x7) as u8, size)?;
+    if !is_data_alterable(destination) {
+        return Err(illegal_opcode(instruction_pc, opcode));
+    }
+    let destination_value = read_ea(cpu, bus, destination, size)?;
+    let result = if add {
+        destination_value.wrapping_add(immediate)
+    } else {
+        destination_value.wrapping_sub(immediate)
+    };
+    write_ea(cpu, bus, destination, size, result)?;
+    set_arithmetic_flags(cpu, add, destination_value, immediate, result, size);
+    Ok(0)
+}
+
+fn addq_or_subq(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let subtract = opcode & 0x0100 != 0;
+    let size = size_from_bits((opcode >> 6) & 0x3)
+        .ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+    let mut immediate = u32::from((opcode >> 9) & 0x7);
+    if immediate == 0 {
+        immediate = 8;
+    }
+    let mode = ((opcode >> 3) & 0x7) as u8;
+    let register = (opcode & 0x7) as u8;
+
+    if mode == 1 {
+        // Address-register destination: full 32-bit operation, no flags.
+        if size == Size::Byte {
+            return Err(illegal_opcode(instruction_pc, opcode));
+        }
+        let destination = cpu.read_an(usize::from(register));
+        let result = if subtract {
+            destination.wrapping_sub(immediate)
+        } else {
+            destination.wrapping_add(immediate)
+        };
+        cpu.write_an(usize::from(register), result);
+        return Ok(0);
+    }
+
+    let destination = decode_ea(mode, register, size)?;
+    if !is_data_alterable(destination) {
+        return Err(illegal_opcode(instruction_pc, opcode));
+    }
+    let destination_value = read_ea(cpu, bus, destination, size)?;
+    let result = if subtract {
+        destination_value.wrapping_sub(immediate)
+    } else {
+        destination_value.wrapping_add(immediate)
+    };
+    write_ea(cpu, bus, destination, size, result)?;
+    set_arithmetic_flags(cpu, !subtract, destination_value, immediate, result, size);
+    Ok(0)
+}
+
+fn compare(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let opmode = (opcode >> 6) & 0x7;
+    let mode = ((opcode >> 3) & 0x7) as u8;
+    let register = (opcode & 0x7) as u8;
+
+    match opmode {
+        0..=2 => {
+            let size =
+                size_from_bits(opmode).ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+            let source = read_ea(cpu, bus, decode_ea(mode, register, size)?, size)?;
+            let destination = cpu.read_dn(usize::from((opcode >> 9) & 0x7), size);
+            cpu.set_cmp_flags(destination, source, size);
+            Ok(0)
+        }
+        3 | 7 => compare_address(cpu, bus, opcode),
+        4..=6 => {
+            if mode == 1 {
+                compare_memory(cpu, bus, opcode)
+            } else {
+                Err(illegal_opcode(instruction_pc, opcode))
+            }
+        }
+        _ => Err(illegal_opcode(instruction_pc, opcode)),
+    }
+}
+
+fn compare_address(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let opmode = (opcode >> 6) & 0x7;
+    let size = match opmode {
+        3 => Size::Word,
+        7 => Size::Long,
+        _ => return Err(illegal_opcode(instruction_pc, opcode)),
+    };
+    let source = read_ea(
+        cpu,
+        bus,
+        decode_ea(((opcode >> 3) & 0x7) as u8, (opcode & 0x7) as u8, size)?,
+        size,
+    )?;
+    let value = size.sign_extend(source);
+    let destination = cpu.read_an(usize::from((opcode >> 9) & 0x7));
+    cpu.set_cmp_flags(destination, value, Size::Long);
+    Ok(0)
+}
+
+fn compare_memory(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let opmode = (opcode >> 6) & 0x7;
+    let size = size_from_bits(opmode - 4).ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+    let source_register = (opcode & 0x7) as u8;
+    let destination_register = ((opcode >> 9) & 0x7) as u8;
+    let source = read_ea(cpu, bus, Ea::PostInc(source_register), size)?;
+    let destination = read_ea(cpu, bus, Ea::PostInc(destination_register), size)?;
+    cpu.set_cmp_flags(destination, source, size);
+    Ok(0)
+}
+
+fn compare_immediate(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let size = size_from_bits((opcode >> 6) & 0x3)
+        .ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+    let immediate = read_ea(cpu, bus, Ea::Imm, size)?;
+    let destination = decode_ea(((opcode >> 3) & 0x7) as u8, (opcode & 0x7) as u8, size)?;
+    if !is_data_alterable(destination) {
+        return Err(illegal_opcode(instruction_pc, opcode));
+    }
+    let value = read_ea(cpu, bus, destination, size)?;
+    cpu.set_cmp_flags(value, immediate, size);
+    Ok(0)
+}
+
+fn negate(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+    extended: bool,
+) -> Result<u16, CpuError> {
+    let instruction_pc = cpu.pc().saturating_sub(2);
+    let size = size_from_bits((opcode >> 6) & 0x3)
+        .ok_or_else(|| illegal_opcode(instruction_pc, opcode))?;
+    let destination = decode_ea(((opcode >> 3) & 0x7) as u8, (opcode & 0x7) as u8, size)?;
+    if !is_data_alterable(destination) {
+        return Err(illegal_opcode(instruction_pc, opcode));
+    }
+    let value = read_ea(cpu, bus, destination, size)?;
+    let extend = if extended {
+        u32::from(cpu.flag(FLAG_X))
+    } else {
+        0
+    };
+    let result = 0_u32.wrapping_sub(value).wrapping_sub(extend) & size.mask();
+    let carry = value != 0 || extend != 0;
+    let overflow = value & result & size.sign_bit() != 0;
+    let zero = if extended {
+        cpu.flag(FLAG_Z) && result == 0
+    } else {
+        result == 0
+    };
+    write_ea(cpu, bus, destination, size, result)?;
+    cpu.set_ccr(carry, overflow, zero, result & size.sign_bit() != 0, carry);
+    Ok(0)
+}
+
+fn set_arithmetic_flags(
+    cpu: &mut M68000,
+    add: bool,
+    destination: u32,
+    source: u32,
+    result: u32,
+    size: Size,
+) {
+    if add {
+        add_flags(cpu, destination, source, result, size);
+    } else {
+        sub_flags(cpu, destination, source, result, size);
+    }
+}
