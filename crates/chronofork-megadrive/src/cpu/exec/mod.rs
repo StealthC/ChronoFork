@@ -17,6 +17,7 @@ pub mod control;
 pub mod logic;
 pub mod r#move;
 pub mod shift;
+pub mod system;
 
 /// Sets the condition codes for a logic result.
 ///

@@ -97,8 +97,8 @@ pub enum InstructionClass {
     Jmp,
     /// `JSR` through an absolute-long effective address.
     Jsr,
-    /// `MOVE.W #imm,SR`.
-    MoveToSr,
+    /// System and privileged instructions.
+    System,
     /// `DBcc`.
     Dbra,
     /// `Scc`.
@@ -126,7 +126,6 @@ pub const fn classify(opcode: u16) -> InstructionClass {
     }
     // Exact system and control encodings handled by the core state machine.
     match opcode {
-        0x46FC => return InstructionClass::MoveToSr,
         0x4E71 => return InstructionClass::Nop,
         0x4E73 => return InstructionClass::Rte,
         0x4E75 => return InstructionClass::Rts,
@@ -175,6 +174,31 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             0x4A00 => return InstructionClass::Tst,
             _ => {}
         }
+    }
+
+    // System and privileged instructions.
+    if matches!(opcode & 0xFFC0, 0x40C0 | 0x42C0 | 0x44C0 | 0x46C0) {
+        return InstructionClass::System;
+    }
+    if matches!(opcode, 0x003C | 0x007C | 0x023C | 0x027C | 0x0A3C | 0x0A7C) {
+        return InstructionClass::System;
+    }
+    if (opcode & 0xF1C0) == 0x4180 {
+        return InstructionClass::System;
+    }
+    if opcode == 0x4AFC {
+        return InstructionClass::System;
+    }
+    if (opcode & 0xFFF8) == 0x4E50
+        || (opcode & 0xFFF8) == 0x4E58
+        || (opcode & 0xFFF8) == 0x4E60
+        || (opcode & 0xFFF8) == 0x4E68
+        || (opcode & 0xFFF0) == 0x4E40
+    {
+        return InstructionClass::System;
+    }
+    if matches!(opcode, 0x4E70 | 0x4E72 | 0x4E76 | 0x4E77) {
+        return InstructionClass::System;
     }
 
     // JMP/JSR take a control effective address.

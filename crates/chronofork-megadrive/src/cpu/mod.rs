@@ -469,6 +469,17 @@ impl M68000 {
         self.cycles
     }
 
+    /// Suspends the processor until the next interrupt, like `STOP`.
+    pub(crate) fn stop(&mut self) {
+        self.halted = true;
+        self.stopped = true;
+    }
+
+    /// Writes the saved user stack pointer.
+    pub(crate) fn set_usp(&mut self, value: u32) {
+        self.usp = value;
+    }
+
     /// Returns whether a `STOP` instruction has suspended the processor.
     ///
     /// No instruction sets this yet; it exists so the register file carries
@@ -666,11 +677,8 @@ impl M68000 {
             }
             InstructionClass::Nop => {}
             InstructionClass::Rte => return self.execute_rte(bus),
-            InstructionClass::MoveToSr => {
-                // Privileged on real hardware; privilege is not enforced yet.
-                // The immediate word replaces the raw SR, including the mask.
-                let value = self.fetch_u16(bus)?;
-                self.sr = value;
+            InstructionClass::System => {
+                exec::system::execute(self, bus, opcode)?;
             }
             InstructionClass::And
             | InstructionClass::Andi
@@ -727,6 +735,10 @@ impl M68000 {
     /// and CCR, with no implicit supervisor re-entry), the program counter is
     /// set to the restored value, and `A7` advances by six.
     fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+        if self.sr & SR_SUPERVISOR == 0 {
+            self.raise_exception(bus, VECTOR_PRIVILEGE_VIOLATION, ExceptionFrame::Short)?;
+            return Ok(());
+        }
         let frame = self.a[7];
         let return_pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
         let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
@@ -738,6 +750,8 @@ impl M68000 {
         self.sr = restored_sr;
         self.pc = restored_pc;
         self.a[7] = restored_a7;
+        self.halted = false;
+        self.stopped = false;
         Ok(())
     }
 
