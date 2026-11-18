@@ -25,19 +25,19 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "66e4ab1f4bd15a62f4484b994ea2af48d6aac9431e5240bfbeb959ba94220b04";
+const RESET_STATE_HASH: &str = "f204d37bb42c9aee3c6aeb048726c932d80af4d92008ed1153b3e151202c0061";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "d970b4717814e23d36717b09fa7d400d85f6d6b208d9c048a3bf2c79bcbb0ee0";
+    "d8c16a74e3112caefe13418fab7e8b63158e9e8e05b55ab6be9b039b9eec83bd";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "0ab0ca0c14e4df22d1837fd2f29fc480245e16a8b8e39c437694eeba13c8a1ca";
+    "da1dafce1a52555969bd6c19fb3c9128922ec370a96483d6724beceaa0e52fc9";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "c26246491eacd1cff29a3704c4cbc86a0420477615e400ddc895ae0dc23a29bd";
+    "97a5d1dded40ef2196d849ee4e9d0e592647783422f53b8931338f89927651a9";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "9f3f2eb75a451cf2fa754609430468e255f6ee65aa18e846b046e38b6dc1ba7b";
+    "5b2304aad147f57fd567dbbd198c6db5293286aa0b096b3c45a5ca98aaaffb40";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -180,7 +180,7 @@ fn debug_inspect_prints_stable_cpu_and_device_fields() {
     assert!(block.body.is_empty(), "inspect has no row body:\n{stdout}");
     let expected = [
         ("record", "debug-inspect"),
-        ("tick", "5"),
+        ("tick", "224"),
         ("state_hash", FIVE_STEP_STATE_HASH),
         ("halted", "0"),
         ("steps", "5"),
@@ -200,12 +200,11 @@ fn debug_inspect_prints_stable_cpu_and_device_fields() {
         ("vdp_address", "0x0000"),
         ("vdp_auto_increment", "0"),
         ("scheduler_standard", "ntsc"),
-        ("scheduler_instructions_per_line", "64"),
         ("scheduler_lines_per_frame", "262"),
         ("scheduler_active_lines", "224"),
         ("scheduler_frame", "0"),
         ("scheduler_line", "0"),
-        ("scheduler_quantum", "5"),
+        ("scheduler_master_cycle_in_line", "224"),
     ];
     assert_eq!(
         block.fields.len(),
@@ -221,7 +220,7 @@ fn debug_inspect_prints_stable_cpu_and_device_fields() {
     assert_eq!(reset.field("tick"), "0");
     assert_eq!(reset.field("steps"), "0");
     assert_eq!(reset.field("pc"), "0x00000200");
-    assert_eq!(reset.field("scheduler_quantum"), "0");
+    assert_eq!(reset.field("scheduler_master_cycle_in_line"), "0");
     assert_eq!(reset.field("state_hash"), RESET_STATE_HASH);
 }
 
@@ -247,7 +246,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=d970b4717814e23d36717b09fa7d400d85f6d6b208d9c048a3bf2c79bcbb0ee0\n\
+state_hash=d8c16a74e3112caefe13418fab7e8b63158e9e8e05b55ab6be9b039b9eec83bd\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -518,7 +517,7 @@ fn debug_vdp_prints_registers_status_and_vram_digest() {
         "--steps",
         "23",
     ]));
-    assert_eq!(advanced.field("tick"), "23");
+    assert_eq!(advanced.field("tick"), "1862");
     assert_eq!(advanced.field("vdp_auto_increment"), "2");
     assert_eq!(advanced.field("vdp_register_15"), "0x02");
     assert_eq!(advanced.field("vdp_address"), "0x0002");
@@ -560,25 +559,24 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
 
     // The fixture never writes SR, so the reset mask 7 keeps the HBlank request
     // pending at the end of the first active line (quantum 64).
-    let stdout = stable(&["debug", "interrupts", "--rom", rom_path, "--steps", "64"]);
+    let stdout = stable(&["debug", "interrupts", "--rom", rom_path, "--steps", "120"]);
     let block = single_block(&stdout);
     let expected = [
         ("record", "debug-interrupts"),
-        ("tick", "64"),
+        ("tick", "3444"),
         (
             "state_hash",
-            "fefb6f9b7e3f6da60159187d37eae1e753f594d897b31c283ac6537d5fd77aa9",
+            "2f6de1cb49ec437e5beb64529006485398d05536b7875b6bafba5c13b245075d",
         ),
         ("video", "ntsc"),
-        ("instructions_per_line", "64"),
         ("lines_per_frame", "262"),
         ("active_lines", "224"),
         ("frame", "0"),
         ("line", "1"),
-        ("quantum", "0"),
+        ("master_cycle_in_line", "24"),
         ("pending", "1"),
         ("pending_0_level", "4"),
-        ("pending_0_issued_tick", "64"),
+        ("pending_0_issued_tick", "3420"),
         ("pending_0_deliverable", "0"),
         ("counter_0_level", "4"),
         ("counter_0_issued", "1"),
@@ -605,13 +603,13 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         "--rom",
         path_str(&interrupt),
         "--steps",
-        "66",
+        "120",
     ]));
-    assert_eq!(delivered.field("tick"), "66");
+    assert_eq!(delivered.field("tick"), "8554");
     assert_eq!(delivered.field("pending"), "0");
-    assert_eq!(delivered.field("counter_0_issued"), "1");
-    assert_eq!(delivered.field("counter_0_coalesced"), "0");
-    assert_eq!(delivered.field("quantum"), "2");
+    assert_eq!(delivered.field("counter_0_issued"), "2");
+    assert_eq!(delivered.field("counter_0_coalesced"), "1");
+    assert_eq!(delivered.field("master_cycle_in_line"), "1714");
 }
 
 #[test]
@@ -673,7 +671,7 @@ fn debug_run_breakpoint_and_condition_stop_before_the_instruction() {
     ]));
     assert_eq!(limited.field("status"), "stopped");
     assert_eq!(limited.field("reason"), "step-limit");
-    assert_eq!(limited.field("tick"), "5");
+    assert_eq!(limited.field("tick"), "224");
     assert_eq!(limited.field("state_hash"), FIVE_STEP_STATE_HASH);
     assert_eq!(limited.field("pc"), "0x0000020E");
     assert_eq!(limited.field("steps"), "5");
@@ -700,7 +698,7 @@ fn debug_run_breakpoint_and_condition_stop_before_the_instruction() {
     ]));
     assert_eq!(breakpoint.field("reason"), "breakpoint");
     assert_eq!(breakpoint.field("breakpoint_id"), "1");
-    assert_eq!(breakpoint.field("tick"), "3");
+    assert_eq!(breakpoint.field("tick"), "84");
     assert_eq!(breakpoint.field("steps"), "3");
     assert_eq!(breakpoint.field("pc"), "0x00000206");
     assert_eq!(breakpoint.field("state_hash"), THREE_STEP_STATE_HASH);
@@ -734,7 +732,7 @@ fn debug_run_breakpoint_and_condition_stop_before_the_instruction() {
         "0x204-0x206",
     ]));
     assert_eq!(range.field("reason"), "breakpoint");
-    assert_eq!(range.field("tick"), "2");
+    assert_eq!(range.field("tick"), "56");
     assert_eq!(range.field("steps"), "2");
     assert_eq!(range.field("pc"), "0x00000204");
     assert_eq!(range.field("state_hash"), TWO_STEP_STATE_HASH);
@@ -752,7 +750,7 @@ fn debug_run_breakpoint_and_condition_stop_before_the_instruction() {
     ]));
     assert_eq!(condition.field("reason"), "breakpoint");
     assert_eq!(condition.field("pc"), "0x00000206");
-    assert_eq!(condition.field("tick"), "3");
+    assert_eq!(condition.field("tick"), "84");
 
     // A condition that never holds reaches the step limit instead of stopping.
     let miss = single_block(&run_ok(&[
@@ -781,7 +779,7 @@ fn debug_run_breakpoint_and_condition_stop_before_the_instruction() {
     ]));
     assert_eq!(memory.field("reason"), "breakpoint");
     assert_eq!(memory.field("pc"), "0x0000020E");
-    assert_eq!(memory.field("tick"), "5");
+    assert_eq!(memory.field("tick"), "224");
     let miss = single_block(&run_ok(&[
         "debug",
         "run",
@@ -821,7 +819,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     assert_eq!(run.field("reason"), "watchpoint");
     assert_eq!(run.field("watchpoint_ids"), "1");
     assert_eq!(run.field("steps"), "4");
-    assert_eq!(run.field("tick"), "4");
+    assert_eq!(run.field("tick"), "196");
     assert_eq!(run.field("pc"), "0x0000020C");
     assert_eq!(run.field("state_hash"), RAM_WRITE_STATE_HASH);
     assert_eq!(run.field("events_matched"), "0");
@@ -837,7 +835,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     for (index, block) in blocks[1..].iter().enumerate() {
         assert_eq!(block.field("record"), "debug-event");
         assert_eq!(block.field("matched"), "0");
-        assert_eq!(block.field("tick"), "3", "pre-step tick of the write");
+        assert_eq!(block.field("tick"), "84", "pre-step tick of the write");
         assert_eq!(block.field("width"), "1");
         assert_eq!(block.field("access"), "write");
         let expected_address = if index < 2 {
@@ -889,7 +887,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     let read = &blocks[0];
     assert_eq!(read.field("reason"), "watchpoint");
     assert_eq!(read.field("watchpoint_ids"), "1");
-    assert_eq!(read.field("tick"), "6");
+    assert_eq!(read.field("tick"), "336");
     assert_eq!(read.field("steps"), "6");
     assert_eq!(read.field("pc"), "0x00000214");
     assert_eq!(read.field("events_retained"), "4");
@@ -910,14 +908,14 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     let run = &blocks[0];
     assert_eq!(run.field("reason"), "event");
     assert_eq!(run.field("eventpoint_id"), "1");
-    assert_eq!(run.field("tick"), "4");
+    assert_eq!(run.field("tick"), "196");
     assert_eq!(run.field("steps"), "4");
     assert_eq!(run.field("events_matched"), "2");
     assert_eq!(run.field("events_retained"), "2");
     for (index, block) in blocks[1..].iter().enumerate() {
         assert_eq!(block.field("kind"), "bus-write");
         assert_eq!(block.field("matched"), "1");
-        assert_eq!(block.field("tick"), "3");
+        assert_eq!(block.field("tick"), "84");
         let expected_address = if index == 0 {
             "0x00FF0000"
         } else {
@@ -940,7 +938,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "5");
+    assert_eq!(blocks[0].field("tick"), "224");
     assert_eq!(blocks[0].field("steps"), "5");
     assert_eq!(blocks[0].field("events_matched"), "1");
     let event = &blocks[1];
@@ -949,7 +947,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     assert_eq!(event.field("value"), "0x0000007F");
     assert_eq!(event.field("width"), "1");
     assert_eq!(event.field("access"), "read");
-    assert_eq!(event.field("tick"), "4");
+    assert_eq!(event.field("tick"), "112");
     assert_eq!(event.field("matched"), "1");
 
     // A VDP-write filter stops on the first data-port write of the demo ROM.
@@ -965,7 +963,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "8");
+    assert_eq!(blocks[0].field("tick"), "504");
     assert_eq!(blocks[0].field("steps"), "8");
     let event = &blocks[1];
     assert_eq!(event.field("kind"), "vdp-port");
@@ -973,7 +971,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     assert_eq!(event.field("value"), "0x00008F02");
     assert_eq!(event.field("width"), "2");
     assert_eq!(event.field("access"), "write");
-    assert_eq!(event.field("tick"), "7");
+    assert_eq!(event.field("tick"), "392");
     assert_eq!(event.field("matched"), "1");
 
     // An interrupt-request filter stops on the masked HBlank request.
@@ -983,20 +981,20 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
         "--rom",
         rom_path,
         "--steps",
-        "100",
+        "200",
         "--eventpoint",
         "interrupt:requested:4",
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "64");
-    assert_eq!(blocks[0].field("steps"), "64");
+    assert_eq!(blocks[0].field("tick"), "3444");
+    assert_eq!(blocks[0].field("steps"), "120");
     assert_eq!(blocks[0].field("events_retained"), "3");
     let event = &blocks[1];
     assert_eq!(event.field("kind"), "interrupt-requested");
     assert_eq!(event.field("level"), "4");
     assert_eq!(event.field("phase"), "requested");
-    assert_eq!(event.field("tick"), "63");
+    assert_eq!(event.field("tick"), "3416");
 
     // Delivery and acknowledgement filters stop after the delivering instruction;
     // the delivered and acknowledged events share that step.
@@ -1007,19 +1005,19 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
         "--rom",
         path_str(&interrupt),
         "--steps",
-        "66",
+        "200",
         "--eventpoint",
         "interrupt:delivered:4",
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "65");
-    assert_eq!(blocks[0].field("steps"), "65");
+    assert_eq!(blocks[0].field("tick"), "7266");
+    assert_eq!(blocks[0].field("steps"), "105");
     assert_eq!(blocks[0].field("events_matched"), "1");
     assert_eq!(blocks[1].field("kind"), "interrupt-delivered");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "delivered");
-    assert_eq!(blocks[1].field("tick"), "64");
+    assert_eq!(blocks[1].field("tick"), "7238");
     assert_eq!(blocks[1].field("matched"), "1");
 
     let blocks = parse_blocks(&run_ok(&[
@@ -1028,12 +1026,12 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
         "--rom",
         path_str(&interrupt),
         "--steps",
-        "70",
+        "200",
         "--eventpoint",
         "interrupt:acknowledged",
     ]));
     assert_eq!(blocks.len(), 2);
-    assert_eq!(blocks[0].field("tick"), "65");
+    assert_eq!(blocks[0].field("tick"), "7266");
     assert_eq!(blocks[1].field("kind"), "interrupt-acknowledged");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "acknowledged");
@@ -1079,7 +1077,7 @@ fn debug_run_logpoint_records_without_stopping() {
     let run = &blocks[0];
     assert_eq!(run.field("reason"), "step-limit");
     assert_eq!(run.field("steps"), "5");
-    assert_eq!(run.field("tick"), "5");
+    assert_eq!(run.field("tick"), "224");
     assert_eq!(run.field("log_entries"), "2");
     assert_eq!(run.field("log_dropped"), "0");
 
@@ -1093,7 +1091,7 @@ fn debug_run_logpoint_records_without_stopping() {
 
     let second = &blocks[2];
     assert_eq!(second.field("logpoint_id"), "2");
-    assert_eq!(second.field("tick"), "2");
+    assert_eq!(second.field("tick"), "56");
     assert_eq!(second.field("pc"), "0x00000204");
     assert_eq!(second.field("hits"), "1");
     assert_eq!(second.field("message"), "hit");

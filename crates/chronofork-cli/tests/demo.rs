@@ -99,10 +99,10 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
         "vdp: register 15 (auto-increment)=2",
         "vdp: program wrote and read back VRAM word 0x1234",
         // Masked pending: mask 7 keeps the request pending, no handler runs.
-        "interrupt: masked HBlank pending at tick 64",
+        "interrupt: masked HBlank pending at tick 3472",
         "interrupt: masked VBlank pending level 6 vector 0x78",
         // Delivery after the ROM lowers the mask, handler execution and RTE.
-        "interrupt: HBlank delivered at tick 9 with handler IPM 4; handler ran; RTE at tick 11",
+        "interrupt: HBlank delivered at tick 7266 with handler IPM 4; handler ran; RTE at tick 7434",
         "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler)",
         // Fork/restore evidence is retained.
         "fork isolation:",

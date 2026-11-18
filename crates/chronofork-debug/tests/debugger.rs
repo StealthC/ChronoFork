@@ -24,7 +24,7 @@ use chronofork_debug::{
     TriggerKind,
 };
 use chronofork_megadrive::{
-    MegadriveBackend, MegadriveFactory, SchedulerConfig, VideoStandard, controller_rom, demo_rom,
+    MegadriveBackend, MegadriveFactory, SchedulerConfig, controller_rom, demo_rom,
     interrupt_rom,
 };
 use chronofork_test_backend::{SyntheticBackendFactory, SyntheticProgram};
@@ -54,8 +54,7 @@ fn megadrive_machine(rom: Vec<u8>) -> MegadriveBackend {
 }
 
 fn interrupt_machine(mask: u8) -> MegadriveBackend {
-    let scheduler =
-        SchedulerConfig::new(VideoStandard::Ntsc, 4).expect("positive instruction quantum");
+    let scheduler = SchedulerConfig::ntsc();
     MegadriveFactory::with_scheduler_config(interrupt_rom(mask), scheduler)
         .expect("valid interrupt fixture ROM")
         .create_machine()
@@ -690,7 +689,7 @@ fn watchpoint_stops_after_the_writing_instruction() {
     assert_eq!(run.steps, 4, "the stopping instruction is the store");
     assert_eq!(
         run.tick,
-        Tick::from_raw(4),
+        Tick::from_raw(196),
         "the stop is after the instruction"
     );
     assert!(!run.halted);
@@ -787,7 +786,7 @@ fn watchpoint_stops_after_the_writing_instruction() {
             }
         );
         assert_eq!(run.steps, 6, "the stopping instruction is the word load");
-        assert_eq!(run.tick, Tick::from_raw(6));
+        assert_eq!(run.tick, Tick::from_raw(336));
         assert_eq!(debugger.inspect().expect("inspect").registers["pc"], 0x214);
     }
 
@@ -851,7 +850,7 @@ fn watchpoint_stops_after_the_writing_instruction() {
             run.matched_events,
             vec![
                 event(
-                    3,
+                    84,
                     DebugEventKind::BusWrite {
                         address: RAM_BASE,
                         value: 0x00,
@@ -859,7 +858,7 @@ fn watchpoint_stops_after_the_writing_instruction() {
                     }
                 ),
                 event(
-                    3,
+                    84,
                     DebugEventKind::BusWrite {
                         address: RAM_BASE + 1,
                         value: 0x03,
@@ -917,8 +916,8 @@ fn watchpoints_require_backend_support() {
 /// retained event, for every documented event class.
 #[test]
 fn event_breakpoint_stops_on_a_matching_event() {
-    // Interrupt delivery: the first HBlank is delivered at tick 8, so the ninth
-    // instruction stops.
+    // Interrupt delivery: the first HBlank is delivered at tick 7238, so the
+    // 105th instruction stops.
     let mut machine = interrupt_machine(3);
     let mut debugger = Debugger::new(&mut machine).expect("debugger");
     let event_breakpoint = debugger
@@ -927,17 +926,17 @@ fn event_breakpoint_stops_on_a_matching_event() {
             phase: InterruptPhase::Delivered,
         })
         .expect("event breakpoint");
-    let run = debugger.run(20).expect("run");
-    let delivered = event(8, DebugEventKind::InterruptDelivered { level: 4 });
+    let run = debugger.run(200).expect("run");
+    let delivered = event(7238, DebugEventKind::InterruptDelivered { level: 4 });
     assert_eq!(
         run.reason,
         StopReason::Event {
             id: event_breakpoint
         }
     );
-    assert_eq!(run.steps, 9);
-    assert_eq!(run.tick, Tick::from_raw(9), "the stop is after the step");
-    assert_eq!(run.state_hash, interrupt_after(3, 9).state_hash);
+    assert_eq!(run.steps, 105);
+    assert_eq!(run.tick, Tick::from_raw(7266), "the stop is after the step");
+    assert_eq!(run.state_hash, interrupt_after(3, 105).state_hash);
     assert_eq!(run.matched_events, vec![delivered]);
     assert!(
         debugger
@@ -968,7 +967,7 @@ fn event_breakpoint_stops_on_a_matching_event() {
         assert_eq!(
             run.matched_events,
             vec![event(
-                7,
+                392,
                 DebugEventKind::VdpPort {
                     offset: 4,
                     value: 0x8F02,
@@ -998,7 +997,7 @@ fn event_breakpoint_stops_on_a_matching_event() {
         assert_eq!(
             run.matched_events,
             vec![event(
-                4,
+                112,
                 DebugEventKind::ControllerRead {
                     port: 1,
                     value: 0x7F
@@ -1028,7 +1027,7 @@ fn event_breakpoint_stops_on_a_matching_event() {
             run.matched_events,
             vec![
                 event(
-                    3,
+                    84,
                     DebugEventKind::BusWrite {
                         address: RAM_BASE,
                         value: 0x00,
@@ -1036,7 +1035,7 @@ fn event_breakpoint_stops_on_a_matching_event() {
                     }
                 ),
                 event(
-                    3,
+                    84,
                     DebugEventKind::BusWrite {
                         address: RAM_BASE + 1,
                         value: 0x03,
@@ -1088,7 +1087,7 @@ fn event_breakpoint_stops_on_a_matching_event() {
         assert_eq!(
             run.matched_events,
             vec![event(
-                3,
+                84,
                 DebugEventKind::BusWrite {
                     address: RAM_BASE + 1,
                     value: 0x03,

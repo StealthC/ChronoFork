@@ -54,7 +54,11 @@ const SR_CARRY: u16 = 0x0001;
 pub struct CpuView {
     pc: u32,
     sr: u16,
+    usp: u32,
+    ssp: u32,
+    cycles: u64,
     halted: bool,
+    stopped: bool,
     supervisor: bool,
     trace: bool,
     interrupt_mask: u8,
@@ -73,7 +77,11 @@ impl CpuView {
         Self {
             pc: cpu.pc(),
             sr,
+            usp: cpu.usp(),
+            ssp: cpu.ssp(),
+            cycles: cpu.cycles(),
             halted: cpu.halted(),
+            stopped: cpu.stopped(),
             supervisor: sr & SR_SUPERVISOR != 0,
             trace: sr & SR_TRACE != 0,
             interrupt_mask: cpu.interrupt_priority_mask(),
@@ -97,10 +105,34 @@ impl CpuView {
         self.sr
     }
 
+    /// Returns the saved user stack pointer (`USP`).
+    #[must_use]
+    pub const fn usp(&self) -> u32 {
+        self.usp
+    }
+
+    /// Returns the saved supervisor stack pointer (`SSP`).
+    #[must_use]
+    pub const fn ssp(&self) -> u32 {
+        self.ssp
+    }
+
+    /// Returns the accumulated 68000 cycle count.
+    #[must_use]
+    pub const fn cycles(&self) -> u64 {
+        self.cycles
+    }
+
     /// Returns whether the CPU is halted.
     #[must_use]
     pub const fn halted(&self) -> bool {
         self.halted
+    }
+
+    /// Returns whether a `STOP` instruction suspended the processor.
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Returns whether the processor is in supervisor mode (`S` bit).
@@ -313,13 +345,12 @@ impl InterruptCounterView {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InterruptView {
     standard: VideoStandard,
-    instructions_per_line: u32,
     lines_per_frame: u32,
     active_lines: u32,
     ticks: u64,
     frame: u64,
     line: u32,
-    quantum: u32,
+    master_cycle_in_line: u64,
     pending: Vec<PendingInterruptView>,
     counters: [InterruptCounterView; 2],
 }
@@ -348,13 +379,12 @@ impl InterruptView {
         });
         Self {
             standard: config.standard(),
-            instructions_per_line: config.instructions_per_line(),
             lines_per_frame: config.lines_per_frame(),
             active_lines: config.active_lines(),
             ticks: scheduler.ticks(),
             frame: scheduler.frame(),
             line: scheduler.line_in_frame(),
-            quantum: scheduler.quantum_in_line(),
+            master_cycle_in_line: scheduler.master_cycle_in_line(),
             pending,
             counters,
         }
@@ -364,12 +394,6 @@ impl InterruptView {
     #[must_use]
     pub const fn standard(&self) -> VideoStandard {
         self.standard
-    }
-
-    /// Returns the configured instruction quanta per scanline.
-    #[must_use]
-    pub const fn instructions_per_line(&self) -> u32 {
-        self.instructions_per_line
     }
 
     /// Returns the configured scanlines per frame, including blanking.
@@ -384,7 +408,7 @@ impl InterruptView {
         self.active_lines
     }
 
-    /// Returns the completed instruction quanta.
+    /// Returns the completed master-clock cycles.
     #[must_use]
     pub const fn ticks(&self) -> u64 {
         self.ticks
@@ -402,10 +426,10 @@ impl InterruptView {
         self.line
     }
 
-    /// Returns the instruction quanta already executed inside the current line.
+    /// Returns the master clock cycles already executed inside the current line.
     #[must_use]
-    pub const fn quantum(&self) -> u32 {
-        self.quantum
+    pub const fn master_cycle_in_line(&self) -> u64 {
+        self.master_cycle_in_line
     }
 
     /// Returns the pending requests in 68000 delivery-priority order.

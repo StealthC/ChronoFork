@@ -24,7 +24,7 @@ fn scheduler() -> InterruptScheduler {
 
 fn scheduler_snapshot(quanta: u64) -> Vec<u8> {
     let mut scheduler = scheduler();
-    scheduler.advance(quanta).expect("advance scheduler");
+    scheduler.advance_master(quanta).expect("advance scheduler");
     scheduler.snapshot_bytes()
 }
 

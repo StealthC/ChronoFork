@@ -1,4 +1,4 @@
-//! Payload v3, state-hash v3 and configuration-hash v3 coverage for the
+//! Payload v4, state-hash v4 and configuration-hash v4 coverage for the
 //! modelled cartridge.
 //!
 //! The images are synthetic headers written by this test; no commercial ROM is
@@ -59,11 +59,11 @@ fn factory() -> MegadriveFactory {
 }
 
 #[test]
-fn payload_v3_and_its_magics_are_the_documented_versions() {
-    assert_eq!(PAYLOAD_VERSION, 3);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K3");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE3");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF3");
+fn payload_v4_and_its_magics_are_the_documented_versions() {
+    assert_eq!(PAYLOAD_VERSION, 4);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K4");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE4");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF4");
 }
 
 #[test]
@@ -325,12 +325,23 @@ fn inspection_exposes_bounded_cartridge_pseudo_registers() {
     assert_eq!(registers["tmss.locked"], 0);
 }
 
-/// Byte offset of the first mapper bank in a v3 payload state body.
-const BANKS_OFFSET: usize =
-    PAYLOAD_MAGIC.len() + 2 + 32 + 32 + 4 + 2 + 1 + 8 + RAM_SIZE + VDP_SNAPSHOT_LEN;
-/// Byte offset of the SRAM control byte in a v3 payload state body.
+/// v4 extended CPU state: USP, SSP, 68000 cycles and the stopped tag.
+const V4_EXTENDED_STATE_LEN: usize = 4 + 4 + 8 + 1;
+/// Byte offset of the first mapper bank in a v4 payload state body.
+const BANKS_OFFSET: usize = PAYLOAD_MAGIC.len()
+    + 2
+    + 32
+    + 32
+    + 4
+    + 2
+    + 1
+    + 8
+    + V4_EXTENDED_STATE_LEN
+    + RAM_SIZE
+    + VDP_SNAPSHOT_LEN;
+/// Byte offset of the SRAM control byte in a v4 payload state body.
 const SRAM_CONTROL_OFFSET: usize = BANKS_OFFSET + 7 * 2;
-/// Byte offset of the canonical 64 KiB SRAM in a v3 payload state body.
+/// Byte offset of the canonical 64 KiB SRAM in a v4 payload state body.
 const SRAM_OFFSET: usize = SRAM_CONTROL_OFFSET + 1;
 /// Byte offset of the TMSS model tag.
 const TMSS_MODEL_OFFSET: usize = SRAM_OFFSET + SRAM_SIZE;

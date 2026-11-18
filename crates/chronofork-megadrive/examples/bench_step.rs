@@ -8,7 +8,7 @@
 //!
 //! The workload is fixed in source: the independently authored
 //! `interrupt_rom(3)` program runs on the minimal 68000 + VDP + interrupt
-//! scheduler slice at a four-instruction line quantum, so step throughput
+//! scheduler slice on the 3420-master-cycle scanline timeline, so step throughput
 //! includes VDP port access and interrupt scheduling. Snapshot cost is measured
 //! through the session layer, which owns the serialized checkpoint envelope.
 //!
@@ -22,11 +22,9 @@ use std::time::{Duration, Instant};
 
 use chronofork_backend_api::Backend;
 use chronofork_core::InputFrame;
-use chronofork_megadrive::{MegadriveFactory, SchedulerConfig, VideoStandard, interrupt_rom};
+use chronofork_megadrive::{MegadriveFactory, SchedulerConfig, interrupt_rom};
 use chronofork_sessions::{SessionManager, Snapshot};
 
-/// Scheduler quantum used by the interrupt program.
-const INSTRUCTIONS_PER_LINE: u32 = 4;
 /// Number of timed step trials.
 const STEP_TRIALS: usize = 5;
 /// Steps executed per timed trial.
@@ -55,7 +53,7 @@ fn summarize(samples: &mut [Duration]) -> (Duration, Duration, Duration) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = SchedulerConfig::new(VideoStandard::Ntsc, INSTRUCTIONS_PER_LINE)?;
+    let config = SchedulerConfig::ntsc();
 
     // Step throughput: one fixed program, repeated timed trials.
     let factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), config)?;
@@ -111,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("chronofork-bench-step v1");
     println!("program=interrupt_rom(3)");
     println!("video=ntsc");
-    println!("instructions_per_line={INSTRUCTIONS_PER_LINE}");
+    println!("master_cycles_per_line={}", config.master_cycles_per_line());
     println!("debug_assertions={}", u8::from(cfg!(debug_assertions)));
     println!("warmup_steps={WARMUP_STEPS}");
     println!("step_trials={STEP_TRIALS}");

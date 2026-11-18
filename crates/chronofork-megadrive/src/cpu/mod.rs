@@ -618,6 +618,25 @@ impl M68000 {
         (self.d, self.a, self.pc, self.sr, self.halted)
     }
 
+    /// Returns the extended register-file state carried by the v4 snapshot.
+    pub(crate) const fn extended_state(&self) -> (u32, u32, bool, u64) {
+        (self.usp, self.ssp, self.stopped, self.cycles)
+    }
+
+    /// Restores the extended register-file state carried by the v4 snapshot.
+    pub(crate) fn restore_extended_state(
+        &mut self,
+        usp: u32,
+        ssp: u32,
+        stopped: bool,
+        cycles: u64,
+    ) {
+        self.usp = usp;
+        self.ssp = ssp;
+        self.stopped = stopped;
+        self.cycles = cycles;
+    }
+
     pub(crate) fn restore_state(
         &mut self,
         d: [u32; 8],

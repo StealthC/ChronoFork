@@ -61,8 +61,8 @@ pub use inspect::{
     PendingInterruptView, VdpView,
 };
 pub use interrupts::{
-    DEFAULT_INSTRUCTIONS_PER_LINE, HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler,
-    PendingInterrupt, SchedulerConfig, SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
+    HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler, PendingInterrupt, SchedulerConfig,
+    SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
 };
 pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};

@@ -18,10 +18,10 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{Backend, BackendFactory};
 use chronofork_core::InputFrame;
+use chronofork_megadrive::cycles::MASTER_CYCLES_PER_LINE;
 use chronofork_megadrive::{
-    Cartridge, DEFAULT_INSTRUCTIONS_PER_LINE, InstructionTrace, MegadriveBackend, MegadriveConfig,
-    MegadriveFactory, RAM_BASE, RAM_SIZE, SchedulerConfig, TmssModel, VideoStandard, boot_marker,
-    demo_rom, interrupt_rom,
+    Cartridge, InstructionTrace, MegadriveBackend, MegadriveConfig, MegadriveFactory, RAM_BASE,
+    RAM_SIZE, SchedulerConfig, TmssModel, VideoStandard, boot_marker, demo_rom, interrupt_rom,
 };
 use chronofork_sessions::{SessionManager, Snapshot};
 use chronofork_test_backend::SyntheticBackendFactory;
@@ -383,11 +383,11 @@ fn run_megadrive_boot(args: &[String]) -> Result<(), Box<dyn Error>> {
     let budget = options
         .frames
         .saturating_mul(u64::from(scheduler.lines_per_frame()))
-        .saturating_mul(u64::from(scheduler.instructions_per_line()));
+        .saturating_mul(MASTER_CYCLES_PER_LINE);
     let marker = boot_marker();
     let mut executed = 0_u64;
     let mut reached = machine.cpu().pc() == marker;
-    while !reached && executed < budget {
+    while !reached && machine.master_cycles() < budget {
         machine.step(InputFrame::NEUTRAL)?;
         executed += 1;
         reached = machine.cpu().pc() == marker;
@@ -610,7 +610,6 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
     let mut trace_out: Option<PathBuf> = None;
     let mut instructions: Option<u64> = None;
     let mut stop_pc: Option<u32> = None;
-    let mut instructions_per_line: Option<u32> = None;
     let mut video: Option<VideoStandard> = None;
     let mut trace_capacity: Option<usize> = None;
     let mut ram_bytes: Option<usize> = None;
@@ -642,11 +641,6 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
             "--stop-pc" => set_once(
                 &mut stop_pc,
                 parse_hex_u32(option_value(args, &mut index, &flag)?, &flag)?,
-                &flag,
-            )?,
-            "--instructions-per-line" => set_once(
-                &mut instructions_per_line,
-                parse_u32(option_value(args, &mut index, &flag)?, &flag)?,
                 &flag,
             )?,
             "--video" => set_once(
@@ -691,10 +685,7 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
         .into());
     }
     let instructions = instructions.unwrap_or(DEFAULT_TRACE_INSTRUCTIONS);
-    let scheduler = SchedulerConfig::new(
-        video.unwrap_or(VideoStandard::Ntsc),
-        instructions_per_line.unwrap_or(DEFAULT_INSTRUCTIONS_PER_LINE),
-    )?;
+    let scheduler = SchedulerConfig::new(video.unwrap_or(VideoStandard::Ntsc));
     let trace_capacity = match trace_capacity {
         Some(0) => {
             return Err(CliError(
@@ -855,10 +846,9 @@ fn run_megadrive_trace(args: &[String]) -> Result<(), Box<dyn Error>> {
         "chronofork megadrive trace: state written to {}",
         options.state_out.display()
     );
-    if executed > u64::from(options.scheduler.instructions_per_line()) {
+    if executed > 0 {
         eprintln!(
-            "note: scheduler quantum is {} instruction(s) per line (the default is {DEFAULT_INSTRUCTIONS_PER_LINE}); one executed instruction is one quantum, so this is an instruction-quantum interrupt model, not cycle-accurate VDP timing. Interrupt delivery is gated by the 68000 SR interrupt-priority mask: level 7 is always taken and any other level only when strictly above the mask, so a masked VDP request stays pending instead of running a handler.",
-            options.scheduler.instructions_per_line()
+            "note: interrupts use the master-cycle timeline: one scanline is {MASTER_CYCLES_PER_LINE} master cycles and each instruction advances canonical time by its 68000 cycle cost times seven. The model adds cost at the instruction boundary, not at each internal microcycle, and does not model VDP prefetch or interrupt latency exactly. Interrupt delivery is gated by the 68000 SR interrupt-priority mask: level 7 is always taken and any other level only when strictly above the mask, so a masked VDP request stays pending instead of running a handler."
         );
     }
 
@@ -937,11 +927,10 @@ fn write_state(
     writeln!(writer, "chronofork-megadrive-state v1")?;
     writeln!(writer, "executed={executed}")?;
     writeln!(writer, "tick={}", machine.tick().raw())?;
-    writeln!(
-        writer,
-        "instructions_per_line={}",
-        scheduler.instructions_per_line()
-    )?;
+    writeln!(writer, "master_cycles={}", machine.master_cycles())?;
+    writeln!(writer, "cpu_cycles={}", cpu.cycles())?;
+    writeln!(writer, "usp={:08x}", cpu.usp())?;
+    writeln!(writer, "ssp={:08x}", cpu.ssp())?;
     writeln!(
         writer,
         "video={}",
@@ -997,10 +986,6 @@ fn print_trace_help() {
         "  --instructions <count>       Instruction budget, decimal (default {DEFAULT_TRACE_INSTRUCTIONS})"
     );
     println!("  --stop-pc <hex>              Stop before the instruction at this address");
-    println!("  --instructions-per-line <n>  Scheduler quantum, 68000 instructions per scanline");
-    println!(
-        "                               (default {DEFAULT_INSTRUCTIONS_PER_LINE}, the unchanged default)"
-    );
     println!("  --video <ntsc|pal>           Video standard for the scheduler (default ntsc)");
     println!("  --trace-capacity <count>     Ring capacity in records (default: instruction");
     println!("                               budget, capped at {MAX_DEFAULT_TRACE_CAPACITY})");
@@ -1022,8 +1007,11 @@ fn print_trace_help() {
     println!("  Text, `key=value`, one per line, in this order:");
     println!("    chronofork-megadrive-state v1   (header line)");
     println!("    executed=<decimal>");
-    println!("    tick=<decimal>");
-    println!("    instructions_per_line=<decimal>");
+    println!("    tick=<decimal>                 (master-clock cycles)");
+    println!("    master_cycles=<decimal>");
+    println!("    cpu_cycles=<decimal>            (sum of 68000 instruction cycles)");
+    println!("    usp=<8 lowercase hex digits>");
+    println!("    ssp=<8 lowercase hex digits>");
     println!("    video=<ntsc|pal>");
     println!("    halted=<0|1>");
     println!("    pc=<8 lowercase hex digits>");
@@ -1035,19 +1023,18 @@ fn print_trace_help() {
     println!("    ram=<2 hex digits per byte, lowercase>");
     println!();
     println!("Interrupts:");
-    println!("  Interrupts use an instruction-quantum model, not cycle-accurate VDP timing:");
+    println!("  Interrupts advance on the master-cycle timeline: one scanline is");
     println!(
-        "  one executed instruction is one scheduler quantum. The default is {DEFAULT_INSTRUCTIONS_PER_LINE}"
+        "  {MASTER_CYCLES_PER_LINE} master cycles and each instruction adds its 68000 cycle cost"
     );
-    println!("  instructions per scanline, `--instructions-per-line` changes the model,");
-    println!("  and the default is never changed implicitly. Delivery is gated by the 68000");
-    println!("  SR interrupt-priority mask: level 7 is always taken, and every other level");
-    println!("  is taken only when strictly above the mask. A masked VDP request");
-    println!("  stays pending — it is not acknowledged or dropped — until the program");
-    println!("  lowers the mask (for example with MOVE.W #imm,SR); handlers return with");
-    println!("  RTE, which restores the saved raw SR. VDP interrupt-enable registers and");
-    println!("  cycle-accurate timing are not modelled, so this is a mask-gating model, not");
-    println!("  a timing-equivalence claim.");
+    println!("  times seven at the instruction boundary. Cost is not distributed across");
+    println!("  internal microcycles, and VDP prefetch and interrupt latency are not");
+    println!("  modelled, so this is not a full VDP-timing equivalence claim. Delivery is");
+    println!("  gated by the 68000 SR interrupt-priority mask: level 7 is always taken,");
+    println!("  and every other level only when strictly above the mask. A masked VDP");
+    println!("  request stays pending — it is not acknowledged or dropped — until the");
+    println!("  program lowers the mask (for example with MOVE.W #imm,SR); handlers return");
+    println!("  with RTE, which restores the saved raw SR.");
 }
 
 fn describe_backend() -> Result<(), Box<dyn Error>> {
@@ -1207,8 +1194,11 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     println!("vdp: program wrote and read back VRAM word 0x1234 through the data port");
 
     // The demo ROM never writes SR, so the reset interrupt-priority mask 7 keeps
-    // both VDP levels masked: the request is retained but never delivered.
-    for _ in 23..64 {
+    // both VDP levels masked: the first HBlank is retained, never delivered.
+    for _ in 0..2_000_000 {
+        if manager.inspect(source)?.machine.registers["irq_pending_level"] == 4_u64 {
+            break;
+        }
         manager.step(source, InputFrame::NEUTRAL)?;
     }
     let pending = manager.inspect(source)?;
@@ -1247,23 +1237,21 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         "snapshot: VDP, scheduler and CPU state reproduced from the checkpoint (masked HBlank preserved)"
     );
 
-    // The same ROM at a shorter quantum reaches vertical blanking, where VBlank
-    // (level 6) is pending but still masked; the VDP status exposes it as bits 3
-    // and 7.
-    let fast_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
-    let fast_factory = MegadriveFactory::with_scheduler_config(demo_rom(), fast_config)?;
-    let mut fast_manager = SessionManager::new(Arc::new(fast_factory));
-    let fast = fast_manager.create_session()?;
-    let vblank_tick = u64::from(VideoStandard::Ntsc.active_lines()) * 4;
-    for _ in 0..vblank_tick {
-        fast_manager.step(fast, InputFrame::NEUTRAL)?;
+    // A ROM that masks every VDP level reaches vertical blanking with VBlank
+    // (level 6) retained; the VDP status exposes it as bits 3 and 7.
+    let mut vblank_manager =
+        SessionManager::new(Arc::new(MegadriveFactory::new(interrupt_rom(7))?));
+    let vblank = vblank_manager.create_session()?;
+    for _ in 0..2_000_000 {
+        if vblank_manager.inspect(vblank)?.machine.registers["irq_pending_level"] == 6_u64 {
+            break;
+        }
+        vblank_manager.step(vblank, InputFrame::NEUTRAL)?;
     }
-    let vblank_checkpoint = fast_manager.snapshot(fast)?;
-    fast_manager.step(fast, InputFrame::NEUTRAL)?;
-    fast_manager.restore(fast, vblank_checkpoint)?;
-    // The line is printed from the restored state, so "snapshot restored them"
-    // describes the state that was actually observed after the restore.
-    let restored_vblank = fast_manager.inspect(fast)?;
+    let vblank_checkpoint = vblank_manager.snapshot(vblank)?;
+    vblank_manager.step(vblank, InputFrame::NEUTRAL)?;
+    vblank_manager.restore(vblank, vblank_checkpoint)?;
+    let restored_vblank = vblank_manager.inspect(vblank)?;
     println!(
         "interrupt: masked VBlank pending level {} vector 0x{:02X} at tick {} (mask {}); VDP VBlank/VINT bits set and snapshot restored them",
         restored_vblank.machine.registers["irq_pending_level"],
@@ -1272,14 +1260,15 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         restored_vblank.machine.registers["irq_mask"],
     );
 
-    // The interrupt ROM lowers the mask with MOVE.W #imm,SR. The retained HBlank
-    // is delivered at the next boundary, its handler runs and RTE restores the
-    // interrupted PC with the saved raw SR (mask and CCR).
-    let gated_config = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
-    let gated_factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), gated_config)?;
-    let mut gated_manager = SessionManager::new(Arc::new(gated_factory));
+    // The interrupt ROM delays past two scanlines with the mask still at 7, then
+    // lowers it. The retained HBlank is delivered at the next boundary, its
+    // handler runs and RTE restores the interrupted PC and saved raw SR.
+    let mut gated_manager = SessionManager::new(Arc::new(MegadriveFactory::new(interrupt_rom(3))?));
     let gated = gated_manager.create_session()?;
-    for _ in 0..7 {
+    for _ in 0..2_000_000 {
+        if gated_manager.inspect(gated)?.machine.registers["irq_pending_level"] == 4_u64 {
+            break;
+        }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
     }
     let masked_hblank = gated_manager.inspect(gated)?;
@@ -1289,7 +1278,12 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         masked_hblank.machine.registers["irq_mask"],
     );
 
-    gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    for _ in 0..2_000_000 {
+        if gated_manager.inspect(gated)?.machine.registers["pc"] == 0x210 {
+            break;
+        }
+        gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    }
     let lowered = gated_manager.inspect(gated)?;
     println!(
         "interrupt: MOVE.W #$2300,SR lowered the mask to {} at tick {}; the retained HBlank became deliverable",
@@ -1312,10 +1306,15 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         returned_hblank.machine.registers["irq_mask"],
     );
 
-    // At vertical blanking VBlank (level 6) is delivered before the pending
-    // HBlank (level 4); the handler runs at IPM 6, so the pending HBlank cannot
-    // nest before RTE restores mask 3. Acknowledging VBlank clears the VINT bit.
-    for _ in 11..vblank_tick {
+    // At vertical blanking the masked VBlank (level 6) is retained while the
+    // pending HBlank (level 4) is delivered every active line. The snapshot
+    // preserves both requests and the VINT status bit until RTE restores the
+    // interrupted program.
+    for _ in 0..2_000_000 {
+        if gated_manager.inspect(gated)?.machine.registers["vdp_status"] & 0x0080_u64 == 0x0080_u64
+        {
+            break;
+        }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
     }
     let vblank_pending = gated_manager.inspect(gated)?;
