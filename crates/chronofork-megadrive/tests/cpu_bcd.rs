@@ -45,6 +45,21 @@ fn abcd_adds_with_extend_and_decimal_adjust() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn abcd_adjusts_when_the_low_nibble_sum_carries() -> Result<(), Box<dyn Error>> {
+    // ABCD D0,D1 with 0x19 + 0x27 + X=0. The binary sum 0x40 has a low digit
+    // below nine, but 9+7 = 16 decimal must still add the BCD correction, so
+    // the documented result is 0x46, not 0x40.
+    let (mut cpu, mut bus) = machine(&[0xC3, 0x00])?;
+    cpu.set_d(0, 0x0000_0019);
+    cpu.set_d(1, 0x0000_0027);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.data_register(1), Some(0x0000_0046));
+    assert!(!flag(&cpu, FLAG_C));
+    assert!(!flag(&cpu, FLAG_X));
+    Ok(())
+}
+
+#[test]
 fn abcd_carries_through_the_high_nibble() -> Result<(), Box<dyn Error>> {
     // ABCD D0,D1 with 0x99 + 0x00 + X=1 -> 0x00, C=X=1.
     let (mut cpu, mut bus) = machine(&[0xC3, 0x00])?;

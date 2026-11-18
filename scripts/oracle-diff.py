@@ -349,9 +349,16 @@ def _init_registers(asm):
     to read 0xFFFFFFFF while ChronoFork zeroes them. Explicit initialisation makes
     the final-state comparison meaningful instead of inheriting reset differences.
     A7 (SP) comes from the reset vector and both sides agree on 0x00FFFF00.
+
+    The condition codes are architecturally undefined too: the oracle powers up
+    with X set (SR 0x7FF0) while ChronoFork resets it clear (SR 0x2700). ADD.B
+    D0,D0 clears X deterministically (X follows the carry) on both sides before
+    the compared program runs, so an unwritten X cannot masquerade as a state
+    divergence in BCD or flag-preserving instructions.
     """
     for dn in range(8):
         asm.moveq(0, dn)
+    asm.emit16(0xD000)  # ADD.B D0,D0: clear X deterministically
     for an in range(7):
         # MOVEA.L #imm,An: the same value as the historical LEA abs.L setup, but
         # its documented 12-cycle cost matches the core's table so the differential

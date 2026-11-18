@@ -133,8 +133,11 @@ fn nbcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cp
 }
 
 fn bcd_add(destination: u8, source: u8, extend: u8) -> (u8, bool) {
+    let low_nibble = u16::from(destination & 0x0F) + u16::from(source & 0x0F) + u16::from(extend);
     let mut result = u16::from(destination) + u16::from(source) + u16::from(extend);
-    if result & 0x000F > 9 {
+    // A low-nibble sum above nine needs the correction even when the binary
+    // result's low digit is nine or below (for example 0x19 + 0x27 = 0x40).
+    if low_nibble > 9 {
         result += 6;
     }
     let mut carry = false;
