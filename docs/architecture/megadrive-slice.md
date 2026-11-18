@@ -82,12 +82,16 @@ The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 | Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
 | System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to `SR`/`CCR` and from `SR`, `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry; `MOVE` from `CCR` is the 68010 extension noted below |
 
-Every documented MC68000 instruction reports its documented 68000-cycle cost
-(see the timing and differential sections below); effective-address cost is added
-exactly once per operand. The 68010 `MOVE from CCR` extension is implemented for
-compatibility but is outside the MC68000 timing table and the differential corpus.
-Unrecognised and reserved encodings raise the guest illegal-instruction exception
-(vector 4) with the documented six-byte frame rather than a host error.
+Every documented MC68000 instruction reports the instruction-boundary cycle cost
+used by the oracle-backed timing table (see the timing and differential sections
+below); effective-address cost is added exactly once per operand. One oracle-model
+difference is recorded rather than hidden: the pinned oracle charges a flat 6
+cycles for `MOVE from SR` to memory instead of a write-EA table, and ChronoFork
+matches the oracle for the differential. The 68010 `MOVE from CCR` extension is
+implemented for compatibility but is outside the MC68000 timing table and the
+differential corpus. Unrecognised and reserved encodings raise the guest
+illegal-instruction exception (vector 4) with the documented six-byte frame
+rather than a host error.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
