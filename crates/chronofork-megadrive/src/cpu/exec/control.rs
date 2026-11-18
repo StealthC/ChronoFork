@@ -105,18 +105,18 @@ fn dbcc(
 ) -> Result<u16, CpuError> {
     let displacement = cpu.fetch_u16(bus)? as i16;
     if cc_to_bool(cpu, condition) {
-        return Ok(timing::instruction_cycles(opcode));
+        return Ok(timing::dbcc_cycles(true, false));
     }
     let register = usize::from(opcode & 0x7);
     let counter = cpu.read_dn(register, Size::Word);
     let decremented = counter.wrapping_sub(1) & Size::Word.mask();
     cpu.write_dn(register, decremented, Size::Word);
     if decremented == 0xFFFF {
-        return Ok(timing::instruction_cycles(opcode));
+        return Ok(timing::dbcc_cycles(false, false));
     }
     let target = cpu.relative_target(i32::from(displacement))?;
     cpu.write_pc(target)?;
-    Ok(timing::instruction_cycles(opcode))
+    Ok(timing::dbcc_cycles(false, true))
 }
 
 fn scc(
@@ -158,6 +158,7 @@ fn jump(
             ExceptionFrame::AddressError {
                 address: target,
                 opcode,
+                access: crate::cpu::AddressAccess::ProgramRead,
             },
         );
     }

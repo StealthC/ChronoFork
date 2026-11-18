@@ -8,7 +8,8 @@ use std::error::Error;
 
 use chronofork_megadrive::test_support::stamp_header;
 use chronofork_megadrive::{
-    Cartridge, CpuError, Ea, M68000, MegadriveBus, Size, decode_ea, ea_address, read_ea, write_ea,
+    AddressAccess, Cartridge, CpuError, Ea, M68000, MegadriveBus, Size, decode_ea, ea_address,
+    read_ea, write_ea,
 };
 
 /// Builds a bus with reset vectors and `program` at address 0x200.
@@ -134,7 +135,8 @@ fn post_increment_write_that_faults_leaves_the_pointer_untouched() -> Result<(),
     assert!(matches!(
         write_ea(&mut cpu, &mut bus, Ea::PostInc(0), Size::Word, 0xBEEF),
         Err(CpuError::AddressError {
-            address: 0x00FF_FFFF
+            address: 0x00FF_FFFF,
+            access: AddressAccess::DataWrite,
         })
     ));
     assert_eq!(cpu.address_register(0), Some(0x00FF_FFFF));
@@ -148,13 +150,15 @@ fn byte_access_to_an_is_a_typed_address_error() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         write_ea(&mut cpu, &mut bus, Ea::An(3), Size::Byte, 0x7F),
         Err(CpuError::AddressError {
-            address: 0x00FF_0004
+            address: 0x00FF_0004,
+            access: AddressAccess::DataWrite,
         })
     );
     assert_eq!(
         read_ea(&mut cpu, &mut bus, Ea::An(3), Size::Byte),
         Err(CpuError::AddressError {
-            address: 0x00FF_0004
+            address: 0x00FF_0004,
+            access: AddressAccess::DataRead,
         })
     );
     assert_eq!(cpu.address_register(3), Some(0x00FF_0004));

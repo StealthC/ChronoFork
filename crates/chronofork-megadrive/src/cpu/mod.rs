@@ -11,21 +11,25 @@
 //!
 //! Exceptions: interrupt-priority-mask gating through
 //! [`interrupt_level_deliverable`] (level 7 always, every other level only when
-//! strictly above the `SR` mask), interrupt and exception entry, the six-byte
-//! short and fourteen-byte address-error frames, privilege enforcement for the
-//! implemented system instructions, and guest illegal-instruction delivery for
-//! unrecognised or reserved encodings. `RTE` restores the raw `SR` and program
-//! counter from its frame and advances `A7` by six.
+//! strictly above the `SR` mask), atomic interrupt and exception entry, the
+//! six-byte short and fourteen-byte address-error frames with the documented
+//! function-code word, privilege enforcement for the implemented system
+//! instructions, and guest illegal-instruction delivery for unrecognised or
+//! reserved encodings. Unmapped or write-protected guest data accesses take the
+//! address-error path (vector 3); host errors remain for a frame or vector fetch
+//! that cannot complete, overflow and trace-capacity failures. `RTE` restores the
+//! raw `SR` and program counter from its frame and advances `A7` by six.
 //!
 //! The register file carries separate user and supervisor stack pointers
-//! (`USP`/`SSP`) selected by `SR` bit 13; exception entry and `RTE` do not yet
-//! perform the hardware stack switch between them.
+//! (`USP`/`SSP`) selected by `SR` bit 13. Instruction writes to `A7` update the
+//! active mirror, and exception/interrupt entry from user mode switches to `SSP`
+//! while saving `USP`; `RTE` restores the user stack when its frame selects user
+//! mode.
 //!
 //! Not modelled: functional prefetch, bus-cycle contention, DMA stalls,
-//! interrupt latency, bus-error and trace exception delivery, and automatic
-//! stack switching. Unrecognised opcodes raise the guest illegal-instruction
-//! exception (vector 4); they are never silently executed as another
-//! instruction.
+//! interrupt latency, and guest bus-error (vector 2) and trace (vector 9)
+//! delivery. Unrecognised opcodes raise the guest illegal-instruction exception
+//! (vector 4); they are never silently executed as another instruction.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -77,6 +81,37 @@ pub const VECTOR_IRQ_BASE: u8 = 24;
 /// First `TRAP #n` vector; add the trap number.
 pub const VECTOR_TRAP_BASE: u8 = 32;
 
+/// The kind of access that raised an address error.
+///
+/// The 68000 exception frame's status word encodes the access function code and
+/// the read/write direction; this enum is the single source of that mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressAccess {
+    /// A data read from memory.
+    DataRead,
+    /// A data write to memory.
+    DataWrite,
+    /// An instruction fetch or program-space read.
+    ProgramRead,
+}
+
+impl AddressAccess {
+    const fn function_code(self, supervisor: bool) -> u16 {
+        let code = match (self, supervisor) {
+            (Self::DataRead | Self::DataWrite, true) => 5,
+            (Self::DataRead | Self::DataWrite, false) => 1,
+            (Self::ProgramRead, true) => 6,
+            (Self::ProgramRead, false) => 2,
+        };
+        let read_bit = if matches!(self, Self::DataRead | Self::ProgramRead) {
+            0x10
+        } else {
+            0
+        };
+        code | read_bit
+    }
+}
+
 /// The frame an exception pushes on the supervisor stack.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExceptionFrame {
@@ -91,6 +126,8 @@ pub enum ExceptionFrame {
         address: u32,
         /// Instruction word that was executing.
         opcode: u16,
+        /// Access that faulted, encoded into the function-code word.
+        access: AddressAccess,
     },
 }
 
@@ -156,6 +193,8 @@ pub enum CpuError {
     AddressError {
         /// Offending address.
         address: u32,
+        /// Access that faulted.
+        access: AddressAccess,
     },
     /// Address arithmetic overflowed.
     AddressOverflow,
@@ -178,7 +217,7 @@ impl fmt::Display for CpuError {
                 write!(f, "illegal opcode 0x{opcode:04X} at 0x{pc:06X}")
             }
             Self::Unsupported(message) => write!(f, "unsupported 68000 form: {message}"),
-            Self::AddressError { address } => {
+            Self::AddressError { address, .. } => {
                 write!(f, "68000 address error at 0x{address:06X}")
             }
             Self::AddressOverflow => f.write_str("68000 address overflow"),
@@ -294,10 +333,10 @@ impl M68000 {
     /// to apply the 68000 priority-mask rule before calling this method.
     /// Automatic vector selection, pending-request bookkeeping and the other
     /// exception groups are not modelled.
-    /// An odd or unmapped `vector_address`, a stack pointer without six bytes
-    /// below it, or a vector entry holding an odd program counter is an error.
-    /// The frame is pushed and the new `SR` applied before the vector is fetched,
-    /// like real hardware, so a bad vector leaves both behind.
+    /// An odd or unmapped `vector_address`, a supervisor stack pointer without
+    /// six bytes below it, or a vector entry holding an odd program counter is an
+    /// error. The vector and frame range are validated before any canonical
+    /// state is written, so a failed entry is atomic.
     pub fn interrupt(
         &mut self,
         level: u8,
@@ -308,17 +347,26 @@ impl M68000 {
             return Err(CpuError::InvalidInterruptLevel { level });
         }
 
-        let stack = self.a[7].checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        // Validate the vector and the complete frame before touching any
+        // canonical state, so a failed entry is atomic.
+        let target = bus.read32(vector_address)?;
+        self.ensure_even(target)?;
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
+        let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
+        let stack = saved_ssp.checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        bus.validate_write_range(stack, 6)?;
+
         let return_pc = self.pc;
         let previous_sr = self.sr;
-
         bus.write16(stack, previous_sr)?;
         let return_pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         bus.write32(return_pc_address, return_pc)?;
+
+        self.usp = saved_usp;
+        self.ssp = stack;
         self.a[7] = stack;
         self.sr = (previous_sr & !SR_INTERRUPT_MASK) | (u16::from(level) << 8) | SR_SUPERVISOR;
-
-        let target = bus.read32(vector_address)?;
         self.write_pc(target)?;
 
         self.halted = false;
@@ -327,11 +375,13 @@ impl M68000 {
 
     /// Enters an exception through `vector`.
     ///
-    /// The vector table is read first and its target validated, so an
-    /// unreadable or odd vector is a typed host error that leaves the
-    /// architectural state untouched. The exception frame is then pushed on the
-    /// active stack, `S` is set and the trace bit cleared, and execution jumps
-    /// to the handler. The returned value is the 34-cycle exception-entry cost.
+    /// The vector table is read and its target validated, then the complete
+    /// frame range is checked before any canonical state is written, so a failed
+    /// frame or vector is a typed host error that leaves the architectural state
+    /// untouched. The frame is pushed on the supervisor stack (saving the active
+    /// `USP` when entering from user mode), `S` is set and the trace bit cleared,
+    /// and execution jumps to the handler. The returned value is the 34-cycle
+    /// exception-entry cost.
     ///
     /// [`ExceptionFrame::Short`] and [`ExceptionFrame::Trace`] push six bytes
     /// (status register and return program counter); an address error pushes
@@ -350,23 +400,38 @@ impl M68000 {
         self.ensure_even(target)?;
 
         let frame_size = frame.size();
-        let stack = self.a[7]
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
+        let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
+        let stack = saved_ssp
             .checked_sub(frame_size)
             .ok_or(CpuError::StackOverflow)?;
-        let return_pc = self.pc;
+        bus.validate_write_range(
+            stack,
+            usize::try_from(frame_size).map_err(|_| CpuError::AddressOverflow)?,
+        )?;
 
+        let return_pc = self.pc;
+        let supervisor = was_supervisor;
         bus.write16(stack, self.sr)?;
         let pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         bus.write32(pc_address, return_pc)?;
-        if let ExceptionFrame::AddressError { address, opcode } = frame {
+        if let ExceptionFrame::AddressError {
+            address,
+            opcode,
+            access,
+        } = frame
+        {
             let address_address = stack.checked_add(6).ok_or(CpuError::AddressOverflow)?;
             bus.write32(address_address, address)?;
             let opcode_address = stack.checked_add(10).ok_or(CpuError::AddressOverflow)?;
             bus.write16(opcode_address, opcode)?;
             let function_code_address = stack.checked_add(12).ok_or(CpuError::AddressOverflow)?;
-            bus.write16(function_code_address, 0)?;
+            bus.write16(function_code_address, access.function_code(supervisor))?;
         }
 
+        self.usp = saved_usp;
+        self.ssp = stack;
         self.a[7] = stack;
         let mut new_sr = (self.sr | SR_SUPERVISOR) & !SR_TRACE;
         if matches!(frame, ExceptionFrame::Trace) {
@@ -746,10 +811,14 @@ impl M68000 {
             Err(CpuError::IllegalOpcode { .. } | CpuError::Unsupported(_)) => {
                 self.raise_exception(bus, VECTOR_ILLEGAL, ExceptionFrame::Short)?
             }
-            Err(CpuError::AddressError { address }) => self.raise_exception(
+            Err(CpuError::AddressError { address, access }) => self.raise_exception(
                 bus,
                 VECTOR_ADDRESS_ERROR,
-                ExceptionFrame::AddressError { address, opcode },
+                ExceptionFrame::AddressError {
+                    address,
+                    opcode,
+                    access,
+                },
             )?,
             Err(error) => return Err(error),
         };
@@ -782,9 +851,11 @@ impl M68000 {
         let restored_pc = bus.read32(return_pc_address)?;
         self.ensure_even(restored_pc)?;
 
-        self.sr = restored_sr;
-        self.pc = restored_pc;
+        // The frame is popped from the supervisor stack; `apply_sr` then saves
+        // the advanced SSP and selects USP when returning to user mode.
         self.a[7] = restored_a7;
+        self.apply_sr(restored_sr);
+        self.pc = restored_pc;
         self.halted = false;
         self.stopped = false;
         Ok(20)
@@ -822,12 +893,18 @@ impl M68000 {
         self.a[register & 0x7]
     }
 
-    /// Writes address register `register` without stack-pointer bookkeeping.
+    /// Writes address register `register`, mirroring `A7` into the active
+    /// stack pointer.
     ///
-    /// Instruction paths use this for `An`; the active stack pointer is still
-    /// `A7` until exception entry selects `USP`/`SSP` in a later phase.
+    /// Every instruction write to `A7` goes through this method so the
+    /// selected `USP`/`SSP` mirror stays consistent with the v4 state and its
+    /// hash. The inactive stack pointer is left unchanged.
     pub(crate) fn write_an(&mut self, register: usize, value: u32) {
-        self.a[register & 0x7] = value;
+        if register & 0x7 == 7 {
+            self.set_a7(value);
+        } else {
+            self.a[register & 0x7] = value;
+        }
     }
 
     /// Writes the low `size` bytes of `value` into data register `register`.
@@ -956,14 +1033,15 @@ impl M68000 {
     pub(crate) fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
         let stack = self.a[7].checked_sub(4).ok_or(CpuError::StackOverflow)?;
         bus.write32(stack, value)?;
-        self.a[7] = stack;
+        self.set_a7(stack);
         Ok(())
     }
 
     fn pop_long(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
         let stack = self.a[7];
         let value = bus.read32(stack)?;
-        self.a[7] = stack.checked_add(4).ok_or(CpuError::StackOverflow)?;
+        let next = stack.checked_add(4).ok_or(CpuError::StackOverflow)?;
+        self.set_a7(next);
         Ok(value)
     }
 
@@ -979,7 +1057,10 @@ impl M68000 {
 
     fn ensure_even(&self, address: u32) -> Result<(), CpuError> {
         if address & 1 != 0 {
-            Err(CpuError::AddressError { address })
+            Err(CpuError::AddressError {
+                address,
+                access: AddressAccess::ProgramRead,
+            })
         } else {
             Ok(())
         }
@@ -994,7 +1075,9 @@ impl Default for M68000 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask};
+    use super::{
+        AddressAccess, CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask,
+    };
     use crate::bus::{BusError, MegadriveBus};
     use crate::trace::TraceError;
 
@@ -1251,6 +1334,11 @@ mod tests {
         assert_eq!(bus.read32(INITIAL_STACK - 12), Ok(0x204));
         assert_eq!(bus.read32(INITIAL_STACK - 8), Ok(0x0000_0201));
         assert_eq!(bus.read16(INITIAL_STACK - 4), Ok(0x51C8));
+        assert_eq!(
+            bus.read16(INITIAL_STACK - 2),
+            Ok(0x0016),
+            "function code: supervisor program read"
+        );
     }
 
     #[test]
@@ -1267,7 +1355,8 @@ mod tests {
         assert_eq!(
             cpu.relative_target(1),
             Err(CpuError::AddressError {
-                address: 0xFFFF_FFFF
+                address: 0xFFFF_FFFF,
+                access: AddressAccess::ProgramRead,
             })
         );
     }
@@ -1368,15 +1457,16 @@ mod tests {
     #[test]
     fn interrupt_rejects_a_rom_stack() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
-        cpu.a[7] = 0x0000_0300;
-        cpu.sr = 0x0000;
+        cpu.set_sr(0x2000);
+        cpu.set_a7(0x0000_0300);
         assert_eq!(
             cpu.interrupt(6, 0x78, &mut bus),
             Err(CpuError::Bus(BusError::WriteProtected {
                 address: 0x0000_02FA
             }))
         );
-        assert_eq!(cpu.sr(), 0x0000, "a failed first push leaves SR untouched");
+        assert_eq!(cpu.sr(), 0x2000, "a failed push leaves SR untouched");
+        assert_eq!(cpu.address_register(7), Some(0x0000_0300));
         assert_eq!(cpu.pc(), 0x200);
     }
 
@@ -1389,11 +1479,11 @@ mod tests {
                 address: 0x0080_0000
             }))
         );
-        // The exception frame is pushed and supervisor mode entered before the
-        // vector fetch fails.
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
+        // The vector is validated before the frame is pushed, so a failed
+        // vector leaves the stack, PC and SR untouched.
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
         assert_eq!(cpu.pc(), 0x200);
-        assert_ne!(cpu.sr() & 0x2000, 0);
+        assert_eq!(cpu.sr(), 0x2700);
     }
 
     #[test]
@@ -1412,15 +1502,14 @@ mod tests {
         cpu.sr = 0x0000;
         assert_eq!(
             cpu.interrupt(6, 0x78, &mut bus),
-            Err(CpuError::AddressError { address: 0x301 })
+            Err(CpuError::AddressError {
+                address: 0x301,
+                access: AddressAccess::ProgramRead,
+            })
         );
         assert_eq!(cpu.pc(), 0x200);
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
-        assert_eq!(
-            cpu.sr(),
-            0x2600,
-            "supervisor mode and the accepted IPM are applied before the jump"
-        );
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        assert_eq!(cpu.sr(), 0x0000, "a bad target leaves SR untouched");
     }
 
     #[test]
@@ -1814,11 +1903,13 @@ mod tests {
         bus.write32(INITIAL_STACK + 2, 0x0000_0300)
             .expect("frame pc");
 
+        cpu.usp = INITIAL_STACK;
         cpu.step(&mut bus).expect("rte");
         assert_eq!(cpu.sr(), 0x0015, "user mode and CCR are restored verbatim");
         assert_eq!(cpu.sr() & 0x2000, 0, "RTE does not force supervisor mode");
         assert_eq!(cpu.pc(), 0x300);
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK + 6));
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        assert_eq!(cpu.ssp(), INITIAL_STACK + 6);
     }
 
     #[test]
@@ -1874,7 +1965,10 @@ mod tests {
             .expect("frame pc");
         assert_eq!(
             cpu.step(&mut bus),
-            Err(CpuError::AddressError { address: 0x401 })
+            Err(CpuError::AddressError {
+                address: 0x401,
+                access: AddressAccess::ProgramRead,
+            })
         );
         assert_eq!(cpu.sr(), 0x2700);
         assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));

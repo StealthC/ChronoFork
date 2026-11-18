@@ -466,6 +466,14 @@ impl MegadriveBus {
         Ok(())
     }
 
+    /// Validates that a write range lies entirely in work RAM.
+    ///
+    /// Exception entry uses this to reject an invalid frame before any byte is
+    /// written, so a failed push cannot leave a partial frame behind.
+    pub fn validate_write_range(&self, address: u32, length: usize) -> Result<(), BusError> {
+        self.ensure_ram_write_range(address, length)
+    }
+
     /// Writes one byte to a mapped window.
     ///
     /// While the enabled TMSS lockout is active a VDP write is acknowledged and

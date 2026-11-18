@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+use chronofork_megadrive::BusError;
 use chronofork_megadrive::test_support::stamp_header;
 use chronofork_megadrive::{
     Cartridge, CpuError, ExceptionFrame, M68000, MegadriveBus, VECTOR_TRAP_BASE,
@@ -185,6 +186,11 @@ fn address_error_pushes_the_documented_fourteen_byte_frame() -> Result<(), Box<d
     assert_eq!(bus.read32(STACK - 12)?, 0x206, "return PC");
     assert_eq!(bus.read32(STACK - 8)?, 0x00FF_0001, "access address");
     assert_eq!(bus.read16(STACK - 4)?, 0x33C0, "instruction register");
+    assert_eq!(
+        bus.read16(STACK - 2)?,
+        0x0005,
+        "function code: supervisor data write"
+    );
     cpu.step(&mut bus)?;
     assert_eq!(cpu.pc(), 0x206);
     Ok(())
@@ -220,5 +226,154 @@ fn an_odd_vector_target_is_a_typed_host_error() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(cpu.address_register(7), Some(STACK), "no frame pushed");
     assert_eq!(cpu.sr(), 0x2700);
+    Ok(())
+}
+
+#[test]
+fn unmapped_data_access_takes_vector_3_and_rte_returns() -> Result<(), Box<dyn Error>> {
+    // MOVE.L (0x00800000).L,D0; NOP. Handler: RTE.
+    let (mut cpu, mut bus) = machine(
+        &[0x20, 0x39, 0x00, 0x80, 0x00, 0x00, 0x4E, 0x71],
+        &[(3, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER, "guest vector 3, not a host bus error");
+    assert_eq!(cpu.address_register(7), Some(STACK - 14));
+    assert_eq!(bus.read16(STACK - 14)?, 0x2700, "SR");
+    assert_eq!(bus.read32(STACK - 12)?, 0x206, "return PC");
+    assert_eq!(bus.read32(STACK - 8)?, 0x0080_0000, "access address");
+    assert_eq!(bus.read16(STACK - 4)?, 0x2039, "instruction register");
+    assert_eq!(
+        bus.read16(STACK - 2)?,
+        0x0015,
+        "function code: supervisor data read"
+    );
+    assert_eq!(cpu.data_register(0), Some(0), "no half-updated destination");
+    cpu.step(&mut bus)?;
+    assert_eq!(
+        cpu.pc(),
+        0x206,
+        "RTE returns after the faulting instruction"
+    );
+    Ok(())
+}
+
+#[test]
+fn unmapped_data_write_takes_vector_3_with_a_write_function_code() -> Result<(), Box<dyn Error>> {
+    // MOVE.L D0,(0x00800000).L; NOP. Handler: RTE.
+    let (mut cpu, mut bus) = machine(
+        &[0x23, 0xC0, 0x00, 0x80, 0x00, 0x00, 0x4E, 0x71],
+        &[(3, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(bus.read32(STACK - 8)?, 0x0080_0000);
+    assert_eq!(bus.read16(STACK - 4)?, 0x23C0);
+    assert_eq!(
+        bus.read16(STACK - 2)?,
+        0x0005,
+        "function code: supervisor data write"
+    );
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x206);
+    Ok(())
+}
+
+#[test]
+fn failed_frame_write_is_atomic_for_short_and_address_error_frames() -> Result<(), Box<dyn Error>> {
+    // ILLEGAL with A7=0x0100_0002: the six-byte frame would cross RAM_END.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xFC], &[(4, HANDLER)], None)?;
+    cpu.set_a7(0x0100_0002);
+    bus.write16(0x00FF_FFFC, 0xAAAA)?;
+    let result = cpu.step(&mut bus);
+    assert!(
+        matches!(result, Err(CpuError::Bus(BusError::UnmappedWrite { .. }))),
+        "a frame that does not fit is a typed host error: {result:?}"
+    );
+    assert_eq!(cpu.sr(), 0x2700, "SR untouched");
+    assert_eq!(cpu.address_register(7), Some(0x0100_0002), "A7 untouched");
+    assert_eq!(bus.read16(0x00FF_FFFC)?, 0xAAAA, "no partial frame write");
+
+    // An odd word store raises an address error, but its fourteen-byte frame
+    // also crosses RAM_END. The failed entry leaves no frame residue.
+    let (mut cpu, mut bus) = machine(&[0x33, 0xC0, 0x00, 0xFF, 0xFF, 0xFF], &[(3, HANDLER)], None)?;
+    cpu.set_a7(0x0100_0002);
+    bus.write16(0x00FF_FFF4, 0xBBBB)?;
+    let result = cpu.step(&mut bus);
+    assert!(
+        matches!(result, Err(CpuError::Bus(BusError::UnmappedWrite { .. }))),
+        "a fourteen-byte frame that does not fit is a typed host error: {result:?}"
+    );
+    assert_eq!(cpu.sr(), 0x2700);
+    assert_eq!(cpu.address_register(7), Some(0x0100_0002));
+    assert_eq!(bus.read16(0x00FF_FFF4)?, 0xBBBB, "no partial frame write");
+    Ok(())
+}
+
+#[test]
+fn interrupt_frame_failure_is_atomic() -> Result<(), Box<dyn Error>> {
+    let (mut cpu, mut bus) = machine(&[0x4E, 0x71], &[(30, HANDLER)], None)?;
+    cpu.set_a7(0x0100_0002);
+    bus.write16(0x00FF_FFFC, 0xCCCC)?;
+    let result = cpu.interrupt(6, 0x78, &mut bus);
+    assert!(
+        matches!(result, Err(CpuError::Bus(BusError::UnmappedWrite { .. }))),
+        "an interrupt frame that does not fit is a typed host error: {result:?}"
+    );
+    assert_eq!(cpu.sr(), 0x2700);
+    assert_eq!(cpu.address_register(7), Some(0x0100_0002));
+    assert_eq!(bus.read16(0x00FF_FFFC)?, 0xCCCC);
+    Ok(())
+}
+
+#[test]
+fn user_mode_exception_uses_ssp_and_rte_restores_usp() -> Result<(), Box<dyn Error>> {
+    let ssp = 0x00FF_2000;
+    let usp = 0x00FF_3000;
+    let (mut cpu, mut bus) = machine(
+        &[0x4A, 0xFC, 0x4E, 0x71],
+        &[(4, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.set_a7(ssp);
+    cpu.set_sr(0x0700);
+    cpu.set_a7(usp);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(cpu.a7(), ssp - 6, "the handler runs on SSP");
+    assert_eq!(cpu.ssp(), ssp - 6);
+    assert_eq!(cpu.usp(), usp, "the user stack is preserved");
+    assert_eq!(bus.read16(ssp - 6)?, 0x0700, "user SR in the frame");
+    assert_eq!(bus.read32(ssp - 4)?, 0x202);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x202);
+    assert_eq!(cpu.a7(), usp, "RTE restores the user stack");
+    assert_eq!(cpu.usp(), usp);
+    assert_eq!(cpu.ssp(), ssp);
+    assert_eq!(cpu.sr(), 0x0700);
+    Ok(())
+}
+
+#[test]
+fn user_mode_interrupt_uses_ssp_and_rte_restores_usp() -> Result<(), Box<dyn Error>> {
+    let ssp = 0x00FF_2000;
+    let usp = 0x00FF_3000;
+    let (mut cpu, mut bus) = machine(&[0x4E, 0x71], &[(30, HANDLER)], Some(&[0x4E, 0x73]))?;
+    cpu.set_a7(ssp);
+    cpu.set_sr(0x0700);
+    cpu.set_a7(usp);
+    cpu.interrupt(6, 0x78, &mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(cpu.a7(), ssp - 6, "the handler runs on SSP");
+    assert_eq!(cpu.usp(), usp);
+    assert_eq!(bus.read16(ssp - 6)?, 0x0700);
+    assert_eq!(bus.read32(ssp - 4)?, 0x200);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x200);
+    assert_eq!(cpu.a7(), usp);
+    assert_eq!(cpu.ssp(), ssp);
+    assert_eq!(cpu.sr(), 0x0700);
     Ok(())
 }

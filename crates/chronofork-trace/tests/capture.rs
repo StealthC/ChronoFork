@@ -416,11 +416,11 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         phases[0],
-        (4, InterruptPhase::Requested, phases[0].2),
+        (4, InterruptPhase::Requested, 3388),
         "the retained HBlank request is stamped with its pre-step tick"
     );
-    assert_eq!(phases[1], (4, InterruptPhase::Delivered, phases[1].2));
-    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, phases[2].2));
+    assert_eq!(phases[1], (4, InterruptPhase::Delivered, 7378));
+    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, 7378));
     assert_eq!(
         phases[1].2, phases[2].2,
         "delivery and acknowledgement share the delivering step"
@@ -437,11 +437,19 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
     let mut masked_backend = masked_factory.create()?;
     let masked = capture(masked_backend.as_mut(), &config, 200)?;
     let masked_phases = interrupts(&masked);
-    assert!(
+    assert_eq!(
         masked_phases
             .iter()
-            .any(|(level, phase, _)| *level == 4 && *phase == InterruptPhase::Requested),
-        "the masked HBlank request must still be observed"
+            .filter(|(level, phase, _)| *level == 4 && *phase == InterruptPhase::Requested)
+            .count(),
+        1,
+        "the masked HBlank request is observed once and coalesced"
+    );
+    assert!(
+        masked_phases.iter().any(|(level, phase, tick)| *level == 4
+            && *phase == InterruptPhase::Requested
+            && *tick == 3388),
+        "the masked HBlank request keeps its pre-step tick"
     );
     assert!(
         !masked_phases.iter().any(|(_, phase, _)| {

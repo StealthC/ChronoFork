@@ -10,9 +10,9 @@
 //! displacement and index words are consumed in encoding order, and the
 //! PC-relative base is the address of the extension word itself.
 
-use crate::bus::MegadriveBus;
+use crate::bus::{BusError, MegadriveBus};
 
-use super::{CpuError, M68000};
+use super::{AddressAccess, CpuError, M68000};
 
 /// Operand width of a 68000 instruction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,7 +286,10 @@ pub fn write_ea(
 fn read_an(cpu: &M68000, register: u8, size: Size) -> Result<u32, CpuError> {
     let value = cpu.read_an(usize::from(register));
     if size == Size::Byte {
-        return Err(CpuError::AddressError { address: value });
+        return Err(CpuError::AddressError {
+            address: value,
+            access: AddressAccess::DataRead,
+        });
     }
     Ok(value & size.mask())
 }
@@ -295,21 +298,49 @@ fn write_an(cpu: &mut M68000, register: u8, size: Size, value: u32) -> Result<()
     if size == Size::Byte {
         return Err(CpuError::AddressError {
             address: cpu.read_an(usize::from(register)),
+            access: AddressAccess::DataWrite,
         });
     }
     cpu.write_an(usize::from(register), size.sign_extend(value));
     Ok(())
 }
 
+/// Maps a bus fault from an instruction data access to the guest address-error
+/// exception. Exception entry, vector fetches and stack frames keep the bus
+/// error as a host failure because they are not instruction data accesses.
+fn data_bus_error(error: BusError, access_address: u32, access: AddressAccess) -> CpuError {
+    match error {
+        BusError::UnmappedRead { .. }
+        | BusError::UnmappedWrite { .. }
+        | BusError::WriteProtected { .. } => CpuError::AddressError {
+            address: access_address,
+            access,
+        },
+        other => CpuError::Bus(other),
+    }
+}
+
 fn read_memory(bus: &mut MegadriveBus, address: u32, size: Size) -> Result<u32, CpuError> {
     if size != Size::Byte && address & 1 != 0 {
-        return Err(CpuError::AddressError { address });
+        return Err(CpuError::AddressError {
+            address,
+            access: AddressAccess::DataRead,
+        });
     }
-    Ok(match size {
-        Size::Byte => u32::from(bus.read8(address)?),
-        Size::Word => u32::from(bus.read16(address)?),
-        Size::Long => bus.read32(address)?,
-    })
+    let value = match size {
+        Size::Byte => u32::from(
+            bus.read8(address)
+                .map_err(|error| data_bus_error(error, address, AddressAccess::DataRead))?,
+        ),
+        Size::Word => u32::from(
+            bus.read16(address)
+                .map_err(|error| data_bus_error(error, address, AddressAccess::DataRead))?,
+        ),
+        Size::Long => bus
+            .read32(address)
+            .map_err(|error| data_bus_error(error, address, AddressAccess::DataRead))?,
+    };
+    Ok(value)
 }
 
 fn write_memory(
@@ -319,12 +350,21 @@ fn write_memory(
     value: u32,
 ) -> Result<(), CpuError> {
     if size != Size::Byte && address & 1 != 0 {
-        return Err(CpuError::AddressError { address });
+        return Err(CpuError::AddressError {
+            address,
+            access: AddressAccess::DataWrite,
+        });
     }
     match size {
-        Size::Byte => bus.write8(address, value as u8)?,
-        Size::Word => bus.write16(address, value as u16)?,
-        Size::Long => bus.write32(address, value)?,
+        Size::Byte => bus
+            .write8(address, value as u8)
+            .map_err(|error| data_bus_error(error, address, AddressAccess::DataWrite))?,
+        Size::Word => bus
+            .write16(address, value as u16)
+            .map_err(|error| data_bus_error(error, address, AddressAccess::DataWrite))?,
+        Size::Long => bus
+            .write32(address, value)
+            .map_err(|error| data_bus_error(error, address, AddressAccess::DataWrite))?,
     }
     Ok(())
 }
@@ -390,6 +430,7 @@ where
             if size == Size::Byte {
                 return Err(CpuError::AddressError {
                     address: cpu.read_an(usize::from(register)),
+                    access: AddressAccess::DataWrite,
                 });
             }
             let old = cpu.read_an(usize::from(register));

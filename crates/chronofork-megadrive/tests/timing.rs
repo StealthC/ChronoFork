@@ -410,3 +410,80 @@ fn system_status_register_forms_use_the_documented_cycles() -> Result<(), Box<dy
     assert_eq!(step_cycles(&[0x0A, 0x7C, 0x01, 0x00], |_, _| {})?, 20);
     Ok(())
 }
+
+fn bit_opcode(operation: u16, static_form: bool, mode: u16, register: u16, dn: u16) -> u16 {
+    if static_form {
+        0x0800 | (operation << 6) | (mode << 3) | register
+    } else {
+        0x0100 | (dn << 9) | (operation << 6) | (mode << 3) | register
+    }
+}
+
+#[test]
+fn dbcc_costs_match_the_three_documented_outcomes() -> Result<(), Box<dyn Error>> {
+    // DBRA D0,+2, counter 2: taken.
+    assert_eq!(
+        step_cycles(&[0x51, 0xC8, 0x00, 0x02], |cpu, _| cpu.set_d(0, 2))?,
+        10,
+        "DBcc taken"
+    );
+    // DBRA D0,+2, counter 0: decrements to 0xFFFF and expires.
+    assert_eq!(
+        step_cycles(&[0x51, 0xC8, 0x00, 0x02], |cpu, _| cpu.set_d(0, 0))?,
+        14,
+        "DBcc counter expired"
+    );
+    // DBEQ D0,+2 with Z set: condition true, no branch.
+    assert_eq!(
+        step_cycles(&[0x57, 0xC8, 0x00, 0x02], |cpu, _| {
+            cpu.set_d(0, 0);
+            cpu.set_sr(0x2704);
+        })?,
+        12,
+        "DBcc condition true"
+    );
+    Ok(())
+}
+
+#[test]
+fn bit_operation_costs_match_the_oracle_bases() -> Result<(), Box<dyn Error>> {
+    // (operation, dynamic Dn, static Dn, dynamic memory, static memory).
+    let cases = [
+        (0u16, 6u16, 10u16, 8u16, 12u16), // BTST
+        (1, 8, 12, 12, 16),               // BCHG
+        (2, 10, 14, 12, 16),              // BCLR
+        (3, 8, 12, 12, 16),               // BSET
+    ];
+    for (operation, dynamic_dn, static_dn, dynamic_memory, static_memory) in cases {
+        let dynamic = bit_opcode(operation, false, 0, 0, 0).to_be_bytes();
+        assert_eq!(
+            step_cycles(&dynamic, |cpu, _| cpu.set_d(0, 0))?,
+            dynamic_dn,
+            "dynamic operation {operation} on Dn"
+        );
+        let static_opcode = bit_opcode(operation, true, 0, 0, 0).to_be_bytes();
+        let mut static_program = vec![static_opcode[0], static_opcode[1], 0x00, 0x00];
+        assert_eq!(
+            step_cycles(&static_program, |cpu, _| cpu.set_d(0, 0))?,
+            static_dn,
+            "static operation {operation} on Dn"
+        );
+        let dynamic_memory_opcode = bit_opcode(operation, false, 2, 0, 0).to_be_bytes();
+        assert_eq!(
+            step_cycles(&dynamic_memory_opcode, |cpu, _| {
+                cpu.set_a(0, 0x00FF_1000);
+                cpu.set_d(0, 0);
+            })?,
+            dynamic_memory,
+            "dynamic operation {operation} on (A0): base + byte EA 4"
+        );
+        let static_memory_opcode = bit_opcode(operation, true, 2, 0, 0).to_be_bytes();
+        static_program = vec![static_memory_opcode[0], static_memory_opcode[1], 0x00, 0x00];
+        assert_eq!(
+            step_cycles(&static_program, |cpu, _| cpu.set_a(0, 0x00FF_1000))?,
+            static_memory,
+            "static operation {operation} on (A0): base + byte EA 4"
+        );
+    }
+    Ok(())
+}

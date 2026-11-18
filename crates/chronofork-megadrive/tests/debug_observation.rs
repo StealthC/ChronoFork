@@ -74,6 +74,18 @@ fn event(tick: u64, kind: DebugEventKind) -> DebugEvent {
     }
 }
 
+fn requested(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptRequested { level }
+}
+
+fn delivered(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptDelivered { level }
+}
+
+fn acknowledged(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptAcknowledged { level }
+}
+
 fn watchpoint(id: u32, access: WatchpointAccess, address: u32, value: u32) -> DebugEventKind {
     DebugEventKind::Watchpoint {
         watchpoint_id: id,
@@ -553,10 +565,9 @@ fn interrupt_events(events: &[DebugEvent]) -> Vec<DebugEvent> {
 /// M4-A9 — interrupt request/delivery/acknowledgement observation.
 #[test]
 fn interrupt_events_are_requested_delivered_and_acknowledged() {
-    // Mask 3 run: the first HBlank is requested while masked, its second issue
-    // coalesces into the pending request (no duplicate event), the mask is
-    // lowered at instruction 8 and the retained request is delivered at
-    // instruction 9.
+    // Mask 3 run: the first HBlank is requested while masked, its later issues
+    // coalesce into the pending request (no duplicate event), and the retained
+    // request is delivered after the ROM lowers the mask.
     let mut machine = interrupt_machine(3);
     configure(&mut machine, 65_536, Vec::new());
     for _ in 0..12_000 {
@@ -564,57 +575,44 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
     }
     assert_eq!(log_ref(&mut machine).dropped(), 0, "ring overflow");
     let all = interrupt_events(&events(&mut machine));
-    let requested4 = all
+    assert_eq!(log_ref(&mut machine).dropped(), 0, "ring overflow");
+    let head: Vec<DebugEvent> = all
         .iter()
-        .find(|event| matches!(event.kind, DebugEventKind::InterruptRequested { level: 4 }))
         .copied()
-        .expect("HBlank request");
-    let delivered4 = all
-        .iter()
-        .find(|event| matches!(event.kind, DebugEventKind::InterruptDelivered { level: 4 }))
-        .copied()
-        .expect("HBlank delivery");
-    let acknowledged4 = all
-        .iter()
-        .find(|event| {
-            matches!(
-                event.kind,
-                DebugEventKind::InterruptAcknowledged { level: 4 }
-            )
-        })
-        .copied()
-        .expect("HBlank acknowledgement");
-    assert!(requested4.tick < delivered4.tick);
+        .filter(|event| event.tick <= Tick::from_raw(7378))
+        .collect();
     assert_eq!(
-        delivered4.tick, acknowledged4.tick,
-        "delivery and acknowledgement share the delivering step"
+        head,
+        vec![
+            event(3388, requested(4)),
+            event(7378, delivered(4)),
+            event(7378, acknowledged(4)),
+        ],
+        "requested at the raising step, then delivered and acknowledged after the \
+         successful entry, in that order"
     );
-    let requested6 = all
+
+    // VBlank is raised at the end of the active region; it is delivered first,
+    // then the retained HBlank is delivered after RTE restores mask 3.
+    let tail: Vec<DebugEvent> = all
         .iter()
-        .find(|event| matches!(event.kind, DebugEventKind::InterruptRequested { level: 6 }))
         .copied()
-        .expect("VBlank request");
-    let delivered6 = all
-        .iter()
-        .find(|event| matches!(event.kind, DebugEventKind::InterruptDelivered { level: 6 }))
-        .copied()
-        .expect("VBlank delivery");
-    assert!(
-        requested6.tick > delivered4.tick,
-        "VBlank is raised only at the end of the active region"
-    );
-    assert!(requested6.tick < delivered6.tick);
-    let acknowledged6 = all
-        .iter()
-        .find(|event| {
-            matches!(
-                event.kind,
-                DebugEventKind::InterruptAcknowledged { level: 6 }
-            )
+        .filter(|event| {
+            event.tick >= Tick::from_raw(765_996) && event.tick <= Tick::from_raw(766_304)
         })
-        .copied()
-        .expect("VBlank acknowledgement");
-    assert_eq!(delivered6.tick, acknowledged6.tick);
+        .collect();
+    assert_eq!(
+        tail,
+        vec![
+            event(765_996, requested(4)),
+            event(765_996, requested(6)),
+            event(766_108, delivered(6)),
+            event(766_108, acknowledged(6)),
+            event(766_304, delivered(4)),
+            event(766_304, acknowledged(4)),
+        ],
+        "only the delivered level is acknowledged and the other level stays pending"
+    );
 
     // Mask 7 run: the request is raised but never delivered or acknowledged, and
     // a coalesced reissue of the same level produces no duplicate request event.
@@ -624,26 +622,10 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
         masked.step(InputFrame::NEUTRAL).expect("masked step");
     }
     assert_eq!(log_ref(&mut masked).dropped(), 0, "ring overflow");
-    let masked_events = interrupt_events(&events(&mut masked));
-    assert!(
-        masked_events
-            .iter()
-            .any(|event| matches!(event.kind, DebugEventKind::InterruptRequested { level: 4 })),
-        "the masked HBlank request must be observed"
-    );
-    assert!(
-        masked_events
-            .iter()
-            .any(|event| matches!(event.kind, DebugEventKind::InterruptRequested { level: 6 })),
-        "the masked VBlank request must be observed"
-    );
-    assert!(
-        !masked_events.iter().any(|event| matches!(
-            event.kind,
-            DebugEventKind::InterruptDelivered { .. }
-                | DebugEventKind::InterruptAcknowledged { .. }
-        )),
-        "a masked pending request is never delivered or acknowledged"
+    assert_eq!(
+        interrupt_events(&events(&mut masked)),
+        vec![event(3388, requested(4)), event(765_982, requested(6))],
+        "a masked pending request is requested once and never delivered or acknowledged"
     );
 }
 

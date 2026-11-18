@@ -1,9 +1,8 @@
 //! Instruction execution groups for the 68000 core.
 //!
 //! Each group is a pure function over the register file and the bus. The
-//! group's `execute` function returns the instruction's 68000-cycle cost; the
-//! timing table lands in a later task, so the groups currently report zero and
-//! the backend keeps its instruction-quantum clock.
+//! group's `execute` function returns the instruction's documented 68000-cycle
+//! cost; the backend advances its master-cycle timeline by that cost times seven.
 //!
 //! [`crate::cpu::decode`] is the single opcode classifier; a group only decodes
 //! its own operand fields (size, direction and effective address) once the

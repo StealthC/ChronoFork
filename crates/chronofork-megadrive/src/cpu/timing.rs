@@ -224,7 +224,7 @@ pub fn base_cycles(opcode: u16) -> Option<u16> {
                 6
             }
         }
-        InstructionClass::Bit => 4,
+        InstructionClass::Bit => bit_cycles(opcode),
         InstructionClass::Shift => {
             if is_memory_shift(opcode) || bits == 2 {
                 8
@@ -282,6 +282,54 @@ pub fn base_cycles(opcode: u16) -> Option<u16> {
 /// costs 8 with an 8-bit displacement and 12 with a 16-bit displacement. `BRA`
 /// is always taken (10) and `BSR` costs 18.
 #[must_use]
+/// Returns the documented base cost of a bit operation, excluding the target
+/// effective-address cost.
+///
+/// The pinned oracle distinguishes the operation, static (`#`) versus dynamic
+/// (`Dn`) bit number, and register versus memory target. `BTST` is cheaper than
+/// the read-modify-write operations, and `BCLR` is one step more expensive than
+/// `BCHG`/`BSET` in the dynamic register form.
+fn bit_cycles(opcode: u16) -> u16 {
+    let static_form = (opcode & 0x0F00) == 0x0800;
+    let operation = (opcode >> 6) & 0x3;
+    let mode = (opcode >> 3) & 0x7;
+    let register_target = mode == 0 || (mode == 1 && operation == 0);
+    if register_target {
+        match (operation, static_form) {
+            (0, false) => 6,
+            (0, true) => 10,
+            (1 | 3, false) => 8,
+            (1 | 3, true) => 12,
+            (2, false) => 10,
+            (2, true) => 14,
+            _ => 0,
+        }
+    } else {
+        match (operation, static_form) {
+            (0, false) => 4,
+            (0, true) => 8,
+            (1..=3, false) => 8,
+            (1..=3, true) => 12,
+            _ => 0,
+        }
+    }
+}
+
+/// Returns the documented `DBcc` cost for its outcome.
+///
+/// A taken counter branch costs 10 cycles, an expired counter costs 14, and a
+/// true condition (which skips the branch) costs 12.
+#[must_use]
+pub fn dbcc_cycles(condition_true: bool, taken: bool) -> u16 {
+    if condition_true {
+        12
+    } else if taken {
+        10
+    } else {
+        14
+    }
+}
+
 pub fn branch_cycles(opcode: u16, taken: bool) -> u16 {
     match (opcode >> 8) & 0xF {
         0x0 => 10,
