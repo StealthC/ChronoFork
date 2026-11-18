@@ -80,7 +80,7 @@ the contract validator.
 | E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
 | E2-13 | Expand instruction/addressing coverage with tests | In progress — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests; broader instruction/addressing coverage remains future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
-| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; CLI demo and masked default-quantum differential control pass. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
+| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; the current Phase 8.2 differential covers eleven synthetic ROMs at 11/11 address, per-instruction cycle and final-state comparisons plus negative controls. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
 
 ## Hardware-depth mapping (H1–H5)
 
@@ -107,46 +107,74 @@ non-canonical debugging surface; it was verified on `agent/m4-debugging-depth` a
 
 ## Differential method and controlled conditions
 
-The current evidence is recorded in
-[Oracle differential instruction-trace evidence](../research/oracle-differential-evidence.md).
+The current evidence is recorded in the
+[68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 The harness runs a pinned Exodus headless oracle and ChronoFork's trace over the
-same generated ROM, projects both to the executed-address sequence before a marker
-self-loop, asserts address equality, and reports the first divergence, record counts
-and projection digests. Every ChronoFork projected opcode word is also checked
-against the ROM word at that address.
-It also compares selected final state (D0–D7, A0–A7, PC, effective SR fields and 64
-work-RAM bytes) through the oracle's MCP register/memory reads, runs a negative
-control that must fail at a deliberately corrupted index, and records the per-ROM
-scheduler quantum plus the masked-ROM gating control. Oracle `cycle`/`time` columns
-and ChronoFork ticks are **not** compared.
+same generated ROMs on the master-cycle timeline (3420 master cycles per scanline;
+each instruction advances by its 68000 cycle cost times seven). The current corpus
+is eleven independently authored synthetic ROMs. For every ROM the harness:
+
+- projects both traces to the executed-address sequence before a marker self-loop,
+  asserts address equality and reports the first divergence, record counts and
+  projection digests; every ChronoFork projected opcode word is checked against the
+  ROM word at that address;
+- compares each instruction's 68000 cycle cost: the oracle's per-instruction
+  `cycle`-column delta against ChronoFork's fourth trace field (`--cycles`);
+- compares selected final state (D0–D7, A0–A7, PC, effective SR fields and 64
+  work-RAM bytes) through the oracle's MCP register/memory reads;
+- runs address, cycle and final-state negative controls that must fail at a
+  deliberately corrupted entry.
 
 Controlled conditions:
 
-- **Explicit interrupt-free window for two ROMs:** the oracle honours reset SR mask 7;
-  `rom_alu` and `rom_mem_vdp` also pass an explicit
-  `--instructions-per-line 1000000`, so no HBlank/VBlank request is raised in their
-  short measured windows. This is a controlled workaround, not interrupt equivalence.
-- **Default-quantum masked window:** `rom_masked` omits `--instructions-per-line` and
-  runs at the CLI default quantum of 64 (read back from the state file). It contains
-  no SR-writing opcode, so both sides stay at mask 7; its 155 executed instructions
-  cross HBlank boundaries at ticks 64 and 128, no handler executes, and the VINT /
-  delivery behavior is not compared. This is **negative evidence for mask gating**,
-  not a positive comparison of interrupt delivery.
 - **Marker-bounded windows:** comparisons stop before a known self-loop, removing
   frame-length and loop-count differences.
 - **Explicit register initialisation:** every ROM initialises every compared
   data/address register it uses and the reset vector sets the same stack pointer,
-  because the oracle's reset D/A values are undefined.
+  because the oracle's reset D/A values are undefined. `X` is cleared explicitly
+  with `ADD.B D0,D0` before the measured program.
 - **Effective SR only:** raw SR words differ (`0x7FE0` vs `0x2700`); only IPM, S and
   CCR are compared.
 - **VDP writes only:** VDP control/data-port writes are part of the instruction
   stream; VDP data-port reads are excluded because oracle prefetch differs from the
   minimal VDP model.
+- **Interrupt-free windows:** the ROMs keep SR mask 7 where they do not exercise
+  mask changes, so no handler runs in the measured window. The masked ROM is
+  negative gating evidence (no handler executes), not a positive comparison of
+  interrupt delivery or timing.
+- **Cycle basis:** the oracle's absolute `cycle` base and `time` column are not
+  compared; only the per-instruction `cycle` delta is.
 
-The historical three-ROM harness run was **PASS 3/3**: 3/3 projected address streams,
-3/3 final states, 3/3 negative controls and 3/3 scheduler controls (masked gating
-1/1), exit 0. The current Phase 8.2 harness runs eleven synthetic ROMs and passes
-11/11 address, per-instruction cycle, final-state and negative controls.
+The current run passes **11/11** address projections, per-instruction cycle
+comparisons, selected final states and address/cycle/final-state negative controls;
+the harness exits 0. Neither the historical nor the current run is interrupt-timing,
+interrupt-delivery, rendering, audio, Z80, DMA or game-compatibility equivalence.
+
+### Historical three-ROM differential method (superseded)
+
+The retired three-ROM harness projected the executed-address sequence and compared
+selected final state, but it also recorded a per-ROM instruction-scheduler quantum
+and a masked-ROM gating control rather than per-instruction cycles. Its controlled
+conditions were:
+
+- **Explicit interrupt-free window for two ROMs:** the oracle honoured reset SR mask
+  7; `rom_alu` and `rom_mem_vdp` also passed an explicit
+  `--instructions-per-line 1000000`, so no HBlank/VBlank request was raised in their
+  short measured windows. This was a controlled workaround, not interrupt
+  equivalence.
+- **Default instruction-quantum masked window:** `rom_masked` omitted
+  `--instructions-per-line` and ran at the then-CLI-default quantum of 64 read back
+  from the state file. It contained no SR-writing opcode, so both sides stayed at
+  mask 7; its 155 executed instructions crossed HBlank boundaries at ticks 64 and
+  128, no handler executed, and the VINT/delivery behavior was not compared. This
+  was negative evidence for mask gating, not a positive comparison of interrupt
+  delivery.
+- **Oracle columns:** the historical method did not compare the oracle `cycle`/`time`
+  columns; the current master-cycle method compares the per-instruction cycle delta.
+
+The historical run was **PASS 3/3**: 3/3 projected address streams, 3/3 final
+states, 3/3 negative controls and 3/3 scheduler controls (masked gating 1/1), exit
+0. Its per-ROM counts were:
 
 - `rom_alu`: 2375 oracle total / 99 projected records and 99/99 ChronoFork projected
   records, projection SHA-256
@@ -156,26 +184,25 @@ The historical three-ROM harness run was **PASS 3/3**: 3/3 projected address str
   `ba4f39489fa56b5fa068af4f4bd21e5aaf311a8138df22231f6c0e04bfe62b47` on both sides,
   negative control index 25.
 - `rom_masked`: 2388 / 155 and 155/155 at the then-default instruction quantum
-  (superseded by the master-cycle timeline), projection
-  SHA-256 `02891e15765a342496196564e17d1649f10d39a069b4494fa96d7fb11ca3cd11` on both
-  sides, negative control index 77, SR mask 7 on both sides, 2 HBlank boundaries
-  crossed and zero handler entries.
+  (superseded by the master-cycle timeline), projection SHA-256
+  `02891e15765a342496196564e17d1649f10d39a069b4494fa96d7fb11ca3cd11` on both sides,
+  negative control index 77, SR mask 7 on both sides, 2 HBlank boundaries crossed
+  and zero handler entries.
 
-All final states match (D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes), and
-every ChronoFork projected opcode word matches the ROM word at its address.
-
-The pre-repair run is preserved as history: `rom_alu` passed, while `rom_mem_vdp`
-diverged at projected index 28 (`0x00027A`, opcode `0x2239`,
+All historical final states matched (D0–D7, A0–A7, PC, effective SR and 64 work-RAM
+bytes), and every ChronoFork projected opcode word matched the ROM word at its
+address. The pre-repair run is preserved as history: `rom_alu` passed, while
+`rom_mem_vdp` diverged at projected index 28 (`0x00027A`, opcode `0x2239`,
 `MOVE.L $00FF0020,D1`) because the core decoded the absolute-**word** form
 (`0x..38`) for absolute-long loads. The real 68000 encoding is `0x..39`. E2-13
 repaired the decoder (`0x1039`/`0x2039`/`0x3039` now decode; `0x1038`/`0x2038`/
-`0x3038` remain typed illegal) with regression tests. The earlier canonical
-two-ROM Phase-10 evidence at the explicit 1,000,000-instruction quantum is
-preserved unchanged under ignored `.research/evidence/before-e2-15/` as the
-controlled-condition history. The historical three-ROM evidence establishes
-instruction-address and selected-state agreement; the current Phase 8.2 harness
-also compares per-instruction 68000 cycle costs. Neither is interrupt-timing,
-interrupt-delivery, rendering, audio, Z80, DMA or game-compatibility equivalence.
+`0x3038` remain typed illegal) with regression tests. The earlier canonical two-ROM
+Phase-10 evidence at the explicit 1,000,000-instruction quantum is preserved
+unchanged under ignored `.research/evidence/before-e2-15/` as controlled-condition
+history. The historical three-ROM evidence establishes instruction-address and
+selected-state agreement; the current Phase 8.2 harness also compares
+per-instruction 68000 cycle costs. Neither is interrupt-timing, interrupt-delivery,
+rendering, audio, Z80, DMA or game-compatibility equivalence.
 
 ## Acceptance criteria for this slice
 
