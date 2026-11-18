@@ -79,6 +79,8 @@ pub enum InstructionClass {
     Not,
     /// Register and memory shifts and rotates.
     Shift,
+    /// `MULU`/`MULS`/`DIVU`/`DIVS`.
+    MulDiv,
     /// `BRA`, `BSR` and the conditional branches.
     Branch,
     /// `NOP`.
@@ -169,6 +171,11 @@ pub const fn classify(opcode: u16) -> InstructionClass {
             0x4A00 => return InstructionClass::Tst,
             _ => {}
         }
+    }
+
+    // MULU/MULS (1100 ddd 011 mmm rrr) and DIVU/DIVS (1000 ddd 011 mmm rrr).
+    if matches!(opcode & 0xF1C0, 0xC0C0 | 0xC1C0 | 0x80C0 | 0x81C0) {
+        return InstructionClass::MulDiv;
     }
 
     // Immediate arithmetic and logic: opcode 0000 0xxx ss mmm rrr.

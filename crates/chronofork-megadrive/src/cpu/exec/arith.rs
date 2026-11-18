@@ -10,7 +10,7 @@ use crate::bus::MegadriveBus;
 
 use super::illegal_opcode;
 use crate::cpu::ea::{Ea, Size, decode_ea, is_data_alterable, modify_ea, read_ea};
-use crate::cpu::{CpuError, FLAG_X, FLAG_Z, M68000};
+use crate::cpu::{CpuError, ExceptionFrame, FLAG_N, FLAG_X, FLAG_Z, M68000, VECTOR_ZERO_DIVIDE};
 
 /// Sets the condition codes for an addition result.
 ///
@@ -31,6 +31,9 @@ pub fn sub_flags(cpu: &mut M68000, destination: u32, source: u32, result: u32, s
 /// table (Task 14) lands.
 pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let instruction_pc = cpu.pc().saturating_sub(2);
+    if matches!(opcode & 0xF1C0, 0xC0C0 | 0xC1C0 | 0x80C0 | 0x81C0) {
+        return multiply_or_divide(cpu, bus, opcode);
+    }
     match opcode & 0xF000 {
         0xD000 => return add_or_sub(cpu, bus, opcode, true),
         0x9000 => return add_or_sub(cpu, bus, opcode, false),
@@ -47,6 +50,81 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
         _ => {}
     }
     Err(illegal_opcode(instruction_pc, opcode))
+}
+
+fn multiply_or_divide(
+    cpu: &mut M68000,
+    bus: &mut MegadriveBus,
+    opcode: u16,
+) -> Result<u16, CpuError> {
+    let register = usize::from((opcode >> 9) & 0x7);
+    let mode = ((opcode >> 3) & 0x7) as u8;
+    let ea_register = (opcode & 0x7) as u8;
+    let source = read_ea(
+        cpu,
+        bus,
+        decode_ea(mode, ea_register, Size::Word)?,
+        Size::Word,
+    )?;
+    let signed = opcode & 0x0100 != 0;
+    let extend = cpu.flag(FLAG_X);
+
+    if opcode & 0xF000 == 0xC000 {
+        let left = u32::from(cpu.read_dn(register, Size::Word) as u16);
+        let value = if signed {
+            (left as u16 as i16 as i32).wrapping_mul(source as u16 as i16 as i32) as u32
+        } else {
+            left.wrapping_mul(u32::from(source as u16))
+        };
+        cpu.set_d(register, value);
+        cpu.set_ccr(false, false, value == 0, value & 0x8000_0000 != 0, extend);
+        return Ok(0);
+    }
+
+    let divisor = u32::from(source as u16);
+    if divisor == 0 {
+        return cpu.raise_exception(bus, VECTOR_ZERO_DIVIDE, ExceptionFrame::Short);
+    }
+    let dividend = cpu.read_dn(register, Size::Long);
+    if signed {
+        let dividend = dividend as i32;
+        let divisor = dividend_divisor(source);
+        let Some(quotient) = dividend.checked_div(divisor) else {
+            return set_divide_overflow(cpu, extend);
+        };
+        if !(-32_768..=32_767).contains(&quotient) {
+            return set_divide_overflow(cpu, extend);
+        }
+        let remainder = dividend % divisor;
+        let value = ((remainder as u16 as u32) << 16) | (quotient as u16 as u32);
+        cpu.set_d(register, value);
+        cpu.set_ccr(false, false, quotient == 0, quotient & 0x8000 != 0, extend);
+    } else {
+        let quotient = dividend / divisor;
+        if quotient > 0xFFFF {
+            return set_divide_overflow(cpu, extend);
+        }
+        let remainder = dividend % divisor;
+        let value = (remainder << 16) | quotient;
+        cpu.set_d(register, value);
+        cpu.set_ccr(false, false, quotient == 0, quotient & 0x8000 != 0, extend);
+    }
+    Ok(0)
+}
+
+const fn dividend_divisor(source: u32) -> i32 {
+    (source as u16) as i16 as i32
+}
+
+/// Sets the documented divide-overflow flags without touching the destination.
+///
+/// `V` is set, `C` is cleared and the other condition codes are left as they
+/// were; the destination register was never written.
+fn set_divide_overflow(cpu: &mut M68000, extend: bool) -> Result<u16, CpuError> {
+    let zero = cpu.flag(FLAG_Z);
+    let negative = cpu.flag(FLAG_N);
+    cpu.set_ccr(false, true, zero, negative, extend);
+    Ok(0)
 }
 
 fn size_from_bits(bits: u16) -> Option<Size> {

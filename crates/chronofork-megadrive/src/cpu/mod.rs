@@ -56,9 +56,59 @@ pub(crate) const FLAG_V: u16 = 0x0002;
 pub(crate) const FLAG_Z: u16 = 0x0004;
 pub(crate) const FLAG_N: u16 = 0x0008;
 pub(crate) const FLAG_X: u16 = 0x0010;
-const SR_SUPERVISOR: u16 = 0x2000;
+pub(crate) const SR_SUPERVISOR: u16 = 0x2000;
 const SR_INTERRUPT_MASK: u16 = 0x0700;
+const SR_TRACE: u16 = 0x8000;
 const RESET_SR: u16 = SR_SUPERVISOR | SR_INTERRUPT_MASK;
+
+/// 68000 reset vector (initial supervisor stack pointer and program counter).
+pub const VECTOR_RESET: u8 = 1;
+/// Bus-error exception vector.
+pub const VECTOR_BUS_ERROR: u8 = 2;
+/// Address-error exception vector.
+pub const VECTOR_ADDRESS_ERROR: u8 = 3;
+/// Illegal-instruction exception vector.
+pub const VECTOR_ILLEGAL: u8 = 4;
+/// Zero-divide exception vector.
+pub const VECTOR_ZERO_DIVIDE: u8 = 5;
+/// `CHK` exception vector.
+pub const VECTOR_CHK: u8 = 6;
+/// `TRAPV` exception vector.
+pub const VECTOR_TRAPV: u8 = 7;
+/// Privilege-violation exception vector.
+pub const VECTOR_PRIVILEGE_VIOLATION: u8 = 8;
+/// Trace exception vector.
+pub const VECTOR_TRACE: u8 = 9;
+/// First autovector interrupt vector (level 1); add the interrupt level.
+pub const VECTOR_IRQ_BASE: u8 = 24;
+/// First `TRAP #n` vector; add the trap number.
+pub const VECTOR_TRAP_BASE: u8 = 32;
+
+/// The frame an exception pushes on the supervisor stack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExceptionFrame {
+    /// Six bytes: status register and program counter.
+    Short,
+    /// Six bytes: status register and program counter, with trace entry.
+    Trace,
+    /// Fourteen bytes: SR, PC, the faulting address, the opcode and a
+    /// function-code word.
+    AddressError {
+        /// Address that faulted.
+        address: u32,
+        /// Instruction word that was executing.
+        opcode: u16,
+    },
+}
+
+impl ExceptionFrame {
+    const fn size(self) -> u32 {
+        match self {
+            Self::Short | Self::Trace => 6,
+            Self::AddressError { .. } => 14,
+        }
+    }
+}
 
 /// Returns the 68000 interrupt-priority mask (IPM) encoded in
 /// `status_register` (bits 10-8).
@@ -272,6 +322,60 @@ impl M68000 {
 
         self.halted = false;
         Ok(())
+    }
+
+    /// Enters an exception through `vector`.
+    ///
+    /// The vector table is read first and its target validated, so an
+    /// unreadable or odd vector is a typed host error that leaves the
+    /// architectural state untouched. The exception frame is then pushed on the
+    /// active stack, `S` is set and the trace bit cleared, and execution jumps
+    /// to the handler. The returned value is the 34-cycle exception-entry cost.
+    ///
+    /// [`ExceptionFrame::Short`] and [`ExceptionFrame::Trace`] push six bytes
+    /// (status register and return program counter); an address error pushes
+    /// the documented fourteen-byte frame (SR, PC, access address, instruction
+    /// register and a function-code word).
+    pub fn raise_exception(
+        &mut self,
+        bus: &mut MegadriveBus,
+        vector: u8,
+        frame: ExceptionFrame,
+    ) -> Result<u16, CpuError> {
+        let vector_address = u32::from(vector)
+            .checked_mul(4)
+            .ok_or(CpuError::AddressOverflow)?;
+        let target = bus.read32(vector_address)?;
+        self.ensure_even(target)?;
+
+        let frame_size = frame.size();
+        let stack = self.a[7]
+            .checked_sub(frame_size)
+            .ok_or(CpuError::StackOverflow)?;
+        let return_pc = self.pc;
+
+        bus.write16(stack, self.sr)?;
+        let pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        bus.write32(pc_address, return_pc)?;
+        if let ExceptionFrame::AddressError { address, opcode } = frame {
+            let address_address = stack.checked_add(6).ok_or(CpuError::AddressOverflow)?;
+            bus.write32(address_address, address)?;
+            let opcode_address = stack.checked_add(10).ok_or(CpuError::AddressOverflow)?;
+            bus.write16(opcode_address, opcode)?;
+            let function_code_address = stack.checked_add(12).ok_or(CpuError::AddressOverflow)?;
+            bus.write16(function_code_address, 0)?;
+        }
+
+        self.a[7] = stack;
+        let mut new_sr = (self.sr | SR_SUPERVISOR) & !SR_TRACE;
+        if matches!(frame, ExceptionFrame::Trace) {
+            new_sr |= SR_INTERRUPT_MASK;
+        }
+        self.sr = new_sr;
+        self.pc = target;
+        self.halted = false;
+        self.stopped = false;
+        Ok(34)
     }
 
     /// Returns the program counter.
@@ -588,6 +692,9 @@ impl M68000 {
             }
             InstructionClass::Shift => {
                 exec::shift::execute(self, bus, opcode)?;
+            }
+            InstructionClass::MulDiv => {
+                exec::arith::execute(self, bus, opcode)?;
             }
             InstructionClass::Add
             | InstructionClass::Adda
