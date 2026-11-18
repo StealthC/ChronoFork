@@ -219,10 +219,7 @@ fn instructions_per_line_is_no_longer_an_option() {
         stderr.contains("unknown `megadrive trace` option `--instructions-per-line`"),
         "typed rejection names the removed option: {stderr}"
     );
-    assert!(
-        !state_path.exists(),
-        "no state is written on rejection"
-    );
+    assert!(!state_path.exists(), "no state is written on rejection");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

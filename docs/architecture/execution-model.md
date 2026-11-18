@@ -1,5 +1,13 @@
 # Execution Model
 
+
+> **Phase 8.2 supersession:** the instruction-quantum statements in this page are
+> superseded for the Mega Drive slice. Canonical time is the master-clock cycle:
+> each instruction advances the backend by `InstructionOutcome.cycles * 7` and one
+> scanline is exactly 3420 master cycles. See
+> [Mega Drive slice timing](megadrive-slice.md#deterministic-interrupt-scheduler)
+> and [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
+
 ## Virtual time
 
 Emulated time is a `Tick`: a monotonically increasing `u64` quantum defined by the
@@ -283,13 +291,15 @@ best-effort parse.
 
 ## Known limitations
 
-- No cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The Mega
-  Drive slice has an instruction-quantum VBlank/HBlank scheduler, and 68000
-  interrupt entry with SR-mask gating, `RTE` handler return and VDP VINT-pending
-  wiring implemented for the modelled slice. Remaining limits: privilege is not
-  enforced; only HBlank (level 4) and VBlank (level 6) sources are modelled, with
-  level 7 a predicate rule rather than a wired source; no interrupt-timing
-  equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
+- No fully cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The
+  Mega Drive slice uses a 3420-master-cycle scanline timeline, with 68000 interrupt
+  entry on that timeline, SR-mask gating, `RTE` handler return, VDP VINT-pending
+  wiring, privilege enforcement for the implemented system instructions and
+  exception vectors 1-9/24-31/32+n. Remaining limits: functional prefetch, bus
+  contention and DMA stalls are not cycle-modelled; only HBlank (level 4) and
+  VBlank (level 6) sources are modelled, with level 7 a predicate rule rather than
+  a wired source; no interrupt-latency equivalence is claimed; and VDP
+  interrupt-enable/acknowledge logic is absent.
 - No general structured/timestamped trace format, conditional breakpoints or
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,

@@ -1,5 +1,14 @@
 # M3 Real-Hardware Input TAS — Executable Acceptance Plan
 
+
+> **Phase 8.2 supersession.** The instruction-quantum scheduler, configurable
+> instructions-per-line flag, tick semantics, quantum rows and masked-boundary
+> fixtures described in this historical M3 record are superseded by the 3420-
+> master-cycle timeline. Timing claims from rows M3-A51/A52 and the oracle
+> quantum control no longer apply; address/final-state evidence remains
+> historical. Current cycle evidence is
+> [cpu-cycle-differential-evidence.md](../research/cpu-cycle-differential-evidence.md).
+
 - **Status:** **Executed; every row M3-A45–M3-A53 is `executed - passed`** (independent
   t5 verification PASS, 2026-11-16). The hardware-TAS increment and the M3 completion audit
   passed for the documented deterministic minimal-slice scope; M3 is complete per the t6
@@ -501,7 +510,7 @@ Executed result (t5): all seven gate commands exited 0; `cargo test --workspace`
 
 **Status:** executed - passed (independent t5 verification, 2026-11-16; row record `rows/A51-m1-m2-m3-non-regression.txt`).
 
-### M3-A52 — Oracle differential harness gate
+### M3-A52 — Oracle differential harness gate (superseded for timing by Phase 8.2)
 
 **Executed and passed (t5, 2026-11-16).** The verified contract was: all of the following are demonstrated:
 

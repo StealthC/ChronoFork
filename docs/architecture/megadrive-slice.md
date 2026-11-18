@@ -2,9 +2,10 @@
 
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
-  VINT-pending/acknowledge + bounded debug instruction trace, with passing
-  three-ROM oracle differential evidence including a default-quantum masked-ROM
-  control); not a complete emulator. Controller-port data-register reads for real-hardware
+  VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
+  timeline, with eight-ROM oracle differential evidence: address projections match
+  all eight and per-instruction cycle comparison records both the matching BCD ROM
+  and the remaining divergences); not a complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
   the canonical state, demos and M1 evidence unchanged. A/Start, TH/6-button/Start
@@ -13,8 +14,9 @@
   CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
   slice (t5 PASS, 2026-11-16). M8 phase 8.1 adds a modelled cartridge — header/region/
   checksum, Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register — with
-  payload/state/config v3 (implemented, reviewed and verified 2026-11-17; booting a
-  commercial title is phase 8.6 evidence, not claimed here).
+  payload/state/config v4 (implemented, reviewed and verified 2026-11-17; phase 8.2
+  adds the master-cycle timeline, extended CPU snapshot fields and the 8.2 cycle
+  differential; booting a commercial title is phase 8.6 evidence, not claimed here).
 - **Next:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is the milestone that completes this slice (full 68000/Z80, VDP rendering/DMA/timing,
   YM2612/PSG audio, cartridge, controllers and capture). This page remains the canonical
@@ -149,13 +151,17 @@ FIFO/access timing and H/V counters.
 
 ### Deterministic interrupt scheduler
 
-- Instruction-quantum model: one scheduler tick equals one completed 68000
-  instruction, not one CPU cycle. This is explicitly **not** cycle-accurate
-  hardware timing.
-- NTSC constants (262 lines/frame, 224 active) and PAL constants (313/240), with a
-  configurable instruction quantum per scanline (default 64).
-- HBlank is requested when each active scanline completes; VBlank when vertical
-  blanking begins. Blanking lines are quiet.
+- Master-cycle model: canonical time is the master-clock cycle. Each executed
+  instruction advances the backend by its 68000 cycle cost times seven, and one
+  scanline is exactly 3420 master cycles (`MASTER_CYCLES_PER_LINE`). This is
+  explicitly **not** fully cycle-accurate hardware timing: functional prefetch,
+  bus contention, DMA stalls and interrupt latency are not modelled. The former M3
+  instruction-quantum model is superseded.
+- NTSC constants (262 lines/frame, 224 active) and PAL constants (313/240), with
+  the fixed 3420-master-cycle scanline; `SchedulerConfig::new(video)/ntsc()/pal()`
+  carries only the video standard.
+- HBlank is requested when each active scanline completes at a master-cycle
+  boundary; VBlank when vertical blanking begins. Blanking lines are quiet.
 - At most one request per level is retained; repeated requests coalesce with
   diagnostic counters, and a masked request keeps its original issue tick. Delivery
   order is VBlank (level 6) before HBlank (level 4).
@@ -228,11 +234,12 @@ FIFO/access timing and H/V counters.
 - Debug data only: enabling the trace leaves snapshot payload bytes, versions, state
   hashes and configuration hashes identical, and restore does not rewind the trace.
 - CLI `megadrive trace` runs an instruction budget or stops before `--stop-pc`,
-  writes TSV `index<TAB>pc_hex<TAB>opcode_hex` and a deterministic key=value final
-  state (executed, tick, quantum, video, halted, D0–D7, A0–A7, PC, raw SR,
-  RAM base/length/hex), and honours `--instructions-per-line`, `--video`,
-  `--trace-capacity`, `--trace-out` (default stdout) and required `--state-out`.
-  The default quantum of 64 is unchanged.
+  writes TSV `index<TAB>pc_hex<TAB>opcode_hex` (and, with `--cycles`, a fourth
+  decimal 68000-cycle field) and a deterministic key=value final state (executed,
+  tick/master_cycles, cpu_cycles, USP/SSP, video, halted, D0–D7, A0–A7, PC, raw
+  SR, RAM base/length/hex), and honours `--video`, `--trace-capacity`, `--out`/
+  `--trace-out` (default stdout) and required `--state-out`. The instruction-quantum
+  flag is removed.
 
 ### Oracle differential method and limits
 
@@ -254,33 +261,23 @@ full numbers, commands and limitations are in
 - Final state is compared through the oracle's MCP `cpu.registers` and
   `cpu.read_memory` calls: D0–D7, A0–A7, PC, effective SR fields (IPM/S/CCR) and 64
   work-RAM bytes at `0xFF0000`. Raw SR words differ and are not compared.
-- The harness records the per-ROM scheduler quantum read back from the state file
-  and, for `rom_masked`, checks the masked gating control.
-- Controlled conditions: `rom_alu` and `rom_mem_vdp` use an explicit
-  `--instructions-per-line 1000000` to keep their short measured windows
-  interrupt-free. `rom_masked` **omits** the flag, runs at the CLI default quantum of
-  64, contains no SR-writing opcode (so both sides stay at mask 7), executes 155
-  instructions and crosses HBlank boundaries at ticks 64 and 128 with no handler
-  entry. This masked pass is negative evidence for gating, not an interrupt-delivery
-  comparison. Every ROM initialises the compared data/address registers it uses and
-  the reset vector sets the same stack pointer, because the oracle's reset D/A
-  values are undefined; VDP control/data-port writes are executed but VDP data-port
-  reads are excluded because oracle prefetch differs from this VDP model.
-- Current result: **PASS 3/3** (3/3 trace, 3/3 final state, 3/3 negative controls,
-  3/3 scheduler controls, exit 0). `rom_alu`: 2375 oracle total / 99 projected,
-  99/99 ChronoFork, projection SHA-256 `2b6f191c…` on both sides, negative control
-  index 49. `rom_mem_vdp`: 2363 / 51, 51/51, `ba4f3948…`, negative control index 25.
-  `rom_masked`: 2388 / 155, 155/155, `02891e15…`, negative control index 77; quantum
-  64 (CLI default, flag omitted), SR mask 7 on both sides, two HBlank boundaries
-  crossed and zero handler entries.
-- History: the pre-repair run passed `rom_alu` but `rom_mem_vdp` diverged at
-  projected index 28 (`0x00027A`, opcode `0x2239`, `MOVE.L $00FF0020,D1`) because
-  the core decoded the absolute-word (`0x..38`) form for absolute-long loads. The
-  real encoding is `0x..39`; E2-13 repaired the decoder and the post-repair run is
-  current evidence. The pre-repair artifacts are preserved under ignored
-  `.research/evidence/before-repair/`. The earlier canonical two-ROM Phase-10 run at
-  the explicit 1,000,000-instruction quantum is preserved unchanged under ignored
-  `.research/evidence/before-e2-15/` as controlled-condition history.
+- Phase 8.2 compares the master-cycle timeline: the oracle's accumulated `cycle`
+  column difference per instruction is checked against ChronoFork's fourth trace
+  field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
+  and the oracle `time` column are not compared. M3's per-ROM instruction quantum
+  and masked-boundary control are superseded.
+- The eight synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP and mul/div fixtures under `scripts/fixtures/`. Current result:
+  address projections 8/8, cycle comparison 1/8 fully matching (BCD) with the seven
+  first mismatches recorded, selected final state 5/8, address and cycle negative
+  controls 8/8. The harness exits 1 because the cycle/state divergences are
+  findings, never hidden by editing an expectation. Full numbers, commands and the
+  pinned oracle revision `ec005615…` are in the
+  [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
+- History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
+  remains recorded in the historical
+  [oracle differential evidence](../research/oracle-differential-evidence.md); the
+  M3 quantum/masked-boundary results there are marked superseded for timing.
 
 **This is not cycle, interrupt-timing or interrupt-delivery equivalence.** The
 masked-ROM pass shows that no handler executes while the SR mask is 7 and that the
@@ -291,19 +288,22 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 ### Known limitations of the integration
 
-- **Privilege is not enforced.** `MOVE.W #imm,SR` and `RTE` execute in either mode;
-  `STOP`, `ORI`/`ANDI`/`EORI` to `SR` and separate user/supervisor stack pointers
-  are absent.
+- **Privilege is enforced for the implemented system instructions.** `MOVE` to
+  `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
+  the exception framework provides vectors 1-9/24-31/32+n, short frames and the
+  documented 14-byte address-error frame. Trace exceptions and the remaining
+  unimplemented instructions are still absent.
 - **Only VBlank (level 6) and HBlank (level 4) sources are modelled.** The "level 7
   is always deliverable" branch is a tested predicate rule in the shared
   68000/scheduler API, not a wired level-7 interrupt source. Other exception groups
-  (timers, Z80, address/bus errors as 68000 exceptions, `TRAP`, etc.) are absent;
-  unsupported instructions and bus faults surface as typed Rust errors, not 68000
-  exception vectors.
+  (timers, Z80, bus-error recovery and trace) are absent; unmapped bus accesses
+  remain typed host errors, while odd/misaligned EA accesses and the implemented
+  `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms use 68000 vectors. Unsupported opcodes remain
+  typed host errors.
 - **No interrupt-timing equivalence is claimed.** Delivery happens at instruction
-  boundaries in the instruction-quantum model (one instruction equals one tick), at
-  most one exception per boundary; the oracle differential evidence does not compare
-  delivery order, latency, acknowledge semantics, vector fetch or handler execution.
+  boundaries on the master-cycle timeline (cycle cost added at the boundary), at
+  most one exception per boundary; the oracle differential does not compare delivery
+  order, latency, acknowledge semantics, vector fetch or handler execution.
 - **VINT pending/acknowledge semantics are minimal.** Status bit 7 is driven only by
   the scheduler's pending VBlank request. VDP interrupt-enable registers, VDP-side
   acknowledge logic, controller-port interrupt acknowledge and other VDP interrupt
@@ -441,7 +441,8 @@ window to it.
   SRAM and the TMSS model/lock latch; v1 and v2 payloads are rejected, a payload carrying
   another TMSS model is rejected even when its hash was recomputed, and a rejected restore
   leaves the machine untouched. The configuration hash covers the ROM SHA-256, video
-  standard, TMSS model, a mapper/SRAM feature tag and the instruction quantum; SRAM bytes
+  standard, TMSS model and a mapper/SRAM feature tag (the instruction quantum is
+  removed); SRAM bytes
   are state and never configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
   and `tmss.locked` pseudo-registers.
@@ -496,44 +497,41 @@ cargo run -p chronofork-cli -- megadrive demo
 ```
 
 The demo executes `1 + 2`, programs VDP register `0x0F` (auto-increment 2), writes
-and reads back VRAM word `0x1234`, and captures the VDP status. With the default
-quantum 64 and the reset mask 7 it shows an HBlank request pending at tick 64 with
-no handler at tick 65, then demonstrates snapshot/fork/restore with the pending
-request preserved. At a shorter demonstration quantum it shows a masked VBlank at
-tick 896 with VDP VBlank and VINT-pending status bits set and restored from a
-checkpoint. Using the independently authored interrupt ROM it shows
-`MOVE.W #$2300,SR` lowering the mask to 3 at tick 8, the retained HBlank delivered
-at tick 9 with the handler at IPM 4, and `RTE` at tick 11 returning to PC
-`0x000214` with raw `SR` `0x2300` (mask and CCR restored). VBlank is then entered at
-IPM 6 before the pending HBlank, so no HBlank handler nests before `RTE` restores the
-program mask; the checkpoint preserves the pending VBlank/VINT state. It prints
-`chronofork megadrive demo: PASS`.
+and reads back VRAM word `0x1234`, and captures the VDP status. On the master-cycle
+timeline with the reset mask 7 it shows the first HBlank request pending at tick
+3472 with no handler, then demonstrates snapshot/fork/restore with the pending
+request preserved. A mask-7 interrupt ROM reaches masked VBlank with the VDP
+VBlank/VINT-pending status bits set and restored from a checkpoint. The mask-3
+interrupt ROM delays past two scanlines, lowers the mask at tick 7238, delivers the
+retained HBlank at tick 7266 with the handler at IPM 4, and `RTE` at tick 7434
+returns to PC `0x000210` with raw `SR` `0x2300` (mask and CCR restored). VBlank is
+then entered at IPM 6 before the pending HBlank, so no HBlank handler nests before
+`RTE` restores the program mask; the checkpoint preserves the pending VBlank/VINT
+state. It prints `chronofork megadrive demo: PASS`.
 
 ## CLI instruction trace
 
 ```sh
 cargo run -p chronofork-cli -- megadrive trace \
   --rom <rom-path> --state-out <state-path> \
-  --instructions 10000 --stop-pc 0x352 \
-  --instructions-per-line 1000000 --ram-bytes 64 \
-  --trace-out <trace-path>
+  --instructions 10000 --stop-pc 0x352 --cycles \
+  --ram-bytes 64 --trace-out <trace-path>
 ```
 
 `megadrive trace` is the evidence-producing CLI surface. It runs a decimal
 instruction budget (or stops before `--stop-pc`), records a bounded ring of
-executed `index`/`pc`/`opcode` records and writes the TSV trace plus a deterministic
-key=value final state. `--trace-capacity` bounds the ring (default: the instruction
-budget, capped); `--video` selects NTSC/PAL scheduler constants; `--trace-out`
-defaults to stdout; `--state-out` is required. The trace is debug data: it does not
-change snapshots, state hashes or the payload version.
+executed `index`/`pc`/`opcode` records (plus a fourth 68000-cycle field with
+`--cycles`) and writes the TSV trace plus a deterministic key=value final state.
+`--trace-capacity` bounds the ring (default: the instruction budget, capped);
+`--video` selects NTSC/PAL timeline constants; `--trace-out` defaults to stdout;
+`--state-out` is required. The trace is debug data: it does not change snapshots,
+state hashes or the payload version.
 
 Interrupt delivery is gated by the 68000 SR interrupt-priority mask, so a
-differential window that must be interrupt-free can either use a program that never
-writes `SR` (the reset mask 7 suppresses VDP levels) or pass a large explicit
-`--instructions-per-line` (for example `1000000`). The default remains 64 and is
-never changed implicitly; the CLI records the effective quantum in the state file
-and prints a note on stderr when the requested instruction window exceeds the
-configured quantum, describing the instruction-quantum model and SR-mask gating.
+differential window that must be interrupt-free uses a program that never writes
+`SR` (the reset mask 7 suppresses VDP levels). There is no instruction-quantum flag:
+canonical time is the 3420-master-cycle scanline, and the state file records
+`tick`/`master_cycles` and the accumulated 68000 `cpu_cycles`.
 
 ## Debugging depth (M4, implemented and verified)
 

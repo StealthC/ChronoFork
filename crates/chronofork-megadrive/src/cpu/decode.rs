@@ -1,4 +1,4 @@
-//! The single 68000 opcode classifier used by [`M68000::step`].
+//! The single 68000 opcode classifier used by [`crate::M68000::step`].
 //!
 //! Every opcode that the CPU executes is classified here exactly once; the
 //! execution groups in [`crate::cpu::exec`] then perform the operation. A

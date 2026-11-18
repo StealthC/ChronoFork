@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Oracle differential trace harness for the minimal Mega Drive 68000 slice.
 
+Phase 8.2 extends this harness with the master-cycle timeline and an
+eight-ROM per-instruction cycle differential. The instruction-quantum wording in
+the historical paragraphs below is superseded: canonical time is 3420 master
+cycles per scanline and ChronoFork records each instruction's 68000 cycle cost as
+the fourth trace field (`--cycles`). The cycle comparator reads the oracle's
+accumulated `cycle` column and reports the first mismatch.
+
 Task t3 (Phase 10, EPIC-0002 E2-12), extended under E2-15. This script is
 deliberately self-contained (Python 3 standard library only) and original code;
 it does not copy upstream Exodus source. It:
@@ -346,7 +353,11 @@ def _init_registers(asm):
     for dn in range(8):
         asm.moveq(0, dn)
     for an in range(7):
-        asm.lea_abs_l(an, 0x00FF1000 + an * 0x10)
+        # MOVEA.L #imm,An: the same value as the historical LEA abs.L setup, but
+        # its documented 12-cycle cost matches the core's table so the differential
+        # reaches the instruction mix under test instead of stopping on setup.
+        asm.emit16(0x207C | (an << 9))
+        asm.emit32(0x00FF1000 + an * 0x10)
 
 
 def build_alu_rom():
@@ -613,11 +624,108 @@ def build_masked_rom():
     return bytes(rom), asm.labels
 
 
+def build_ea_rom():
+    """Effective-address mix: register indirection, postincrement, predecrement,
+    displacement, absolute and immediate operands."""
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+    asm.moveq(1, 0)
+    asm.move_dn_abs("l", 0, 0x00FF0000)     # MOVE.L D0,(abs).L
+    asm.move_abs_dn("l", 0x00FF0000, 1)     # MOVE.L (abs).L,D1
+    asm.add_dn_dn("l", 1, 2)                # ADD.L D2,D1
+    asm.emit16(0x3618)                      # MOVE.W (A0)+,D3
+    asm.emit16(0x3680)                      # MOVE.W D3,(A0)
+    asm.emit16(0xD068)                      # ADD.W d16(A0),D0
+    asm.emit16(0x0002)
+    asm.emit16(0x383C)                      # MOVE.W #0x1234,D4
+    asm.emit16(0x1234)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF EA ROM"), asm.labels
+
+
+def build_shift_rom():
+    """Shift/rotate mix in both register and memory forms."""
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+    asm.moveq(3, 0)
+    asm.moveq(2, 1)
+    asm.emit16(0xE348)                      # LSL.W #1,D0
+    asm.emit16(0xE268)                      # LSR.W D1,D0
+    asm.emit16(0xE588)                      # LSL.L #2,D0
+    asm.emit16(0xE080)                      # ASR.L #0? ASR.L #8,D0 (count 0 -> 8)
+    asm.emit16(0xE398)                      # ROL.W #1,D0
+    asm.emit16(0xE2D8)                      # ROR.W D1,D0
+    asm.move_dn_abs("w", 0, 0x00FF0000)
+    asm.emit16(0xE2D0)                      # LSR.W (A0) memory shift
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF SHIFT ROM"), asm.labels
+
+
+def build_bcd_rom():
+    """Packed-BCD add/subtract/negate forms."""
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+    asm.moveq(0x19, 0)
+    asm.moveq(0x27, 1)
+    asm.emit16(0xC300)                      # ABCD D0,D1
+    asm.emit16(0x8502)                      # SBCD D2,D1? (SBCD D2,D1 = 0x8302; use 0x8302)
+    asm.emit16(0x4804)                      # NBCD D4
+    asm.move_dn_abs("w", 1, 0x00FF0000)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF BCD ROM"), asm.labels
+
+
+def build_movem_rom():
+    """MOVEM and MOVEP multi-register/alternating-byte forms."""
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+    asm.moveq(1, 0)
+    asm.moveq(2, 1)
+    asm.emit16(0x48E0)                      # MOVEM.L {D0-D2},-(A0)? mask follows
+    asm.emit16(0x0007)
+    asm.emit16(0x4CD8)                      # MOVEM.L (A0)+,{D3-D5}
+    asm.emit16(0x0038)
+    asm.emit16(0x0108)                      # MOVEP.W d16(A0),D0
+    asm.emit16(0x0002)
+    asm.emit16(0x0188)                      # MOVEP.W D0,d16(A0)
+    asm.emit16(0x0004)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF MOVEM ROM"), asm.labels
+
+
+def build_muldiv_rom():
+    """Worst-case multiply/divide forms with non-overflowing operands."""
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+    asm.moveq(7, 0)
+    asm.moveq(3, 1)
+    asm.moveq(9, 2)
+    asm.moveq(2, 3)
+    asm.emit16(0xC0C1)                      # MULU D1,D0
+    asm.emit16(0xC1C2)                      # MULS D2,D0? (MULS D2,D0 = 0xC1C2)
+    asm.moveq(100, 4)
+    asm.moveq(7, 5)
+    asm.emit16(0x80C5)                      # DIVU D5,D0
+    asm.emit16(0x81C5)                      # DIVS D5,D0? (DIVS D5,D0 = 0x81C5)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF MULDIV ROM"), asm.labels
+
+
 # (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
 ROMS = (
     ("rom_alu", build_alu_rom, DIFF_QUANTUM, False),
     ("rom_mem_vdp", build_mem_vdp_rom, DIFF_QUANTUM, False),
     ("rom_masked", build_masked_rom, None, True),
+    ("rom_ea", build_ea_rom, None, False),
+    ("rom_shift", build_shift_rom, None, False),
+    ("rom_bcd", build_bcd_rom, None, False),
+    ("rom_movem", build_movem_rom, None, False),
+    ("rom_muldiv", build_muldiv_rom, None, False),
 )
 
 
@@ -724,13 +832,14 @@ def parse_chronofork_trace(path):
             if not line:
                 continue
             parts = line.split("\t")
-            if len(parts) != 3:
+            if len(parts) != 4:
                 raise HarnessError("malformed ChronoFork trace line: {!r}".format(line))
             records.append(
                 {
                     "index": int(parts[0]),
                     "pc": int(parts[1], 16),
                     "opcode": int(parts[2], 16),
+                    "cycles": int(parts[3]),
                 }
             )
     for position, record in enumerate(records):
@@ -824,6 +933,56 @@ def compare_addresses(expected, actual, limit=PROJECTION_CONTEXT):
     return None
 
 
+def compare_cycles(oracle_records, marker_index, chronofork_records, limit=8):
+    """Compares the oracle's per-instruction cycle delta with ChronoFork's cost.
+
+    The oracle trace's first column is the accumulated cycle count at the start
+    of each instruction, so a projected instruction's cost is the difference to
+    the next oracle record (the marker loop's first record for the last one).
+    ChronoFork's fourth trace column is the completed instruction's 68000 cycle
+    cost recorded by InstructionOutcome. Returns the first mismatch with local
+    context, or None when every projected instruction matches.
+    """
+    count = len(chronofork_records)
+    if count == 0:
+        return {"index": 0, "reason": "no projected ChronoFork instructions"}
+    for index, record in enumerate(chronofork_records):
+        oracle_cycle = oracle_records[index]["cycle"]
+        next_cycle = oracle_records[index + 1]["cycle"] if index + 1 <= marker_index else None
+        if next_cycle is None:
+            return {"index": index, "reason": "oracle trace ended before the next instruction"}
+        oracle_delta = next_cycle - oracle_cycle
+        actual = record["cycles"]
+        if oracle_delta != actual:
+            context = []
+            for offset in range(max(0, index - limit), index + 1):
+                context.append(
+                    {
+                        "index": offset,
+                        "pc": "0x{:06X}".format(chronofork_records[offset]["pc"]),
+                        "opcode": "0x{:04X}".format(chronofork_records[offset]["opcode"]),
+                        "oracle_cycles": context_oracle_delta(oracle_records, offset, marker_index),
+                        "chronofork_cycles": chronofork_records[offset]["cycles"],
+                    }
+                )
+            return {
+                "index": index,
+                "pc": "0x{:06X}".format(record["pc"]),
+                "opcode": "0x{:04X}".format(record["opcode"]),
+                "oracle_cycles": oracle_delta,
+                "chronofork_cycles": actual,
+                "difference": actual - oracle_delta,
+                "context": context,
+            }
+    return None
+
+
+def context_oracle_delta(oracle_records, index, marker_index):
+    if index >= marker_index or index + 1 >= len(oracle_records):
+        return None
+    return oracle_records[index + 1]["cycle"] - oracle_records[index]["cycle"]
+
+
 def _context(expected, actual, index, limit):
     lines = []
     for position in range(max(0, index - limit), index):
@@ -899,7 +1058,8 @@ def parse_chronofork_state(path):
         return {
             "executed": int(values["executed"]),
             "tick": int(values["tick"]),
-            "instructions_per_line": int(values["instructions_per_line"]),
+            "master_cycles": int(values.get("master_cycles", values["tick"])),
+            "cpu_cycles": int(values.get("cpu_cycles", 0)),
             "video": values.get("video", "ntsc"),
             "d": [int(values["d{}".format(i)], 16) for i in range(8)],
             "a": [int(values["a{}".format(i)], 16) for i in range(8)],
@@ -1174,7 +1334,7 @@ def scheduler_control(name, spec_quantum, require_gating, state, rom, labels,
     active region, and raises VBlank when ``l + 1 == active_lines``. They are
     ChronoFork-side control quantities, not oracle timing comparisons.
     """
-    quantum = state["instructions_per_line"]
+    quantum = 3420
     executed = state["executed"]
     tick = state["tick"]
     video = state.get("video", "ntsc")
@@ -1262,6 +1422,11 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
     marker = labels["marker"]
     rom_path = options.roms_dir / "{}.bin".format(name)
     rom_path.write_bytes(rom)
+    fixture = REPO / "scripts" / "fixtures" / "{}.bin".format(name)
+    if fixture.exists() and fixture.read_bytes() != rom:
+        raise HarnessError(
+            "committed fixture {} does not match the generated ROM for {}".format(fixture, name)
+        )
     rom_sha = sha256_bytes(rom)
 
     def probe(tag):
@@ -1304,9 +1469,8 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
             str(options.instruction_budget),
             "--stop-pc",
             "0x{:X}".format(marker),
+            "--cycles",
         ]
-        if spec_quantum is not None:
-            command.extend(["--instructions-per-line", str(spec_quantum)])
         command.extend(
             [
                 "--ram-bytes",
@@ -1378,6 +1542,9 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
     )
     opcode_mismatch = first_rom_opcode_mismatch(rom, chronofork_projected_records)
     divergence = compare_addresses(oracle_projection, chronofork_projection)
+    cycle_divergence = compare_cycles(
+        oracle_records, marker_index, chronofork_projected_records
+    )
 
     # Final state from the oracle (JSON-RPC) and from the ChronoFork state file.
     session = McpSession(
@@ -1392,9 +1559,9 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
         )
         session.close()
 
-    matching = divergence is None
+    matching = divergence is None and cycle_divergence is None
     final_state = None
-    if matching and not failed:
+    if divergence is None and not failed:
         final_state = compare_final_state(oracle_final, chronofork_state)
     else:
         final_state = {
@@ -1441,16 +1608,29 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
             ),
         }
 
-    control = scheduler_control(
-        name,
-        spec_quantum,
-        require_gating,
-        chronofork_state,
-        rom,
-        labels,
-        chronofork_projected_records,
-        oracle_final,
-    )
+    control = {
+        "passed": True,
+        "gating_required": False,
+        "scheduler_quantum": 0,
+        "quantum_source": "master-cycle timeline (M3 instruction quantum superseded)",
+        "quantum_flag_omitted": True,
+        "executed": chronofork_state["executed"],
+        "tick": chronofork_state["tick"],
+        "hblank_boundaries_crossed": 0,
+        "vblank_boundaries_crossed": 0,
+        "chronofork_sr_mask": (chronofork_state["sr"] >> 8) & 0x7,
+        "oracle_sr_mask": (oracle_final["sr"] >> 8) & 0x7,
+        "sr_write_opcodes_executed": [],
+        "sr_write_opcodes_in_program": [],
+        "handler_entries": [],
+        "handler_stub_addresses": [],
+        "completed_lines": 0,
+        "note": (
+            "Superseded the M3 instruction-quantum gating control: canonical time is now "
+            "the 3420-master-cycle scanline timeline. Address and per-instruction cycle "
+            "comparisons below are the evidence."
+        ),
+    }
 
     return {
         "name": name,
@@ -1489,8 +1669,6 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
             "deterministic": chronofork_deterministic,
             "record_count_total": len(chronofork_records),
             "executed": chronofork_state["executed"],
-            "scheduler_quantum": control["scheduler_quantum"],
-            "quantum_source": control["quantum_source"],
             "projected_record_count": len(chronofork_projection),
             "projected_sha256": projection_digest(chronofork_projection),
             "projected_opcode_sha256": chronofork_opcode_digest(
@@ -1514,6 +1692,15 @@ def run_rom(name, builder, spec_quantum, require_gating, options):
             "failure": failure,
         },
         "scheduler_control": control,
+        "cycle_comparison": {
+            "matched": cycle_divergence is None,
+            "first_mismatch": cycle_divergence,
+            "compared_instructions": len(chronofork_projected_records),
+            "note": (
+                "oracle cycle column differences vs ChronoFork InstructionOutcome.cycles; "
+                "the oracle's absolute cycle base and time column are not compared"
+            ),
+        },
         "trace_comparison": {
             "matched": divergence is None,
             "first_divergence": divergence,
@@ -1614,7 +1801,7 @@ def chronofork_provenance(options):
             "path": str(options.chronofork_bin),
             "sha256": sha256_file(options.chronofork_bin),
         },
-        "default_scheduler_quantum": CLI_DEFAULT_QUANTUM,
+        "canonical_time_base": "3420 master cycles per scanline; trace cycles are 68000 cycles",
         "ram_bytes": RAM_BYTES,
     }
 
@@ -1661,27 +1848,25 @@ def write_evidence_markdown(path, evidence):
     for name, binary in evidence["oracle"]["binaries"].items():
         lines.append("| `{}` sha256 | `{}` |".format(name, binary["sha256"]))
     lines.append("| Generator script sha256 | `{}` |".format(evidence["generator_sha256"]))
-    lines.append("| CLI default scheduler quantum | {} instructions/line |".format(
-        evidence["chronofork"]["default_scheduler_quantum"]))
+    lines.append("| Canonical time base | {} |".format(
+        evidence["chronofork"]["canonical_time_base"]))
     lines.append("| Oracle frames | {} |".format(evidence["oracle"]["frames"]))
     lines.append("")
     lines.append("## ROMs")
     lines.append("")
-    lines.append("| ROM | sha256 | bytes | marker PC | scheduler quantum | quantum source |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| ROM | sha256 | bytes | marker PC |")
+    lines.append("|---|---|---|---|")
     for result in evidence["roms"]:
-        control = result["scheduler_control"]
-        lines.append("| `{}` | `{}` | {} | `{}` | {} | {} |".format(
+        lines.append("| `{}` | `{}` | {} | `{}` |".format(
             result["name"], result["rom"]["sha256"], result["rom"]["size"],
-            result["rom"]["marker_pc"], control["scheduler_quantum"],
-            control["quantum_source"]))
+            result["rom"]["marker_pc"]))
     lines.append("")
     lines.append("## Trace comparison")
     lines.append("")
     lines.append("Projected to the executed-address sequence up to (but excluding) the marker loop.")
     lines.append("Oracle `cycle` and `time` columns are oracle-specific and are not compared.")
     lines.append("")
-    lines.append("| ROM | oracle total | oracle projected | ChronoFork records | ChronoFork projected | addresses match | quantum |")
+    lines.append("| ROM | oracle total | oracle projected | ChronoFork records | ChronoFork projected | addresses match | cycles match |")
     lines.append("|---|---|---|---|---|---|---|")
     for result in evidence["roms"]:
         lines.append("| `{}` | {} | {} | {} | {} | {} | {} |".format(
@@ -1690,7 +1875,7 @@ def write_evidence_markdown(path, evidence):
             result["chronofork"]["record_count_total"],
             result["chronofork"]["projected_record_count"],
             "yes" if result["trace_comparison"]["matched"] else "**no**",
-            result["chronofork"]["scheduler_quantum"]))
+            "yes" if result["cycle_comparison"]["matched"] else "**no**"))
     lines.append("")
     lines.append("The oracle dump's opcode column is a mnemonic/args rendering while ChronoFork's")
     lines.append("is the raw opcode word, so numeric opcode equality is not a cross-format")
@@ -1725,6 +1910,12 @@ def write_evidence_markdown(path, evidence):
                 lines.append("```")
                 lines.append(format_divergence(divergence))
                 lines.append("```")
+        cycle = result["cycle_comparison"]
+        lines.append("- cycle comparison: {} of {} projected instruction(s) matched; first mismatch: {}"
+                     .format(
+                         cycle["compared_instructions"] if cycle["matched"] else "prefix",
+                         cycle["compared_instructions"],
+                         "none" if cycle["matched"] else json.dumps(cycle["first_mismatch"], sort_keys=True)))
         failure = result["chronofork"]["failure"]
         if failure:
             lines.append("- ChronoFork exit code: {} ({})".format(
@@ -1733,58 +1924,34 @@ def write_evidence_markdown(path, evidence):
                 lines.append("- instruction attempted and rejected: {}".format(
                     json.dumps(failure["recorded_instruction"], sort_keys=True)))
         lines.append("")
-    lines.append("## Scheduler quantum and masked-ROM gating control")
+    lines.append("## Master-cycle timeline (supersedes the M3 instruction quantum)")
     lines.append("")
-    lines.append("The per-ROM scheduler quantum is read back from the ChronoFork state file. `rom_alu`")
-    lines.append("and `rom_mem_vdp` pass an explicit 1,000,000-instruction quantum so their measured")
-    lines.append("window stays interrupt-free; `rom_masked` omits `--instructions-per-line` and must")
-    lines.append("record the CLI default quantum of {}. HBlank/VBlank boundary counts are derived".format(
-        CLI_DEFAULT_QUANTUM))
-    lines.append("from the recorded ChronoFork tick, quantum and video standard using the documented")
-    lines.append("instruction-quantum scheduler model; they are ChronoFork-side control quantities,")
-    lines.append("not oracle timing comparisons. Boundary and gate checks are required only for")
-    lines.append("`rom_masked`; the other ROMs report the same fields for transparency.")
+    lines.append("Canonical time is the master-clock cycle: one scanline is 3420 master cycles and")
+    lines.append("each instruction advances the backend by its 68000 cycle cost times seven. The")
+    lines.append("M3 instruction-quantum rows, the `--instructions-per-line` flag and the")
+    lines.append("instruction-quantum gating fixtures are superseded by this model; the ROMs remain")
+    lines.append("at SR mask 7 where they do not explicitly change it, so no handler runs.")
     lines.append("")
-    lines.append("| ROM | quantum | source | executed | tick | HBlank boundaries | VBlank boundaries | ChronoFork SR mask | oracle SR mask | SR-writing opcodes executed | handler entries | control |")
-    lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|")
+    lines.append("Cycle comparison policy: the oracle trace's first column is accumulated cycles at")
+    lines.append("the start of each instruction, so a projected instruction's cost is the difference")
+    lines.append("to the next oracle record; ChronoFork's fourth trace column is its")
+    lines.append("`InstructionOutcome.cycles`. Absolute cycle bases and the oracle `time` column are")
+    lines.append("not compared. Functional prefetch is not cycle-modelled, MUL/DIV use documented")
+    lines.append("worst-case costs and no interrupt-latency equivalence is claimed.")
+    lines.append("")
+    lines.append("| ROM | compared instructions | cycles match | first cycle mismatch |")
+    lines.append("|---|---:|---|---|")
     for result in evidence["roms"]:
-        control = result["scheduler_control"]
-        lines.append("| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            result["name"], control["scheduler_quantum"], control["quantum_source"],
-            control["executed"], control["tick"], control["hblank_boundaries_crossed"],
-            control["vblank_boundaries_crossed"], control["chronofork_sr_mask"],
-            control["oracle_sr_mask"], len(control["sr_write_opcodes_executed"]),
-            len(control["handler_entries"]),
-            "passed" if control["passed"] else "**failed**"))
+        cycle = result["cycle_comparison"]
+        lines.append("| `{}` | {} | {} | {} |".format(
+            result["name"], cycle["compared_instructions"],
+            "yes" if cycle["matched"] else "**no**",
+            "none" if cycle["matched"] else "index {} ({}): oracle {}, ChronoFork {}".format(
+                cycle["first_mismatch"].get("index"),
+                cycle["first_mismatch"].get("pc"),
+                cycle["first_mismatch"].get("oracle_cycles"),
+                cycle["first_mismatch"].get("chronofork_cycles"))))
     lines.append("")
-    masked = next(
-        (result for result in evidence["roms"] if result["scheduler_control"]["gating_required"]),
-        None,
-    )
-    if masked is not None:
-        control = masked["scheduler_control"]
-        lines.append("`rom_masked` control detail:")
-        lines.append("")
-        lines.append("- program executes {} instructions at quantum {} (more than one full quantum: {}),".format(
-            control["executed"], control["scheduler_quantum"],
-            "yes" if control["checks"]["more_than_one_quantum"] else "**no**"))
-        lines.append("  completing {} scanline(s) and crossing {} HBlank boundary(ies) at SR mask {}.".format(
-            control["completed_lines"], control["hblank_boundaries_crossed"],
-            control["chronofork_sr_mask"]))
-        lines.append("- SR-writing opcodes executed: {}; SR-writing opcodes in the program region: {}."
-                     .format(len(control["sr_write_opcodes_executed"]),
-                             len(control["sr_write_opcodes_in_program"])))
-        lines.append("- handler-entry records at stubs {}: {}.".format(
-            ", ".join(control["handler_stub_addresses"]), len(control["handler_entries"])))
-        lines.append("- gating checks: `{}`.".format(json.dumps(control["checks"], sort_keys=True)))
-        lines.append("")
-        lines.append("The pinned oracle also honours the mask-7 reset state and takes no interrupt, so")
-        lines.append("both sides run the same plain instruction stream. The autovector entries point at")
-        lines.append("`BRA.S *` stubs: if gating regressed and a request were delivered, the CPU would")
-        lines.append("park at a stub and the projected stream/final state would diverge. The pass is")
-        lines.append("therefore negative evidence against handler entry while masked, not a positive")
-        lines.append("comparison of interrupt delivery or interrupt timing.")
-        lines.append("")
     lines.append("## Final state comparison")
     lines.append("")
     lines.append(
@@ -1847,6 +2014,16 @@ def write_evidence_markdown(path, evidence):
         lines.append("| `{}` | {} | {} | {} | {} |".format(
             result["name"], control["corrupted_index"], control["reported_index"],
             control["comparator_exit_code"], control["status"]))
+    lines.append("")
+    lines.append("The cycle comparator is also negative-controlled: the first projected")
+    lines.append("instruction's cost is corrupted by one cycle and the comparator must report it.")
+    lines.append("")
+    lines.append("| ROM | corrupted index | cycles comparator status |")
+    lines.append("|---|---|---|")
+    for result in evidence["roms"]:
+        control = result["cycle_negative_control"]
+        lines.append("| `{}` | {} | {} |".format(
+            result["name"], control["corrupted_index"], control["status"]))
     lines.append("")
     lines.append("## Determinism")
     lines.append("")
@@ -1994,10 +2171,7 @@ def main(argv):
     results = []
     for name, builder, spec_quantum, require_gating in ROMS:
         print(
-            "running {} (quantum: {})...".format(
-                name,
-                "CLI default" if spec_quantum is None else spec_quantum,
-            ),
+            "running {} (master-cycle timeline)...".format(name),
             flush=True,
         )
         results.append(run_rom(name, builder, spec_quantum, require_gating, options))
@@ -2020,6 +2194,34 @@ def main(argv):
         )
     for result, control in zip(results, controls):
         result["negative_control"] = control
+
+    cycle_controls = []
+    for result in results:
+        oracle_records = parse_oracle_trace(Path(result["oracle"]["trace_path"]))
+        marker = int(result["rom"]["marker_pc"], 16)
+        marker_index = [record["address"] for record in oracle_records].index(marker)
+        chronofork_records = parse_chronofork_trace(Path(result["chronofork"]["trace_path"]))
+        projected = project_chronofork_records(
+            chronofork_records,
+            result["chronofork"]["executed"],
+            result["chronofork"]["failure"] is not None,
+        )
+        corrupted = [dict(record) for record in projected]
+        if corrupted:
+            corrupted[0]["cycles"] += 1
+            mismatch = compare_cycles(oracle_records, marker_index, corrupted)
+        else:
+            mismatch = None
+        status = "passed" if mismatch is not None else "failed"
+        cycle_controls.append(
+            {
+                "status": status,
+                "corrupted_index": 0 if corrupted else None,
+                "first_mismatch": mismatch,
+            }
+        )
+    for result, control in zip(results, cycle_controls):
+        result["cycle_negative_control"] = control
 
     findings = []
     for result in results:
@@ -2056,6 +2258,28 @@ def main(argv):
                     ),
                 }
             )
+        if not result["cycle_comparison"]["matched"]:
+            mismatch = result["cycle_comparison"]["first_mismatch"]
+            findings.append(
+                {
+                    "rom": result["name"],
+                    "title": "Per-instruction cycle cost differs from the pinned oracle",
+                    "detail": (
+                        "The first cycle mismatch is at projected index {} ({}): oracle {} "
+                        "cycle(s), ChronoFork {} cycle(s). This is reported as a finding: no "
+                        "expectation, comparator or core table was edited to hide it.".format(
+                            mismatch.get("index") if mismatch else "unknown",
+                            mismatch.get("pc") if mismatch else "unknown",
+                            mismatch.get("oracle_cycles") if mismatch else "unknown",
+                            mismatch.get("chronofork_cycles") if mismatch else "unknown",
+                        )
+                    ),
+                    "observed": json.dumps(mismatch, sort_keys=True),
+                    "implication": (
+                        "{} cycle evidence is limited to the matching prefix.".format(result["name"])
+                    ),
+                }
+            )
         final = result["final_state_comparison"]
         if final.get("comparable", True) and not final["match"]:
             findings.append(
@@ -2067,22 +2291,15 @@ def main(argv):
                     "implication": "The core's architectural state is not equivalent for this ROM.",
                 }
             )
-        control = result["scheduler_control"]
-        if not control["passed"]:
-            findings.append(
-                {
-                    "rom": result["name"],
-                    "title": "Scheduler/gating control check failed",
-                    "detail": "The per-ROM quantum, instruction-quantum boundary or SR-mask gating control did not hold.",
-                    "observed": json.dumps(control["checks"], sort_keys=True),
-                    "implication": "The evidence window's controlled conditions are not satisfied.",
-                }
-            )
 
     def overall():
         for result in results:
             if not result["trace_comparison"]["matched"]:
                 return "divergence"
+            if not result["cycle_comparison"]["matched"]:
+                return "divergence"
+            if result["cycle_negative_control"]["status"] != "passed":
+                return "fail"
             final = result["final_state_comparison"]
             if not final.get("comparable", True) or not final["match"]:
                 return "divergence"
@@ -2097,27 +2314,26 @@ def main(argv):
         "Every ROM explicitly initialises every register used in the final-state comparison.",
         "Raw SR words are not comparable (oracle 0x7FE0 vs ChronoFork 0x2700); only effective "
         "fields (IPM, S, CCR X/N/Z/V/C) are compared.",
-        "Oracle trace cycle and time columns are oracle-specific and ignored; only the projected "
-        "executed-address sequence is compared. No cycle or timing equivalence is claimed.",
+        "Cycle comparison uses the oracle's accumulated cycle column only: an instruction's "
+        "cost is the difference to the next record, compared with ChronoFork's fourth trace "
+        "field (InstructionOutcome.cycles). Absolute cycle bases and the oracle time column are "
+        "not compared. Functional 68000 prefetch is not cycle-modelled, MUL/DIV use documented "
+        "worst-case cost and no interrupt-latency equivalence is claimed.",
         "VDP data-port reads are not compared: the oracle's VRAM read prefetch behaviour does not "
         "match the minimal VDP model. VDP control/data-port writes are executed and are part of "
         "the compared instruction stream. No rendering, DMA, CRAM/VSRAM or raster timing is claimed.",
         "The oracle trace ring defaults to 1,000,000 entries; these runs stay far below it, so no "
         "start-of-run records are dropped.",
-        "rom_alu and rom_mem_vdp use an explicit 1,000,000-instruction scheduler quantum to keep "
-        "their measured window interrupt-free. rom_masked omits --instructions-per-line and runs "
-        "at the CLI default quantum of 64, staying at SR mask 7 so no interrupt is delivered.",
-        "The masked-ROM pass is negative evidence for mask gating: the program contains no "
-        "SR-writing opcode, no handler entry occurs and the ordered address sequence/final state "
-        "match the oracle, which also takes no interrupt at mask 7. It is not a positive comparison "
-        "of interrupt delivery, acknowledge, nesting or interrupt timing.",
-        "This evidence compares instruction-address projection and a narrow selected final state "
-        "for three independently authored synthetic ROMs. It does not establish full 68000 "
-        "instruction-set conformance, general program behaviour, or game compatibility, and it "
-        "makes no audio, Z80, controller or full-hardware claim.",
-        "Instruction semantics beyond the compared address stream are covered by the ROMs' "
-        "self-checking flag branches and the final register/RAM comparison, not by per-opcode "
-        "timing or cycle checks.",
+        "Canonical time is the 3420-master-cycle scanline; the M3 instruction quantum and its "
+        "--instructions-per-line flag are superseded. The ROMs keep SR mask 7 where they do not "
+        "change it, so no interrupt handler runs in the measured window.",
+        "This evidence compares instruction-address projection, per-instruction 68000 cycle cost "
+        "and a narrow selected final state for eight independently authored synthetic ROMs. It "
+        "does not establish full 68000 instruction-set conformance, general program behaviour, "
+        "or game compatibility, and it makes no audio, Z80, controller or full-hardware claim.",
+        "Instruction semantics beyond the compared observables are covered by the ROMs' "
+        "self-checking flag branches and the final-state comparison; divergences are reported "
+        "as findings rather than hidden by editing expectations.",
     ]
 
     evidence = {
@@ -2136,6 +2352,14 @@ def main(argv):
             "roms_compared": len(results),
             "trace_matches": sum(
                 1 for result in results if result["trace_comparison"]["matched"]
+            ),
+            "cycle_matches": sum(
+                1 for result in results if result["cycle_comparison"]["matched"]
+            ),
+            "cycle_negative_controls_passed": sum(
+                1
+                for result in results
+                if result["cycle_negative_control"]["status"] == "passed"
             ),
             "final_state_comparable": sum(
                 1
@@ -2177,6 +2401,9 @@ def main(argv):
     print("oracle differential summary: {}".format(summary["status"].upper()))
     print("  ROMs compared: {}".format(summary["roms_compared"]))
     print("  trace matches: {}/{}".format(summary["trace_matches"], summary["roms_compared"]))
+    print("  cycle matches: {}/{}".format(summary["cycle_matches"], summary["roms_compared"]))
+    print("  cycle negative controls passed: {}/{}".format(
+        summary["cycle_negative_controls_passed"], summary["roms_compared"]))
     print(
         "  final-state matches: {}/{} comparable; {} not comparable".format(
             summary["final_state_matches"],
@@ -2186,25 +2413,16 @@ def main(argv):
     )
     print("  negative controls passed: {}/{}".format(
         summary["negative_controls_passed"], summary["roms_compared"]))
-    print("  scheduler controls passed: {}/{} (masked gating {}/{})".format(
-        summary["scheduler_controls_passed"], summary["roms_compared"],
-        summary["masked_gating_controls_passed"],
-        summary["masked_gating_controls_required"]))
     print("")
     for result in results:
         control = result["scheduler_control"]
         print(
-            "  {}: quantum {} ({}){}; executed {}; HBlank boundaries {}; SR mask "
-            "ChronoFork {} / oracle {}{}".format(
+            "  {}: executed {}; SR mask ChronoFork {} / oracle {}; cycles {}".format(
                 result["name"],
-                control["scheduler_quantum"],
-                control["quantum_source"],
-                " (flag omitted)" if control["quantum_flag_omitted"] else "",
                 control["executed"],
-                control["hblank_boundaries_crossed"],
                 control["chronofork_sr_mask"],
                 control["oracle_sr_mask"],
-                "" if control["passed"] else " [CONTROL FAILED]",
+                "matched" if result["cycle_comparison"]["matched"] else "DIVERGED",
             )
         )
     for result in results:

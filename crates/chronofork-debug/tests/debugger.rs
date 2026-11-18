@@ -24,8 +24,7 @@ use chronofork_debug::{
     TriggerKind,
 };
 use chronofork_megadrive::{
-    MegadriveBackend, MegadriveFactory, SchedulerConfig, controller_rom, demo_rom,
-    interrupt_rom,
+    MegadriveBackend, MegadriveFactory, SchedulerConfig, controller_rom, demo_rom, interrupt_rom,
 };
 use chronofork_test_backend::{SyntheticBackendFactory, SyntheticProgram};
 

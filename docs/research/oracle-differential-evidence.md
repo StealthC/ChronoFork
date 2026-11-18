@@ -1,5 +1,12 @@
 # Oracle Differential Instruction-Trace Evidence
 
+
+> **Superseded for timing (Phase 8.2):** the instruction-quantum scheduler and
+> per-ROM quantum/masked-boundary control described on this page are superseded by
+> the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
+> The address-projection and final-state results below remain historical evidence;
+> they are not a cycle-timing claim.
+
 - **Status:** Current evidence **PASS 3/3** against the pinned Exodus headless
   oracle: three independently authored synthetic ROMs have identical projected
   address streams, equal selected final state and passing negative controls. The

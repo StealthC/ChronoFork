@@ -591,6 +591,7 @@ struct TraceOptions {
     scheduler: SchedulerConfig,
     trace_capacity: Option<usize>,
     ram_bytes: usize,
+    cycles: bool,
 }
 
 /// Parses `megadrive trace` arguments.
@@ -613,6 +614,7 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
     let mut video: Option<VideoStandard> = None;
     let mut trace_capacity: Option<usize> = None;
     let mut ram_bytes: Option<usize> = None;
+    let mut cycles = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -653,6 +655,10 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
                 parse_capacity(option_value(args, &mut index, &flag)?, &flag)?,
                 &flag,
             )?,
+            "--cycles" => {
+                ensure(!cycles, "`--cycles` may be given only once")?;
+                cycles = true;
+            }
             "--ram-bytes" => {
                 let value = option_value(args, &mut index, &flag)?;
                 let parsed = parse_usize(value, &flag)?;
@@ -705,6 +711,7 @@ fn parse_trace_options(args: &[String]) -> Result<Option<TraceOptions>, Box<dyn 
         scheduler,
         trace_capacity,
         ram_bytes: ram_bytes.unwrap_or(DEFAULT_TRACE_RAM_BYTES),
+        cycles,
     }))
 }
 
@@ -819,7 +826,7 @@ fn run_megadrive_trace(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let ram = machine.read_memory(u64::from(RAM_BASE), options.ram_bytes)?;
     let trace = machine.take_trace();
-    write_trace(options.trace_out.as_deref(), trace.as_ref())?;
+    write_trace(options.trace_out.as_deref(), trace.as_ref(), options.cycles)?;
     write_state(
         &options.state_out,
         &machine,
@@ -864,6 +871,7 @@ fn run_megadrive_trace(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn write_trace(
     path: Option<&Path>,
     trace: Option<&InstructionTrace>,
+    cycles: bool,
 ) -> Result<(), Box<dyn Error>> {
     match path {
         Some(path) => {
@@ -874,13 +882,13 @@ fn write_trace(
                 ))
             })?;
             let mut writer = BufWriter::new(file);
-            write_trace_records(&mut writer, trace)?;
+            write_trace_records(&mut writer, trace, cycles)?;
             writer.flush()?;
         }
         None => {
             let stdout = io::stdout();
             let mut writer = stdout.lock();
-            write_trace_records(&mut writer, trace)?;
+            write_trace_records(&mut writer, trace, cycles)?;
             writer.flush()?;
         }
     }
@@ -890,6 +898,7 @@ fn write_trace(
 fn write_trace_records(
     writer: &mut dyn Write,
     trace: Option<&InstructionTrace>,
+    cycles: bool,
 ) -> Result<(), Box<dyn Error>> {
     let Some(trace) = trace else {
         return Err(
@@ -897,13 +906,24 @@ fn write_trace_records(
         );
     };
     for entry in trace.entries() {
-        writeln!(
-            writer,
-            "{}\t{:06x}\t{:04x}",
-            entry.index(),
-            entry.pc(),
-            entry.opcode()
-        )?;
+        if cycles {
+            writeln!(
+                writer,
+                "{}\t{:06x}\t{:04x}\t{}",
+                entry.index(),
+                entry.pc(),
+                entry.opcode(),
+                entry.cycles()
+            )?;
+        } else {
+            writeln!(
+                writer,
+                "{}\t{:06x}\t{:04x}",
+                entry.index(),
+                entry.pc(),
+                entry.opcode()
+            )?;
+        }
     }
     Ok(())
 }
@@ -987,6 +1007,7 @@ fn print_trace_help() {
     );
     println!("  --stop-pc <hex>              Stop before the instruction at this address");
     println!("  --video <ntsc|pal>           Video standard for the scheduler (default ntsc)");
+    println!("  --cycles                     Append the 68000 cycle cost as a fourth field");
     println!("  --trace-capacity <count>     Ring capacity in records (default: instruction");
     println!("                               budget, capped at {MAX_DEFAULT_TRACE_CAPACITY})");
     println!(
@@ -1000,6 +1021,8 @@ fn print_trace_help() {
     println!("    index        decimal, continues past 0 when the ring overflows");
     println!("    pc_hex       lowercase hexadecimal fetch address, at least 6 digits");
     println!("    opcode_hex   lowercase hexadecimal opcode word, 4 digits");
+    println!("  With `--cycles`, a fourth tab-separated decimal field carries the completed");
+    println!("  instruction's 68000 cycle cost (the oracle differential uses this column).");
     println!("  The file has no header. The record is appended after the opcode word is");
     println!("  fetched, so an illegal or unsupported instruction is still recorded.");
     println!();

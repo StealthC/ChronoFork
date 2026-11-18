@@ -18,8 +18,8 @@ use chronofork_backend_api::{
 };
 use chronofork_core::{InputFrame, Tick};
 use chronofork_megadrive::{
-    MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION, SchedulerConfig,
-    controller_rom, demo_rom, interrupt_rom,
+    MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION, SchedulerConfig, controller_rom, demo_rom,
+    interrupt_rom,
 };
 
 const RAM_BASE: u32 = 0x00FF_0000;

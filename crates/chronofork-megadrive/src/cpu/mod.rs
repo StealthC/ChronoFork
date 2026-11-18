@@ -682,6 +682,9 @@ impl M68000 {
         if decode::classify(opcode) == InstructionClass::Rte {
             let cycles = self.execute_rte(bus)?;
             self.cycles += u64::from(cycles);
+            if let Some(trace) = &mut self.trace {
+                trace.set_last_cycles(cycles);
+            }
             return Ok(InstructionOutcome { cycles });
         }
 
@@ -746,6 +749,9 @@ impl M68000 {
             Err(error) => return Err(error),
         };
         self.cycles += u64::from(cycles);
+        if let Some(trace) = &mut self.trace {
+            trace.set_last_cycles(cycles);
+        }
         Ok(InstructionOutcome { cycles })
     }
 
