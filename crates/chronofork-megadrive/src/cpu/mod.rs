@@ -145,13 +145,21 @@ pub enum CpuError {
     /// The CPU was already halted.
     Halted,
     /// The opcode is not implemented by this slice.
+    ///
+    /// This is the internal signal the execution groups use for an
+    /// unrecognised or reserved encoding. [`M68000::step`] converts it to the
+    /// guest illegal-instruction exception (vector 4), so callers of `step`
+    /// do not observe it.
     IllegalOpcode {
         /// Address of the opcode.
         pc: u32,
         /// Fetched opcode.
         opcode: u16,
     },
-    /// A recognized opcode uses an addressing/size form not implemented here.
+    /// A recognized opcode uses a reserved or invalid addressing/size form.
+    ///
+    /// Like [`CpuError::IllegalOpcode`], this is an internal execution signal;
+    /// [`M68000::step`] delivers it as the guest illegal-instruction exception.
     Unsupported(String),
     /// The program counter or branch target is not word-aligned.
     AddressError {
@@ -741,6 +749,9 @@ impl M68000 {
 
         let cycles = match outcome {
             Ok(cycles) => cycles,
+            Err(CpuError::IllegalOpcode { .. } | CpuError::Unsupported(_)) => {
+                self.raise_exception(bus, VECTOR_ILLEGAL, ExceptionFrame::Short)?
+            }
             Err(CpuError::AddressError { address }) => self.raise_exception(
                 bus,
                 VECTOR_ADDRESS_ERROR,
@@ -1546,16 +1557,12 @@ mod tests {
     }
 
     #[test]
-    fn trace_still_records_an_instruction_that_fails_after_the_fetch() {
+    fn trace_still_records_an_instruction_that_raises_the_illegal_exception() {
         let (mut cpu, mut bus) = cpu_at_program(&[0xFF, 0xFF]);
         cpu.enable_trace(4).expect("trace capacity 4");
-        assert_eq!(
-            cpu.step(&mut bus),
-            Err(CpuError::IllegalOpcode {
-                pc: 0x200,
-                opcode: 0xFFFF
-            })
-        );
+        let outcome = cpu.step(&mut bus).expect("illegal-instruction delivery");
+        assert_eq!(outcome.cycles, 34);
+        assert_eq!(cpu.pc(), 0, "vector 4 entry is zero in this ROM");
         let trace = cpu.trace().expect("trace enabled");
         assert_eq!(trace.len(), 1);
         let entry = trace.get(0).expect("recorded instruction");

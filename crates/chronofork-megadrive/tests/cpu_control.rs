@@ -65,6 +65,54 @@ fn bsr_pushes_the_return_address_and_bra_does_not() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn word_branch_forms_use_the_16_bit_extension_displacement() -> Result<(), Box<dyn Error>> {
+    // BRA.W +4 from 0x200: the extension word is consumed, so the target is
+    // 0x204 + 4 = 0x208 and the instruction length is four bytes.
+    let (mut cpu, mut bus) = machine(&[0x60, 0x00, 0x00, 0x04], &[])?;
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x208);
+    assert_eq!(outcome.cycles, 10);
+
+    // BNE.W taken with Z clear.
+    let (mut cpu, mut bus) = machine(&[0x66, 0x00, 0x00, 0x08], &[])?;
+    cpu.set_sr(0x2700);
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x20C);
+    assert_eq!(outcome.cycles, 10);
+
+    // BNE.W not taken with Z set advances past both words and costs 12.
+    let (mut cpu, mut bus) = machine(&[0x66, 0x00, 0x00, 0x08], &[])?;
+    cpu.set_sr(0x2704);
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x204);
+    assert_eq!(outcome.cycles, 12);
+
+    // BSR.W pushes the address after the extension word.
+    let (mut cpu, mut bus) = machine(&[0x61, 0x00, 0x01, 0x00], &[])?;
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x304);
+    assert_eq!(bus.read32(STACK - 4)?, 0x204);
+    assert_eq!(outcome.cycles, 18);
+    Ok(())
+}
+
+#[test]
+fn byte_branch_forms_still_use_the_8_bit_displacement() -> Result<(), Box<dyn Error>> {
+    // BNE.B taken with Z clear: target 0x202 + 2 = 0x204, cost 10.
+    let (mut cpu, mut bus) = machine(&[0x66, 0x02], &[])?;
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x204);
+    assert_eq!(outcome.cycles, 10);
+    // BNE.B not taken with Z set: next instruction, cost 8.
+    let (mut cpu, mut bus) = machine(&[0x66, 0x02], &[])?;
+    cpu.set_sr(0x2704);
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x202);
+    assert_eq!(outcome.cycles, 8);
+    Ok(())
+}
+
+#[test]
 fn dbcc_skips_without_decrementing_when_the_condition_is_true() -> Result<(), Box<dyn Error>> {
     // DBEQ D0,-4 with Z set: no decrement, no branch.
     let (mut cpu, mut bus) = machine(&[0x57, 0xC8, 0xFF, 0xFC], &[])?;

@@ -53,6 +53,42 @@ fn illegal_opcode_takes_vector_4_and_rte_returns() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
+fn unrecognised_opcode_takes_vector_4_and_rte_returns() -> Result<(), Box<dyn Error>> {
+    // 0xA000 is an unassigned line-A encoding; NOP follows. Handler: RTE.
+    let (mut cpu, mut bus) = machine(
+        &[0xA0, 0x00, 0x4E, 0x71],
+        &[(4, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(outcome.cycles, 34, "exception entry cost");
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(cpu.address_register(7), Some(STACK - 6));
+    assert_eq!(bus.read16(STACK - 6)?, 0x2700, "short frame SR");
+    assert_eq!(bus.read32(STACK - 4)?, 0x202, "return PC after the opcode");
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x202, "RTE returns after the illegal opcode");
+    Ok(())
+}
+
+#[test]
+fn reserved_movem_destination_takes_vector_4() -> Result<(), Box<dyn Error>> {
+    // MOVEM.L D0,(A0)+ is not a documented destination form. The mask word is
+    // consumed before the reserved form is rejected, so the return PC is 0x204.
+    let (mut cpu, mut bus) = machine(
+        &[0x48, 0xD8, 0x00, 0x01, 0x4E, 0x71],
+        &[(4, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(bus.read32(STACK - 4)?, 0x204);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x204);
+    Ok(())
+}
+
+#[test]
 fn privilege_violation_reaches_a_user_written_handler() -> Result<(), Box<dyn Error>> {
     // NOP; MOVE.W #0,SR in user mode; handler RTE.
     let (mut cpu, mut bus) = machine(

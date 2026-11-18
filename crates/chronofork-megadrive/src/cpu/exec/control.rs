@@ -76,7 +76,14 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
 
 fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let condition = ((opcode >> 8) & 0xF) as u8;
-    let displacement = i32::from((opcode & 0xFF) as u8 as i8);
+    // A zero byte displacement selects the documented 16-bit extension form;
+    // every other value is the sign-extended 8-bit form.
+    let byte = (opcode & 0xFF) as u8;
+    let displacement = if byte == 0 {
+        i32::from(cpu.fetch_u16(bus)? as i16)
+    } else {
+        i32::from(byte as i8)
+    };
     let taken = condition == 1 || cc_to_bool(cpu, condition);
     if !taken {
         return Ok(timing::branch_cycles(opcode, false));

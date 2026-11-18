@@ -9,9 +9,8 @@
 //!
 //! One [`TraceEntry`] is appended after the opcode word has been fetched
 //! successfully and before it is decoded. An instruction that is recorded and then
-//! fails with [`crate::CpuError::IllegalOpcode`] or
-//! [`crate::CpuError::Unsupported`] is still in the trace, which is what a
-//! differential run needs in order to explain the divergence. A fetch that fails
+//! raises the guest illegal-instruction exception is still in the trace, which
+//! is what a differential run needs in order to explain the divergence. A fetch that fails
 //! before the opcode word is available records nothing. Interrupt exception entry
 //! is not an instruction and is not recorded.
 //!

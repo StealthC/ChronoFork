@@ -11,15 +11,16 @@
 //!
 //! # Supported subset
 //!
-//! Only the encodings the CPU executes are decoded. Every other opcode word is
-//! rendered as `DC.W` with length 2, including encodings that share a mask with
-//! a supported instruction but use a form this slice rejects (for example
-//! `LEA (abs).W` or an unsupported branch condition).
+//! Only the encodings this view renders are decoded. Every other opcode word is
+//! rendered as `DC.W` with length 2, including branch conditions this view does
+//! not render (the CPU executes every condition, but the viewer falls back) and
+//! encodings that share a mask with a supported instruction but use a form this
+//! slice rejects (for example `LEA (abs).W`).
 //!
 //! | Encoding | Text | Bytes |
 //! |---|---|---|
 //! | `MOVEQ #imm,Dn` | `MOVEQ #$FE,D0` | 2 |
-//! | `BRA`/`BSR`/`BCC`/`BCS`/`BEQ`/`BNE`/`BMI`/`BPL` | `BRA $00000202` | 2 |
+//! | `BRA`/`BSR`/`BCC`/`BCS`/`BEQ`/`BNE`/`BMI`/`BPL` | `BRA $00000202` | 2 or 4 |
 //! | `MOVE.W #imm,SR` | `MOVE.W #$2000,SR` | 4 |
 //! | `NOP`, `RTS`, `RTE` | `NOP` | 2 |
 //! | `JMP (abs).L`, `JSR (abs).L` | `JMP ($00000206).L` | 6 |
@@ -50,7 +51,8 @@
 //!   `).L`;
 //! - a branch or `DBRA` target is `$` plus 8 hexadecimal digits of the absolute
 //!   target address, computed from the instruction address, the encoded
-//!   displacement and the instruction length, exactly like the CPU;
+//!   displacement and the instruction length, exactly like the CPU; a zero
+//!   8-bit branch displacement selects the 16-bit extension form;
 //! - `ADDQ`/`SUBQ` print their encoded count as decimal `#1`..`#8`, because the
 //!   field is a count and not a data value;
 //! - an unknown or unsupported opcode word is `DC.W $` plus 4 hexadecimal
@@ -370,7 +372,7 @@ fn decode(memory: &dyn DisasmMemory, address: u32, opcode: u16) -> Result<Decode
 
     // `M68000::step`: every 0110 branch encoding, before any exact opcode.
     if (opcode & 0xF000) == 0x6000 {
-        return decode_branch(address, opcode);
+        return decode_branch(memory, address, opcode);
     }
 
     match opcode {
@@ -395,10 +397,14 @@ fn decode(memory: &dyn DisasmMemory, address: u32, opcode: u16) -> Result<Decode
 
 /// Decodes one 0110 branch encoding.
 ///
-/// Only the conditions the CPU executes are rendered; every other condition has
-/// the same shape but is rejected during execution, so it falls back to
-/// `DC.W`.
-fn decode_branch(address: u32, opcode: u16) -> Result<Decoded, DisasmError> {
+/// This view renders a subset of the branch conditions. The remaining
+/// conditions have the same shape and execute in the CPU, but this view falls
+/// back to `DC.W` for them.
+fn decode_branch(
+    memory: &dyn DisasmMemory,
+    address: u32,
+    opcode: u16,
+) -> Result<Decoded, DisasmError> {
     let mnemonic = match (opcode >> 8) & 0xF {
         0x0 => "BRA",
         0x1 => "BSR",
@@ -410,9 +416,16 @@ fn decode_branch(address: u32, opcode: u16) -> Result<Decoded, DisasmError> {
         0xB => "BMI",
         _ => return Ok(data_word(opcode)),
     };
-    let displacement = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
-    let target = relative_target(address, 2, displacement)?;
-    Ok(Decoded::new(format!("{mnemonic} ${target:08X}"), 2))
+    // A zero byte displacement is the documented 16-bit form; every other
+    // value is the sign-extended 8-bit form.
+    let byte = (opcode & 0xFF) as u8;
+    let (displacement, length) = if byte == 0 {
+        (i32::from(extension_word(memory, address, 2)? as i16), 4_u8)
+    } else {
+        (i32::from(byte as i8), 2_u8)
+    };
+    let target = relative_target(address, u32::from(length), displacement)?;
+    Ok(Decoded::new(format!("{mnemonic} ${target:08X}"), length))
 }
 
 /// Decodes the encodings `M68000::execute_other` tries after the exact opcodes,
@@ -668,24 +681,47 @@ mod tests {
     /// makes one step succeed and, for control flow, land exactly on the address
     /// implied by the instruction length.
     const CASES: &[Case] = &[
-        // MOVEQ, all unconditional and conditional branches and BSR. A zero
-        // branch displacement makes the taken target equal the next address, so
-        // the observed PC delta equals the encoded length.
+        // MOVEQ, all unconditional and conditional branches and BSR. The word
+        // forms use a zero 16-bit displacement, so the target is the next
+        // address and the observed PC delta equals the four-byte length. The
+        // final case pins the 8-bit form with a not-taken conditional branch,
+        // whose PC delta is the two-byte length.
         case(&[], &[0x72, 0xFE], &[], "MOVEQ #$FE,D1"),
-        case(&[], &[0x60, 0x00], &[], "BRA $00000202"),
-        case(&[], &[0x61, 0x00], &[], "BSR $00000202"),
-        case(&[], &[0x64, 0x00], &[], "BCC $00000202"),
+        case(&[], &[0x60, 0x00, 0x00, 0x00], &[], "BRA $00000204"),
+        case(&[], &[0x61, 0x00, 0x00, 0x00], &[], "BSR $00000204"),
+        case(&[], &[0x64, 0x00, 0x00, 0x00], &[], "BCC $00000204"),
         // CMP.B D1,D0 with D0 = 0 and D1 = 1 sets C and N without touching X.
         case(
             &[0x70, 0x00, 0x72, 0x01, 0xB0, 0x01],
-            &[0x65, 0x00],
+            &[0x65, 0x00, 0x00, 0x00],
             &[],
-            "BCS $00000208",
+            "BCS $0000020A",
         ),
-        case(&[0x70, 0x00], &[0x67, 0x00], &[], "BEQ $00000204"),
-        case(&[0x70, 0x01], &[0x66, 0x00], &[], "BNE $00000204"),
-        case(&[0x70, 0xFF], &[0x6B, 0x00], &[], "BMI $00000204"),
-        case(&[0x70, 0x00], &[0x6A, 0x00], &[], "BPL $00000204"),
+        case(
+            &[0x70, 0x00],
+            &[0x67, 0x00, 0x00, 0x00],
+            &[],
+            "BEQ $00000206",
+        ),
+        case(
+            &[0x70, 0x01],
+            &[0x66, 0x00, 0x00, 0x00],
+            &[],
+            "BNE $00000206",
+        ),
+        case(
+            &[0x70, 0xFF],
+            &[0x6B, 0x00, 0x00, 0x00],
+            &[],
+            "BMI $00000206",
+        ),
+        case(
+            &[0x70, 0x00],
+            &[0x6A, 0x00, 0x00, 0x00],
+            &[],
+            "BPL $00000206",
+        ),
+        case(&[0x70, 0x00], &[0x66, 0x02], &[], "BNE $00000206"),
         // MOVE.W #imm,SR.
         case(&[], &[0x46, 0xFC, 0x20, 0x00], &[], "MOVE.W #$2000,SR"),
         // NOP, RTS and RTE. The stack bytes are the return frame.
@@ -897,17 +933,30 @@ mod tests {
             assert_eq!(decoded[0].opcode(), *opcode);
         }
 
-        // Reserved and unassigned encodings stay typed errors: the CPU never
-        // silently executes a word no documented instruction owns.
+        // Reserved and unassigned encodings raise the guest illegal-instruction
+        // exception (vector 4) instead of silently executing; the data-word
+        // fallback above is a view of an encoding the CPU rejects, not a claim
+        // that the word executes as data.
         for opcode in [0x4E7A_u16, 0xA000, 0xF000] {
             let bytes = opcode.to_be_bytes();
             let rom = program_rom(&[], &bytes);
             let mut bus = MegadriveBus::new(crate::cartridge::test_cartridge(rom.to_vec()));
             let mut cpu = M68000::new();
             cpu.reset(&mut bus).expect("reset");
-            assert!(
-                cpu.step(&mut bus).is_err(),
-                "0x{opcode:04X} must not execute"
+            let outcome = cpu
+                .step(&mut bus)
+                .expect("unrecognised opcode raises the guest illegal instruction");
+            assert_eq!(outcome.cycles, 34, "0x{opcode:04X} exception entry");
+            assert_eq!(cpu.pc(), 0, "0x{opcode:04X} vector 4 target");
+            assert_eq!(
+                cpu.address_register(7),
+                Some(INITIAL_STACK - 6),
+                "0x{opcode:04X} short frame"
+            );
+            assert_eq!(
+                bus.read32(INITIAL_STACK - 4),
+                Ok(PROGRAM_ADDRESS + 2),
+                "0x{opcode:04X} return PC"
             );
         }
     }
