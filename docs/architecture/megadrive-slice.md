@@ -14,13 +14,14 @@
   CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
   slice (t5 PASS, 2026-11-16). M8 phase 8.1 adds a modelled cartridge — header/region/
   checksum, Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register — with
-  payload/state/config v4 (implemented, reviewed and verified 2026-11-17; phase 8.2
-  adds the master-cycle timeline, extended CPU snapshot fields and the 8.2 cycle
-  differential; booting a commercial title is phase 8.6 evidence, not claimed here).
+  payload/state/config v3 (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`; implemented, reviewed and
+  verified 2026-11-17). Phase 8.2 moves the identity to v4
+  (`CFMD68K4`/`CFMDSTATE4`/`CFMDCONF4`) with the master-cycle timeline and extended CPU
+  snapshot fields; booting a commercial title is phase 8.6 evidence, not claimed here.
 - **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
   with 11/11 address, per-instruction cycle and final-state differential evidence) is
-  implemented; final verification/review and merge are pending. M8 then completes the
+  implemented; verification passed (round 12), with review and merge pending. M8 then completes the
   remaining slice (Z80, VDP rendering/DMA/timing, YM2612/PSG audio, cartridge,
   controllers and capture). This page remains the canonical capability/limitation home;
   it is updated as each phase lands, never in advance.
@@ -447,11 +448,14 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State.** Payload v4 (`CFMD68K4`), state hash v4 (`CFMDSTATE4`) and configuration hash
-  v4 (`CFMDCONF4`). The snapshot adds the seven mapper banks, the SRAM control byte, 64 KiB
-  SRAM, the TMSS model/lock latch and the extended 68000/scheduler state; v1-v3 payloads
-  are rejected, a payload carrying another TMSS model is rejected even when its hash was
-  recomputed, and a rejected restore leaves the machine untouched. The configuration hash
+- **State (current, after phase 8.2).** Payload v4 (`CFMD68K4`), state hash v4
+  (`CFMDSTATE4`) and configuration hash v4 (`CFMDCONF4`). Phase 8.1 used v3
+  (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`); phase 8.2 moved the identity to v4 for the
+  master-cycle timeline and extended 68000/scheduler state. The snapshot adds the seven
+  mapper banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch and the
+  extended 68000/scheduler state; v1-v3 payloads are rejected, a payload carrying another
+  TMSS model is rejected even when its hash was recomputed, and a rejected restore leaves
+  the machine untouched. The configuration hash
   covers the ROM SHA-256, video standard, TMSS model and a mapper/SRAM feature tag; SRAM
   bytes are state and never configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
