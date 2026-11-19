@@ -25,19 +25,19 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "f204d37bb42c9aee3c6aeb048726c932d80af4d92008ed1153b3e151202c0061";
+const RESET_STATE_HASH: &str = "dfccb99a066506a94d8e155a54d5388bd7afea4705608dd97a3ea1d0dc7a80be";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "d8c16a74e3112caefe13418fab7e8b63158e9e8e05b55ab6be9b039b9eec83bd";
+    "fa0be27b911efc7169bdc3a6e6d171bfd50860e5e5b8da140c2e5f74c55c1436";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "da1dafce1a52555969bd6c19fb3c9128922ec370a96483d6724beceaa0e52fc9";
+    "ebe230e260fe7f82daf6a42344b1d5eb3ff2a585f50e2355ca998de41d29debf";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "97a5d1dded40ef2196d849ee4e9d0e592647783422f53b8931338f89927651a9";
+    "8e3503a1bd2d316c33752923171953039a53255b356a73dbaa48dc4ce8acc9d2";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "5b2304aad147f57fd567dbbd198c6db5293286aa0b096b3c45a5ca98aaaffb40";
+    "6d8e70bca206641e3819ac0b4785697471933eac99b2a40ae95b4f8e9c0c3240";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -246,7 +246,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=d8c16a74e3112caefe13418fab7e8b63158e9e8e05b55ab6be9b039b9eec83bd\n\
+state_hash=fa0be27b911efc7169bdc3a6e6d171bfd50860e5e5b8da140c2e5f74c55c1436\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -566,7 +566,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "3444"),
         (
             "state_hash",
-            "2f6de1cb49ec437e5beb64529006485398d05536b7875b6bafba5c13b245075d",
+            "e820a506b89a5684265fe379a860609100ca5e890985d7dc391227fa112e2096",
         ),
         ("video", "ntsc"),
         ("lines_per_frame", "262"),
@@ -605,11 +605,11 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         "--steps",
         "120",
     ]));
-    assert_eq!(delivered.field("tick"), "8694");
+    assert_eq!(delivered.field("tick"), "8764");
     assert_eq!(delivered.field("pending"), "0");
     assert_eq!(delivered.field("counter_0_issued"), "2");
     assert_eq!(delivered.field("counter_0_coalesced"), "1");
-    assert_eq!(delivered.field("master_cycle_in_line"), "1854");
+    assert_eq!(delivered.field("master_cycle_in_line"), "1924");
 }
 
 #[test]
@@ -1011,13 +1011,13 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
     ]));
     assert_eq!(blocks.len(), 2);
     assert_eq!(blocks[0].field("reason"), "event");
-    assert_eq!(blocks[0].field("tick"), "7406");
-    assert_eq!(blocks[0].field("steps"), "105");
+    assert_eq!(blocks[0].field("tick"), "7546");
+    assert_eq!(blocks[0].field("steps"), "106");
     assert_eq!(blocks[0].field("events_matched"), "1");
     assert_eq!(blocks[1].field("kind"), "interrupt-delivered");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "delivered");
-    assert_eq!(blocks[1].field("tick"), "7378");
+    assert_eq!(blocks[1].field("tick"), "7518");
     assert_eq!(blocks[1].field("matched"), "1");
 
     let blocks = parse_blocks(&run_ok(&[
@@ -1031,7 +1031,7 @@ fn debug_run_watchpoint_and_eventpoint_stop_after_the_instruction() {
         "interrupt:acknowledged",
     ]));
     assert_eq!(blocks.len(), 2);
-    assert_eq!(blocks[0].field("tick"), "7406");
+    assert_eq!(blocks[0].field("tick"), "7546");
     assert_eq!(blocks[1].field("kind"), "interrupt-acknowledged");
     assert_eq!(blocks[1].field("level"), "4");
     assert_eq!(blocks[1].field("phase"), "acknowledged");

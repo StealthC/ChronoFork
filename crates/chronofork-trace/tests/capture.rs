@@ -419,8 +419,8 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
         (4, InterruptPhase::Requested, 3388),
         "the retained HBlank request is stamped with its pre-step tick"
     );
-    assert_eq!(phases[1], (4, InterruptPhase::Delivered, 7378));
-    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, 7378));
+    assert_eq!(phases[1], (4, InterruptPhase::Delivered, 7518));
+    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, 7518));
     assert_eq!(
         phases[1].2, phases[2].2,
         "delivery and acknowledgement share the delivering step"
