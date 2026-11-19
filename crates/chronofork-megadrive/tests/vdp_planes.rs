@@ -63,6 +63,7 @@ fn base_vdp() -> Vdp {
     write_register(&mut vdp, 0x02, 0x38).expect("plane A base");
     write_register(&mut vdp, 0x04, 0x01).expect("plane B base");
     write_register(&mut vdp, 0x03, 0x3C).expect("window base");
+    write_register(&mut vdp, 0x05, 0x7C).expect("SAT base at 0xF800");
     write_register(&mut vdp, 0x0C, 0x01).expect("H40 mode");
     write_register(&mut vdp, 0x10, 0x00).expect("32x32 planes");
     write_register(&mut vdp, 0x0B, 0x00).expect("full-screen scroll");
