@@ -3187,19 +3187,24 @@ mod tests {
         // Golden values for payload v4 / state hash v4 / configuration hash v4
         // (six steps of the demo ROM on the master-cycle timeline). The v4 bump
         // is the documented master-cycle, extended-snapshot and timing change.
+        //
+        // Phase 8.3 re-pinned the length and the two hashes: payload v4 embeds
+        // the VDP snapshot, and VDP snapshot v2 (`CFVDP002`) adds the device
+        // state, so the body grew by 237 bytes. Phase 8.3 task 12 bumps the
+        // outer payload to v5 and re-pins these values again.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 196_821);
+        assert_eq!(snapshot.payload().len(), 197_058);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "8f24b601f08606c537c57af74ca5569ad7b68351ed7f5e6aa4e1d976520b594a"
+            "4cab2a24407480f82c08d035857fe09462b716ab73ddadde31956f694393764f"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "dafc89a301f1e1a4b799ff2cb6df655e0d64463c3fc9ab6236214236e013ca1a"
+            "c7013848900f3d3edb715000e4b15416102bc863ec4d7eca173ea67172e98117"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),

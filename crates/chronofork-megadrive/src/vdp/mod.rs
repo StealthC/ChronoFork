@@ -1,8 +1,17 @@
-//! Minimal deterministic Sega Mega Drive VDP status/control/VRAM slice.
+//! Minimal deterministic Sega Mega Drive VDP: device state, ports and snapshot.
 //!
-//! **Status:** partial VDP emulation, not a rendering engine. This module
-//! implements only the parts of the 315-5313 VDP required by the current
-//! backend slice.
+//! **Status:** partial VDP emulation, not yet a rendering engine. This module
+//! tree splits the device so rendering, DMA, FIFO timing and interrupt
+//! generation have one owner each:
+//!
+//! - `mod.rs` (this file): the device, its port window, typed errors and the
+//!   versioned snapshot.
+//! - `regs.rs`: port offsets, register/status positions and status latches.
+//! - `timing.rs`: line/dot position and frame index (timing behaviour lands in
+//!   phase 8.3 task 4).
+//! - `render.rs`: scanline composition (phase 8.3 tasks 5–7).
+//! - `dma.rs`: DMA transfer state and modes (transfer engine in task 8).
+//! - `fifo.rs`: the bounded write FIFO (CPU wait accounting in task 9).
 //!
 //! **Implemented:**
 //!
@@ -11,7 +20,7 @@
 //!   `0x00..=0x03` is the data port (word accesses at `0x00`/`0x02`),
 //!   `0x04..=0x07` is the control port (word accesses at `0x04`/`0x06`) and
 //!   `0x08..=0x0F` is the HV counter. HV-counter reads return zero because no
-//!   raster timing is modelled; HV-counter writes are rejected.
+//!   raster timing is modelled yet; HV-counter writes are rejected.
 //! - Control-port two-word command setup. The first word latches command bits
 //!   `1..=0` (bits `15..=14`) and address bits `13..=0`; the second word
 //!   latches command bits `5..=2` (bits `7..=4`) and address bits `15..=14`
@@ -23,13 +32,20 @@
 //!   byte into both halves (the documented VDP data-port byte-write
 //!   behaviour), and byte reads return the requested byte lane of the
 //!   transferred word.
+//! - Canonical device state for the rest of phase 8.3: 64 CRAM words, 40 VSRAM
+//!   words, the bounded write FIFO, DMA state, the frame index, the line/dot
+//!   position and the latched status conditions. The port surface still
+//!   addresses VRAM only, so CRAM/VSRAM/DMA/FIFO behaviour and raster timing
+//!   arrive in later tasks; the state is present, canonical and snapshotted.
 //! - The status-register bits covered by [`STATUS_MASK`]. VBlank (bit 3) is
 //!   controlled by [`Vdp::set_vblank`] and VBlank-interrupt-pending, VINT
-//!   (bit 7), by [`Vdp::set_vint_pending`]. FIFO-empty is always set because
-//!   data writes complete immediately and no write FIFO is modelled. Every
-//!   other status bit is a documented constant with no hardware behind it yet.
+//!   (bit 7), by [`Vdp::set_vint_pending`]. PAL (bit 0) and HBlank (bit 2) read
+//!   zero until region and raster timing exist. FIFO-empty is derived from the
+//!   empty FIFO; DMA-busy, sprite-collision and sprite-overflow are derived from
+//!   their state and latches.
 //! - Versioned, fixed-length snapshots through [`Vdp::snapshot_bytes`] and
-//!   [`Vdp::restore_bytes`].
+//!   [`Vdp::restore_bytes`]. Format v2 (`CFVDP002`) covers the complete device
+//!   state; `CFVDP001`/v1 payloads are rejected, never reinterpreted.
 //!
 //! # VINT-pending is derived state
 //!
@@ -49,88 +65,96 @@
 //! consumes an interrupt request.
 //!
 //! **Not implemented (and not claimed):** rendering, planes, window, sprites,
-//! scrolling, CRAM, VSRAM, DMA, FIFO/access timing, H/V counters, VDP interrupt
-//! enable registers and VDP-side acknowledge logic (status bit 7 is driven by
-//! the external scheduler), Z80/PSG interaction, audio, the
-//! byte-swapped/interleaved physical VRAM layout, and cycle-accurate port
-//! timing.
+//! scrolling, CRAM/VSRAM port addressing, DMA transfers, FIFO/access timing,
+//! H/V counters, VDP interrupt enable registers and VDP-side acknowledge logic
+//! (status bit 7 is driven by the external scheduler), Z80/PSG interaction,
+//! audio, interlace, the byte-swapped/interleaved physical VRAM layout, and
+//! cycle-accurate port timing.
 //!
-//! **Deterministic reset state:** VRAM is zeroed and all 24 registers are
-//! zero. In particular register `0x0F` (auto-increment) starts at zero, so a
-//! program must write it before relying on address advancement.
+//! **Deterministic reset state:** VRAM, CRAM, VSRAM, the FIFO, DMA state,
+//! status latches, the frame index and the line/dot position are zero, all 24
+//! registers are zero and no command is latched. In particular register `0x0F`
+//! (auto-increment) starts at zero, so a program must write it before relying
+//! on address advancement.
+
+mod dma;
+mod fifo;
+mod regs;
+mod render;
+mod timing;
 
 use std::error::Error;
 use std::fmt;
 
 use chronofork_core::codec::Writer;
 
-/// Size of VDP VRAM in bytes.
-pub const VRAM_SIZE: usize = 0x0001_0000;
-/// Number of VDP registers implemented by this slice (`0x00..=0x17`).
-pub const REGISTER_COUNT: usize = 0x18;
-/// VDP register that holds the data-port auto-increment value.
-pub const AUTO_INCREMENT_REGISTER: usize = 0x0F;
-/// Number of port bytes covered by this slice (`0x00..=0x0F`).
-pub const PORT_WINDOW_SIZE: usize = 0x10;
-/// Offset of the data port relative to `0xC00000`.
-pub const DATA_PORT_OFFSET: u8 = 0x00;
-/// Offset of the control port relative to `0xC00000`.
-pub const CONTROL_PORT_OFFSET: u8 = 0x04;
-/// Offset of the HV-counter port relative to `0xC00000`.
-pub const HV_COUNTER_OFFSET: u8 = 0x08;
+use fifo::Fifo;
+use regs::{CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE, CODE_VRAM_READ, CODE_VRAM_WRITE};
 
-/// PAL region flag (status bit 0). Always 0: region is not modelled.
-pub const STATUS_PAL: u16 = 0x0001;
-/// DMA-busy flag (status bit 1). Always 0: DMA is not implemented.
-pub const STATUS_DMA_BUSY: u16 = 0x0002;
-/// HBlank flag (status bit 2). Always 0: no raster timing.
-pub const STATUS_HBLANK: u16 = 0x0004;
-/// VBlank flag (status bit 3). Controlled by [`Vdp::set_vblank`].
-pub const STATUS_VBLANK: u16 = 0x0008;
-/// Odd interlace frame flag (status bit 4). Always 0: no interlace.
-pub const STATUS_ODD_FRAME: u16 = 0x0010;
-/// Sprite-collision flag (status bit 5). Always 0: no sprites.
-pub const STATUS_SPRITE_COLLISION: u16 = 0x0020;
-/// Sprite-overflow flag (status bit 6). Always 0: no sprites.
-pub const STATUS_SPRITE_OVERFLOW: u16 = 0x0040;
-/// VBlank-interrupt-pending flag (status bit 7).
-///
-/// Driven by [`Vdp::set_vint_pending`]. The minimal Mega Drive backend sets it
-/// while its scheduler holds a pending VBlank (level 6) request, including while
-/// the 68000 `SR` interrupt-priority mask blocks delivery, and clears it only
-/// when that request is delivered and acknowledged. It is derived state, not
-/// part of the serialized VDP snapshot, and a control-port status read never
-/// changes it.
-pub const STATUS_VINT_PENDING: u16 = 0x0080;
-/// FIFO-empty flag (status bit 8). Always set: no write FIFO is modelled, so
-/// every accepted data-port write has already completed.
-pub const STATUS_FIFO_EMPTY: u16 = 0x0100;
-/// FIFO-full flag (status bit 9). Always 0: no write FIFO is modelled.
-pub const STATUS_FIFO_FULL: u16 = 0x0200;
-/// Mask of the ten status bits defined by the VDP. The upper six bits read as
-/// zero here; real hardware leaves them floating.
-pub const STATUS_MASK: u16 = 0x03FF;
+pub use dma::{DmaMode, DmaState};
+pub use fifo::FIFO_CAPACITY;
+pub use regs::{
+    AUTO_INCREMENT_REGISTER, CONTROL_PORT_OFFSET, CRAM_WORDS, DATA_PORT_OFFSET, HV_COUNTER_OFFSET,
+    PORT_WINDOW_SIZE, REGISTER_COUNT, STATUS_DMA_BUSY, STATUS_FIFO_EMPTY, STATUS_FIFO_FULL,
+    STATUS_HBLANK, STATUS_MASK, STATUS_ODD_FRAME, STATUS_PAL, STATUS_SPRITE_COLLISION,
+    STATUS_SPRITE_OVERFLOW, STATUS_VBLANK, STATUS_VINT_PENDING, StatusLatches, VRAM_SIZE,
+    VSRAM_WORDS,
+};
 
 /// Magic prefix of a serialized VDP snapshot.
-pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFVDP001";
+pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFVDP002";
 /// Version of the serialized VDP snapshot format.
-pub const SNAPSHOT_VERSION: u16 = 1;
+pub const SNAPSHOT_VERSION: u16 = 2;
+
+// Snapshot layout, in bytes. All multi-byte integers are little-endian:
+//
+//   0..8    magic "CFVDP002"
+//   8..10   format version (2)
+//   10      flags: vblank, half-latched command, odd frame, collision, overflow
+//   11      command code (six bits)
+//   12..14  address
+//   14..38  registers (24)
+//   38..166 CRAM (64 words)
+//   166..246 VSRAM (40 words)
+//   246     FIFO occupancy (0..=4)
+//   247..255 FIFO words oldest first (4 words, zero-padded)
+//   255     DMA active (0 or 1)
+//   256..260 DMA source
+//   260..262 DMA length
+//   262     DMA mode code
+//   263..271 frame index
+//   271..273 line
+//   273..275 dot
+//   275..   VRAM (64 KiB)
+const SNAPSHOT_FLAGS_OFFSET: usize = SNAPSHOT_MAGIC.len() + 2;
+const SNAPSHOT_CODE_OFFSET: usize = SNAPSHOT_FLAGS_OFFSET + 1;
+const SNAPSHOT_ADDRESS_OFFSET: usize = SNAPSHOT_CODE_OFFSET + 1;
+const SNAPSHOT_REGISTERS_OFFSET: usize = SNAPSHOT_ADDRESS_OFFSET + 2;
+const SNAPSHOT_CRAM_OFFSET: usize = SNAPSHOT_REGISTERS_OFFSET + REGISTER_COUNT;
+const SNAPSHOT_VSRAM_OFFSET: usize = SNAPSHOT_CRAM_OFFSET + CRAM_WORDS * 2;
+const SNAPSHOT_FIFO_COUNT_OFFSET: usize = SNAPSHOT_VSRAM_OFFSET + VSRAM_WORDS * 2;
+const SNAPSHOT_FIFO_WORDS_OFFSET: usize = SNAPSHOT_FIFO_COUNT_OFFSET + 1;
+const SNAPSHOT_DMA_ACTIVE_OFFSET: usize = SNAPSHOT_FIFO_WORDS_OFFSET + FIFO_CAPACITY * 2;
+const SNAPSHOT_DMA_SOURCE_OFFSET: usize = SNAPSHOT_DMA_ACTIVE_OFFSET + 1;
+const SNAPSHOT_DMA_LENGTH_OFFSET: usize = SNAPSHOT_DMA_SOURCE_OFFSET + 4;
+const SNAPSHOT_DMA_MODE_OFFSET: usize = SNAPSHOT_DMA_LENGTH_OFFSET + 2;
+const SNAPSHOT_FRAME_INDEX_OFFSET: usize = SNAPSHOT_DMA_MODE_OFFSET + 1;
+const SNAPSHOT_LINE_OFFSET: usize = SNAPSHOT_FRAME_INDEX_OFFSET + 8;
+const SNAPSHOT_DOT_OFFSET: usize = SNAPSHOT_LINE_OFFSET + 2;
+const SNAPSHOT_VRAM_OFFSET: usize = SNAPSHOT_DOT_OFFSET + 2;
 /// Exact byte length of a serialized VDP snapshot.
-pub const SNAPSHOT_LEN: usize = 8 + 2 + 1 + 1 + 2 + REGISTER_COUNT + VRAM_SIZE;
+pub const SNAPSHOT_LEN: usize = SNAPSHOT_VRAM_OFFSET + VRAM_SIZE;
 
 const SNAPSHOT_FLAG_VBLANK: u8 = 1 << 0;
 const SNAPSHOT_FLAG_COMMAND_PENDING: u8 = 1 << 1;
-const SNAPSHOT_FLAG_MASK: u8 = SNAPSHOT_FLAG_VBLANK | SNAPSHOT_FLAG_COMMAND_PENDING;
-const SNAPSHOT_HEADER_LEN: usize = 8 + 2 + 1 + 1 + 2 + REGISTER_COUNT;
-
-// Command-code bits. CD0/CD1 are latched from the first control word, CD2..CD5
-// from the second. CD4 inhibits read targets after a partial command; CD5 flags
-// a DMA transfer request.
-const CODE_READ_INHIBIT: u8 = 0x10;
-const CODE_DMA: u8 = 0x20;
-const CODE_VRAM_READ: u8 = 0x00;
-const CODE_VRAM_WRITE: u8 = 0x01;
-const CODE_REGISTER_WRITE: u8 = 0x02;
+const SNAPSHOT_FLAG_ODD_FRAME: u8 = 1 << 2;
+const SNAPSHOT_FLAG_SPRITE_COLLISION: u8 = 1 << 3;
+const SNAPSHOT_FLAG_SPRITE_OVERFLOW: u8 = 1 << 4;
+const SNAPSHOT_FLAG_MASK: u8 = SNAPSHOT_FLAG_VBLANK
+    | SNAPSHOT_FLAG_COMMAND_PENDING
+    | SNAPSHOT_FLAG_ODD_FRAME
+    | SNAPSHOT_FLAG_SPRITE_COLLISION
+    | SNAPSHOT_FLAG_SPRITE_OVERFLOW;
 
 /// A VDP port access or snapshot that this slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +192,9 @@ pub enum VdpError {
         code: u8,
     },
     /// A snapshot whose length is not [`SNAPSHOT_LEN`].
+    ///
+    /// A `CFVDP001` v1 payload always lands here: its fixed length differs, so
+    /// it is rejected before any field is interpreted.
     SnapshotLengthMismatch {
         /// Required length.
         expected: usize,
@@ -190,6 +217,23 @@ pub enum VdpError {
     SnapshotCodeInvalid {
         /// Command code found in the snapshot header.
         code: u8,
+    },
+    /// A snapshot whose FIFO occupancy exceeds [`FIFO_CAPACITY`].
+    SnapshotFifoCountInvalid {
+        /// Occupancy found in the snapshot.
+        count: u8,
+    },
+    /// A snapshot whose DMA mode code is not a defined mode.
+    SnapshotDmaModeInvalid {
+        /// Mode code found in the snapshot.
+        mode: u8,
+    },
+    /// A snapshot whose boolean field is neither 0 nor 1.
+    SnapshotBooleanInvalid {
+        /// Name of the offending field.
+        field: &'static str,
+        /// Value found in the snapshot.
+        value: u8,
     },
 }
 
@@ -234,13 +278,24 @@ impl fmt::Display for VdpError {
             Self::SnapshotCodeInvalid { code } => {
                 write!(f, "VDP snapshot command code 0x{code:02X} exceeds six bits")
             }
+            Self::SnapshotFifoCountInvalid { count } => write!(
+                f,
+                "VDP snapshot FIFO occupancy {count} exceeds the {FIFO_CAPACITY}-word queue"
+            ),
+            Self::SnapshotDmaModeInvalid { mode } => {
+                write!(f, "VDP snapshot DMA mode code 0x{mode:02X} is not defined")
+            }
+            Self::SnapshotBooleanInvalid { field, value } => {
+                write!(f, "VDP snapshot {field} flag {value} is not 0 or 1")
+            }
         }
     }
 }
 
 impl Error for VdpError {}
 
-/// Partial 315-5313 VDP: control port, status register and 64 KiB VRAM.
+/// Partial 315-5313 VDP: port window, status register, device state and
+/// snapshot.
 ///
 /// Accesses are made through port offsets relative to `0xC00000`, matching the
 /// big-endian 16-bit bus of the Mega Drive. All state changes are confined to
@@ -250,10 +305,17 @@ impl Error for VdpError {}
 pub struct Vdp {
     vram: Vec<u8>,
     registers: [u8; REGISTER_COUNT],
+    cram: [u16; CRAM_WORDS],
+    vsram: [u16; VSRAM_WORDS],
+    fifo: Fifo,
+    dma: DmaState,
     code: u8,
     address: u16,
     command_pending: bool,
-    vblank: bool,
+    frame_index: u64,
+    line: u16,
+    dot: u16,
+    status_latches: StatusLatches,
     /// Derived VINT-pending latch driven by the owning machine's interrupt
     /// source. Deliberately absent from the serialized snapshot.
     vint_pending: bool,
@@ -261,33 +323,59 @@ pub struct Vdp {
 
 impl Vdp {
     /// Creates a VDP in the deterministic reset state described by the module
-    /// documentation: zeroed VRAM, zeroed registers and no pending command.
+    /// documentation: zeroed memory, registers and queues, and no pending
+    /// command or status condition.
     #[must_use]
     pub fn new() -> Self {
         Self {
             vram: vec![0; VRAM_SIZE],
             registers: [0; REGISTER_COUNT],
+            cram: [0; CRAM_WORDS],
+            vsram: [0; VSRAM_WORDS],
+            fifo: Fifo::empty(),
+            dma: DmaState::default(),
             code: 0,
             address: 0,
             command_pending: false,
-            vblank: false,
+            frame_index: 0,
+            line: 0,
+            dot: 0,
+            status_latches: StatusLatches::default(),
             vint_pending: false,
         }
     }
 
     /// Returns the ten-bit status register.
     ///
-    /// VBlank (bit 3), VINT pending (bit 7) and FIFO-empty (bit 8) are the only
-    /// bits this slice drives; the remaining bits are documented constants.
-    /// Upper bits are zero rather than the floating values real hardware
-    /// returns. Reading the status through a control-port access does not
-    /// acknowledge the VINT-pending latch; only [`Vdp::set_vint_pending`] changes
-    /// it.
+    /// DMA-busy, HBlank, VBlank, odd frame, sprite collision, sprite overflow,
+    /// VINT pending and FIFO empty/full are derived from device state; PAL and
+    /// HBlank stay zero until region and raster timing exist. The upper bits
+    /// are zero rather than the floating values real hardware returns. Reading
+    /// the status through a control-port access does not acknowledge the
+    /// VINT-pending latch; only [`Vdp::set_vint_pending`] changes it.
     #[must_use]
     pub fn status(&self) -> u16 {
-        let mut status = STATUS_FIFO_EMPTY;
-        if self.vblank {
+        let mut status = 0;
+        if self.fifo.is_empty() {
+            status |= STATUS_FIFO_EMPTY;
+        }
+        if self.fifo.is_full() {
+            status |= STATUS_FIFO_FULL;
+        }
+        if self.dma.active() {
+            status |= STATUS_DMA_BUSY;
+        }
+        if self.status_latches.vblank {
             status |= STATUS_VBLANK;
+        }
+        if self.status_latches.odd_frame {
+            status |= STATUS_ODD_FRAME;
+        }
+        if self.status_latches.sprite_collision {
+            status |= STATUS_SPRITE_COLLISION;
+        }
+        if self.status_latches.sprite_overflow {
+            status |= STATUS_SPRITE_OVERFLOW;
         }
         if self.vint_pending {
             status |= STATUS_VINT_PENDING;
@@ -295,13 +383,13 @@ impl Vdp {
         status
     }
 
-    /// Sets or clears the video VBlank status flag (bit 3).
+    /// Sets or clears the video VBlank status latch (bit 3).
     ///
     /// The minimal Mega Drive backend drives this from the scheduler's
     /// deterministic scanline position, so it reflects the vertical blanking
     /// interval rather than a pending CPU request.
     pub fn set_vblank(&mut self, active: bool) {
-        self.vblank = active;
+        self.status_latches.vblank = active;
     }
 
     /// Sets or clears the derived VBlank-interrupt-pending latch (status bit 7).
@@ -329,6 +417,36 @@ impl Vdp {
     #[must_use]
     pub fn vram(&self) -> &[u8] {
         &self.vram
+    }
+
+    /// Returns the 64 CRAM colour words.
+    #[must_use]
+    pub const fn cram(&self) -> &[u16; CRAM_WORDS] {
+        &self.cram
+    }
+
+    /// Returns the 40 VSRAM vertical-scroll words.
+    #[must_use]
+    pub const fn vsram(&self) -> &[u16; VSRAM_WORDS] {
+        &self.vsram
+    }
+
+    /// Returns the number of words queued in the write FIFO.
+    #[must_use]
+    pub const fn fifo_len(&self) -> usize {
+        self.fifo.len()
+    }
+
+    /// Returns the current DMA state.
+    #[must_use]
+    pub const fn dma(&self) -> &DmaState {
+        &self.dma
+    }
+
+    /// Returns the latched status conditions.
+    #[must_use]
+    pub const fn status_latches(&self) -> StatusLatches {
+        self.status_latches
     }
 
     /// Returns one VDP register, or `None` when `index` is outside
@@ -433,41 +551,73 @@ impl Vdp {
 
     /// Serializes the complete VDP state into [`SNAPSHOT_LEN`] bytes.
     ///
-    /// Layout, in order: 8-byte magic, little-endian `u16` format version,
-    /// one flag byte (bit 0 VBlank, bit 1 pending command half), one command
-    /// code byte, little-endian `u16` address, 24 registers and 64 KiB of
+    /// Layout, in order (all multi-byte integers little-endian): 8-byte magic,
+    /// `u16` format version, one flag byte (bit 0 VBlank, bit 1 pending command
+    /// half, bit 2 odd frame, bit 3 sprite collision, bit 4 sprite overflow),
+    /// one command code byte, `u16` address, 24 registers, 64 CRAM words, 40
+    /// VSRAM words, one FIFO occupancy byte, four FIFO words oldest first
+    /// (zero-padded), one DMA active byte, `u32` DMA source, `u16` DMA length,
+    /// one DMA mode byte, `u64` frame index, `u16` line, `u16` dot and 64 KiB of
     /// VRAM. The format is versioned and self-describing; consumers must not
-    /// reinterpret bytes from another version.
+    /// reinterpret bytes from another version. `CFVDP001` v1 payloads are
+    /// rejected by [`Vdp::restore_bytes`].
     ///
     /// The derived VINT-pending latch is intentionally excluded: it is a
     /// function of the owning machine's canonical interrupt state, which that
-    /// machine snapshots and hashes separately. The payload version therefore
-    /// does not change when the VDP exposes the bit.
+    /// machine snapshots and hashes separately.
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let mut bytes = Writer::with_capacity(SNAPSHOT_LEN);
         bytes.write_bytes(&SNAPSHOT_MAGIC);
         bytes.write_u16_le(SNAPSHOT_VERSION);
         let mut flags = 0;
-        if self.vblank {
+        if self.status_latches.vblank {
             flags |= SNAPSHOT_FLAG_VBLANK;
         }
         if self.command_pending {
             flags |= SNAPSHOT_FLAG_COMMAND_PENDING;
         }
+        if self.status_latches.odd_frame {
+            flags |= SNAPSHOT_FLAG_ODD_FRAME;
+        }
+        if self.status_latches.sprite_collision {
+            flags |= SNAPSHOT_FLAG_SPRITE_COLLISION;
+        }
+        if self.status_latches.sprite_overflow {
+            flags |= SNAPSHOT_FLAG_SPRITE_OVERFLOW;
+        }
         bytes.write_u8(flags);
         bytes.write_u8(self.code);
         bytes.write_u16_le(self.address);
         bytes.write_bytes(&self.registers);
+        for word in &self.cram {
+            bytes.write_u16_le(*word);
+        }
+        for word in &self.vsram {
+            bytes.write_u16_le(*word);
+        }
+        // The FIFO occupancy is bounded by FIFO_CAPACITY, so the cast is lossless.
+        bytes.write_u8(self.fifo.len() as u8);
+        for word in self.fifo.words() {
+            bytes.write_u16_le(word);
+        }
+        bytes.write_u8(u8::from(self.dma.active()));
+        bytes.write_u32_le(self.dma.source());
+        bytes.write_u16_le(self.dma.length());
+        bytes.write_u8(self.dma.mode().code());
+        bytes.write_u64_le(self.frame_index);
+        bytes.write_u16_le(self.line);
+        bytes.write_u16_le(self.dot);
         bytes.write_bytes(&self.vram);
         bytes.into_bytes()
     }
 
     /// Restores state from a [`Vdp::snapshot_bytes`] payload.
     ///
-    /// Length, magic, version, reserved flag bits and the command-code width
-    /// are validated before any field is mutated, so a rejected snapshot
-    /// leaves the VDP exactly as it was.
+    /// Length, magic, version, reserved flag bits, the command-code width, the
+    /// FIFO occupancy, the DMA mode code and the DMA active byte are validated
+    /// before any field is mutated, so a rejected snapshot leaves the VDP
+    /// exactly as it was.
     ///
     /// The write path uses the shared [`chronofork_core::codec::Writer`]. The
     /// read path stays index-based because this format has a compile-time fixed
@@ -491,28 +641,80 @@ impl Vdp {
         if &bytes[..SNAPSHOT_MAGIC.len()] != SNAPSHOT_MAGIC.as_slice() {
             return Err(VdpError::SnapshotMagicMismatch);
         }
-        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        let version = read_u16_le(bytes, 8);
         if version != SNAPSHOT_VERSION {
             return Err(VdpError::SnapshotVersionUnsupported { found: version });
         }
-        let flags = bytes[10];
+        let flags = bytes[SNAPSHOT_FLAGS_OFFSET];
         if flags & !SNAPSHOT_FLAG_MASK != 0 {
             return Err(VdpError::SnapshotFlagsInvalid { flags });
         }
-        let code = bytes[11];
+        let code = bytes[SNAPSHOT_CODE_OFFSET];
         if code & !0x3F != 0 {
             return Err(VdpError::SnapshotCodeInvalid { code });
         }
-        let address = u16::from_le_bytes([bytes[12], bytes[13]]);
-        let mut registers = [0; REGISTER_COUNT];
-        registers.copy_from_slice(&bytes[14..14 + REGISTER_COUNT]);
+        let fifo_count = bytes[SNAPSHOT_FIFO_COUNT_OFFSET];
+        let mut fifo_words = [0_u16; FIFO_CAPACITY];
+        for (index, word) in fifo_words.iter_mut().enumerate() {
+            *word = read_u16_le(bytes, SNAPSHOT_FIFO_WORDS_OFFSET + index * 2);
+        }
+        let fifo = Fifo::try_restore(usize::from(fifo_count), fifo_words)
+            .ok_or(VdpError::SnapshotFifoCountInvalid { count: fifo_count })?;
+        let dma_mode = bytes[SNAPSHOT_DMA_MODE_OFFSET];
+        let mode = DmaMode::from_code(dma_mode)
+            .ok_or(VdpError::SnapshotDmaModeInvalid { mode: dma_mode })?;
+        let dma_active = match bytes[SNAPSHOT_DMA_ACTIVE_OFFSET] {
+            0 => false,
+            1 => true,
+            value => {
+                return Err(VdpError::SnapshotBooleanInvalid {
+                    field: "DMA active",
+                    value,
+                });
+            }
+        };
 
-        self.vblank = flags & SNAPSHOT_FLAG_VBLANK != 0;
+        let address = read_u16_le(bytes, SNAPSHOT_ADDRESS_OFFSET);
+        let mut registers = [0; REGISTER_COUNT];
+        registers.copy_from_slice(
+            &bytes[SNAPSHOT_REGISTERS_OFFSET..SNAPSHOT_REGISTERS_OFFSET + REGISTER_COUNT],
+        );
+        let mut cram = [0_u16; CRAM_WORDS];
+        for (index, word) in cram.iter_mut().enumerate() {
+            *word = read_u16_le(bytes, SNAPSHOT_CRAM_OFFSET + index * 2);
+        }
+        let mut vsram = [0_u16; VSRAM_WORDS];
+        for (index, word) in vsram.iter_mut().enumerate() {
+            *word = read_u16_le(bytes, SNAPSHOT_VSRAM_OFFSET + index * 2);
+        }
+        let dma = DmaState::from_parts(
+            read_u32_le(bytes, SNAPSHOT_DMA_SOURCE_OFFSET),
+            read_u16_le(bytes, SNAPSHOT_DMA_LENGTH_OFFSET),
+            mode,
+            dma_active,
+        );
+        let frame_index = read_u64_le(bytes, SNAPSHOT_FRAME_INDEX_OFFSET);
+        let line = read_u16_le(bytes, SNAPSHOT_LINE_OFFSET);
+        let dot = read_u16_le(bytes, SNAPSHOT_DOT_OFFSET);
+
+        self.status_latches = StatusLatches {
+            vblank: flags & SNAPSHOT_FLAG_VBLANK != 0,
+            odd_frame: flags & SNAPSHOT_FLAG_ODD_FRAME != 0,
+            sprite_collision: flags & SNAPSHOT_FLAG_SPRITE_COLLISION != 0,
+            sprite_overflow: flags & SNAPSHOT_FLAG_SPRITE_OVERFLOW != 0,
+        };
         self.command_pending = flags & SNAPSHOT_FLAG_COMMAND_PENDING != 0;
         self.code = code;
         self.address = address;
         self.registers = registers;
-        self.vram.copy_from_slice(&bytes[SNAPSHOT_HEADER_LEN..]);
+        self.cram = cram;
+        self.vsram = vsram;
+        self.fifo = fifo;
+        self.dma = dma;
+        self.frame_index = frame_index;
+        self.line = line;
+        self.dot = dot;
+        self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
 
@@ -617,15 +819,46 @@ impl Default for Vdp {
 impl fmt::Debug for Vdp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Vdp")
-            .field("vblank", &self.vblank)
+            .field("vblank", &self.status_latches.vblank)
             .field("vint_pending", &self.vint_pending)
             .field("command_pending", &self.command_pending)
             .field("code", &format_args!("0x{:02X}", self.code))
             .field("address", &format_args!("0x{:04X}", self.address))
             .field("registers", &self.registers)
+            .field("cram_len", &self.cram.len())
+            .field("vsram_len", &self.vsram.len())
+            .field("fifo_len", &self.fifo.len())
+            .field("dma_active", &self.dma.active())
+            .field("frame_index", &self.frame_index)
+            .field("line", &self.line)
+            .field("dot", &self.dot)
             .field("vram_len", &self.vram.len())
             .finish()
     }
+}
+
+/// Reads a little-endian `u16` at a validated fixed offset.
+///
+/// The caller has checked [`SNAPSHOT_LEN`], so the slice indexes cannot panic.
+fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+/// Reads a little-endian `u32` at a validated fixed offset.
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+/// Reads a little-endian `u64` at a validated fixed offset.
+fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
+    let mut value = [0_u8; 8];
+    value.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_le_bytes(value)
 }
 
 #[cfg(test)]
@@ -988,6 +1221,13 @@ mod tests {
         assert_eq!(restored.registers(), vdp.registers());
         assert_eq!(restored.address(), vdp.address());
         assert_eq!(restored.vram(), vdp.vram());
+        assert_eq!(restored.cram(), vdp.cram());
+        assert_eq!(restored.vsram(), vdp.vsram());
+        assert_eq!(restored.fifo_len(), vdp.fifo_len());
+        assert_eq!(restored.dma(), vdp.dma());
+        assert_eq!(restored.line(), vdp.line());
+        assert_eq!(restored.dot(), vdp.dot());
+        assert_eq!(restored.frame_index(), vdp.frame_index());
         assert_eq!(&restored.vram()[0x1234..0x1236], &[0xCA, 0xFE]);
     }
 
@@ -1015,6 +1255,7 @@ mod tests {
     #[test]
     fn invalid_snapshots_are_rejected_without_mutation() {
         let good = Vdp::new().snapshot_bytes();
+        assert_eq!(good.len(), SNAPSHOT_LEN);
         let mut vdp = Vdp::new();
         vdp.write16(CONTROL_PORT_OFFSET, 0x8F02)
             .expect("auto-increment 2");
@@ -1053,20 +1294,82 @@ mod tests {
         );
 
         let mut bad_flags = good.clone();
-        bad_flags[10] = 0x80;
+        bad_flags[SNAPSHOT_FLAGS_OFFSET] = 0x80;
         assert_eq!(
             vdp.restore_bytes(&bad_flags),
             Err(VdpError::SnapshotFlagsInvalid { flags: 0x80 })
         );
 
         let mut bad_code = good.clone();
-        bad_code[11] = 0x40;
+        bad_code[SNAPSHOT_CODE_OFFSET] = 0x40;
         assert_eq!(
             vdp.restore_bytes(&bad_code),
             Err(VdpError::SnapshotCodeInvalid { code: 0x40 })
         );
 
+        let mut bad_fifo = good.clone();
+        bad_fifo[SNAPSHOT_FIFO_COUNT_OFFSET] = FIFO_CAPACITY as u8 + 1;
+        assert_eq!(
+            vdp.restore_bytes(&bad_fifo),
+            Err(VdpError::SnapshotFifoCountInvalid {
+                count: FIFO_CAPACITY as u8 + 1
+            })
+        );
+
+        let mut bad_dma_mode = good.clone();
+        bad_dma_mode[SNAPSHOT_DMA_MODE_OFFSET] = 0xFF;
+        assert_eq!(
+            vdp.restore_bytes(&bad_dma_mode),
+            Err(VdpError::SnapshotDmaModeInvalid { mode: 0xFF })
+        );
+
+        let mut bad_dma_active = good.clone();
+        bad_dma_active[SNAPSHOT_DMA_ACTIVE_OFFSET] = 2;
+        assert_eq!(
+            vdp.restore_bytes(&bad_dma_active),
+            Err(VdpError::SnapshotBooleanInvalid {
+                field: "DMA active",
+                value: 2
+            })
+        );
+
         assert_eq!(vdp.snapshot_bytes(), before);
+    }
+
+    #[test]
+    fn snapshot_fifo_words_are_canonical_beyond_the_occupancy() {
+        let mut vdp = Vdp::new();
+        let mut bytes = vdp.snapshot_bytes();
+        // Claim two queued words and leave the remaining slots as arbitrary
+        // stale bytes; the canonical encoder must zero them.
+        bytes[SNAPSHOT_FIFO_COUNT_OFFSET] = 2;
+        bytes[SNAPSHOT_FIFO_WORDS_OFFSET..SNAPSHOT_FIFO_WORDS_OFFSET + 2]
+            .copy_from_slice(&0x1234_u16.to_le_bytes());
+        bytes[SNAPSHOT_FIFO_WORDS_OFFSET + 2..SNAPSHOT_FIFO_WORDS_OFFSET + 4]
+            .copy_from_slice(&0x5678_u16.to_le_bytes());
+        for word in 2..FIFO_CAPACITY {
+            let offset = SNAPSHOT_FIFO_WORDS_OFFSET + word * 2;
+            bytes[offset] = 0xAA;
+            bytes[offset + 1] = 0xBB;
+        }
+        vdp.restore_bytes(&bytes).expect("restore non-empty FIFO");
+        assert_eq!(vdp.fifo_len(), 2);
+
+        let mut canonical = bytes.clone();
+        for word in 2..FIFO_CAPACITY {
+            let offset = SNAPSHOT_FIFO_WORDS_OFFSET + word * 2;
+            canonical[offset] = 0;
+            canonical[offset + 1] = 0;
+        }
+        assert_eq!(vdp.snapshot_bytes(), canonical);
+
+        // The oldest word is still first: a round trip of the canonical bytes
+        // is byte-identical and keeps the occupancy.
+        let mut again = Vdp::new();
+        again
+            .restore_bytes(&canonical)
+            .expect("restore canonical FIFO");
+        assert_eq!(again.snapshot_bytes(), canonical);
     }
 
     #[test]
