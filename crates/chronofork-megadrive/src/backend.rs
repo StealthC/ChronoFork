@@ -2475,6 +2475,83 @@ mod tests {
         assert_eq!(register(&machine, "d6"), 0);
     }
 
+    /// Builds a ROM that reads the status port repeatedly while both VDP
+    /// interrupt sources are masked, then lowers the mask. The HBlank handler
+    /// increments D7 and returns with `RTE`.
+    fn status_read_before_delivery_rom() -> Vec<u8> {
+        let mut rom = [0x4E_u8, 0x71].repeat(0x200); // 0x400 bytes of NOP fill
+        rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x70..0x74].copy_from_slice(&0x0000_02C0_u32.to_be_bytes());
+        rom[0x78..0x7C].copy_from_slice(&0x0000_02E0_u32.to_be_bytes());
+        let program: &[u8] = &[
+            0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR
+            0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0xC00004)
+            0x30, 0x3C, 0x03, 0xE8, // MOVE.W #1000,D0
+            0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // loop: MOVE.W (0xC00004).L,D5
+            0x51, 0xC8, 0xFF, 0xF6, // DBRA D0,loop
+            0x46, 0xFC, 0x23, 0x00, // MOVE.W #$2300,SR (lower the mask)
+            0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // MOVE.W (0xC00004).L,D5
+            0x60, 0xF8, // BRA.S back to the status read
+        ];
+        rom[0x200..0x200 + program.len()].copy_from_slice(program);
+        rom[0x2C0..0x2C6].copy_from_slice(&[
+            0x52, 0x47, // ADDQ.W #1,D7
+            0x76, 0xFF, // MOVEQ #-1,D3
+            0x4E, 0x73, // RTE
+        ]);
+        rom[0x2E0..0x2E6].copy_from_slice(&[
+            0x52, 0x46, // ADDQ.W #1,D6
+            0x76, 0xFF, // MOVEQ #-1,D3
+            0x4E, 0x73, // RTE
+        ]);
+        super::stamp_synthetic_header(&mut rom);
+        rom
+    }
+
+    #[test]
+    fn status_reads_before_delivery_do_not_acknowledge_the_request() {
+        let mut machine = MegadriveFactory::new(status_read_before_delivery_rom())
+            .expect("valid status-read ROM")
+            .create_machine()
+            .expect("machine");
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::HBlank),
+            "HBlank pending while masked",
+        );
+        assert_eq!(register(&machine, "irq_mask"), 7);
+        assert_eq!(register(&machine, "d7"), 0);
+
+        // The ROM is in its status-read loop. More status reads must neither
+        // acknowledge the retained request nor enter the handler.
+        for _ in 0..20 {
+            machine.step(InputFrame::NEUTRAL).expect("status read");
+        }
+        assert!(
+            machine.interrupts().is_pending(InterruptLevel::HBlank),
+            "a status read must not acknowledge the pending HBlank"
+        );
+        assert_eq!(
+            register(&machine, "d7"),
+            0,
+            "a status read must not enter the handler"
+        );
+
+        // The loop lowers the mask; the retained request is still delivered.
+        step_until(
+            &mut machine,
+            |machine| register(machine, "d7") >= 1,
+            "HBlank delivery after the status reads",
+        );
+        assert_eq!(
+            register(&machine, "irq_mask"),
+            4,
+            "handler entry loads IPM 4"
+        );
+        assert!(!machine.interrupts().is_pending(InterruptLevel::HBlank));
+    }
+
     #[test]
     fn acknowledging_one_level_never_clears_the_other() {
         // The backend can only take VBlank first (68000 priority), so the reverse
