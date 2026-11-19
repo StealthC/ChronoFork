@@ -200,7 +200,9 @@ surface, with attach/detach proving unchanged canonical results and a determinis
 human/agent handoff. Deferred: native toolkit frontend, real video/audio sources and sinks
 (H2/H3), VDP/bus/disassembly/trace panel content (M6-FU1), live host-clock playback, GUI
 input injection, GUI state persistence and multi-window/multi-display. M7 is merged to
-`main` at `cb05836` (PR #6); M8 (functional Mega Drive) is `Next`, with M9 (multi-backend) `Planned`.
+`main` at `cb05836` (PR #6); M8 (functional Mega Drive) is `In progress` — phase 8.2 is
+implemented through repair round 10, with final verification/review and merge pending — and M9
+(multi-backend) is `Planned`.
 
 ## Licensing and provenance
 
