@@ -46,6 +46,25 @@ impl Fifo {
         self.len == FIFO_CAPACITY
     }
 
+    /// Pushes one word, returning `false` when the queue is already full.
+    ///
+    /// A caller that sees `false` records a wait slot; the queue never drops
+    /// or reorders a word.
+    pub(super) fn push(&mut self, word: u16) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        let tail = (self.head + self.len) % FIFO_CAPACITY;
+        self.words[tail] = word;
+        self.len += 1;
+        true
+    }
+
+    /// Drains the queue after an advance.
+    pub(super) fn drain(&mut self) {
+        *self = Self::empty();
+    }
+
     /// Returns the queued words oldest first, zero-padded to capacity.
     pub(super) fn words(&self) -> [u16; FIFO_CAPACITY] {
         let mut words = [0_u16; FIFO_CAPACITY];

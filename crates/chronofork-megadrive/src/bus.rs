@@ -341,6 +341,15 @@ impl MegadriveBus {
         &mut self.vdp
     }
 
+    /// Takes the VDP FIFO wait slots accumulated since the previous call.
+    ///
+    /// The count is in 68000 clock cycles; the backend converts it to master
+    /// cycles (`wait * 7`) and adds it to the instruction cost. A write that
+    /// found the four-word FIFO full contributes one slot and is never dropped.
+    pub fn take_vdp_wait_cycles(&mut self) -> u32 {
+        self.vdp.take_fifo_wait_cycles()
+    }
+
     /// Reads one byte through the bus, including side-effecting VDP ports and the
     /// step-scoped controller data registers.
     pub fn read8(&mut self, address: u32) -> Result<u8, BusError> {
@@ -994,6 +1003,10 @@ mod tests {
         bus.write8(0x00C0_0000, 0x5A).expect("byte write");
         assert_eq!(&bus.vdp().vram()[0x20..0x22], &[0x5A, 0x5A]);
 
+        // Two data-port writes are queued, so FIFO-empty is clear until the
+        // owner advances and drains the queue.
+        assert_eq!(bus.read16(0x00C0_0004).expect("status"), 0x0000);
+        bus.vdp_mut().drain_fifo();
         assert_eq!(bus.read16(0x00C0_0004).expect("status"), 0x0100);
         assert_eq!(bus.read16(0x00C0_0008).expect("hv counter"), 0);
     }

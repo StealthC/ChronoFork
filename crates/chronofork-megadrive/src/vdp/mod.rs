@@ -452,6 +452,9 @@ pub struct Vdp {
     /// Slot cost of the most recent eager DMA transfer, in master cycles.
     /// Derived observation consumed by the owner, not serialized.
     dma_cycles: u32,
+    /// Accumulated 68000-cycle wait slots for data-port writes that found the
+    /// FIFO full. Derived observation consumed by the owner, not serialized.
+    fifo_wait_cycles: u32,
 }
 
 impl Vdp {
@@ -478,6 +481,7 @@ impl Vdp {
             vint_pending: false,
             sprite_limit_reached: false,
             dma_cycles: 0,
+            fifo_wait_cycles: 0,
         }
     }
 
@@ -831,6 +835,7 @@ impl Vdp {
     pub fn take_dma_cycles(&mut self) -> u32 {
         let cycles = self.dma_cycles;
         self.dma_cycles = 0;
+        self.fifo_wait_cycles = 0;
         if self.dma.active() {
             self.dma =
                 DmaState::from_parts(self.dma.source(), self.dma.length(), self.dma.mode(), false);
@@ -1109,6 +1114,7 @@ impl Vdp {
         self.video = video;
         self.sprite_limit_reached = false;
         self.dma_cycles = 0;
+        self.fifo_wait_cycles = 0;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
@@ -1162,6 +1168,12 @@ impl Vdp {
         };
         let address = Self::word_address(target, self.address);
         self.write_word(target, address, value)?;
+        // The data write completes eagerly; the queue tracks occupancy and
+        // backpressure. A full queue costs one 68000-cycle wait slot per extra
+        // write without dropping or reordering it.
+        if !self.fifo.push(value) {
+            self.fifo_wait_cycles = self.fifo_wait_cycles.saturating_add(1);
+        }
         self.increment_address();
         Ok(())
     }
@@ -1216,6 +1228,26 @@ impl Vdp {
         Ok(())
     }
 
+    /// Drains the write FIFO after the owner advanced the device timeline.
+    ///
+    /// The data writes already completed eagerly, so draining only releases the
+    /// occupancy/backpressure bookkeeping. The owning backend calls this after
+    /// every step's [`Vdp::advance_master`].
+    pub fn drain_fifo(&mut self) {
+        self.fifo.drain();
+    }
+
+    /// Takes the accumulated FIFO wait slots, in 68000 clock cycles.
+    ///
+    /// Each data-port write that found the four-word queue full contributes one
+    /// slot. The backend converts the count to master cycles with
+    /// `wait * MASTER_CYCLES_PER_68000_CYCLE`.
+    pub fn take_fifo_wait_cycles(&mut self) -> u32 {
+        let wait = self.fifo_wait_cycles;
+        self.fifo_wait_cycles = 0;
+        wait
+    }
+
     /// Reads a big-endian VRAM word for the DMA engine.
     fn read_vram_word(&self, address: u16) -> u16 {
         let index = usize::from(address & 0xFFFE);
@@ -1253,6 +1285,7 @@ impl fmt::Debug for Vdp {
             .field("video", &self.video)
             .field("sprite_limit_reached", &self.sprite_limit_reached)
             .field("dma_cycles", &self.dma_cycles)
+            .field("fifo_wait_cycles", &self.fifo_wait_cycles)
             .field("vram_len", &self.vram.len())
             .finish()
     }

@@ -591,8 +591,19 @@ impl MegadriveBackend {
         // instructions instead of nesting several handlers in a single tick.
         self.deliver_pending_interrupt()?;
         let outcome = self.cpu.step(&mut self.bus).map_err(map_cpu)?;
-        let master_cycles = u64::from(outcome.cycles)
+        // A data-port write that found the VDP FIFO full stalls the CPU by one
+        // 68000 cycle per overflow slot; convert the slots to master cycles and
+        // add them to this instruction's cost. This is deterministic integer
+        // arithmetic, never host time.
+        let fifo_wait = self.bus.take_vdp_wait_cycles();
+        let instruction_cycles = u64::from(outcome.cycles)
             .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
+            .ok_or(BackendError::TickOverflow)?;
+        let wait_cycles = u64::from(fifo_wait)
+            .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
+            .ok_or(BackendError::TickOverflow)?;
+        let master_cycles = instruction_cycles
+            .checked_add(wait_cycles)
             .ok_or(BackendError::TickOverflow)?;
         let next_tick = self
             .tick
@@ -602,6 +613,12 @@ impl MegadriveBackend {
         self.scheduler
             .advance_master(master_cycles)
             .map_err(map_scheduler)?;
+        // The VDP advances on the same master-cycle timeline, then its FIFO
+        // drains and any eager DMA busy window closes for the next step.
+        let standard = self.scheduler.config().standard();
+        self.bus.vdp_mut().advance_master(master_cycles, standard);
+        self.bus.vdp_mut().drain_fifo();
+        self.bus.vdp_mut().take_dma_cycles();
         self.tick = Tick::from_raw(next_tick);
         self.observe_scheduler_requests();
         self.sync_vdp_status();
@@ -1513,7 +1530,7 @@ mod tests {
 
     use super::{
         HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
+        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom, stamp_synthetic_header,
     };
     use crate::bus::{
         BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, RAM_BASE, RAM_END,
@@ -3190,8 +3207,10 @@ mod tests {
         //
         // Phase 8.3 re-pinned the length and the two hashes: payload v4 embeds
         // the VDP snapshot, and VDP snapshot v2 (`CFVDP002`) adds the device
-        // state, so the body grew by 237 bytes. Phase 8.3 task 12 bumps the
-        // outer payload to v5 and re-pins these values again.
+        // state, so the body grew by 237 bytes. Phase 8.3 tasks 9–10 also drive
+        // the VDP line/dot timeline from the backend, so the six-step state
+        // includes a non-zero VDP position; the outer payload is still v4.
+        // Phase 8.3 task 12 bumps the outer payload to v5 and re-pins again.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
@@ -3200,15 +3219,67 @@ mod tests {
         assert_eq!(snapshot.payload().len(), 197_058);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "4cab2a24407480f82c08d035857fe09462b716ab73ddadde31956f694393764f"
+            "f7d3d49de6ccb6c5f630660c0d5623f349f2672db5ead789c85d9755e2b77b6f"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "c7013848900f3d3edb715000e4b15416102bc863ec4d7eca173ea67172e98117"
+            "646ac25ae1263679a69831d9ada86d28a7f0dd587f3422998951e79b29c2c41c"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
             "1ac706deb485d0b521b67533d2b17e6aed87db900609eed810874482f656eca4"
         );
+    }
+
+    /// A valid cartridge whose program is a NOP fill, so a step's tick delta is
+    /// exactly the instruction cost.
+    fn nop_factory() -> MegadriveFactory {
+        let mut rom = vec![0_u8; 0x400];
+        for word in rom.chunks_exact_mut(2) {
+            word.copy_from_slice(&[0x4E, 0x71]);
+        }
+        rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        stamp_synthetic_header(&mut rom);
+        MegadriveFactory::new(rom).expect("nop cartridge")
+    }
+
+    fn fill_vdp_fifo(machine: &mut MegadriveBackend) {
+        use crate::vdp::{CONTROL_PORT_OFFSET, DATA_PORT_OFFSET};
+
+        let vdp = machine.bus.vdp_mut();
+        vdp.write16(CONTROL_PORT_OFFSET, 0x8F02)
+            .expect("auto-increment");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
+            .expect("command first word");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0000)
+            .expect("command second word");
+        for word in 0..5_u16 {
+            vdp.write16(DATA_PORT_OFFSET, word)
+                .expect("queued data write");
+        }
+    }
+
+    #[test]
+    fn vdp_fifo_wait_cycles_are_added_to_the_instruction_tick() {
+        let factory = nop_factory();
+        let mut plain = factory.create_machine().expect("machine");
+        let mut stalled = factory.create_machine().expect("machine");
+        fill_vdp_fifo(&mut stalled);
+
+        let plain_outcome = plain.step(InputFrame::NEUTRAL).expect("plain step");
+        let stalled_outcome = stalled.step(InputFrame::NEUTRAL).expect("stalled step");
+        assert_eq!(
+            stalled_outcome.tick.raw(),
+            plain_outcome.tick.raw() + 7,
+            "one FIFO overflow slot adds one 68000 cycle (seven master cycles)"
+        );
+
+        // The same setup is deterministic: identical tick and state hash.
+        let mut again = factory.create_machine().expect("machine");
+        fill_vdp_fifo(&mut again);
+        let again_outcome = again.step(InputFrame::NEUTRAL).expect("repeat step");
+        assert_eq!(again_outcome.tick, stalled_outcome.tick);
+        assert_eq!(again_outcome.state_hash, stalled_outcome.state_hash);
     }
 }
