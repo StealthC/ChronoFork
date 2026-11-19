@@ -17,10 +17,10 @@
 > are one-line records; their Definition of Done, work items and evidence stay on the
 > canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone, but
 > M8 is the product milestone that sequences those tracks to completion. M8 is marked active
-> because it is the current milestone — its phases are still pending, so the status does not
-> mean implementation or merge is in progress. The canonical milestone page calls M8 `Next`
-> and M9 `Planned`; this file's `active` and `**Started:**` date record when the lifecycle
-> layer took M8 as the current milestone, not when implementation began.
+> because it is the current milestone: phase 8.2 is complete and merged and phases 8.3–8.8 are
+> pending, so `active` does not mean every phase is implemented. The canonical milestone page
+> records M8 as `In progress` and M9 as `Planned`; this file's `active` and `**Started:**` date
+> record when the lifecycle layer took M8 as the current milestone.
 >
 > **Owner decision (2026-11-17).** M8 was redefined as the functional Mega Drive emulator;
 > the former multi-backend milestone moved to M9. The backend is considered complete only
@@ -116,7 +116,7 @@ mapper and SRAM, and boot a cartridge deterministically to its main loop.
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.1-cartridge-region-tmss.md)
 **Completed:** 2026-11-17
 
-### Phase 8.2: Complete 68000 and the cycle time model [status: pending]
+### Phase 8.2: Complete 68000 and the cycle time model [status: complete]
 
 **Goal:** Implement the full 68000 instruction set, addressing modes, privilege and exception
 groups with cycle accounting, defining canonical emulated time for the machine.
@@ -124,6 +124,7 @@ groups with cycle accounting, defining canonical emulated time for the machine.
 **HelpWanted:** no
 **Issue:** #15
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.2-cpu-cycle-model.md)
+**Completed:** 2026-11-18
 
 ### Phase 8.3: Complete VDP [status: pending]
 
