@@ -43,6 +43,19 @@
 //!   frame counters, the approximate H/V counters and the HV-counter port.
 //!   VBlank/HBlank status comes from the position; interlace and dot-exact
 //!   counter values are not modelled and are not claimed.
+//! - Scanline rendering through [`Vdp::render_scanline`] and frame assembly
+//!   through [`Vdp::finish_frame`]: plane A/B nametables with cell tile,
+//!   palette, h/v flips and priority; 4bpp packed tile fetch; the window from
+//!   registers `0x11`/`0x12`; full/column/line scroll from `0x0B`/`0x0D` (the
+//!   undocumented value 3 falls back to full-screen scroll); 80 link-ordered
+//!   sprites with sizes, flips, X-duplication for sprites starting left of the
+//!   screen and per-line count/pixel budgets; the documented
+//!   sprite-priority > plane-A > plane-B priority table; shadow/highlight
+//!   operator flags when register `0x0C` bit 3 is set; and the register-`0x07`
+//!   background colour on the H40 side-column border. Frame pixels are palette
+//!   indices carrying the shadow/highlight flags for the media layer, and
+//!   H32/H40 plus the 224/240-line height follow register `0x0C` and the video
+//!   standard.
 //! - Canonical device state for the rest of phase 8.3: 64 CRAM words, 40 VSRAM
 //!   words, the bounded write FIFO, DMA state, the frame index, the line/dot
 //!   position and the latched status conditions. DMA transfers and FIFO/access
@@ -76,11 +89,12 @@
 //! half-latched command word; it never acknowledges, clears or otherwise
 //! consumes an interrupt request.
 //!
-//! **Not implemented (and not claimed):** rendering, planes, window, sprites,
-//! scrolling, DMA transfers, FIFO/access timing, H/V counters, VSRAM data-port
-//! reads, VDP interrupt enable registers and VDP-side acknowledge logic
-//! (status bit 7 is driven by the external scheduler), Z80/PSG interaction,
-//! audio, interlace, the byte-swapped/interleaved physical VRAM layout, and
+//! **Not implemented (and not claimed):** DMA transfers, FIFO/access timing,
+//! VSRAM data-port reads, VDP interrupt enable registers and VDP-side
+//! acknowledge logic (status bit 7 is driven by the external scheduler),
+//! Z80/PSG interaction, audio, interlace, the byte-swapped/interleaved
+//! physical VRAM layout, dot-exact H/V counters, exact H32 window geometry and
+//! exact line-mode vertical scrolling (see the `render` module notes), and
 //! cycle-accurate port timing.
 //!
 //! **Deterministic reset state:** VRAM, CRAM, VSRAM, the FIFO, DMA state,

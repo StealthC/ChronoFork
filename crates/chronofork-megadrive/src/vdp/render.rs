@@ -248,6 +248,41 @@ impl Vdp {
         out[..count].copy_from_slice(&pixels[..count]);
     }
 
+    /// Renders every active line into a completed [`FrameBuffer`].
+    ///
+    /// The frame uses the active width (320 in H40, 256 in H32) and height
+    /// (224 NTSC, 240 PAL), composes each line through the plane/window/sprite
+    /// priority table, encodes shadow/highlight operators as pixel flags and
+    /// fills the H40 eight-pixel side borders with the register-`0x07`
+    /// background colour. The sprite collision/overflow latches are cleared at
+    /// the start of the frame and latched again while the lines render, so the
+    /// status register reflects the completed frame.
+    ///
+    /// Rendering is a pure function of canonical state: two calls from the same
+    /// state return byte-identical frames and the same checksum.
+    pub fn finish_frame(&mut self) -> FrameBuffer {
+        let width = self.active_width();
+        let height = self.active_height();
+        let mut frame = FrameBuffer::new(width, height);
+        self.status_latches.sprite_collision = false;
+        self.status_latches.sprite_overflow = false;
+        self.sprite_limit_reached = false;
+
+        let width_pixels = usize::from(width);
+        let border = self.background_colour();
+        let side_border = if self.is_h40() { 8 } else { 0 };
+        let mut line = [0_u8; MAX_FRAME_WIDTH as usize];
+        for y in 0..height {
+            self.compose_scanline(y, &mut line[..width_pixels]);
+            let row = usize::from(y) * width_pixels;
+            for (x, pixel) in line[..width_pixels].iter().enumerate() {
+                let outside = x < side_border || x >= width_pixels - side_border;
+                frame.indices[row + x] = if outside { border } else { *pixel };
+            }
+        }
+        frame
+    }
+
     /// Returns the active display width in pixels.
     #[must_use]
     pub fn active_width(&self) -> u16 {
