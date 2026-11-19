@@ -126,13 +126,15 @@ use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
 use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
 use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
-use crate::cpu::{CpuError, M68000};
+use crate::cpu::{CpuError, M68000, interrupt_level_deliverable};
 use crate::cycles::MASTER_CYCLES_PER_68000_CYCLE;
 use crate::interrupts::{
     InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
 };
 use crate::trace::{InstructionTrace, TraceError};
-use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
+use crate::vdp::{
+    AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp, VdpInterruptSource,
+};
 
 /// Stable backend identifier.
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
@@ -502,20 +504,39 @@ impl MegadriveBackend {
         self.bus.vdp_mut().set_vblank(vblank);
     }
 
-    /// Recomputes the derived VINT-pending status bit from the canonical
-    /// scheduler state.
+    /// Mirrors the scheduler's retained line events into VDP-owned requests.
     ///
-    /// The latch is set while a VBlank (level 6) request is pending, whether or
-    /// not the 68000 `SR` mask currently admits it, and clears only when delivery
-    /// acknowledges that request. It is derived state, so this must run after
-    /// every mutation of pending state and after a restore.
+    /// The scheduler remains the master-cycle line-event source; the VDP owns
+    /// the pending/acknowledge surface and the register-`0x00` enable gating.
+    /// A request the program has disabled is dropped by the VDP, while the
+    /// scheduler keeps its retained request so enabling the bit later can still
+    /// deliver it.
+    fn sync_vdp_interrupts(&mut self) {
+        for (level, source) in [
+            (InterruptLevel::VBlank, VdpInterruptSource::VBlank),
+            (InterruptLevel::HBlank, VdpInterruptSource::HBlank),
+        ] {
+            if self.scheduler.is_pending(level) {
+                self.bus.vdp_mut().request_interrupt(source);
+            }
+        }
+    }
+
+    /// Recomputes the derived VINT-pending status bit from the VDP's owned
+    /// VBlank request.
+    ///
+    /// The latch is set while the VDP holds an enabled VBlank request, whether
+    /// or not the 68000 `SR` mask currently admits it, and clears only when
+    /// delivery acknowledges that request. It is derived state, so this must run
+    /// after every mutation of pending state and after a restore.
     fn sync_vdp_vint_pending(&mut self) {
-        let pending = self.scheduler.is_pending(InterruptLevel::VBlank);
+        let pending = self.bus.vdp().take_interrupts().vblank_pending;
         self.bus.vdp_mut().set_vint_pending(pending);
     }
 
     fn sync_vdp_status(&mut self) {
         self.sync_vdp_vblank();
+        self.sync_vdp_interrupts();
         self.sync_vdp_vint_pending();
     }
 
@@ -529,29 +550,43 @@ impl MegadriveBackend {
     /// is delivered, only that level is acknowledged, so a pending request of the
     /// other level survives.
     fn deliver_pending_interrupt(&mut self) -> Result<(), BackendError> {
-        let Some(level) = self.scheduler.next_deliverable(self.cpu.sr()) else {
-            return Ok(());
-        };
-        self.cpu
-            .interrupt(level.level(), vector_address(level), &mut self.bus)
-            .map_err(map_cpu)?;
-        self.bus
-            .debug_observer_mut()
-            .record(DebugEventKind::InterruptDelivered {
-                level: level.level(),
-            });
-        // Acknowledge exactly the delivered level: selecting the highest-priority
-        // pending request instead could acknowledge a different (masked) level.
-        let acknowledged = self.scheduler.acknowledge(level);
-        debug_assert!(acknowledged, "a deliverable level must have been pending");
-        if acknowledged {
+        // VBlank (level 6) is checked before HBlank (level 4), preserving the
+        // hardware priority order. A request is deliverable only when the VDP
+        // still owns it (register 0x00 enabled it) and the 68000 SR mask admits
+        // the level according to the shared predicate.
+        for (level, source) in [
+            (InterruptLevel::VBlank, VdpInterruptSource::VBlank),
+            (InterruptLevel::HBlank, VdpInterruptSource::HBlank),
+        ] {
+            if !self.scheduler.is_pending(level)
+                || !self.bus.vdp().take_interrupts().pending(source)
+                || !interrupt_level_deliverable(level.level(), self.cpu.sr())
+            {
+                continue;
+            }
+            self.cpu
+                .interrupt(level.level(), vector_address(level), &mut self.bus)
+                .map_err(map_cpu)?;
             self.bus
                 .debug_observer_mut()
-                .record(DebugEventKind::InterruptAcknowledged {
+                .record(DebugEventKind::InterruptDelivered {
                     level: level.level(),
                 });
+            // Acknowledge exactly the delivered level and source: selecting a
+            // different retained request could acknowledge a masked one.
+            let acknowledged = self.scheduler.acknowledge(level);
+            debug_assert!(acknowledged, "a deliverable level must have been pending");
+            self.bus.vdp_mut().acknowledge(source);
+            if acknowledged {
+                self.bus
+                    .debug_observer_mut()
+                    .record(DebugEventKind::InterruptAcknowledged {
+                        level: level.level(),
+                    });
+            }
+            self.sync_vdp_vint_pending();
+            return Ok(());
         }
-        self.sync_vdp_vint_pending();
         Ok(())
     }
 
@@ -748,6 +783,8 @@ impl Backend for MegadriveBackend {
         // state, so recompute it before anything can inspect the machine. The
         // canonical VBlank bit (bit 3) is serialized and was validated against
         // the snapshot state hash, so it is not reinterpreted here.
+        self.bus.vdp_mut().clear_interrupts();
+        self.sync_vdp_interrupts();
         self.sync_vdp_vint_pending();
         // The scheduler's diagnostic counters were just restored. Rebase the
         // debug-only request detection on them so a restore never reports a
@@ -1375,6 +1412,7 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
 
     let mut main = vec![
         0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR (explicitly mask the VDP levels)
+        0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0x00C00004)
         0x30, 0x3C, 0x00, 0x64, // MOVE.W #100,D0 (busy delay over two scanlines)
         0x51, 0xC8, 0xFF, 0xFC, // DBRA D0,*-4 (10 cycles per iteration)
         0x46, 0xFC, // MOVE.W #imm,SR: lower the mask to `mask`
@@ -1660,17 +1698,22 @@ mod tests {
         assert_eq!(&rom[0x70..0x74], &0x0000_02C0_u32.to_be_bytes());
         assert_eq!(&rom[0x78..0x7C], &0x0000_02E0_u32.to_be_bytes());
 
-        // MOVE.W #$2700,SR, a 100-iteration DBRA delay, then MOVE.W #$2300,SR.
+        // MOVE.W #$2700,SR, enable the VDP interrupts, a 100-iteration DBRA
+        // delay, then MOVE.W #$2300,SR.
         assert_eq!(&rom[0x200..0x204], &[0x46, 0xFC, 0x27, 0x00]);
-        assert_eq!(&rom[0x204..0x208], &[0x30, 0x3C, 0x00, 0x64]);
-        assert_eq!(&rom[0x208..0x20C], &[0x51, 0xC8, 0xFF, 0xFC]);
-        assert_eq!(&rom[0x20C..0x210], &[0x46, 0xFC, 0x23, 0x00]);
-        assert_eq!(&rom[0x210..0x212], &[0x70, 0x00]); // MOVEQ #0,D0
         assert_eq!(
-            &rom[0x212..0x218],
+            &rom[0x204..0x20C],
+            &[0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04]
+        ); // MOVE.W #$8030,(0x00C00004): enable VBlank and HBlank
+        assert_eq!(&rom[0x20C..0x210], &[0x30, 0x3C, 0x00, 0x64]);
+        assert_eq!(&rom[0x210..0x214], &[0x51, 0xC8, 0xFF, 0xFC]);
+        assert_eq!(&rom[0x214..0x218], &[0x46, 0xFC, 0x23, 0x00]);
+        assert_eq!(&rom[0x218..0x21A], &[0x70, 0x00]); // MOVEQ #0,D0
+        assert_eq!(
+            &rom[0x21A..0x220],
             &[0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04] // MOVE.W (0x00C00004).L,D5
         );
-        assert_eq!(&rom[0x218..0x21A], &[0x60, 0xF8]); // BRA.S status read
+        assert_eq!(&rom[0x220..0x222], &[0x60, 0xF8]); // BRA.S status read
 
         // Both handlers increment their counter, set N with MOVEQ #-1,D3 and RTE.
         // There is no MOVE.W #$2700,SR handler prologue: exception entry loads the
@@ -1689,8 +1732,8 @@ mod tests {
         );
 
         // The mask parameter is encoded as SR = 0x2000 | mask << 8.
-        assert_eq!(&interrupt_rom(7)[0x20C..0x210], &[0x46, 0xFC, 0x27, 0x00]);
-        assert_eq!(&interrupt_rom(0)[0x20C..0x210], &[0x46, 0xFC, 0x20, 0x00]);
+        assert_eq!(&interrupt_rom(7)[0x214..0x218], &[0x46, 0xFC, 0x27, 0x00]);
+        assert_eq!(&interrupt_rom(0)[0x214..0x218], &[0x46, 0xFC, 0x20, 0x00]);
     }
 
     #[test]
@@ -2022,7 +2065,7 @@ mod tests {
         // retained but is now deliverable.
         step_until(
             &mut machine,
-            |machine| machine.cpu().pc() == 0x210,
+            |machine| machine.cpu().pc() == 0x218,
             "mask lowering",
         );
         let lowered = machine.inspect().expect("inspect");
@@ -2068,10 +2111,10 @@ mod tests {
             delivered.memory[frame + 5],
         ]);
         assert_eq!(saved_sr, 0x2300);
-        assert_eq!(saved_pc, 0x210);
+        assert_eq!(saved_pc, 0x218);
         assert_eq!(
             delivered.memory[frame..frame + 6],
-            [0x23, 0x00, 0x00, 0x00, 0x02, 0x10]
+            [0x23, 0x00, 0x00, 0x00, 0x02, 0x18]
         );
 
         machine.step(InputFrame::NEUTRAL).expect("handler MOVEQ");
@@ -2087,7 +2130,7 @@ mod tests {
         machine.step(InputFrame::NEUTRAL).expect("RTE");
         let returned = machine.inspect().expect("inspect");
         assert_eq!(
-            returned.registers["pc"], 0x210,
+            returned.registers["pc"], 0x218,
             "RTE returns to the interrupted PC"
         );
         assert_eq!(machine.cpu().sr(), 0x2300, "RTE restores the saved raw SR");
@@ -2731,7 +2774,7 @@ mod tests {
         // The fork finishes its delay loop, lowers the mask and takes the
         // retained HBlank at the next instruction boundary.
         for _ in 0..1_000_000 {
-            if manager.inspect(fork).expect("inspect").machine.registers["pc"] == 0x210 {
+            if manager.inspect(fork).expect("inspect").machine.registers["pc"] == 0x218 {
                 break;
             }
             manager.step(fork, InputFrame::NEUTRAL).expect("lower mask");

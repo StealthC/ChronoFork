@@ -418,6 +418,40 @@ impl fmt::Display for VdpError {
 
 impl Error for VdpError {}
 
+/// A VDP-generated interrupt source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VdpInterruptSource {
+    /// Vertical blanking (68000 level 6).
+    VBlank,
+    /// Horizontal blanking (68000 level 4).
+    HBlank,
+}
+
+/// The VDP's pending interrupt requests.
+///
+/// The requests are owned by the VDP and gated by register `0x00` bits 5 (VBlank)
+/// and 4 (HBlank). They are derived from the master-cycle timeline, so they are
+/// not serialized; the owning backend re-derives them from the scheduler's
+/// retained requests after a restore.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct VdpInterrupts {
+    /// Vertical-blanking request is pending.
+    pub vblank_pending: bool,
+    /// Horizontal-blanking request is pending.
+    pub hblank_pending: bool,
+}
+
+impl VdpInterrupts {
+    /// Returns whether `source` is pending.
+    #[must_use]
+    pub const fn pending(self, source: VdpInterruptSource) -> bool {
+        match source {
+            VdpInterruptSource::VBlank => self.vblank_pending,
+            VdpInterruptSource::HBlank => self.hblank_pending,
+        }
+    }
+}
+
 /// Partial 315-5313 VDP: port window, status register, device state and
 /// snapshot.
 ///
@@ -446,6 +480,12 @@ pub struct Vdp {
     /// Derived VINT-pending latch driven by the owning machine's interrupt
     /// source. Deliberately absent from the serialized snapshot.
     vint_pending: bool,
+    /// VBlank request pending, gated by register `0x00` bit 5. Derived state,
+    /// not serialized.
+    vblank_pending: bool,
+    /// HBlank request pending, gated by register `0x00` bit 4. Derived state,
+    /// not serialized.
+    hblank_pending: bool,
     /// Whether the most recently rendered line reached the per-line sprite
     /// count or pixel budget. Derived render observation, not serialized.
     sprite_limit_reached: bool,
@@ -479,6 +519,8 @@ impl Vdp {
             video: VideoStandard::Ntsc,
             status_latches: StatusLatches::default(),
             vint_pending: false,
+            vblank_pending: false,
+            hblank_pending: false,
             sprite_limit_reached: false,
             dma_cycles: 0,
             fifo_wait_cycles: 0,
@@ -561,6 +603,63 @@ impl Vdp {
     #[must_use]
     pub const fn vint_pending(&self) -> bool {
         self.vint_pending
+    }
+
+    /// Returns whether register `0x00` enables `source`.
+    ///
+    /// Bit 5 is the VBlank enable and bit 4 the HBlank enable, matching the
+    /// phase 8.3 design's modelled register layout.
+    #[must_use]
+    pub fn interrupt_enabled(&self, source: VdpInterruptSource) -> bool {
+        let bit = match source {
+            VdpInterruptSource::VBlank => 0x20,
+            VdpInterruptSource::HBlank => 0x10,
+        };
+        self.registers[0] & bit != 0
+    }
+
+    /// Requests `source`, gated by register `0x00`.
+    ///
+    /// A disabled source is dropped: it does not set a pending request. A
+    /// request that is already pending is coalesced (the latch stays set).
+    pub fn request_interrupt(&mut self, source: VdpInterruptSource) {
+        if !self.interrupt_enabled(source) {
+            return;
+        }
+        match source {
+            VdpInterruptSource::VBlank => self.vblank_pending = true,
+            VdpInterruptSource::HBlank => self.hblank_pending = true,
+        }
+    }
+
+    /// Returns the pending interrupt requests without consuming them.
+    ///
+    /// A control-port status read reports these requests but never acknowledges
+    /// them: only [`Vdp::acknowledge`] clears a request, so a program observing
+    /// the status register cannot lose an interrupt by polling it.
+    #[must_use]
+    pub const fn take_interrupts(&self) -> VdpInterrupts {
+        VdpInterrupts {
+            vblank_pending: self.vblank_pending,
+            hblank_pending: self.hblank_pending,
+        }
+    }
+
+    /// Acknowledges one delivered `source`, leaving the other source pending.
+    pub fn acknowledge(&mut self, source: VdpInterruptSource) {
+        match source {
+            VdpInterruptSource::VBlank => self.vblank_pending = false,
+            VdpInterruptSource::HBlank => self.hblank_pending = false,
+        }
+    }
+
+    /// Clears both pending requests.
+    ///
+    /// The owning backend calls this before re-deriving requests after a
+    /// restore, so no stale request survives the snapshot replacement.
+    pub fn clear_interrupts(&mut self) {
+        self.vblank_pending = false;
+        self.hblank_pending = false;
     }
 
     /// Returns the flat 64 KiB VRAM contents.
@@ -836,6 +935,8 @@ impl Vdp {
         let cycles = self.dma_cycles;
         self.dma_cycles = 0;
         self.fifo_wait_cycles = 0;
+        self.vblank_pending = false;
+        self.hblank_pending = false;
         if self.dma.active() {
             self.dma =
                 DmaState::from_parts(self.dma.source(), self.dma.length(), self.dma.mode(), false);
@@ -1115,6 +1216,8 @@ impl Vdp {
         self.sprite_limit_reached = false;
         self.dma_cycles = 0;
         self.fifo_wait_cycles = 0;
+        self.vblank_pending = false;
+        self.hblank_pending = false;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
@@ -1286,6 +1389,8 @@ impl fmt::Debug for Vdp {
             .field("sprite_limit_reached", &self.sprite_limit_reached)
             .field("dma_cycles", &self.dma_cycles)
             .field("fifo_wait_cycles", &self.fifo_wait_cycles)
+            .field("vblank_pending", &self.vblank_pending)
+            .field("hblank_pending", &self.hblank_pending)
             .field("vram_len", &self.vram.len())
             .finish()
     }
