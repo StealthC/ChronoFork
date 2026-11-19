@@ -27,13 +27,23 @@ pub const CONTROL_PORT_OFFSET: u8 = 0x04;
 /// Offset of the HV-counter port relative to `0xC00000`.
 pub const HV_COUNTER_OFFSET: u8 = 0x08;
 
-/// PAL region flag (status bit 0). Always 0: region is not modelled.
+/// PAL region flag (status bit 0).
+///
+/// Set while the device's timing was last advanced under the PAL video
+/// standard; the reset state is NTSC.
 pub const STATUS_PAL: u16 = 0x0001;
 /// DMA-busy flag (status bit 1).
 pub const STATUS_DMA_BUSY: u16 = 0x0002;
 /// HBlank flag (status bit 2).
+///
+/// Set while the master-cycle dot is inside the approximate horizontal
+/// blanking tail of the line (see [`crate::vdp::Vdp::h_counter`]).
 pub const STATUS_HBLANK: u16 = 0x0004;
 /// VBlank flag (status bit 3).
+///
+/// Driven by [`crate::vdp::Vdp::advance_master`] from the active-line count, or
+/// by the owning backend through `set_vblank` while the VDP is not yet driven
+/// on its own timeline.
 pub const STATUS_VBLANK: u16 = 0x0008;
 /// Odd interlace frame flag (status bit 4).
 pub const STATUS_ODD_FRAME: u16 = 0x0010;

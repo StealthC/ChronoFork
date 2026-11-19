@@ -19,8 +19,8 @@
 //! - The VDP port window at offsets `0x00..=0x0F` relative to `0xC00000`:
 //!   `0x00..=0x03` is the data port (word accesses at `0x00`/`0x02`),
 //!   `0x04..=0x07` is the control port (word accesses at `0x04`/`0x06`) and
-//!   `0x08..=0x0F` is the HV counter. HV-counter reads return zero because no
-//!   raster timing is modelled yet; HV-counter writes are rejected.
+//!   `0x08..=0x0F` is the HV counter, which returns the current approximate
+//!   V/H position (see the timing module); HV-counter writes are rejected.
 //! - Control-port two-word command setup. The first word latches command bits
 //!   `1..=0` (bits `15..=14`) and address bits `13..=0`; the second word
 //!   latches command bits `5..=2` (bits `7..=4`) and address bits `15..=14`
@@ -39,20 +39,25 @@
 //!   wraps modulo its 40 words through a 9-bit address). CRAM/VSRAM data-port
 //!   reads are supported for CRAM; VSRAM reads have no decoded command in this
 //!   slice and are rejected.
+//! - Master-cycle line timing through [`Vdp::advance_master`]: dot, line and
+//!   frame counters, the approximate H/V counters and the HV-counter port.
+//!   VBlank/HBlank status comes from the position; interlace and dot-exact
+//!   counter values are not modelled and are not claimed.
 //! - Canonical device state for the rest of phase 8.3: 64 CRAM words, 40 VSRAM
 //!   words, the bounded write FIFO, DMA state, the frame index, the line/dot
-//!   position and the latched status conditions. DMA transfers, FIFO/access
-//!   timing and raster timing arrive in later tasks; the state is present,
-//!   canonical and snapshotted.
-//! - The status-register bits covered by [`STATUS_MASK`]. VBlank (bit 3) is
-//!   controlled by [`Vdp::set_vblank`] and VBlank-interrupt-pending, VINT
-//!   (bit 7), by [`Vdp::set_vint_pending`]. PAL (bit 0) and HBlank (bit 2) read
-//!   zero until region and raster timing exist. FIFO-empty is derived from the
-//!   empty FIFO; DMA-busy, sprite-collision and sprite-overflow are derived from
-//!   their state and latches.
+//!   position and the latched status conditions. DMA transfers and FIFO/access
+//!   timing arrive in later tasks; the state is present, canonical and
+//!   snapshotted.
+//! - The status-register bits covered by [`STATUS_MASK`], all derived from
+//!   device state: PAL from the video standard, HBlank from the dot position,
+//!   VBlank and the sprite/odd-frame latches from the latches, DMA-busy from
+//!   the DMA state, VINT from the owning machine's pending request and FIFO
+//!   empty/full from the write queue.
 //! - Versioned, fixed-length snapshots through [`Vdp::snapshot_bytes`] and
 //!   [`Vdp::restore_bytes`]. Format v2 (`CFVDP002`) covers the complete device
-//!   state; `CFVDP001`/v1 payloads are rejected, never reinterpreted.
+//!   state, including the PAL flag and the line/dot position (validated
+//!   against the stored standard); `CFVDP001`/v1 payloads are rejected, never
+//!   reinterpreted.
 //!
 //! # VINT-pending is derived state
 //!
@@ -95,11 +100,15 @@ use std::fmt;
 
 use chronofork_core::codec::Writer;
 
+use crate::cycles::{MASTER_CYCLES_PER_LINE, lines_per_frame};
+use crate::interrupts::VideoStandard;
+
 use fifo::Fifo;
 use regs::{
     CODE_CRAM_READ, CODE_CRAM_WRITE, CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE,
     CODE_VRAM_READ, CODE_VRAM_WRITE, CODE_VSRAM_WRITE,
 };
+use timing::HBLANK_START_MASTER_CYCLES;
 
 pub use dma::{DmaMode, DmaState};
 pub use fifo::FIFO_CAPACITY;
@@ -110,6 +119,7 @@ pub use regs::{
     STATUS_SPRITE_OVERFLOW, STATUS_VBLANK, STATUS_VINT_PENDING, StatusLatches, VRAM_SIZE,
     VSRAM_WORDS, VramTarget,
 };
+pub use timing::VdpTick;
 
 /// Magic prefix of a serialized VDP snapshot.
 pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFVDP002";
@@ -120,7 +130,8 @@ pub const SNAPSHOT_VERSION: u16 = 2;
 //
 //   0..8    magic "CFVDP002"
 //   8..10   format version (2)
-//   10      flags: vblank, half-latched command, odd frame, collision, overflow
+//   10      flags: vblank, half-latched command, odd frame, collision,
+//           overflow, PAL
 //   11      command code (six bits)
 //   12..14  address
 //   14..38  registers (24)
@@ -160,11 +171,16 @@ const SNAPSHOT_FLAG_COMMAND_PENDING: u8 = 1 << 1;
 const SNAPSHOT_FLAG_ODD_FRAME: u8 = 1 << 2;
 const SNAPSHOT_FLAG_SPRITE_COLLISION: u8 = 1 << 3;
 const SNAPSHOT_FLAG_SPRITE_OVERFLOW: u8 = 1 << 4;
+/// PAL video standard (the device was last advanced under PAL). Flag bit 5 was
+/// reserved before timing existed; no earlier valid v2 payload used it, so
+/// accepting it now reinterprets no accepted state.
+const SNAPSHOT_FLAG_PAL: u8 = 1 << 5;
 const SNAPSHOT_FLAG_MASK: u8 = SNAPSHOT_FLAG_VBLANK
     | SNAPSHOT_FLAG_COMMAND_PENDING
     | SNAPSHOT_FLAG_ODD_FRAME
     | SNAPSHOT_FLAG_SPRITE_COLLISION
-    | SNAPSHOT_FLAG_SPRITE_OVERFLOW;
+    | SNAPSHOT_FLAG_SPRITE_OVERFLOW
+    | SNAPSHOT_FLAG_PAL;
 
 /// A VDP port access or snapshot that this slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -245,6 +261,20 @@ pub enum VdpError {
         /// Value found in the snapshot.
         value: u8,
     },
+    /// A snapshot line outside the frame of its video standard.
+    SnapshotLineOutOfRange {
+        /// Line found in the snapshot.
+        line: u16,
+        /// Last valid line (exclusive) for the stored standard.
+        lines_per_frame: u16,
+    },
+    /// A snapshot dot outside one master-cycle line.
+    SnapshotDotOutOfRange {
+        /// Dot found in the snapshot.
+        dot: u16,
+        /// Master cycles in one line.
+        master_cycles_per_line: u64,
+    },
 }
 
 impl fmt::Display for VdpError {
@@ -298,6 +328,20 @@ impl fmt::Display for VdpError {
             Self::SnapshotBooleanInvalid { field, value } => {
                 write!(f, "VDP snapshot {field} flag {value} is not 0 or 1")
             }
+            Self::SnapshotLineOutOfRange {
+                line,
+                lines_per_frame,
+            } => write!(
+                f,
+                "VDP snapshot line {line} is outside the {lines_per_frame}-line frame"
+            ),
+            Self::SnapshotDotOutOfRange {
+                dot,
+                master_cycles_per_line,
+            } => write!(
+                f,
+                "VDP snapshot dot {dot} is outside the {master_cycles_per_line}-cycle line"
+            ),
         }
     }
 }
@@ -325,6 +369,9 @@ pub struct Vdp {
     frame_index: u64,
     line: u16,
     dot: u16,
+    /// Video standard the timing last advanced under; drives the PAL status
+    /// bit. Snapshotted through the flag byte.
+    video: VideoStandard,
     status_latches: StatusLatches,
     /// Derived VINT-pending latch driven by the owning machine's interrupt
     /// source. Deliberately absent from the serialized snapshot.
@@ -350,6 +397,7 @@ impl Vdp {
             frame_index: 0,
             line: 0,
             dot: 0,
+            video: VideoStandard::Ntsc,
             status_latches: StatusLatches::default(),
             vint_pending: false,
         }
@@ -357,15 +405,20 @@ impl Vdp {
 
     /// Returns the ten-bit status register.
     ///
-    /// DMA-busy, HBlank, VBlank, odd frame, sprite collision, sprite overflow,
-    /// VINT pending and FIFO empty/full are derived from device state; PAL and
-    /// HBlank stay zero until region and raster timing exist. The upper bits
-    /// are zero rather than the floating values real hardware returns. Reading
-    /// the status through a control-port access does not acknowledge the
-    /// VINT-pending latch; only [`Vdp::set_vint_pending`] changes it.
+    /// Every bit comes from device state instead of a constant: PAL from the
+    /// video standard, HBlank from the dot position, VBlank and the sprite
+    /// latches from the status latches, DMA-busy from the DMA state, VINT from
+    /// the owning machine's pending request and FIFO empty/full from the write
+    /// queue. The upper bits are zero rather than the floating values real
+    /// hardware returns. Reading the status through a control-port access does
+    /// not acknowledge the VINT-pending latch; only
+    /// [`Vdp::set_vint_pending`] changes it.
     #[must_use]
     pub fn status(&self) -> u16 {
         let mut status = 0;
+        if self.video == VideoStandard::Pal {
+            status |= STATUS_PAL;
+        }
         if self.fifo.is_empty() {
             status |= STATUS_FIFO_EMPTY;
         }
@@ -374,6 +427,9 @@ impl Vdp {
         }
         if self.dma.active() {
             status |= STATUS_DMA_BUSY;
+        }
+        if self.dot >= HBLANK_START_MASTER_CYCLES {
+            status |= STATUS_HBLANK;
         }
         if self.status_latches.vblank {
             status |= STATUS_VBLANK;
@@ -395,9 +451,11 @@ impl Vdp {
 
     /// Sets or clears the video VBlank status latch (bit 3).
     ///
-    /// The minimal Mega Drive backend drives this from the scheduler's
-    /// deterministic scanline position, so it reflects the vertical blanking
-    /// interval rather than a pending CPU request.
+    /// [`Vdp::advance_master`] drives this latch from the line position. Until
+    /// the backend advances the VDP on its own timeline, the minimal Mega Drive
+    /// backend may keep driving it from the scheduler's deterministic scanline
+    /// position, so it reflects the vertical blanking interval rather than a
+    /// pending CPU request.
     pub fn set_vblank(&mut self, active: bool) {
         self.status_latches.vblank = active;
     }
@@ -570,7 +628,7 @@ impl Vdp {
         let word = match offset & 0x0C {
             0x00 => self.read_data_port()?,
             0x04 => self.read_control_port(),
-            _ => 0,
+            _ => self.hv_counter(),
         };
         if offset & 1 == 0 {
             Ok((word >> 8) as u8)
@@ -603,7 +661,8 @@ impl Vdp {
     /// Word accesses require an even offset. Data-port reads use the command
     /// code set up through the control port and apply auto-increment; reads
     /// from the control port return the status register and cancel any
-    /// half-completed command; HV-counter reads return zero.
+    /// half-completed command; HV-counter reads return the current approximate
+    /// V/H position (V in the high byte).
     ///
     /// A control-port read does not acknowledge any interrupt: the derived
     /// VINT-pending latch is unchanged by the read.
@@ -615,7 +674,7 @@ impl Vdp {
         match offset & 0x0C {
             0x00 => self.read_data_port(),
             0x04 => Ok(self.read_control_port()),
-            _ => Ok(0),
+            _ => Ok(self.hv_counter()),
         }
     }
 
@@ -644,14 +703,14 @@ impl Vdp {
     ///
     /// Layout, in order (all multi-byte integers little-endian): 8-byte magic,
     /// `u16` format version, one flag byte (bit 0 VBlank, bit 1 pending command
-    /// half, bit 2 odd frame, bit 3 sprite collision, bit 4 sprite overflow),
-    /// one command code byte, `u16` address, 24 registers, 64 CRAM words, 40
-    /// VSRAM words, one FIFO occupancy byte, four FIFO words oldest first
-    /// (zero-padded), one DMA active byte, `u32` DMA source, `u16` DMA length,
-    /// one DMA mode byte, `u64` frame index, `u16` line, `u16` dot and 64 KiB of
-    /// VRAM. The format is versioned and self-describing; consumers must not
-    /// reinterpret bytes from another version. `CFVDP001` v1 payloads are
-    /// rejected by [`Vdp::restore_bytes`].
+    /// half, bit 2 odd frame, bit 3 sprite collision, bit 4 sprite overflow,
+    /// bit 5 PAL), one command code byte, `u16` address, 24 registers, 64 CRAM
+    /// words, 40 VSRAM words, one FIFO occupancy byte, four FIFO words oldest
+    /// first (zero-padded), one DMA active byte, `u32` DMA source, `u16` DMA
+    /// length, one DMA mode byte, `u64` frame index, `u16` line, `u16` dot and
+    /// 64 KiB of VRAM. The format is versioned and self-describing; consumers
+    /// must not reinterpret bytes from another version. `CFVDP001` v1 payloads
+    /// are rejected by [`Vdp::restore_bytes`].
     ///
     /// The derived VINT-pending latch is intentionally excluded: it is a
     /// function of the owning machine's canonical interrupt state, which that
@@ -676,6 +735,9 @@ impl Vdp {
         }
         if self.status_latches.sprite_overflow {
             flags |= SNAPSHOT_FLAG_SPRITE_OVERFLOW;
+        }
+        if self.video == VideoStandard::Pal {
+            flags |= SNAPSHOT_FLAG_PAL;
         }
         bytes.write_u8(flags);
         bytes.write_u8(self.code);
@@ -706,9 +768,10 @@ impl Vdp {
     /// Restores state from a [`Vdp::snapshot_bytes`] payload.
     ///
     /// Length, magic, version, reserved flag bits, the command-code width, the
-    /// FIFO occupancy, the DMA mode code and the DMA active byte are validated
-    /// before any field is mutated, so a rejected snapshot leaves the VDP
-    /// exactly as it was.
+    /// FIFO occupancy, the DMA mode code, the DMA active byte and the line/dot
+    /// position (against the stored video standard) are validated before any
+    /// field is mutated, so a rejected snapshot leaves the VDP exactly as it
+    /// was.
     ///
     /// The write path uses the shared [`chronofork_core::codec::Writer`]. The
     /// read path stays index-based because this format has a compile-time fixed
@@ -764,6 +827,25 @@ impl Vdp {
                 });
             }
         };
+        let video = if flags & SNAPSHOT_FLAG_PAL != 0 {
+            VideoStandard::Pal
+        } else {
+            VideoStandard::Ntsc
+        };
+        let line = read_u16_le(bytes, SNAPSHOT_LINE_OFFSET);
+        let dot = read_u16_le(bytes, SNAPSHOT_DOT_OFFSET);
+        if line >= lines_per_frame(video) {
+            return Err(VdpError::SnapshotLineOutOfRange {
+                line,
+                lines_per_frame: lines_per_frame(video),
+            });
+        }
+        if u64::from(dot) >= MASTER_CYCLES_PER_LINE {
+            return Err(VdpError::SnapshotDotOutOfRange {
+                dot,
+                master_cycles_per_line: MASTER_CYCLES_PER_LINE,
+            });
+        }
 
         let address = read_u16_le(bytes, SNAPSHOT_ADDRESS_OFFSET);
         let mut registers = [0; REGISTER_COUNT];
@@ -785,8 +867,6 @@ impl Vdp {
             dma_active,
         );
         let frame_index = read_u64_le(bytes, SNAPSHOT_FRAME_INDEX_OFFSET);
-        let line = read_u16_le(bytes, SNAPSHOT_LINE_OFFSET);
-        let dot = read_u16_le(bytes, SNAPSHOT_DOT_OFFSET);
 
         self.status_latches = StatusLatches {
             vblank: flags & SNAPSHOT_FLAG_VBLANK != 0,
@@ -805,6 +885,7 @@ impl Vdp {
         self.frame_index = frame_index;
         self.line = line;
         self.dot = dot;
+        self.video = video;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
@@ -937,6 +1018,7 @@ impl fmt::Debug for Vdp {
             .field("frame_index", &self.frame_index)
             .field("line", &self.line)
             .field("dot", &self.dot)
+            .field("video", &self.video)
             .field("vram_len", &self.vram.len())
             .finish()
     }
@@ -1446,7 +1528,61 @@ mod tests {
             })
         );
 
+        let mut bad_line = good.clone();
+        bad_line[SNAPSHOT_LINE_OFFSET..SNAPSHOT_LINE_OFFSET + 2]
+            .copy_from_slice(&lines_per_frame(VideoStandard::Ntsc).to_le_bytes());
+        assert_eq!(
+            vdp.restore_bytes(&bad_line),
+            Err(VdpError::SnapshotLineOutOfRange {
+                line: lines_per_frame(VideoStandard::Ntsc),
+                lines_per_frame: lines_per_frame(VideoStandard::Ntsc)
+            })
+        );
+
+        let mut bad_dot = good.clone();
+        bad_dot[SNAPSHOT_DOT_OFFSET..SNAPSHOT_DOT_OFFSET + 2]
+            .copy_from_slice(&(MASTER_CYCLES_PER_LINE as u16).to_le_bytes());
+        assert_eq!(
+            vdp.restore_bytes(&bad_dot),
+            Err(VdpError::SnapshotDotOutOfRange {
+                dot: MASTER_CYCLES_PER_LINE as u16,
+                master_cycles_per_line: MASTER_CYCLES_PER_LINE
+            })
+        );
+
         assert_eq!(vdp.snapshot_bytes(), before);
+    }
+
+    #[test]
+    fn snapshot_round_trips_the_pal_standard_and_validates_against_it() {
+        let mut vdp = Vdp::new();
+        vdp.advance_master(MASTER_CYCLES_PER_LINE * 300, VideoStandard::Pal);
+        let snapshot = vdp.snapshot_bytes();
+        assert_ne!(snapshot[SNAPSHOT_FLAGS_OFFSET] & SNAPSHOT_FLAG_PAL, 0);
+
+        let mut restored = Vdp::new();
+        restored.restore_bytes(&snapshot).expect("PAL snapshot");
+        assert_eq!(restored.video_standard(), VideoStandard::Pal);
+        assert_eq!(restored.line(), 300);
+        assert_eq!(restored.status() & STATUS_PAL, STATUS_PAL);
+        assert_eq!(restored.snapshot_bytes(), snapshot);
+
+        // Line 300 is valid for the 313-line PAL frame but not for the
+        // 262-line NTSC frame, so clearing the PAL flag must reject it.
+        let mut ntsc_flag = snapshot.clone();
+        ntsc_flag[SNAPSHOT_FLAGS_OFFSET] &= !SNAPSHOT_FLAG_PAL;
+        assert_eq!(
+            restored.restore_bytes(&ntsc_flag),
+            Err(VdpError::SnapshotLineOutOfRange {
+                line: 300,
+                lines_per_frame: lines_per_frame(VideoStandard::Ntsc)
+            })
+        );
+        assert_eq!(
+            restored.snapshot_bytes(),
+            snapshot,
+            "a rejected restore never mutates"
+        );
     }
 
     #[test]
