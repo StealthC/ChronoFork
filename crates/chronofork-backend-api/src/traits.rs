@@ -6,6 +6,7 @@ use crate::debug::DebugAccess;
 use crate::descriptor::{BackendDescriptor, Capabilities};
 use crate::error::BackendError;
 use crate::inspection::MachineInspection;
+use crate::media::MediaSource;
 use crate::snapshot::BackendSnapshot;
 
 /// Result of one execution step.
@@ -62,6 +63,21 @@ pub trait Backend: Send {
     /// `write_memory` calls must not produce events either. See
     /// [ADR-0010](../../../docs/adr/0010-debugging-depth.md).
     fn debug_access(&mut self) -> Option<&mut dyn DebugAccess> {
+        None
+    }
+
+    /// Returns the optional media capture surface.
+    ///
+    /// The default is `None`: a backend that produces no video frames or audio
+    /// chunks keeps the default and must not advertise
+    /// [`Capabilities::rendering`] or [`Capabilities::audio`].
+    ///
+    /// Media is output derived from canonical state, not canonical state
+    /// itself: it must never enter a snapshot, the state hash, the
+    /// configuration hash or the payload version, and restoring a snapshot
+    /// must not rewind a queued frame. A frame is produced deterministically
+    /// from emulated state and the master-cycle timeline, never from host time.
+    fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
         None
     }
 }

@@ -11,6 +11,7 @@ pub mod debug;
 pub mod descriptor;
 pub mod error;
 pub mod inspection;
+pub mod media;
 pub mod snapshot;
 pub mod traits;
 
@@ -22,5 +23,6 @@ pub use debug::{
 pub use descriptor::{BackendDescriptor, BackendId, Capabilities};
 pub use error::BackendError;
 pub use inspection::MachineInspection;
+pub use media::{AudioChunk, MediaError, MediaSource, VideoFrame};
 pub use snapshot::{BACKEND_SNAPSHOT_FORMAT_VERSION, BackendSnapshot, validate_envelope};
 pub use traits::{Backend, BackendFactory, StepOutcome};
