@@ -48,7 +48,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented through repair round 9, with independent verification/review and merge pending; phases 8.3–8.8 planned |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented through repair round 10, with independent verification/review and merge pending; phases 8.3–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -61,9 +61,9 @@ Hardware-depth track (parallel, not a stage):
 | [H4 — Cartridge, controllers and timers](#h4--cartridge-controllers-and-timers) | `Partial` | ROM identity, mapper/SRAM, full controller protocol, timers |
 | [H5 — Accuracy and evidence](#h5--accuracy-and-evidence) | `Partial` | Differential corpus, interrupt timing, cycle accuracy, cross-platform determinism |
 
-## Next
+## Current milestone
 
-**M8 — Functional Mega Drive is `Next`.** The owner redefined M8 on 2026-11-17: the former
+**M8 — Functional Mega Drive is `In progress`.** The owner redefined M8 on 2026-11-17: the former
 multi-backend milestone became M9, and M8 now completes the Mega Drive model (full 68000 and
 Z80, VDP rendering/timing/DMA, YM2612/PSG audio, cartridge, controllers) so a curated set of
 commercial ROMs plays, with deterministic headless capture and an optional native window.
@@ -77,8 +77,9 @@ also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-inte
 the same base. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
 verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
 milestone and has started: phase 8.1 (cartridge, region, TMSS and boot) was implemented,
-independently reviewed and merged to `main` at `f024b7b` (PR #25), and phases 8.2–8.8 are not
-started; it depends on the M1–M7 layers and consumes the H1–H5
+independently reviewed and merged to `main` at `f024b7b` (PR #25); phase 8.2 is implemented
+through repair round 10, with final verification/review and merge pending, and phases 8.3–8.8
+are planned. M8 depends on the M1–M7 layers and consumes the H1–H5
 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
@@ -703,7 +704,7 @@ and do not reopen it.
 - **Roadmap stage:** [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive)
 - **Status:** `In progress`
 - **Integration state:** phase 8.1 (cartridge, region, TMSS and boot) merged to `main` at
-  `f024b7b` (PR #25); phase 8.2 implemented through repair round 9, with independent
+  `f024b7b` (PR #25); phase 8.2 implemented through repair round 10, with independent
   verification/review and merge pending; phases 8.3–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
