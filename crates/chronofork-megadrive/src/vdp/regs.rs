@@ -66,6 +66,28 @@ pub(crate) const CODE_DMA: u8 = 0x20;
 pub(crate) const CODE_VRAM_READ: u8 = 0x00;
 pub(crate) const CODE_VRAM_WRITE: u8 = 0x01;
 pub(crate) const CODE_REGISTER_WRITE: u8 = 0x02;
+pub(crate) const CODE_CRAM_WRITE: u8 = 0x03;
+pub(crate) const CODE_VSRAM_WRITE: u8 = 0x04;
+pub(crate) const CODE_CRAM_READ: u8 = 0x08;
+
+/// A memory space the VDP data port can address.
+///
+/// The command code latched on the control port selects the space; the
+/// read/write direction comes from the port access itself. [`Self::VramCopy`]
+/// names the VRAM space as seen by the DMA VRAM-copy engine (the engine itself
+/// arrives in phase 8.3 task 8); it addresses the same linear 64 KiB VRAM as
+/// [`Self::Vram`] because the physical interleaved layout is not modelled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VramTarget {
+    /// The flat 64 KiB video RAM.
+    Vram,
+    /// The 64-word colour RAM.
+    Cram,
+    /// The 40-word vertical-scroll RAM.
+    Vsram,
+    /// VRAM as addressed by the DMA copy engine.
+    VramCopy,
+}
 
 /// Latched VDP status conditions that are not a pure function of another
 /// field.

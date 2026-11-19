@@ -27,16 +27,23 @@
 //!   (bits `1..=0`).
 //! - Control-port register writes (`0x8000 | register << 8 | value`) for
 //!   registers `0x00..=0x17`.
-//! - Data-port VRAM word reads and writes with auto-increment from register
-//!   `0x0F`. Byte accesses transfer a full word: byte writes duplicate the
-//!   byte into both halves (the documented VDP data-port byte-write
-//!   behaviour), and byte reads return the requested byte lane of the
-//!   transferred word.
+//! - Data-port word reads and writes with auto-increment from register `0x0F`.
+//!   The command code selects VRAM (read/write), CRAM (read/write) or VSRAM
+//!   (write); each transferred word advances the address once, and CRAM/VSRAM
+//!   command addresses are byte offsets converted to word indices. Byte
+//!   accesses transfer a full word: byte writes duplicate the byte into both
+//!   halves (the documented VDP data-port byte-write behaviour), and byte reads
+//!   return the requested byte lane of the transferred word.
+//! - Space-addressed `write_word`/`read_word` primitives for VRAM, CRAM and
+//!   VSRAM with the documented wrapping (CRAM aliases every 64 words, VSRAM
+//!   wraps modulo its 40 words through a 9-bit address). CRAM/VSRAM data-port
+//!   reads are supported for CRAM; VSRAM reads have no decoded command in this
+//!   slice and are rejected.
 //! - Canonical device state for the rest of phase 8.3: 64 CRAM words, 40 VSRAM
 //!   words, the bounded write FIFO, DMA state, the frame index, the line/dot
-//!   position and the latched status conditions. The port surface still
-//!   addresses VRAM only, so CRAM/VSRAM/DMA/FIFO behaviour and raster timing
-//!   arrive in later tasks; the state is present, canonical and snapshotted.
+//!   position and the latched status conditions. DMA transfers, FIFO/access
+//!   timing and raster timing arrive in later tasks; the state is present,
+//!   canonical and snapshotted.
 //! - The status-register bits covered by [`STATUS_MASK`]. VBlank (bit 3) is
 //!   controlled by [`Vdp::set_vblank`] and VBlank-interrupt-pending, VINT
 //!   (bit 7), by [`Vdp::set_vint_pending`]. PAL (bit 0) and HBlank (bit 2) read
@@ -65,8 +72,8 @@
 //! consumes an interrupt request.
 //!
 //! **Not implemented (and not claimed):** rendering, planes, window, sprites,
-//! scrolling, CRAM/VSRAM port addressing, DMA transfers, FIFO/access timing,
-//! H/V counters, VDP interrupt enable registers and VDP-side acknowledge logic
+//! scrolling, DMA transfers, FIFO/access timing, H/V counters, VSRAM data-port
+//! reads, VDP interrupt enable registers and VDP-side acknowledge logic
 //! (status bit 7 is driven by the external scheduler), Z80/PSG interaction,
 //! audio, interlace, the byte-swapped/interleaved physical VRAM layout, and
 //! cycle-accurate port timing.
@@ -89,7 +96,10 @@ use std::fmt;
 use chronofork_core::codec::Writer;
 
 use fifo::Fifo;
-use regs::{CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE, CODE_VRAM_READ, CODE_VRAM_WRITE};
+use regs::{
+    CODE_CRAM_READ, CODE_CRAM_WRITE, CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE,
+    CODE_VRAM_READ, CODE_VRAM_WRITE, CODE_VSRAM_WRITE,
+};
 
 pub use dma::{DmaMode, DmaState};
 pub use fifo::FIFO_CAPACITY;
@@ -98,7 +108,7 @@ pub use regs::{
     PORT_WINDOW_SIZE, REGISTER_COUNT, STATUS_DMA_BUSY, STATUS_FIFO_EMPTY, STATUS_FIFO_FULL,
     STATUS_HBLANK, STATUS_MASK, STATUS_ODD_FRAME, STATUS_PAL, STATUS_SPRITE_COLLISION,
     STATUS_SPRITE_OVERFLOW, STATUS_VBLANK, STATUS_VINT_PENDING, StatusLatches, VRAM_SIZE,
-    VSRAM_WORDS,
+    VSRAM_WORDS, VramTarget,
 };
 
 /// Magic prefix of a serialized VDP snapshot.
@@ -431,6 +441,25 @@ impl Vdp {
         &self.vsram
     }
 
+    /// Returns one CRAM colour word, or `None` when `index` is not a CRAM
+    /// entry.
+    ///
+    /// This is a direct index into the 64 stored words; the data-port address
+    /// decoder wraps addresses instead (see [`Vdp::write_word`]).
+    #[must_use]
+    pub fn cram_entry(&self, index: usize) -> Option<u16> {
+        self.cram.get(index).copied()
+    }
+
+    /// Returns one VSRAM word, or `None` when `index` is not a VSRAM entry.
+    ///
+    /// This is a direct index into the 40 stored words; the data-port address
+    /// decoder wraps addresses instead (see [`Vdp::write_word`]).
+    #[must_use]
+    pub fn vsram_word(&self, index: usize) -> Option<u16> {
+        self.vsram.get(index).copied()
+    }
+
     /// Returns the number of words queued in the write FIFO.
     #[must_use]
     pub const fn fifo_len(&self) -> usize {
@@ -466,6 +495,68 @@ impl Vdp {
     #[must_use]
     pub const fn address(&self) -> u16 {
         self.address
+    }
+
+    /// Writes one word into `target` at `address`.
+    ///
+    /// This is the space-addressed primitive behind the data port: it does not
+    /// read or advance the command/address register, and it never applies
+    /// auto-increment, so a port access transfers exactly one word. Address
+    /// decoding follows the documented memory layouts:
+    ///
+    /// - VRAM (and the DMA copy view of it) keeps a 16-bit address; word
+    ///   accesses align down to an even byte address.
+    /// - CRAM exposes 64 words through a 7-bit address whose bit 6 is not
+    ///   decoded, so addresses `64..=127` alias entries `0..=63`.
+    /// - VSRAM exposes 40 words through a 9-bit address; the address wraps
+    ///   modulo 40 (`(address & 0x01FF) % 40`).
+    ///
+    /// `address` is a word index for CRAM and VSRAM; the data port converts its
+    /// byte-oriented command address with `address >> 1` before calling this
+    /// primitive, so an auto-increment of two moves to the next entry. Values
+    /// are stored verbatim: this slice does not yet mask CRAM to its nine-bit
+    /// colour fields.
+    pub fn write_word(
+        &mut self,
+        target: VramTarget,
+        address: u16,
+        value: u16,
+    ) -> Result<(), VdpError> {
+        match target {
+            VramTarget::Vram | VramTarget::VramCopy => {
+                let index = usize::from(address & 0xFFFE);
+                let bytes = value.to_be_bytes();
+                self.vram[index] = bytes[0];
+                self.vram[index + 1] = bytes[1];
+            }
+            VramTarget::Cram => {
+                let index = usize::from(address) & (CRAM_WORDS - 1);
+                self.cram[index] = value;
+            }
+            VramTarget::Vsram => {
+                let index = (usize::from(address) & 0x01FF) % VSRAM_WORDS;
+                self.vsram[index] = value;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads one word from `target` at `address`.
+    ///
+    /// This is the space-addressed primitive behind the data port and uses the
+    /// same address decoding as [`Vdp::write_word`]; `address` is a word index
+    /// for CRAM and VSRAM. It does not read or advance the command/address
+    /// register. VRAM words are big-endian.
+    pub fn read_word(&mut self, target: VramTarget, address: u16) -> Result<u16, VdpError> {
+        let word = match target {
+            VramTarget::Vram | VramTarget::VramCopy => {
+                let index = usize::from(address & 0xFFFE);
+                u16::from_be_bytes([self.vram[index], self.vram[index + 1]])
+            }
+            VramTarget::Cram => self.cram[usize::from(address) & (CRAM_WORDS - 1)],
+            VramTarget::Vsram => self.vsram[(usize::from(address) & 0x01FF) % VSRAM_WORDS],
+        };
+        Ok(word)
     }
 
     /// Reads one byte from the VDP port at `offset`.
@@ -730,14 +821,16 @@ impl Vdp {
         if self.code & CODE_DMA != 0 {
             return Err(VdpError::DmaUnsupported { code: self.code });
         }
-        if self.code & 0x0F != CODE_VRAM_READ || self.code & CODE_READ_INHIBIT != 0 {
+        if self.code & CODE_READ_INHIBIT != 0 {
             return Err(VdpError::UnsupportedTarget { code: self.code });
         }
-        // VRAM word accesses align down to an even byte address. The physical
-        // byte-swapped/interleaved layout and odd-address byte-ordering quirk
-        // are not modelled.
-        let index = usize::from(self.address & 0xFFFE);
-        let word = u16::from_be_bytes([self.vram[index], self.vram[index + 1]]);
+        let target = match self.code & 0x0F {
+            CODE_VRAM_READ => VramTarget::Vram,
+            CODE_CRAM_READ => VramTarget::Cram,
+            _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
+        };
+        let address = Self::word_address(target, self.address);
+        let word = self.read_word(target, address)?;
         self.increment_address();
         Ok(word)
     }
@@ -746,7 +839,7 @@ impl Vdp {
         if self.command_pending {
             // Only the first word of a two-word control command has been
             // latched, so the write target and address are not fully decoded
-            // yet. Reject the access without mutating VRAM; the half-latched
+            // yet. Reject the access without mutating memory; the half-latched
             // command stays pending and can still be completed by its second
             // control word.
             return Err(VdpError::UnsupportedTarget { code: self.code });
@@ -754,15 +847,27 @@ impl Vdp {
         if self.code & CODE_DMA != 0 {
             return Err(VdpError::DmaUnsupported { code: self.code });
         }
-        if self.code & 0x0F != CODE_VRAM_WRITE {
-            return Err(VdpError::UnsupportedTarget { code: self.code });
-        }
-        let index = usize::from(self.address & 0xFFFE);
-        let bytes = value.to_be_bytes();
-        self.vram[index] = bytes[0];
-        self.vram[index + 1] = bytes[1];
+        let target = match self.code & 0x0F {
+            CODE_VRAM_WRITE => VramTarget::Vram,
+            CODE_CRAM_WRITE => VramTarget::Cram,
+            CODE_VSRAM_WRITE => VramTarget::Vsram,
+            _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
+        };
+        let address = Self::word_address(target, self.address);
+        self.write_word(target, address, value)?;
         self.increment_address();
         Ok(())
+    }
+
+    /// Converts the byte-oriented command address to the space's word index.
+    ///
+    /// VRAM addresses bytes directly; CRAM and VSRAM address words, and the
+    /// command address carries the byte offset, so two bytes advance one entry.
+    const fn word_address(target: VramTarget, address: u16) -> u16 {
+        match target {
+            VramTarget::Vram | VramTarget::VramCopy => address,
+            VramTarget::Cram | VramTarget::Vsram => address >> 1,
+        }
     }
 
     fn read_control_port(&mut self) -> u16 {
@@ -1123,16 +1228,24 @@ mod tests {
     }
 
     #[test]
-    fn data_port_rejects_unsupported_command_targets() {
+    fn data_port_decodes_supported_targets_and_rejects_unknown_ones() {
         let mut vdp = Vdp::new();
         // CRAM write command: CD3..CD0 = 0x3.
         vdp.write16(CONTROL_PORT_OFFSET, 0xC000)
             .expect("cram first half");
         vdp.write16(CONTROL_PORT_OFFSET, 0x0000)
             .expect("cram second half");
+        vdp.write16(DATA_PORT_OFFSET, 0x0EEE).expect("cram write");
+        assert_eq!(vdp.cram_entry(0), Some(0x0EEE));
+
+        // A command code outside the decoded targets is rejected.
+        vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
+            .expect("unknown first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("unknown second half");
         assert_eq!(
             vdp.write16(DATA_PORT_OFFSET, 0),
-            Err(VdpError::UnsupportedTarget { code: 0x03 })
+            Err(VdpError::UnsupportedTarget { code: 0x05 })
         );
 
         // DMA transfer: CD5 set in the second command word.
