@@ -1,10 +1,11 @@
 //! Bounded VDP write FIFO state.
 //!
-//! The real VDP accepts CPU data-port writes into a small FIFO and stalls the
-//! CPU when it is full. Version 2 snapshots the queue because its contents are
-//! canonical state: a restore must reproduce the same pending writes in the
-//! same order. Phase 8.3 task 9 wires port writes and drain/wait accounting to
-//! this type; until then the queue is part of reset and snapshot state only.
+//! The VDP accepts CPU data-port writes into a small FIFO and stalls the CPU when
+//! it is full. Data-port writes push into this queue in order; a write that finds
+//! it full records one deterministic 68000 wait slot instead of dropping or
+//! reordering the word, and the owning machine drains the queue after each
+//! advance. Version 2 snapshots the queue because its contents are canonical
+//! state: a restore reproduces the same pending writes in the same order.
 
 /// Number of 16-bit words the VDP write FIFO can hold.
 pub const FIFO_CAPACITY: usize = 4;

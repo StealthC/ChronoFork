@@ -1,17 +1,16 @@
-//! Minimal deterministic Sega Mega Drive VDP: device state, ports and snapshot.
+//! Deterministic Sega Mega Drive VDP: device state, ports, DMA, FIFO, rendering
+//! and snapshot.
 //!
-//! **Status:** partial VDP emulation, not yet a rendering engine. This module
-//! tree splits the device so rendering, DMA, FIFO timing and interrupt
-//! generation have one owner each:
+//! This module tree splits the device so each concern has one owner:
 //!
-//! - `mod.rs` (this file): the device, its port window, typed errors and the
-//!   versioned snapshot.
-//! - `regs.rs`: port offsets, register/status positions and status latches.
-//! - `timing.rs`: line/dot position and frame index (timing behaviour lands in
-//!   phase 8.3 task 4).
-//! - `render.rs`: scanline composition (phase 8.3 tasks 5–7).
-//! - `dma.rs`: DMA transfer state and modes (transfer engine in task 8).
-//! - `fifo.rs`: the bounded write FIFO (CPU wait accounting in task 9).
+//! - `mod.rs` (this file): the device, its port window, the eager DMA engine,
+//!   typed errors and the versioned snapshot.
+//! - `regs.rs`: port offsets, register/status positions, command-code bits and
+//!   status latches.
+//! - `timing.rs`: line/dot position, H/V counters and the frame index.
+//! - `render.rs`: scanline composition and frame assembly.
+//! - `dma.rs`: DMA modes and the latched transfer state the engine reports.
+//! - `fifo.rs`: the bounded write FIFO and its occupancy/backpressure rules.
 //!
 //! **Implemented:**
 //!
@@ -98,12 +97,14 @@
 //! half-latched command word; it never acknowledges, clears or otherwise
 //! consumes an interrupt request.
 //!
-//! **Not implemented (and not claimed):** DMA transfers, FIFO/access timing,
-//! VSRAM data-port reads, VDP interrupt enable registers and VDP-side
-//! acknowledge logic (status bit 7 is driven by the external scheduler),
-//! Z80/PSG interaction, audio, interlace, the byte-swapped/interleaved
-//! physical VRAM layout, dot-exact H/V counters, exact H32 window geometry and
-//! exact line-mode vertical scrolling (see the `render` module notes), and
+//! VDP interrupt enable gating (register `0x00` bits 5/4), the owned
+//! pending/acknowledge surface and the derived VINT latches are implemented; the
+//! backend uses them for 68000 level-6/level-4 delivery.
+//!
+//! **Not implemented (and not claimed):** VSRAM data-port reads, Z80/PSG
+//! interaction, audio, interlace, the byte-swapped/interleaved physical VRAM
+//! layout, dot-exact H/V counters, exact H32 window geometry, exact line-mode
+//! vertical scrolling (see the `render` module notes), 68000-side DMA stalls and
 //! cycle-accurate port timing.
 //!
 //! **Deterministic reset state:** VRAM, CRAM, VSRAM, the FIFO, DMA state,
@@ -241,7 +242,9 @@ pub enum VdpError {
         /// Current six-bit command code.
         code: u8,
     },
-    /// A data-port access while the command code requests DMA.
+    /// A DMA command whose destination space, mode or copy flag cannot be
+    /// decoded (for example a DX command with no data target, or a copy
+    /// without command bit CD4).
     DmaUnsupported {
         /// Current six-bit command code.
         code: u8,
@@ -356,7 +359,7 @@ impl fmt::Display for VdpError {
             ),
             Self::DmaUnsupported { code } => write!(
                 f,
-                "VDP data-port access with DMA command code 0x{code:02X}; DMA is not implemented"
+                "VDP data-port access with DMA command code 0x{code:02X} has no decodable transfer"
             ),
             Self::SnapshotLengthMismatch { expected, found } => {
                 write!(f, "VDP snapshot is {found} bytes, expected {expected}")

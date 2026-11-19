@@ -69,8 +69,8 @@ pub const STATUS_FIFO_FULL: u16 = 0x0200;
 pub const STATUS_MASK: u16 = 0x03FF;
 
 // Command-code bits. CD0/CD1 are latched from the first control word, CD2..CD5
-// from the second. CD4 inhibits read targets after a partial command; CD5 flags
-// a DMA transfer request.
+// from the second. CD4 marks the VRAM-copy command (and inhibits read targets
+// after a partial command); CD5 flags a DMA transfer request.
 pub(crate) const CODE_READ_INHIBIT: u8 = 0x10;
 pub(crate) const CODE_DMA: u8 = 0x20;
 pub(crate) const CODE_VRAM_READ: u8 = 0x00;
@@ -84,8 +84,8 @@ pub(crate) const CODE_CRAM_READ: u8 = 0x08;
 ///
 /// The command code latched on the control port selects the space; the
 /// read/write direction comes from the port access itself. [`Self::VramCopy`]
-/// names the VRAM space as seen by the DMA VRAM-copy engine (the engine itself
-/// arrives in phase 8.3 task 8); it addresses the same linear 64 KiB VRAM as
+/// names the VRAM space as seen by the implemented DMA VRAM-copy engine; it
+/// addresses the same linear 64 KiB VRAM as
 /// [`Self::Vram`] because the physical interleaved layout is not modelled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VramTarget {

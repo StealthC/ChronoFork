@@ -1,10 +1,13 @@
 //! VDP DMA transfer state.
 //!
 //! The 315-5313 has five transfer modes: 68000 memory to VRAM, CRAM or VSRAM,
-//! VRAM fill and VRAM copy. Version 2 snapshots the selected mode, source and
-//! length, plus the busy flag the status register reports. The transfer engine
-//! that validates the range and performs the transfer lands in phase 8.3 task 8;
-//! this module owns the state it operates on.
+//! VRAM fill and VRAM copy. The eager transfer engine in `mod.rs` validates the
+//! complete range and performs the transfer; this module owns the mode enum and
+//! the latched source/length/busy state that the engine reports and the status
+//! register exposes. The register-programmed path uses the hardware layout:
+//! `0x13`/`0x14` are the little-endian word length, `0x15`/`0x16`/`0x17` the
+//! source low/mid/high, and `0x17` bits 7..=6 select 68k-to-VDP (destination
+//! from the command code), fill or copy.
 
 /// A VDP DMA transfer mode.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -52,8 +55,9 @@ impl DmaMode {
 /// Canonical DMA state.
 ///
 /// `active` drives status bit 1 (DMA busy). `source` and `length` are the
-/// latched transfer parameters; source is a 68000 address and length is in
-/// words for memory transfers and bytes for fill/copy, as the mode defines.
+/// latched transfer parameters; in this slice `source` is a VRAM byte address
+/// (the VDP has no 68000-memory view), `length` is the transfer word count, and
+/// the fill mode reuses the source low byte as the fill value.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DmaState {
     source: u32,
