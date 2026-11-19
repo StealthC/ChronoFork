@@ -116,10 +116,11 @@
 //! instruction-quantum knob and the master-cycle timeline is never changed
 //! implicitly.
 
+use crate::vdp::{CRAM_WORDS, HIGHLIGHT_FLAG, SHADOW_FLAG};
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
     BackendId, BackendSnapshot, Capabilities, DebugAccess, DebugConfig, DebugEventKind,
-    DebugEventLog, MachineInspection, StepOutcome, validate_envelope,
+    DebugEventLog, MachineInspection, MediaSource, StepOutcome, VideoFrame, validate_envelope,
 };
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
@@ -300,6 +301,7 @@ impl MegadriveFactory {
             cpu,
             scheduler: InterruptScheduler::new(self.scheduler_config),
             tick: Tick::ZERO,
+            pending_frame: None,
         })
     }
 }
@@ -323,6 +325,8 @@ pub struct MegadriveBackend {
     cpu: M68000,
     scheduler: InterruptScheduler,
     tick: Tick,
+    /// Bounded one-frame media queue; derived output, never serialized.
+    pending_frame: Option<VideoFrame>,
 }
 
 impl MegadriveBackend {
@@ -651,10 +655,13 @@ impl MegadriveBackend {
         // The VDP advances on the same master-cycle timeline, then its FIFO
         // drains and any eager DMA busy window closes for the next step.
         let standard = self.scheduler.config().standard();
-        self.bus.vdp_mut().advance_master(master_cycles, standard);
+        let vdp_tick = self.bus.vdp_mut().advance_master(master_cycles, standard);
         self.bus.vdp_mut().drain_fifo();
         self.bus.vdp_mut().take_dma_cycles();
         self.tick = Tick::from_raw(next_tick);
+        if vdp_tick.frame_started {
+            self.capture_frame()?;
+        }
         self.observe_scheduler_requests();
         self.sync_vdp_status();
         Ok(StepOutcome {
@@ -665,9 +672,69 @@ impl MegadriveBackend {
     }
 }
 
+/// Converts palette-index pixels into RGBA8 with opaque alpha.
+///
+/// CRAM is the documented 9-bit `0BBBGGGRRR` word, expanded by bit replication;
+/// the shadow flag halves each channel and the highlight flag adds `0x80`.
+fn rgba_from_indices(indices: &[u8], cram: &[u16; CRAM_WORDS]) -> Vec<u8> {
+    fn expand(value: u16) -> u8 {
+        let value = (value & 0x7) as u8;
+        (value << 5) | (value << 2) | (value >> 1)
+    }
+    let mut rgba = Vec::with_capacity(indices.len() * 4);
+    for &pixel in indices {
+        let colour = cram[usize::from(pixel & 0x3F)];
+        let mut r = expand(colour);
+        let mut g = expand(colour >> 3);
+        let mut b = expand(colour >> 6);
+        if pixel & SHADOW_FLAG != 0 {
+            r >>= 1;
+            g >>= 1;
+            b >>= 1;
+        } else if pixel & HIGHLIGHT_FLAG != 0 {
+            r = r.saturating_add(0x80);
+            g = g.saturating_add(0x80);
+            b = b.saturating_add(0x80);
+        }
+        rgba.extend_from_slice(&[r, g, b, 0xFF]);
+    }
+    rgba
+}
+
+impl MegadriveBackend {
+    /// Renders the completed frame from a clone of canonical VDP state.
+    ///
+    /// Rendering on a clone keeps sprite/status latches canonical and makes the
+    /// frame a pure function of state at the boundary. The one-frame queue keeps
+    /// the latest frame; a second take before a new frame returns `None`.
+    fn capture_frame(&mut self) -> Result<(), BackendError> {
+        let mut renderer = self.bus.vdp().clone();
+        let buffer = renderer.finish_frame();
+        let rgba = rgba_from_indices(&buffer.indices, renderer.cram());
+        let frame = VideoFrame::new(buffer.width, buffer.height, rgba)
+            .map_err(|error| BackendError::InvalidConfiguration(format!("video frame: {error}")))?;
+        self.pending_frame = Some(frame);
+        Ok(())
+    }
+}
+
+impl MediaSource for MegadriveBackend {
+    fn take_video_frame(&mut self) -> Option<VideoFrame> {
+        self.pending_frame.take()
+    }
+
+    fn take_audio_chunk(&mut self) -> Option<chronofork_backend_api::AudioChunk> {
+        None
+    }
+}
+
 impl Backend for MegadriveBackend {
     fn descriptor(&self) -> &BackendDescriptor {
         &self.descriptor
+    }
+
+    fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
+        Some(self)
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
@@ -795,6 +862,8 @@ impl Backend for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
+        // A frame queued before a restore belongs to the replaced state.
+        self.pending_frame = None;
         Ok(())
     }
 
@@ -931,6 +1000,8 @@ impl DebugAccess for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
+        // A frame queued before a restore belongs to the replaced state.
+        self.pending_frame = None;
         Ok(())
     }
 

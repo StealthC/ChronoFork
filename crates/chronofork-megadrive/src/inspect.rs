@@ -203,6 +203,18 @@ pub struct VdpView {
     registers: [u8; REGISTER_COUNT],
     vram_len: usize,
     vram_sha256: StateHash,
+    /// Completed VDP frame counter.
+    pub frame_index: u64,
+    /// Active frame width in pixels.
+    pub width: u16,
+    /// Active frame height in pixels.
+    pub height: u16,
+    /// Queued data-port words.
+    pub fifo_len: usize,
+    /// DMA busy state.
+    pub dma_active: bool,
+    /// SHA-256 of the frame the current state would produce.
+    pub frame_sha256: StateHash,
 }
 
 impl VdpView {
@@ -210,7 +222,15 @@ impl VdpView {
     #[must_use]
     pub fn new(vdp: &Vdp) -> Self {
         let status = vdp.status();
+        let mut renderer = vdp.clone();
+        let buffer = renderer.finish_frame();
         Self {
+            frame_index: vdp.frame_index(),
+            width: vdp.active_width(),
+            height: vdp.active_height(),
+            fifo_len: vdp.fifo_len(),
+            dma_active: vdp.dma_active(),
+            frame_sha256: buffer.checksum(),
             status,
             vblank: status & STATUS_VBLANK != 0,
             vint_pending: status & STATUS_VINT_PENDING != 0,
