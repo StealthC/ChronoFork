@@ -182,25 +182,159 @@ fn out_of_range_transfers_are_rejected_before_mutation() {
     );
 }
 
+/// Sets register `0x01` bit 4 (DMA enable).
+fn enable_dma(vdp: &mut Vdp) {
+    write_register(vdp, 0x01, 0x10).expect("dma enable");
+}
+
+/// Programs the hardware DMA registers: `0x13`/`0x14` length, `0x15`/`0x16`/
+/// `0x17` source low/mid/high plus the mode bits.
+fn program_dma(vdp: &mut Vdp, source: u32, length: u16, mode_bits: u8) {
+    write_register(vdp, 0x13, (length & 0x00FF) as u8).expect("length low");
+    write_register(vdp, 0x14, ((length >> 8) & 0x00FF) as u8).expect("length high");
+    write_register(vdp, 0x15, (source & 0x00FF) as u8).expect("source low");
+    write_register(vdp, 0x16, ((source >> 8) & 0x00FF) as u8).expect("source mid");
+    write_register(vdp, 0x17, (((source >> 16) & 0x003F) as u8) | mode_bits)
+        .expect("source high and mode");
+}
+
+/// Latches a DMA command code and then triggers it with a data-port access.
+fn trigger_dma(vdp: &mut Vdp, code: u8, address: u16) {
+    let first = (u16::from(code & 0x03) << 14) | (address & 0x3FFF);
+    let second = (u16::from((code >> 2) & 0x0F) << 4) | ((address >> 14) & 0x0003);
+    vdp.write16(CONTROL_PORT_OFFSET, first).expect("first word");
+    vdp.write16(CONTROL_PORT_OFFSET, second)
+        .expect("second word");
+    vdp.write16(DATA_PORT_OFFSET, 0)
+        .expect("data-port access triggers the transfer");
+}
+
 #[test]
 fn dma_registers_program_a_triggered_transfer() {
     let mut vdp = Vdp::new();
     write_vram(&mut vdp, 0x0100, &[0xABCD, 0x1234]).expect("source");
-    write_register(&mut vdp, 0x13, 0x00).expect("source low");
-    write_register(&mut vdp, 0x14, 0x01).expect("source high");
-    write_register(&mut vdp, 0x15, 0x00).expect("source bank/mode");
-    write_register(&mut vdp, 0x16, 0x02).expect("length low");
-    write_register(&mut vdp, 0x17, 0x00).expect("length high, 68k->VRAM");
+    enable_dma(&mut vdp);
+    program_dma(&mut vdp, 0x0100, 2, 0x00);
 
-    // DMA command: CD5 set in the second control word, destination address 0.
-    vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
-        .expect("first word");
-    vdp.write16(CONTROL_PORT_OFFSET, 0x0080)
-        .expect("second word");
-    vdp.write16(DATA_PORT_OFFSET, 0)
-        .expect("data-port access triggers the transfer");
+    // DMA command code 0x21: CD5 (DMA) plus the VRAM-write target, address 0.
+    trigger_dma(&mut vdp, 0x21, 0x0000);
 
     assert_eq!(vram_word(&vdp, 0x0000), 0xABCD);
     assert_eq!(vram_word(&vdp, 0x0002), 0x1234);
     assert_eq!(vdp.take_dma_cycles(), 4);
+}
+
+#[test]
+fn register_dma_takes_the_destination_from_the_command_code() {
+    let mut vdp = Vdp::new();
+    write_vram(&mut vdp, 0x0100, &[0x0EEE, 0x0123]).expect("source");
+    enable_dma(&mut vdp);
+    program_dma(&mut vdp, 0x0100, 2, 0x00);
+
+    // CRAM write (command code 0x23).
+    trigger_dma(&mut vdp, 0x23, 0x0000);
+    assert_eq!(vdp.cram_entry(0), Some(0x0EEE));
+    assert_eq!(vdp.cram_entry(1), Some(0x0123));
+    let _ = vdp.take_dma_cycles();
+
+    // VSRAM write (command code 0x24).
+    trigger_dma(&mut vdp, 0x24, 0x0000);
+    assert_eq!(vdp.vsram_word(0), Some(0x0EEE));
+    assert_eq!(vdp.vsram_word(1), Some(0x0123));
+    assert_eq!(vdp.take_dma_cycles(), 4);
+}
+
+#[test]
+fn register_dma_fill_and_copy_use_their_mode_bits() {
+    let mut vdp = Vdp::new();
+    enable_dma(&mut vdp);
+
+    // Fill: mode 10, source low byte 0xAB is the fill value.
+    program_dma(&mut vdp, 0x00AB, 4, 0x80);
+    trigger_dma(&mut vdp, 0x21, 0x0300);
+    for offset in (0..8).step_by(2) {
+        assert_eq!(vram_word(&vdp, 0x0300 + offset), 0xABAB);
+    }
+    assert_eq!(vdp.take_dma_cycles(), 8);
+
+    // Copy: mode 11 plus command CD4; source VRAM 0x0100 to command address.
+    write_vram(&mut vdp, 0x0100, &[0xCAFE, 0xBEEF]).expect("source");
+    program_dma(&mut vdp, 0x0100, 2, 0xC0);
+    trigger_dma(&mut vdp, 0x30, 0x0400);
+    assert_eq!(vram_word(&vdp, 0x0400), 0xCAFE);
+    assert_eq!(vram_word(&vdp, 0x0402), 0xBEEF);
+    assert_eq!(vdp.take_dma_cycles(), 4);
+}
+
+#[test]
+fn register_dma_rejects_an_unknown_target_and_copy_without_cd4() {
+    let mut vdp = Vdp::new();
+    write_vram(&mut vdp, 0x0100, &[0x1111]).expect("source");
+    enable_dma(&mut vdp);
+    program_dma(&mut vdp, 0x0100, 1, 0x00);
+
+    // Command code 0x20 requests DMA but selects no destination data space.
+    assert_eq!(vdp.write16(CONTROL_PORT_OFFSET, 0x0000), Ok(()));
+    assert_eq!(vdp.write16(CONTROL_PORT_OFFSET, 0x0080), Ok(()));
+    assert_eq!(
+        vdp.write16(DATA_PORT_OFFSET, 0),
+        Err(VdpError::DmaUnsupported { code: 0x20 })
+    );
+    assert!(!vdp.dma_active());
+
+    // Copy (mode 11) requires command bit CD4.
+    program_dma(&mut vdp, 0x0100, 1, 0xC0);
+    assert_eq!(vdp.write16(CONTROL_PORT_OFFSET, 0x4000), Ok(()));
+    assert_eq!(vdp.write16(CONTROL_PORT_OFFSET, 0x0080), Ok(()));
+    assert_eq!(
+        vdp.write16(DATA_PORT_OFFSET, 0),
+        Err(VdpError::DmaUnsupported { code: 0x21 })
+    );
+    assert!(!vdp.dma_active());
+}
+
+#[test]
+fn disabled_dma_register_transfer_is_a_no_op() {
+    let mut vdp = Vdp::new();
+    write_vram(&mut vdp, 0x0100, &[0xABCD]).expect("source");
+    // Register 0x01 bit 4 stays clear.
+    program_dma(&mut vdp, 0x0100, 1, 0x00);
+
+    trigger_dma(&mut vdp, 0x21, 0x0200);
+
+    assert_eq!(vram_word(&vdp, 0x0200), 0x0000, "no word was transferred");
+    assert!(!vdp.dma_active(), "DMA_BUSY never asserts");
+    assert_eq!(vdp.take_dma_cycles(), 0);
+}
+
+#[test]
+fn taking_dma_cycles_preserves_fifo_waits_and_interrupt_pendings() {
+    let mut vdp = Vdp::new();
+    write_register(&mut vdp, 0x00, 0x30).expect("enable both interrupt sources");
+    vdp.request_interrupt(VdpInterruptSource::VBlank);
+    vdp.request_interrupt(VdpInterruptSource::HBlank);
+
+    // Four writes fill the queue; the fifth adds exactly one wait slot.
+    set_vram_write(&mut vdp, 0x0000).expect("destination");
+    for _ in 0..5 {
+        vdp.write16(DATA_PORT_OFFSET, 0x1234).expect("queued write");
+    }
+
+    vdp.start_dma(0x0000, 1, DmaMode::Fill).expect("dma");
+    assert_eq!(vdp.take_dma_cycles(), 2, "one fill word at two cycles");
+
+    assert_eq!(
+        vdp.take_fifo_wait_cycles(),
+        1,
+        "taking the DMA cost must not discard the FIFO wait accounting"
+    );
+    let pending = vdp.take_interrupts();
+    assert!(
+        pending.vblank_pending,
+        "taking the DMA cost must not acknowledge VBlank"
+    );
+    assert!(
+        pending.hblank_pending,
+        "taking the DMA cost must not acknowledge HBlank"
+    );
 }

@@ -56,11 +56,20 @@
 //!   indices carrying the shadow/highlight flags for the media layer, and
 //!   H32/H40 plus the 224/240-line height follow register `0x0C` and the video
 //!   standard.
-//! - Canonical device state for the rest of phase 8.3: 64 CRAM words, 40 VSRAM
-//!   words, the bounded write FIFO, DMA state, the frame index, the line/dot
-//!   position and the latched status conditions. DMA transfers and FIFO/access
-//!   timing arrive in later tasks; the state is present, canonical and
-//!   snapshotted.
+//! - Canonical device state: 64 CRAM words, 40 VSRAM words, the bounded write
+//!   FIFO, DMA state, the frame index, the line/dot position and the latched
+//!   status conditions.
+//! - Eager DMA with pre-validated source/destination ranges: memory to VRAM,
+//!   CRAM or VSRAM, VRAM fill and VRAM copy. The register path
+//!   ([`Vdp::start_dma_from_registers`]) uses the hardware layout
+//!   (`0x13`/`0x14` length, `0x15`/`0x16`/`0x17` source and mode, with modes 0/1
+//!   taking the destination from the command code, 2 fill and 3 copy), and is
+//!   gated by register `0x01` bit 4. A transfer sets `DMA_BUSY` and records its
+//!   slot cost for [`Vdp::take_dma_cycles`]; the 68000-side stalls are not
+//!   modelled.
+//! - The bounded four-word write FIFO: data-port writes fill it in order; a
+//!   write while it is full adds one deterministic 68000 wait slot (never
+//!   dropping or reordering a word), and the owner drains it after an advance.
 //! - The status-register bits covered by [`STATUS_MASK`], all derived from
 //!   device state: PAL from the video standard, HBlank from the dot position,
 //!   VBlank and the sprite/odd-frame latches from the latches, DMA-busy from
@@ -893,23 +902,44 @@ impl Vdp {
         Ok(())
     }
 
-    /// Runs the DMA transfer programmed through registers `0x13..0x17`.
+    /// Runs the DMA transfer programmed through registers `0x13..=0x17`.
     ///
-    /// Registers `0x13`/`0x14` hold source bits `15..0`, register `0x15` bits
-    /// `21..16`; register `0x16` and bits `5..0` of `0x17` hold the literal
-    /// word count and bits `7..6` of `0x17` select the mode. A data-port access
-    /// with the DMA command code triggers it, as on hardware.
+    /// The hardware register layout is used: `0x13`/`0x14` are the little-endian
+    /// length in words, `0x15`/`0x16`/`0x17` are the source address low/mid/high
+    /// byte, and bits `7..=6` of `0x17` select the mode:
+    ///
+    /// - `0b00`/`0b01`: 68000 memory to the space selected by the latched command
+    ///   code (`0x01` VRAM, `0x03` CRAM, `0x04` VSRAM);
+    /// - `0b10`: VRAM fill, using the source low byte as the fill value;
+    /// - `0b11`: VRAM copy, which additionally requires command bit CD4.
+    ///
+    /// Register `0x01` bit 4 gates DMA: while it is clear, a data-port access with
+    /// a DMA command performs no transfer and mutates nothing. The length is the
+    /// literal word count in this slice (the hardware length-minus-one encoding is
+    /// not modelled); a zero length performs no words. A data-port access with the
+    /// DMA command code triggers the transfer, as on hardware.
     pub fn start_dma_from_registers(&mut self) -> Result<(), VdpError> {
-        let source = u32::from(self.registers[0x13])
-            | (u32::from(self.registers[0x14]) << 8)
-            | (u32::from(self.registers[0x15] & 0x3F) << 16);
-        let length =
-            u16::from(self.registers[0x16]) | (u16::from(self.registers[0x17] & 0x3F) << 8);
+        if self.registers[0x01] & 0x10 == 0 {
+            return Ok(());
+        }
+        let length = u16::from(self.registers[0x13]) | (u16::from(self.registers[0x14]) << 8);
+        let source = u32::from(self.registers[0x15])
+            | (u32::from(self.registers[0x16]) << 8)
+            | (u32::from(self.registers[0x17] & 0x3F) << 16);
         let mode = match (self.registers[0x17] >> 6) & 0x03 {
-            0 => DmaMode::MemoryToVram,
-            1 => DmaMode::MemoryToCram,
-            2 => DmaMode::MemoryToVsram,
-            _ => DmaMode::Fill,
+            0 | 1 => match self.code & 0x0F {
+                CODE_VRAM_WRITE => DmaMode::MemoryToVram,
+                CODE_CRAM_WRITE => DmaMode::MemoryToCram,
+                CODE_VSRAM_WRITE => DmaMode::MemoryToVsram,
+                _ => return Err(VdpError::DmaUnsupported { code: self.code }),
+            },
+            2 => DmaMode::Fill,
+            _ => {
+                if self.code & CODE_READ_INHIBIT == 0 {
+                    return Err(VdpError::DmaUnsupported { code: self.code });
+                }
+                DmaMode::Copy
+            }
         };
         self.start_dma(source, length, mode)
     }
