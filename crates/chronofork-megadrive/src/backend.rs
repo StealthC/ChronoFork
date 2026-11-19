@@ -4,8 +4,12 @@
 //! master-cycle interrupt scheduler, **not** a complete Mega Drive.
 //! The cartridge device models the header, region, Sega mapper, 64 KiB battery
 //! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
-//! v4. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
-//! cycle-accurate timing are not implemented. Controller port
+//! v5. The VDP implements CRAM/VSRAM addressing, plane/window/sprite composition,
+//! DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
+//! interrupt pending/acknowledge. Audio, Z80, TH-latched/6-button controller
+//! protocols, VSRAM data-port reads, interlace, the byte-swapped physical VRAM
+//! layout, dot-exact H/V counters and cycle-accurate timing are not
+//! implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
 //! advertises only what it actually provides and uses an independently authored
@@ -116,43 +120,48 @@
 //! instruction-quantum knob and the master-cycle timeline is never changed
 //! implicitly.
 
+use crate::vdp::{CRAM_WORDS, HIGHLIGHT_FLAG, SHADOW_FLAG};
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
     BackendId, BackendSnapshot, Capabilities, DebugAccess, DebugConfig, DebugEventKind,
-    DebugEventLog, MachineInspection, StepOutcome, validate_envelope,
+    DebugEventLog, MachineInspection, MediaSource, StepOutcome, VideoFrame, validate_envelope,
 };
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
 use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
 use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
-use crate::cpu::{CpuError, M68000};
+use crate::cpu::{CpuError, M68000, interrupt_level_deliverable};
 use crate::cycles::MASTER_CYCLES_PER_68000_CYCLE;
 use crate::interrupts::{
     InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
 };
 use crate::trace::{InstructionTrace, TraceError};
-use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
+use crate::vdp::{
+    AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp, VdpInterruptSource,
+};
 
 /// Stable backend identifier.
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
 /// Payload format version.
 ///
-/// Version 3 adds the cartridge state: the seven mapper banks, the SRAM control
-/// byte, the 64 KiB battery SRAM and the TMSS model/lock latch. Version 1 and 2
-/// payloads are rejected instead of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 4;
+/// Version 3 added the cartridge state (seven mapper banks, SRAM control byte,
+/// 64 KiB battery SRAM, TMSS model/lock latch); version 5 adds the rendered
+/// frame counter through the embedded VDP snapshot and is the only accepted
+/// version. Payloads v1-v4 are rejected with a typed error instead of being
+/// reinterpreted.
+pub const PAYLOAD_VERSION: u16 = 5;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 4.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K4";
-/// State-hash magic for state hash version 4.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE4";
-/// Configuration-hash magic for configuration hash version 4.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF4";
+/// Snapshot payload magic for payload version 5.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K5";
+/// State-hash magic for state hash version 5.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE5";
+/// Configuration-hash magic for configuration hash version 5.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF5";
 
 /// Cartridge capability tag folded into the configuration hash.
 ///
@@ -242,12 +251,15 @@ impl MegadriveFactory {
             debug_events: true,
             state_cloning: true,
             deterministic_replay: true,
+            // Frame production is implemented and covered by `vdp_frame`;
+            // audio remains unimplemented for this slice.
+            rendering: true,
             ..Capabilities::none()
         };
         Ok(Self {
             descriptor: BackendDescriptor::new(
                 BackendId::new(BACKEND_ID),
-                "ChronoFork Mega Drive 68000 (VDP port + interrupt scheduler, no rendering/audio)",
+                "ChronoFork Mega Drive 68000 (VDP port, interrupts, deterministic video frames; no audio)",
                 env!("CARGO_PKG_VERSION"),
                 capabilities,
                 false,
@@ -298,6 +310,7 @@ impl MegadriveFactory {
             cpu,
             scheduler: InterruptScheduler::new(self.scheduler_config),
             tick: Tick::ZERO,
+            pending_frame: None,
         })
     }
 }
@@ -321,6 +334,8 @@ pub struct MegadriveBackend {
     cpu: M68000,
     scheduler: InterruptScheduler,
     tick: Tick,
+    /// Bounded one-frame media queue; derived output, never serialized.
+    pending_frame: Option<VideoFrame>,
 }
 
 impl MegadriveBackend {
@@ -502,20 +517,39 @@ impl MegadriveBackend {
         self.bus.vdp_mut().set_vblank(vblank);
     }
 
-    /// Recomputes the derived VINT-pending status bit from the canonical
-    /// scheduler state.
+    /// Mirrors the scheduler's retained line events into VDP-owned requests.
     ///
-    /// The latch is set while a VBlank (level 6) request is pending, whether or
-    /// not the 68000 `SR` mask currently admits it, and clears only when delivery
-    /// acknowledges that request. It is derived state, so this must run after
-    /// every mutation of pending state and after a restore.
+    /// The scheduler remains the master-cycle line-event source; the VDP owns
+    /// the pending/acknowledge surface and the register-`0x00` enable gating.
+    /// A request the program has disabled is dropped by the VDP, while the
+    /// scheduler keeps its retained request so enabling the bit later can still
+    /// deliver it.
+    fn sync_vdp_interrupts(&mut self) {
+        for (level, source) in [
+            (InterruptLevel::VBlank, VdpInterruptSource::VBlank),
+            (InterruptLevel::HBlank, VdpInterruptSource::HBlank),
+        ] {
+            if self.scheduler.is_pending(level) {
+                self.bus.vdp_mut().request_interrupt(source);
+            }
+        }
+    }
+
+    /// Recomputes the derived VINT-pending status bit from the VDP's owned
+    /// VBlank request.
+    ///
+    /// The latch is set while the VDP holds an enabled VBlank request, whether
+    /// or not the 68000 `SR` mask currently admits it, and clears only when
+    /// delivery acknowledges that request. It is derived state, so this must run
+    /// after every mutation of pending state and after a restore.
     fn sync_vdp_vint_pending(&mut self) {
-        let pending = self.scheduler.is_pending(InterruptLevel::VBlank);
+        let pending = self.bus.vdp().take_interrupts().vblank_pending;
         self.bus.vdp_mut().set_vint_pending(pending);
     }
 
     fn sync_vdp_status(&mut self) {
         self.sync_vdp_vblank();
+        self.sync_vdp_interrupts();
         self.sync_vdp_vint_pending();
     }
 
@@ -529,29 +563,43 @@ impl MegadriveBackend {
     /// is delivered, only that level is acknowledged, so a pending request of the
     /// other level survives.
     fn deliver_pending_interrupt(&mut self) -> Result<(), BackendError> {
-        let Some(level) = self.scheduler.next_deliverable(self.cpu.sr()) else {
-            return Ok(());
-        };
-        self.cpu
-            .interrupt(level.level(), vector_address(level), &mut self.bus)
-            .map_err(map_cpu)?;
-        self.bus
-            .debug_observer_mut()
-            .record(DebugEventKind::InterruptDelivered {
-                level: level.level(),
-            });
-        // Acknowledge exactly the delivered level: selecting the highest-priority
-        // pending request instead could acknowledge a different (masked) level.
-        let acknowledged = self.scheduler.acknowledge(level);
-        debug_assert!(acknowledged, "a deliverable level must have been pending");
-        if acknowledged {
+        // VBlank (level 6) is checked before HBlank (level 4), preserving the
+        // hardware priority order. A request is deliverable only when the VDP
+        // still owns it (register 0x00 enabled it) and the 68000 SR mask admits
+        // the level according to the shared predicate.
+        for (level, source) in [
+            (InterruptLevel::VBlank, VdpInterruptSource::VBlank),
+            (InterruptLevel::HBlank, VdpInterruptSource::HBlank),
+        ] {
+            if !self.scheduler.is_pending(level)
+                || !self.bus.vdp().take_interrupts().pending(source)
+                || !interrupt_level_deliverable(level.level(), self.cpu.sr())
+            {
+                continue;
+            }
+            self.cpu
+                .interrupt(level.level(), vector_address(level), &mut self.bus)
+                .map_err(map_cpu)?;
             self.bus
                 .debug_observer_mut()
-                .record(DebugEventKind::InterruptAcknowledged {
+                .record(DebugEventKind::InterruptDelivered {
                     level: level.level(),
                 });
+            // Acknowledge exactly the delivered level and source: selecting a
+            // different retained request could acknowledge a masked one.
+            let acknowledged = self.scheduler.acknowledge(level);
+            debug_assert!(acknowledged, "a deliverable level must have been pending");
+            self.bus.vdp_mut().acknowledge(source);
+            if acknowledged {
+                self.bus
+                    .debug_observer_mut()
+                    .record(DebugEventKind::InterruptAcknowledged {
+                        level: level.level(),
+                    });
+            }
+            self.sync_vdp_vint_pending();
+            return Ok(());
         }
-        self.sync_vdp_vint_pending();
         Ok(())
     }
 
@@ -591,8 +639,19 @@ impl MegadriveBackend {
         // instructions instead of nesting several handlers in a single tick.
         self.deliver_pending_interrupt()?;
         let outcome = self.cpu.step(&mut self.bus).map_err(map_cpu)?;
-        let master_cycles = u64::from(outcome.cycles)
+        // A data-port write that found the VDP FIFO full stalls the CPU by one
+        // 68000 cycle per overflow slot; convert the slots to master cycles and
+        // add them to this instruction's cost. This is deterministic integer
+        // arithmetic, never host time.
+        let fifo_wait = self.bus.take_vdp_wait_cycles();
+        let instruction_cycles = u64::from(outcome.cycles)
             .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
+            .ok_or(BackendError::TickOverflow)?;
+        let wait_cycles = u64::from(fifo_wait)
+            .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
+            .ok_or(BackendError::TickOverflow)?;
+        let master_cycles = instruction_cycles
+            .checked_add(wait_cycles)
             .ok_or(BackendError::TickOverflow)?;
         let next_tick = self
             .tick
@@ -602,7 +661,20 @@ impl MegadriveBackend {
         self.scheduler
             .advance_master(master_cycles)
             .map_err(map_scheduler)?;
+        // The VDP advances on the same master-cycle timeline, then its FIFO
+        // drains and any eager DMA busy window closes for the next step. Taking
+        // the DMA cost only closes DMA_BUSY; FIFO waits were already taken above
+        // and VDP interrupt pendings are untouched, so the status re-sync below
+        // is purely the derived-state recomputation (scheduler mirror + VINT
+        // latch), not a repair of an incidental clear.
+        let standard = self.scheduler.config().standard();
+        let vdp_tick = self.bus.vdp_mut().advance_master(master_cycles, standard);
+        self.bus.vdp_mut().drain_fifo();
+        self.bus.vdp_mut().take_dma_cycles();
         self.tick = Tick::from_raw(next_tick);
+        if vdp_tick.frame_started {
+            self.capture_frame()?;
+        }
         self.observe_scheduler_requests();
         self.sync_vdp_status();
         Ok(StepOutcome {
@@ -613,9 +685,69 @@ impl MegadriveBackend {
     }
 }
 
+/// Converts palette-index pixels into RGBA8 with opaque alpha.
+///
+/// CRAM is the documented 9-bit `0BBBGGGRRR` word, expanded by bit replication;
+/// the shadow flag halves each channel and the highlight flag adds `0x80`.
+fn rgba_from_indices(indices: &[u8], cram: &[u16; CRAM_WORDS]) -> Vec<u8> {
+    fn expand(value: u16) -> u8 {
+        let value = (value & 0x7) as u8;
+        (value << 5) | (value << 2) | (value >> 1)
+    }
+    let mut rgba = Vec::with_capacity(indices.len() * 4);
+    for &pixel in indices {
+        let colour = cram[usize::from(pixel & 0x3F)];
+        let mut r = expand(colour);
+        let mut g = expand(colour >> 3);
+        let mut b = expand(colour >> 6);
+        if pixel & SHADOW_FLAG != 0 {
+            r >>= 1;
+            g >>= 1;
+            b >>= 1;
+        } else if pixel & HIGHLIGHT_FLAG != 0 {
+            r = r.saturating_add(0x80);
+            g = g.saturating_add(0x80);
+            b = b.saturating_add(0x80);
+        }
+        rgba.extend_from_slice(&[r, g, b, 0xFF]);
+    }
+    rgba
+}
+
+impl MegadriveBackend {
+    /// Renders the completed frame from a clone of canonical VDP state.
+    ///
+    /// Rendering on a clone keeps sprite/status latches canonical and makes the
+    /// frame a pure function of state at the boundary. The one-frame queue keeps
+    /// the latest frame; a second take before a new frame returns `None`.
+    fn capture_frame(&mut self) -> Result<(), BackendError> {
+        let mut renderer = self.bus.vdp().clone();
+        let buffer = renderer.finish_frame();
+        let rgba = rgba_from_indices(&buffer.indices, renderer.cram());
+        let frame = VideoFrame::new(buffer.width, buffer.height, rgba)
+            .map_err(|error| BackendError::InvalidConfiguration(format!("video frame: {error}")))?;
+        self.pending_frame = Some(frame);
+        Ok(())
+    }
+}
+
+impl MediaSource for MegadriveBackend {
+    fn take_video_frame(&mut self) -> Option<VideoFrame> {
+        self.pending_frame.take()
+    }
+
+    fn take_audio_chunk(&mut self) -> Option<chronofork_backend_api::AudioChunk> {
+        None
+    }
+}
+
 impl Backend for MegadriveBackend {
     fn descriptor(&self) -> &BackendDescriptor {
         &self.descriptor
+    }
+
+    fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
+        Some(self)
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
@@ -731,6 +863,8 @@ impl Backend for MegadriveBackend {
         // state, so recompute it before anything can inspect the machine. The
         // canonical VBlank bit (bit 3) is serialized and was validated against
         // the snapshot state hash, so it is not reinterpreted here.
+        self.bus.vdp_mut().clear_interrupts();
+        self.sync_vdp_interrupts();
         self.sync_vdp_vint_pending();
         // The scheduler's diagnostic counters were just restored. Rebase the
         // debug-only request detection on them so a restore never reports a
@@ -741,6 +875,8 @@ impl Backend for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
+        // A frame queued before a restore belongs to the replaced state.
+        self.pending_frame = None;
         Ok(())
     }
 
@@ -877,6 +1013,8 @@ impl DebugAccess for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
+        // A frame queued before a restore belongs to the replaced state.
+        self.pending_frame = None;
         Ok(())
     }
 
@@ -1358,6 +1496,7 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
 
     let mut main = vec![
         0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR (explicitly mask the VDP levels)
+        0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0x00C00004)
         0x30, 0x3C, 0x00, 0x64, // MOVE.W #100,D0 (busy delay over two scanlines)
         0x51, 0xC8, 0xFF, 0xFC, // DBRA D0,*-4 (10 cycles per iteration)
         0x46, 0xFC, // MOVE.W #imm,SR: lower the mask to `mask`
@@ -1513,7 +1652,7 @@ mod tests {
 
     use super::{
         HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
+        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom, stamp_synthetic_header,
     };
     use crate::bus::{
         BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, RAM_BASE, RAM_END,
@@ -1595,7 +1734,7 @@ mod tests {
     #[test]
     fn reset_vectors_and_demo_program_execute() {
         let factory = factory();
-        assert!(!factory.descriptor().capabilities().rendering);
+        assert!(factory.descriptor().capabilities().rendering);
         let mut machine = factory.create_machine().expect("machine");
         let initial = machine.inspect().expect("inspect");
         assert_eq!(initial.registers["pc"], 0x200);
@@ -1643,17 +1782,22 @@ mod tests {
         assert_eq!(&rom[0x70..0x74], &0x0000_02C0_u32.to_be_bytes());
         assert_eq!(&rom[0x78..0x7C], &0x0000_02E0_u32.to_be_bytes());
 
-        // MOVE.W #$2700,SR, a 100-iteration DBRA delay, then MOVE.W #$2300,SR.
+        // MOVE.W #$2700,SR, enable the VDP interrupts, a 100-iteration DBRA
+        // delay, then MOVE.W #$2300,SR.
         assert_eq!(&rom[0x200..0x204], &[0x46, 0xFC, 0x27, 0x00]);
-        assert_eq!(&rom[0x204..0x208], &[0x30, 0x3C, 0x00, 0x64]);
-        assert_eq!(&rom[0x208..0x20C], &[0x51, 0xC8, 0xFF, 0xFC]);
-        assert_eq!(&rom[0x20C..0x210], &[0x46, 0xFC, 0x23, 0x00]);
-        assert_eq!(&rom[0x210..0x212], &[0x70, 0x00]); // MOVEQ #0,D0
         assert_eq!(
-            &rom[0x212..0x218],
+            &rom[0x204..0x20C],
+            &[0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04]
+        ); // MOVE.W #$8030,(0x00C00004): enable VBlank and HBlank
+        assert_eq!(&rom[0x20C..0x210], &[0x30, 0x3C, 0x00, 0x64]);
+        assert_eq!(&rom[0x210..0x214], &[0x51, 0xC8, 0xFF, 0xFC]);
+        assert_eq!(&rom[0x214..0x218], &[0x46, 0xFC, 0x23, 0x00]);
+        assert_eq!(&rom[0x218..0x21A], &[0x70, 0x00]); // MOVEQ #0,D0
+        assert_eq!(
+            &rom[0x21A..0x220],
             &[0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04] // MOVE.W (0x00C00004).L,D5
         );
-        assert_eq!(&rom[0x218..0x21A], &[0x60, 0xF8]); // BRA.S status read
+        assert_eq!(&rom[0x220..0x222], &[0x60, 0xF8]); // BRA.S status read
 
         // Both handlers increment their counter, set N with MOVEQ #-1,D3 and RTE.
         // There is no MOVE.W #$2700,SR handler prologue: exception entry loads the
@@ -1672,8 +1816,8 @@ mod tests {
         );
 
         // The mask parameter is encoded as SR = 0x2000 | mask << 8.
-        assert_eq!(&interrupt_rom(7)[0x20C..0x210], &[0x46, 0xFC, 0x27, 0x00]);
-        assert_eq!(&interrupt_rom(0)[0x20C..0x210], &[0x46, 0xFC, 0x20, 0x00]);
+        assert_eq!(&interrupt_rom(7)[0x214..0x218], &[0x46, 0xFC, 0x27, 0x00]);
+        assert_eq!(&interrupt_rom(0)[0x214..0x218], &[0x46, 0xFC, 0x20, 0x00]);
     }
 
     #[test]
@@ -2005,7 +2149,7 @@ mod tests {
         // retained but is now deliverable.
         step_until(
             &mut machine,
-            |machine| machine.cpu().pc() == 0x210,
+            |machine| machine.cpu().pc() == 0x218,
             "mask lowering",
         );
         let lowered = machine.inspect().expect("inspect");
@@ -2051,10 +2195,10 @@ mod tests {
             delivered.memory[frame + 5],
         ]);
         assert_eq!(saved_sr, 0x2300);
-        assert_eq!(saved_pc, 0x210);
+        assert_eq!(saved_pc, 0x218);
         assert_eq!(
             delivered.memory[frame..frame + 6],
-            [0x23, 0x00, 0x00, 0x00, 0x02, 0x10]
+            [0x23, 0x00, 0x00, 0x00, 0x02, 0x18]
         );
 
         machine.step(InputFrame::NEUTRAL).expect("handler MOVEQ");
@@ -2070,7 +2214,7 @@ mod tests {
         machine.step(InputFrame::NEUTRAL).expect("RTE");
         let returned = machine.inspect().expect("inspect");
         assert_eq!(
-            returned.registers["pc"], 0x210,
+            returned.registers["pc"], 0x218,
             "RTE returns to the interrupted PC"
         );
         assert_eq!(machine.cpu().sr(), 0x2300, "RTE restores the saved raw SR");
@@ -2333,6 +2477,83 @@ mod tests {
             u64::from(STATUS_VINT_PENDING)
         );
         assert_eq!(register(&machine, "d6"), 0);
+    }
+
+    /// Builds a ROM that reads the status port repeatedly while both VDP
+    /// interrupt sources are masked, then lowers the mask. The HBlank handler
+    /// increments D7 and returns with `RTE`.
+    fn status_read_before_delivery_rom() -> Vec<u8> {
+        let mut rom = [0x4E_u8, 0x71].repeat(0x200); // 0x400 bytes of NOP fill
+        rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        rom[0x70..0x74].copy_from_slice(&0x0000_02C0_u32.to_be_bytes());
+        rom[0x78..0x7C].copy_from_slice(&0x0000_02E0_u32.to_be_bytes());
+        let program: &[u8] = &[
+            0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR
+            0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0xC00004)
+            0x30, 0x3C, 0x03, 0xE8, // MOVE.W #1000,D0
+            0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // loop: MOVE.W (0xC00004).L,D5
+            0x51, 0xC8, 0xFF, 0xF6, // DBRA D0,loop
+            0x46, 0xFC, 0x23, 0x00, // MOVE.W #$2300,SR (lower the mask)
+            0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // MOVE.W (0xC00004).L,D5
+            0x60, 0xF8, // BRA.S back to the status read
+        ];
+        rom[0x200..0x200 + program.len()].copy_from_slice(program);
+        rom[0x2C0..0x2C6].copy_from_slice(&[
+            0x52, 0x47, // ADDQ.W #1,D7
+            0x76, 0xFF, // MOVEQ #-1,D3
+            0x4E, 0x73, // RTE
+        ]);
+        rom[0x2E0..0x2E6].copy_from_slice(&[
+            0x52, 0x46, // ADDQ.W #1,D6
+            0x76, 0xFF, // MOVEQ #-1,D3
+            0x4E, 0x73, // RTE
+        ]);
+        super::stamp_synthetic_header(&mut rom);
+        rom
+    }
+
+    #[test]
+    fn status_reads_before_delivery_do_not_acknowledge_the_request() {
+        let mut machine = MegadriveFactory::new(status_read_before_delivery_rom())
+            .expect("valid status-read ROM")
+            .create_machine()
+            .expect("machine");
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::HBlank),
+            "HBlank pending while masked",
+        );
+        assert_eq!(register(&machine, "irq_mask"), 7);
+        assert_eq!(register(&machine, "d7"), 0);
+
+        // The ROM is in its status-read loop. More status reads must neither
+        // acknowledge the retained request nor enter the handler.
+        for _ in 0..20 {
+            machine.step(InputFrame::NEUTRAL).expect("status read");
+        }
+        assert!(
+            machine.interrupts().is_pending(InterruptLevel::HBlank),
+            "a status read must not acknowledge the pending HBlank"
+        );
+        assert_eq!(
+            register(&machine, "d7"),
+            0,
+            "a status read must not enter the handler"
+        );
+
+        // The loop lowers the mask; the retained request is still delivered.
+        step_until(
+            &mut machine,
+            |machine| register(machine, "d7") >= 1,
+            "HBlank delivery after the status reads",
+        );
+        assert_eq!(
+            register(&machine, "irq_mask"),
+            4,
+            "handler entry loads IPM 4"
+        );
+        assert!(!machine.interrupts().is_pending(InterruptLevel::HBlank));
     }
 
     #[test]
@@ -2714,7 +2935,7 @@ mod tests {
         // The fork finishes its delay loop, lowers the mask and takes the
         // retained HBlank at the next instruction boundary.
         for _ in 0..1_000_000 {
-            if manager.inspect(fork).expect("inspect").machine.registers["pc"] == 0x210 {
+            if manager.inspect(fork).expect("inspect").machine.registers["pc"] == 0x218 {
                 break;
             }
             manager.step(fork, InputFrame::NEUTRAL).expect("lower mask");
@@ -3184,26 +3405,83 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v4 / state hash v4 / configuration hash v4
-        // (six steps of the demo ROM on the master-cycle timeline). The v4 bump
-        // is the documented master-cycle, extended-snapshot and timing change.
+        // Golden values for payload v5 / state hash v5 / configuration hash v5
+        // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
+        // moved the outer identity from v4 to v5 and the body now embeds the
+        // CFVDP002 VDP snapshot (registers, CRAM, VSRAM, FIFO, DMA, frame index,
+        // line/dot and VRAM). The VDP also advances on the master-cycle
+        // timeline, so the six-step state includes a non-zero line/dot
+        // position. The length and both hashes below are the current v5 golden;
+        // v1-v4 payloads are rejected before any body byte is reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 196_821);
+        assert_eq!(snapshot.payload().len(), 197_058);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "8f24b601f08606c537c57af74ca5569ad7b68351ed7f5e6aa4e1d976520b594a"
+            "8171b3576cac95f3d34652fc89cfccebd681e8d154a9436927b36beaf24c87a2"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "dafc89a301f1e1a4b799ff2cb6df655e0d64463c3fc9ab6236214236e013ca1a"
+            "0b783b181af81e902c39b49840c91a4af435d0e6c93cc80b0abc7084b40901fa"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "1ac706deb485d0b521b67533d2b17e6aed87db900609eed810874482f656eca4"
+            "1a0b6125b29dc677ba6860065b5a59f8982cbf3cda11503facd988a520654602"
         );
+    }
+
+    /// A valid cartridge whose program is a NOP fill, so a step's tick delta is
+    /// exactly the instruction cost.
+    fn nop_factory() -> MegadriveFactory {
+        let mut rom = vec![0_u8; 0x400];
+        for word in rom.chunks_exact_mut(2) {
+            word.copy_from_slice(&[0x4E, 0x71]);
+        }
+        rom[0..4].copy_from_slice(&0x0100_0000_u32.to_be_bytes());
+        rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
+        stamp_synthetic_header(&mut rom);
+        MegadriveFactory::new(rom).expect("nop cartridge")
+    }
+
+    fn fill_vdp_fifo(machine: &mut MegadriveBackend) {
+        use crate::vdp::{CONTROL_PORT_OFFSET, DATA_PORT_OFFSET};
+
+        let vdp = machine.bus.vdp_mut();
+        vdp.write16(CONTROL_PORT_OFFSET, 0x8F02)
+            .expect("auto-increment");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
+            .expect("command first word");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0000)
+            .expect("command second word");
+        for word in 0..5_u16 {
+            vdp.write16(DATA_PORT_OFFSET, word)
+                .expect("queued data write");
+        }
+    }
+
+    #[test]
+    fn vdp_fifo_wait_cycles_are_added_to_the_instruction_tick() {
+        let factory = nop_factory();
+        let mut plain = factory.create_machine().expect("machine");
+        let mut stalled = factory.create_machine().expect("machine");
+        fill_vdp_fifo(&mut stalled);
+
+        let plain_outcome = plain.step(InputFrame::NEUTRAL).expect("plain step");
+        let stalled_outcome = stalled.step(InputFrame::NEUTRAL).expect("stalled step");
+        assert_eq!(
+            stalled_outcome.tick.raw(),
+            plain_outcome.tick.raw() + 7,
+            "one FIFO overflow slot adds one 68000 cycle (seven master cycles)"
+        );
+
+        // The same setup is deterministic: identical tick and state hash.
+        let mut again = factory.create_machine().expect("machine");
+        fill_vdp_fifo(&mut again);
+        let again_outcome = again.step(InputFrame::NEUTRAL).expect("repeat step");
+        assert_eq!(again_outcome.tick, stalled_outcome.tick);
+        assert_eq!(again_outcome.state_hash, stalled_outcome.state_hash);
     }
 }

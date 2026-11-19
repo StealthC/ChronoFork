@@ -1,4 +1,4 @@
-//! Version 4 snapshot identity and extended register-file round trips.
+//! Version 5 snapshot identity and extended register-file round trips.
 
 #![allow(clippy::expect_used)]
 
@@ -14,15 +14,15 @@ fn new_machine() -> Result<MegadriveBackend, Box<dyn Error>> {
 }
 
 #[test]
-fn version_four_identity_is_published() {
-    assert_eq!(PAYLOAD_VERSION, 4);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K4");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE4");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF4");
+fn version_five_identity_is_published() {
+    assert_eq!(PAYLOAD_VERSION, 5);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K5");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE5");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF5");
 }
 
 #[test]
-fn v4_snapshot_round_trips_master_cycles_stacks_and_cpu_cycles() -> Result<(), Box<dyn Error>> {
+fn v5_snapshot_round_trips_master_cycles_stacks_and_cpu_cycles() -> Result<(), Box<dyn Error>> {
     let mut machine = new_machine()?;
     machine.step(InputFrame::NEUTRAL)?;
     machine.step(InputFrame::NEUTRAL)?;

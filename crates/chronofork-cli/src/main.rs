@@ -1197,9 +1197,11 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         descriptor.version()
     );
     println!(
-        "scope: documented MC68000 instruction set, ROM/RAM, VDP status/control/VRAM window, master-cycle interrupt scheduler"
+        "scope: documented MC68000 instruction set, ROM/RAM, VDP status/control/VRAM window, plane/window/sprite compositor, DMA/FIFO, master-cycle timing and interrupt scheduler"
     );
-    println!("limitations: no rendering, audio, Z80, DMA, controllers or cycle-accurate timing");
+    println!(
+        "limitations: deterministic headless video frames only (no host window); no audio, Z80, interlace or game compatibility; H/V counters and H32 geometry are approximate"
+    );
 
     // The demo is a wiring and output smoke test: the values it prints are read
     // back from the session, but the invariants behind them are asserted by the
@@ -1284,8 +1286,9 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     );
 
     // The interrupt ROM delays past two scanlines with the mask still at 7, then
-    // lowers it. The retained HBlank is delivered at the next boundary, its
-    // handler runs and RTE restores the interrupted PC and saved raw SR.
+    // lowers it at 0x214; the instruction boundary after that instruction is at
+    // pc=0x218. The retained HBlank is delivered at the next boundary, its
+    // handler runs at IPM 4 and RTE restores the interrupted PC and saved raw SR.
     let mut gated_manager = SessionManager::new(Arc::new(MegadriveFactory::new(interrupt_rom(3))?));
     let gated = gated_manager.create_session()?;
     for _ in 0..2_000_000 {
@@ -1302,7 +1305,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     );
 
     for _ in 0..2_000_000 {
-        if gated_manager.inspect(gated)?.machine.registers["pc"] == 0x210 {
+        if gated_manager.inspect(gated)?.machine.registers["pc"] == 0x218 {
             break;
         }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
@@ -1329,10 +1332,10 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         returned_hblank.machine.registers["irq_mask"],
     );
 
-    // At vertical blanking the masked VBlank (level 6) is retained while the
-    // pending HBlank (level 4) is delivered every active line. The snapshot
-    // preserves both requests and the VINT status bit until RTE restores the
-    // interrupted program.
+    // At vertical blanking the VDP raises VBlank (level 6) first, and VINT sets
+    // status bit 7. The handler runs at IPM 6 while the pending HBlank (level 4)
+    // cannot preempt; RTE restores the interrupted program's mask. The snapshot
+    // preserves the pending VBlank request and VINT state until RTE.
     for _ in 0..2_000_000 {
         if gated_manager.inspect(gated)?.machine.registers["vdp_status"] & 0x0080_u64 == 0x0080_u64
         {
@@ -1340,16 +1343,25 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
     }
-    let vblank_pending = gated_manager.inspect(gated)?;
-    let pre_pc = vblank_pending.machine.registers["pc"];
-    let pre_sr = vblank_pending.machine.registers["sr"];
     let vblank_gated_checkpoint = gated_manager.snapshot(gated)?;
     gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let vblank_entry = gated_manager.inspect(gated)?;
     gated_manager.step(gated, InputFrame::NEUTRAL)?;
     gated_manager.step(gated, InputFrame::NEUTRAL)?;
+    let vblank_rte = gated_manager.inspect(gated)?;
     gated_manager.restore(gated, vblank_gated_checkpoint)?;
+    let vblank_restored = gated_manager.inspect(gated)?;
     println!(
-        "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler); RTE returned to pc=0x{pre_pc:X} with SR=0x{pre_sr:04X} (mask restored); snapshot preserved the pending VBlank/VINT state"
+        "interrupt: VBlank entered at tick {} with handler IPM {} and blocked the pending HBlank (level {}, no nested handler); RTE at tick {} returned to pc=0x{:X} with SR=0x{:04X} (mask {}); snapshot restored the pending VBlank/VINT state (level {}) at tick {}",
+        vblank_entry.machine.tick.raw(),
+        vblank_entry.machine.registers["irq_mask"],
+        vblank_entry.machine.registers["irq_pending_level"],
+        vblank_rte.machine.tick.raw(),
+        vblank_rte.machine.registers["pc"],
+        vblank_rte.machine.registers["sr"],
+        vblank_rte.machine.registers["irq_mask"],
+        vblank_restored.machine.registers["irq_pending_level"],
+        vblank_restored.machine.tick.raw(),
     );
 
     println!("chronofork megadrive demo: PASS");

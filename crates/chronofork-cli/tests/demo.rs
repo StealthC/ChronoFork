@@ -94,7 +94,8 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
     for expected in [
         "chronofork megadrive demo:",
         "68000 + VDP port + interrupt scheduler slice",
-        "no rendering, audio, Z80",
+        "deterministic headless video frames only",
+        "no audio, Z80, interlace or game compatibility",
         // VDP/VRAM evidence is retained.
         "vdp: register 15 (auto-increment)=2",
         "vdp: program wrote and read back VRAM word 0x1234",
@@ -102,8 +103,9 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
         "interrupt: masked HBlank pending at tick 3472",
         "interrupt: masked VBlank pending level 6 vector 0x78",
         // Delivery after the ROM lowers the mask, handler execution and RTE.
-        "interrupt: HBlank delivered at tick 7406 with handler IPM 4; handler ran; RTE at tick 7574",
-        "interrupt: VBlank entered at IPM 6 and blocked the pending HBlank (no nested handler)",
+        "interrupt: HBlank delivered at tick 7546 with handler IPM 4; handler ran; RTE at tick 7714 returned to pc=0x218 with SR=0x2300 (mask 3, CCR restored)",
+        "interrupt: VBlank entered at tick 766164 with handler IPM 6 and blocked the pending HBlank (level 4, no nested handler)",
+        "snapshot restored the pending VBlank/VINT state (level 6)",
         // Fork/restore evidence is retained.
         "fork isolation:",
         "snapshot: VDP, scheduler and CPU state reproduced from the checkpoint",
@@ -114,10 +116,16 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
             "megadrive demo output is missing `{expected}`:\n{stdout}"
         );
     }
-    for stale in ["does not gate interrupts", "E2-15", "1000000"] {
+    for stale in [
+        "does not gate interrupts",
+        "E2-15",
+        "1000000",
+        "no rendering",
+        "VBlank entered at IPM 6; RTE returned",
+    ] {
         assert!(
             !stdout.contains(stale),
-            "stale interrupt text `{stale}` must be gone:\n{stdout}"
+            "stale interrupt/rendering text `{stale}` must be gone:\n{stdout}"
         );
     }
 }

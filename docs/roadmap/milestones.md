@@ -48,7 +48,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phases 8.3–8.8 planned |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented, verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the phase-8.3 PR (issue #16); phases 8.4–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -79,7 +79,9 @@ verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unbl
 milestone and has started: phase 8.1 (cartridge, region, TMSS and boot) was implemented,
 independently reviewed and merged to `main` at `f024b7b` (PR #25); phase 8.2 is implemented,
 verified (round 12) and independently reviewed (round 11), and merged to `main` through the
-phase-8.2 PR (issue #15); phases 8.3–8.8 are planned. M8 depends on the M1–M7 layers and consumes the H1–H5
+phase-8.2 PR (issue #15); phase 8.3 (complete VDP) is implemented, verified (rounds 1–3) and
+independently reviewed (rounds 2–3), and merged to `main` through the phase-8.3 PR (issue
+#16); phases 8.4–8.8 are planned. M8 depends on the M1–M7 layers and consumes the H1–H5
 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
@@ -152,7 +154,9 @@ phases.
 - [x] Differential trace evidence against the pinned Exodus oracle: the historical three
       synthetic ROMs match on projected address streams and selected final state, and the
       current Phase 8.2 harness covers eleven ROMs at 11/11 address, per-instruction cycle,
-      final-state and negative controls. The historical masked-ROM default-quantum control
+      final-state and negative controls; the phase-8.3 VDP state differential covers the
+      oracle-visible status/HV readbacks and the canonical registers/VRAM/CRAM with a
+      negative control. The historical masked-ROM default-quantum control
       crossed two HBlank boundaries with the SR mask at 7 and no handler entry. Current
       evidence, controlled windows and pre-repair history are in [oracle differential
       evidence](../research/oracle-differential-evidence.md); the masked run is negative
@@ -705,7 +709,9 @@ and do not reopen it.
 - **Status:** `In progress`
 - **Integration state:** phase 8.1 (cartridge, region, TMSS and boot) merged to `main` at
   `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed
-  (round 11), merged to `main` through the phase-8.2 PR (issue #15); phases 8.3–8.8 planned
+  (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented,
+  verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the
+  phase-8.3 PR (issue #16); phases 8.4–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic
@@ -727,8 +733,10 @@ and do not reopen it.
       cycle accounting (phase 8.2; verified round 12, reviewed round 11 and merged).
 - [ ] Remaining 68000 exception groups (guest bus error/trace), a wired level-7 source
       and cycle/prefetch behavior only as far as H5 requires.
-- [ ] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
-      256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
+- [x] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
+      256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge
+      (phase 8.3; verified rounds 1–3, reviewed rounds 2–3 and merged; evidence in the
+      [VDP state differential](../research/vdp-state-differential-evidence.md)).
 - [ ] Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
 - [ ] Timer interrupts and the full TH latch / 3- and 6-button controllers on ports 1–2.
 - [ ] Cycle-based canonical time plus unpaced/paced/manual execution modes with run-to-target
@@ -759,6 +767,9 @@ and do not reopen it.
 
 - Port 3, analog and keyboard hardware remain H4 residual limits unless the curated set
   requires them.
+- CI runtime (issue #28): the ~20 min `Test` job and the slow `megadrive demo` are the next
+  engineering follow-up after phase 8.3; study the shared-cache, job-split, demo-performance
+  and concurrency-cancellation options before implementing.
 - Dynamic recompilation, run-ahead, skip-frames and savestate-rewind shortcuts are out of
   scope; each would need an ADR and a determinism analysis.
 - Universal commercial compatibility and cycle-perfect hardware equivalence are not claimed.

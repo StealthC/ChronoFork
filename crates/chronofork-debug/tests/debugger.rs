@@ -915,8 +915,8 @@ fn watchpoints_require_backend_support() {
 /// retained event, for every documented event class.
 #[test]
 fn event_breakpoint_stops_on_a_matching_event() {
-    // Interrupt delivery: the first HBlank is delivered at tick 7378, so the
-    // 105th instruction stops.
+    // Interrupt delivery: the first HBlank is delivered at tick 7518, so the
+    // 106th instruction stops.
     let mut machine = interrupt_machine(3);
     let mut debugger = Debugger::new(&mut machine).expect("debugger");
     let event_breakpoint = debugger
@@ -926,16 +926,16 @@ fn event_breakpoint_stops_on_a_matching_event() {
         })
         .expect("event breakpoint");
     let run = debugger.run(200).expect("run");
-    let delivered = event(7378, DebugEventKind::InterruptDelivered { level: 4 });
+    let delivered = event(7518, DebugEventKind::InterruptDelivered { level: 4 });
     assert_eq!(
         run.reason,
         StopReason::Event {
             id: event_breakpoint
         }
     );
-    assert_eq!(run.steps, 105);
-    assert_eq!(run.tick, Tick::from_raw(7406), "the stop is after the step");
-    assert_eq!(run.state_hash, interrupt_after(3, 105).state_hash);
+    assert_eq!(run.steps, 106);
+    assert_eq!(run.tick, Tick::from_raw(7546), "the stop is after the step");
+    assert_eq!(run.state_hash, interrupt_after(3, 106).state_hash);
     assert_eq!(run.matched_events, vec![delivered]);
     assert!(
         debugger

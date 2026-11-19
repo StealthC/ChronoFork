@@ -579,14 +579,14 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
     let head: Vec<DebugEvent> = all
         .iter()
         .copied()
-        .filter(|event| event.tick <= Tick::from_raw(7378))
+        .filter(|event| event.tick <= Tick::from_raw(7518))
         .collect();
     assert_eq!(
         head,
         vec![
             event(3388, requested(4)),
-            event(7378, delivered(4)),
-            event(7378, acknowledged(4)),
+            event(7518, delivered(4)),
+            event(7518, acknowledged(4)),
         ],
         "requested at the raising step, then delivered and acknowledged after the \
          successful entry, in that order"
@@ -598,18 +598,18 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
         .iter()
         .copied()
         .filter(|event| {
-            event.tick >= Tick::from_raw(765_996) && event.tick <= Tick::from_raw(766_304)
+            event.tick >= Tick::from_raw(766_000) && event.tick <= Tick::from_raw(766_400)
         })
         .collect();
     assert_eq!(
         tail,
         vec![
-            event(765_996, requested(4)),
-            event(765_996, requested(6)),
-            event(766_108, delivered(6)),
-            event(766_108, acknowledged(6)),
-            event(766_304, delivered(4)),
-            event(766_304, acknowledged(4)),
+            event(766_066, requested(4)),
+            event(766_066, requested(6)),
+            event(766_136, delivered(6)),
+            event(766_136, acknowledged(6)),
+            event(766_332, delivered(4)),
+            event(766_332, acknowledged(4)),
         ],
         "only the delivered level is acknowledged and the other level stays pending"
     );
@@ -624,7 +624,7 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
     assert_eq!(log_ref(&mut masked).dropped(), 0, "ring overflow");
     assert_eq!(
         interrupt_events(&events(&mut masked)),
-        vec![event(3388, requested(4)), event(765_982, requested(6))],
+        vec![event(3388, requested(4)), event(766_052, requested(6))],
         "a masked pending request is requested once and never delivered or acknowledged"
     );
 }
