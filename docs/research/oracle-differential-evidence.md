@@ -670,13 +670,15 @@ python3 scripts/oracle-diff.py --out-dir .research/evidence
 sha256sum .research/evidence/oracle-diff.json .research/evidence/oracle-diff.md
 ```
 
-Expected exit code: **0** — all three ROMs pass projection, final-state and
-negative-control comparisons, and the scheduler/gating control passes (3/3
-scheduler controls, masked gating 1/1). The harness verifies that `rom_masked`
-recorded quantum 64 with the flag omitted and that `rom_alu`/`rom_mem_vdp` recorded
-the explicit 1,000,000 quantum. To reproduce the historical pre-repair FAIL, check
-out the pre-repair core revision and harness and preserve its output under a
-separate directory before running again.
+Expected exit code: **0** — the command above runs the **current eleven-ROM
+master-cycle** harness, not the 3-ROM result documented on this page. The current
+run passes 11/11 address projections, per-instruction cycle comparisons, final
+states and address/cycle/final-state negative controls; see the
+[68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The 3/3
+and quantum-64 material on this page is retained historical evidence and is **not**
+reproduced by this command. To reproduce the historical pre-repair FAIL, check out
+the pre-repair core revision and harness and preserve its output under a separate
+directory before running again.
 
 The harness writes `oracle-diff.json` (machine-readable, schema v2) and
 `oracle-diff.md` (human-readable) plus per-ROM artifacts under

@@ -303,7 +303,10 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
   accesses, unrecognised/reserved encodings and the implemented
   `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms also use 68000 vectors. Host errors are
   reserved for host-level failures (a frame or vector fetch that cannot complete,
-  stack/address overflow, trace capacity), not for guest data accesses.
+  stack/address overflow, trace capacity), not for guest data accesses. Instruction
+  and extension-word fetches are not converted: an unmapped or protected fetch
+  remains a typed host bus error, which is the declared guest bus-error (vector 2)
+  residual, distinct from the data accesses that take vector 3.
 - **No interrupt-timing equivalence is claimed.** Delivery happens at instruction
   boundaries on the master-cycle timeline (cycle cost added at the boundary), at
   most one exception per boundary; the oracle differential does not compare delivery

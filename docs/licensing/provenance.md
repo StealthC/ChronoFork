@@ -63,13 +63,13 @@ ignored by Git, are not submodules, and are not distributed with ChronoFork.
 Exodus headless (`exodus-for-ais`, branch `linux-headless`, commit
 `ec0056151f3ff1c334d09ee375abb30a68fdfec5`) is used only as an **external
 oracle** for differential instruction-trace evidence, in [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
-E2-12. The evidence is recorded in
+E2-12. The historical E2-12/E2-15 evidence is recorded in
 [Oracle differential instruction-trace evidence](../research/oracle-differential-evidence.md).
-The final post-repair run passes all three synthetic ROMs, including the E2-15
-masked-ROM default-quantum gating control; the earlier pre-E2-15 two-ROM evidence,
-the pre-repair FAIL and its E2-13 core repair are preserved as history in that page
-and under ignored `.research/evidence/before-repair/` and
-`.research/evidence/before-e2-15/`.
+The historical E2-12/E2-15 post-repair three-ROM run, including its masked-ROM
+default-quantum gating control, is preserved as history in that page and under
+ignored `.research/evidence/before-repair/` and `.research/evidence/before-e2-15/`;
+the current Phase 8.2 evidence is the eleven-ROM master-cycle differential in the
+[68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
 - The oracle is built from a pinned commit in the ignored
   `.research/upstream/exodus-headless` checkout and invoked as separate

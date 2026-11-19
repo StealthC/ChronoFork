@@ -713,8 +713,10 @@ impl M68000 {
         self.a = a;
         self.pc = pc;
         self.sr = sr;
-        // The snapshot layout does not carry USP/SSP yet; keep the mirror for
-        // the restored mode consistent with the restored active A7.
+        // The v4 snapshot carries USP and SSP separately; the backend applies
+        // them through `restore_extended_state` after this base register restore.
+        // This mode-consistent fallback keeps the mirror coherent for callers
+        // that restore only the base register file.
         if sr & SR_SUPERVISOR != 0 {
             self.ssp = a[7];
         } else {

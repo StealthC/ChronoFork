@@ -122,8 +122,8 @@ scope, exit criteria, dependencies and non-goals.
 ### Non-goals and tracked elsewhere
 
 - **Production hardware completeness is not a Stage 1 exit criterion.** Rendering, DMA,
-  CRAM/VSRAM, audio, Z80, cartridge identity/mapper, timers, the full controller protocol,
-  privilege and cycle accuracy belong to the parallel
+  CRAM/VSRAM, audio, Z80, cartridge identity/mapper, timers, the full controller protocol
+  and cycle accuracy belong to the parallel
   [H1–H5](#hardware-depth-parallel-track-h1h5) track; Stage 1 stays complete for the
   modelled slice while that work continues.
 - The slice keeps its documented limits: privilege is enforced for the implemented system
@@ -133,7 +133,7 @@ scope, exit criteria, dependencies and non-goals.
   acknowledge logic are not modelled (the CPU-side pending/acknowledge path exists);
   controller input is the TH-high 3-button subset on ports 1–2. See [Mega Drive
   slice](../architecture/megadrive-slice.md#not-implemented).
-- Broader instruction/addressing coverage is [H1](#h1--cpu-and-instruction-completeness);
+- Coverage beyond the documented MC68000 set is [H1](#h1--cpu-and-instruction-completeness);
   the remaining controller protocol, cartridge identity and timers are
   [H4](#h4--cartridge-controllers-and-timers).
 
@@ -429,8 +429,9 @@ scope, exit criteria, dependencies and non-goals.
 ### Scope and deliverables
 
 - Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM.
-- Complete 68000: full instruction set, addressing modes, privilege, exception groups and
-  cycle accounting; canonical emulated time in CPU cycles.
+- Documented MC68000 instruction set, addressing modes and privilege enforcement are
+  delivered by phase 8.2, with canonical time in master cycles; remaining exception
+  groups and cycle/prefetch accuracy stay in H1/H5.
 - Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
   256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
 - Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
@@ -505,18 +506,18 @@ carrying an unchecked hardware box.
 
 ### H1 — CPU and instruction completeness
 
-- **Goal:** a documented, testable 68000 model instead of a subset that happens to run the
-  current fixtures.
+- **Goal:** a documented, testable 68000 model; the documented set and privilege are
+  delivered, with remaining exception groups and coverage beyond that set.
 - **Milestone:** [H1](milestones.md#h1--cpu-and-instruction-completeness).
 - **Depends on:** the Stage 1 slice and its differential harness.
 
 #### Scope and deliverables
 
-- Broader 68000 instruction and addressing-mode coverage (EPIC-0002 E2-13 continued),
-  driven by differential tests.
-- Privilege enforcement, separate user/supervisor stacks and the resulting exception
-  behavior.
-- Exception groups beyond the implemented interrupt path.
+- Coverage beyond the documented MC68000 instruction set and broader differential cases
+  (EPIC-0002 E2-13 continued).
+- Exception groups beyond the implemented interrupt path (guest bus error and trace).
+- Privilege enforcement and separate user/supervisor stacks are delivered; keep them
+  regression-tested rather than listing them as open scope.
 - A wired level-7 interrupt source instead of a predicate rule only.
 - Cycle and prefetch behavior only as far as [H5](#h5--accuracy-and-evidence) requires it.
 

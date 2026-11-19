@@ -48,14 +48,14 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `Next` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phases 8.2–8.8 not started |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented through repair round 9, with independent verification/review and merge pending; phases 8.3–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
 
 | Track | Status | Objective |
 |---|---|---|
-| [H1 — CPU and instruction completeness](#h1--cpu-and-instruction-completeness) | `Partial` | Broader 68000 instruction/addressing coverage, privilege, exception groups |
+| [H1 — CPU and instruction completeness](#h1--cpu-and-instruction-completeness) | `Partial` | Documented MC68000 set and privilege delivered; remaining exception groups and coverage beyond the documented set |
 | [H2 — Video, VDP and DMA](#h2--video-vdp-and-dma) | `Partial` | Rendering, CRAM/VSRAM, DMA, raster and H/V timing |
 | [H3 — Audio and Z80](#h3--audio-and-z80) | `Planned` | Z80, bus arbitration, YM2612 and PSG |
 | [H4 — Cartridge, controllers and timers](#h4--cartridge-controllers-and-timers) | `Partial` | ROM identity, mapper/SRAM, full controller protocol, timers |
@@ -701,9 +701,10 @@ and do not reopen it.
 ## M8 — Functional Mega Drive
 
 - **Roadmap stage:** [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive)
-- **Status:** `Next`
+- **Status:** `In progress`
 - **Integration state:** phase 8.1 (cartridge, region, TMSS and boot) merged to `main` at
-  `f024b7b` (PR #25); phases 8.2–8.8 not started
+  `f024b7b` (PR #25); phase 8.2 implemented through repair round 9, with independent
+  verification/review and merge pending; phases 8.3–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic
@@ -721,8 +722,10 @@ and do not reopen it.
 
 - [x] Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM
       (phase 8.1, reviewed PASS 2026-11-17).
-- [ ] Complete 68000 instruction set, addressing modes, privilege, exception groups and cycle
-      accounting.
+- [x] Documented MC68000 instruction set, addressing modes, privilege enforcement and
+      cycle accounting (phase 8.2; final verification/review and merge pending).
+- [ ] Remaining 68000 exception groups (guest bus error/trace), a wired level-7 source
+      and cycle/prefetch behavior only as far as H5 requires.
 - [ ] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
       256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
 - [ ] Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
@@ -798,11 +801,12 @@ and do not reopen it.
   hardware-depth track, not a stage.
 - **Status:** `Partial`
 - **Integration state:** n/a (track)
-- **Objective:** a documented, testable 68000 model instead of a subset that happens to run
-  the current fixtures.
+- **Objective:** a documented, testable 68000 model; the documented MC68000 set and
+  privilege are delivered, and the remaining track work is exception groups and
+  coverage beyond the documented set.
 - **Depends on:** the M1 slice and its differential harness.
-- **Evidence:** implemented subset in [Mega Drive
-  slice](../architecture/megadrive-slice.md#68000-subset); [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
+- **Evidence:** the documented instruction set in [Mega Drive
+  slice](../architecture/megadrive-slice.md#68000-instruction-set); [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
   E2-03/E2-13; FR-MD-002 and FR-MD-009 in
   [functional requirements](../requirements/functional.md).
 
@@ -810,10 +814,11 @@ and do not reopen it.
 
 - [x] Documented MC68000 instruction set with reset vectors, flags and big-endian bus discipline.
 - [x] E2-13 absolute-long `MOVE` decoding repair, verified by differential evidence.
-- [ ] Broader instruction and addressing-mode coverage, driven by differential tests
-      (EPIC-0002 E2-13 continued).
-- [ ] Privilege enforcement and separate user/supervisor stacks.
-- [ ] 68000 exception groups beyond the implemented interrupt path.
+- [ ] Coverage beyond the documented MC68000 instruction set and broader differential
+      cases (EPIC-0002 E2-13 continued).
+- [x] Privilege enforcement and separate user/supervisor stacks, with RTE restore.
+- [ ] 68000 exception groups beyond the implemented interrupt path (guest bus error and
+      trace).
 - [ ] A wired level-7 interrupt source instead of a predicate rule only.
 
 ### Exit criteria

@@ -524,9 +524,9 @@ def build_masked_rom():
     The program contains no SR-writing opcode, so the 68000 reset
     interrupt-priority mask 7 (oracle effective IPM 7; ChronoFork SR 0x2700)
     holds for the whole run and neither side can take a VDP interrupt. The
-    ten-iteration recurrence executes well over one full CLI default quantum of
-    64 instructions before the marker loop, so the instruction-quantum scheduler
-    raises at least one HBlank request behind the masked program.
+    ten-iteration recurrence executes well past the first 3420-master-cycle
+    scanline boundary before the marker loop, so the master-cycle scheduler raises
+    at least one HBlank request behind the masked program.
 
     Two autovector table entries point at distinct ``BRA.S *`` stubs outside the
     measured program region. If mask gating regressed and a request were
@@ -539,7 +539,7 @@ def build_masked_rom():
     _init_registers(asm)
 
     # Ten-iteration recurrence. Repeated loop addresses make the projected
-    # stream comfortably longer than the historical default instruction quantum.
+    # stream comfortably longer than the historical instruction quantum.
     asm.moveq(10, 0)  # D0 = iteration counter
     asm.moveq(0, 1)  # D1 = accumulated sum
     asm.moveq(5, 2)  # D2 = recurrence increment
@@ -856,7 +856,7 @@ def build_bits_dbcc_rom():
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF BITS DBCC ROM"), asm.labels
 
 
-# (name, builder, scheduler quantum or None to omit the flag, masked-gating check)
+# (name, builder) for the current master-cycle differential corpus
 ROMS = (
     ("rom_alu", build_alu_rom),
     ("rom_mem_vdp", build_mem_vdp_rom),

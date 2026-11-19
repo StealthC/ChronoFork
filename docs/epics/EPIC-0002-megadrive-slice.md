@@ -49,12 +49,12 @@ the contract validator.
 
 ## Out of scope
 
-- Full 68000 instruction set, prefetch or cycle accuracy.
+- Behavior beyond the documented MC68000 instruction set, functional prefetch or full hardware cycle accuracy.
 - VDP rendering, DMA, CRAM/VSRAM, raster timing or audio.
 - YM2612, PSG or audio.
 - Z80, timer interrupts, the controller protocol beyond the delivered TH-high
-  3-button reads, mapper/SRAM, other 68000 exception groups and privilege
-  enforcement.
+  3-button reads, mapper/SRAM and the remaining 68000 exception groups (guest bus
+  error and trace).
 - ROM header/region detection or a commercial ROM loader.
 - Cycle/timing equivalence, interrupt-timing or interrupt-delivery equivalence
   beyond the implemented mask-gating tests and the masked-ROM negative control,
@@ -78,7 +78,7 @@ the contract validator.
 | E2-10 | Add deterministic interrupt/tick scheduler | Done |
 | E2-11 | Add ROM header/region/config identity and cartridge loader | Planned |
 | E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
-| E2-13 | Expand instruction/addressing coverage with tests | In progress — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests; broader instruction/addressing coverage remains future work |
+| E2-13 | Expand instruction/addressing coverage with tests | Done for the documented MC68000 set — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests and the full documented family audit; coverage beyond the documented set (undefined/reserved encodings) and broader differential cases remain future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
 | E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; the current Phase 8.2 differential covers eleven synthetic ROMs at 11/11 address, per-instruction cycle and final-state comparisons plus negative controls. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
 
@@ -91,7 +91,7 @@ milestone has to be reopened:
 
 | Open work | Track |
 |---|---|
-| E2-13 broader instruction/addressing coverage; the remaining 68000 exception groups (including guest bus error and trace) | H1 |
+| Coverage beyond the documented MC68000 instruction set; the remaining 68000 exception groups (guest bus error and trace) | H1 |
 | VDP rendering, planes, sprites and scrolling; CRAM/VSRAM; DMA; raster and H/V timing; VDP interrupt-enable/acknowledge and FIFO behaviour | H2 |
 | YM2612, PSG, the Z80 and bus arbitration | H3 |
 | E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
@@ -287,7 +287,7 @@ of truth for the current count.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Subset mistaken for a complete emulator | Misleading users | Explicit naming, docs, capabilities and CLI text |
-| Wrong 68000 decoding | Silent bad execution | Unit tests plus the differential harness; the E2-13 absolute-long repair added regression tests for the `0x..39` loads and `0x..38` rejection, while broader decoding coverage remains future work |
+| Wrong 68000 decoding | Silent bad execution | Unit tests, the decode audit and the differential harness; the documented set is covered, while undefined/reserved encodings and broader differential cases remain future work. |
 | Snapshot state missing future devices | Broken restore/fork | Versioned payload v4; device blobs validated before commit; pending interrupt state and the derived VINT latch are covered by tests |
 | Tick = instruction conflated with cycles | False timing claims | Canonical time is the master-cycle timeline (instruction cost x 7); functional prefetch, bus contention and interrupt latency remain out of scope |
 | Mask gating mistaken for interrupt timing/delivery equivalence | False hardware-equivalence claims | Unit/backend tests cover the mask rule, pending retention, acknowledge-per-level, VBlank priority and no nesting; the differential masked-ROM pass is documented as negative gating evidence only |
