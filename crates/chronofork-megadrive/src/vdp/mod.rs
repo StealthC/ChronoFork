@@ -183,6 +183,9 @@ const SNAPSHOT_VRAM_OFFSET: usize = SNAPSHOT_DOT_OFFSET + 2;
 /// Exact byte length of a serialized VDP snapshot.
 pub const SNAPSHOT_LEN: usize = SNAPSHOT_VRAM_OFFSET + VRAM_SIZE;
 
+/// Master-cycle cost of one word in the eager DMA model.
+pub const DMA_MASTER_CYCLES_PER_WORD: u32 = 2;
+
 const SNAPSHOT_FLAG_VBLANK: u8 = 1 << 0;
 const SNAPSHOT_FLAG_COMMAND_PENDING: u8 = 1 << 1;
 const SNAPSHOT_FLAG_ODD_FRAME: u8 = 1 << 2;
@@ -292,6 +295,33 @@ pub enum VdpError {
         /// Master cycles in one line.
         master_cycles_per_line: u64,
     },
+    /// A DMA source range outside the modelled 64 KiB VRAM view.
+    DmaSourceOutOfRange {
+        /// Requested source byte address.
+        source: u32,
+        /// Number of words requested.
+        words: u32,
+    },
+    /// A DMA destination range outside its memory space.
+    DmaDestinationOutOfRange {
+        /// Destination memory space.
+        target: VramTarget,
+        /// First destination word index.
+        word_index: u32,
+        /// Number of words requested.
+        words: u32,
+        /// Number of words the destination can hold.
+        capacity: u32,
+    },
+    /// A DMA source and destination overlap inside VRAM.
+    DmaSourceDestinationOverlap {
+        /// Source byte address.
+        source: u32,
+        /// Destination byte address.
+        destination: u32,
+        /// Number of words requested.
+        words: u32,
+    },
 }
 
 impl fmt::Display for VdpError {
@@ -359,6 +389,29 @@ impl fmt::Display for VdpError {
                 f,
                 "VDP snapshot dot {dot} is outside the {master_cycles_per_line}-cycle line"
             ),
+            Self::DmaSourceOutOfRange { source, words } => write!(
+                f,
+                "VDP DMA source 0x{source:05X} for {words} words is outside VRAM"
+            ),
+            Self::DmaDestinationOutOfRange {
+                target,
+                word_index,
+                words,
+                capacity,
+            } => write!(
+                f,
+                "VDP DMA destination {target:?} from word {word_index} for {words} words \
+                 exceeds the {capacity}-word space"
+            ),
+            Self::DmaSourceDestinationOverlap {
+                source,
+                destination,
+                words,
+            } => write!(
+                f,
+                "VDP DMA source 0x{source:05X} and destination 0x{destination:05X} overlap \
+                 over {words} words"
+            ),
         }
     }
 }
@@ -396,6 +449,9 @@ pub struct Vdp {
     /// Whether the most recently rendered line reached the per-line sprite
     /// count or pixel budget. Derived render observation, not serialized.
     sprite_limit_reached: bool,
+    /// Slot cost of the most recent eager DMA transfer, in master cycles.
+    /// Derived observation consumed by the owner, not serialized.
+    dma_cycles: u32,
 }
 
 impl Vdp {
@@ -421,6 +477,7 @@ impl Vdp {
             status_latches: StatusLatches::default(),
             vint_pending: false,
             sprite_limit_reached: false,
+            dma_cycles: 0,
         }
     }
 
@@ -636,6 +693,149 @@ impl Vdp {
             VramTarget::Vsram => self.vsram[(usize::from(address) & 0x01FF) % VSRAM_WORDS],
         };
         Ok(word)
+    }
+
+    /// Starts one eager DMA transfer into the command address.
+    ///
+    /// The whole source and destination range is validated before any byte is
+    /// written, so a rejected transfer leaves VRAM, CRAM, VSRAM and the DMA
+    /// state untouched. This slice has no view of 68000 memory, so the `source`
+    /// operand names a VRAM byte address for the memory and copy modes; fill
+    /// uses its low byte as the constant fill value. The transfer completes
+    /// eagerly, sets the DMA-busy state and records its slot cost for
+    /// [`Vdp::take_dma_cycles`].
+    ///
+    /// Word counts are the literal transfer length (this slice does not model
+    /// the hardware's length-minus-one encoding).
+    pub fn start_dma(&mut self, source: u32, length: u16, mode: DmaMode) -> Result<(), VdpError> {
+        let words = u32::from(length);
+        let bytes = words * 2;
+        if mode != DmaMode::Fill {
+            let end = source
+                .checked_add(bytes)
+                .ok_or(VdpError::DmaSourceOutOfRange { source, words })?;
+            if end > VRAM_SIZE as u32 {
+                return Err(VdpError::DmaSourceOutOfRange { source, words });
+            }
+        }
+
+        let (target, first_index) = match mode {
+            DmaMode::MemoryToVram | DmaMode::Fill | DmaMode::Copy => {
+                let index = u32::from(self.address & 0xFFFE);
+                if index + bytes > VRAM_SIZE as u32 {
+                    return Err(VdpError::DmaDestinationOutOfRange {
+                        target: VramTarget::Vram,
+                        word_index: index / 2,
+                        words,
+                        capacity: (VRAM_SIZE / 2) as u32,
+                    });
+                }
+                if mode != DmaMode::Fill && source < index + bytes && index < source + bytes {
+                    return Err(VdpError::DmaSourceDestinationOverlap {
+                        source,
+                        destination: index,
+                        words,
+                    });
+                }
+                (VramTarget::Vram, index)
+            }
+            DmaMode::MemoryToCram => {
+                let index = (u32::from(self.address) >> 1) & (CRAM_WORDS as u32 - 1);
+                if index + words > CRAM_WORDS as u32 {
+                    return Err(VdpError::DmaDestinationOutOfRange {
+                        target: VramTarget::Cram,
+                        word_index: index,
+                        words,
+                        capacity: CRAM_WORDS as u32,
+                    });
+                }
+                (VramTarget::Cram, index)
+            }
+            DmaMode::MemoryToVsram => {
+                let index = (u32::from(self.address) >> 1) & 0x01FF;
+                if index + words > VSRAM_WORDS as u32 {
+                    return Err(VdpError::DmaDestinationOutOfRange {
+                        target: VramTarget::Vsram,
+                        word_index: index,
+                        words,
+                        capacity: VSRAM_WORDS as u32,
+                    });
+                }
+                (VramTarget::Vsram, index)
+            }
+        };
+
+        let fill_byte = (source & 0xFF) as u8;
+        let fill_word = u16::from_be_bytes([fill_byte, fill_byte]);
+        for offset in 0..words {
+            let word = if mode == DmaMode::Fill {
+                fill_word
+            } else {
+                let read = u16::try_from(source + offset * 2).unwrap_or(0);
+                self.read_vram_word(read)
+            };
+            let index = offset;
+            let address = match target {
+                VramTarget::Vram => u16::try_from(first_index + index * 2).unwrap_or(0),
+                VramTarget::Cram | VramTarget::Vsram => {
+                    u16::try_from(first_index + index).unwrap_or(0)
+                }
+                VramTarget::VramCopy => 0,
+            };
+            self.write_word(target, address, word)?;
+        }
+
+        self.dma = DmaState::from_parts(source, length, mode, true);
+        self.dma_cycles = words * DMA_MASTER_CYCLES_PER_WORD;
+        Ok(())
+    }
+
+    /// Runs the DMA transfer programmed through registers `0x13..0x17`.
+    ///
+    /// Registers `0x13`/`0x14` hold source bits `15..0`, register `0x15` bits
+    /// `21..16`; register `0x16` and bits `5..0` of `0x17` hold the literal
+    /// word count and bits `7..6` of `0x17` select the mode. A data-port access
+    /// with the DMA command code triggers it, as on hardware.
+    pub fn start_dma_from_registers(&mut self) -> Result<(), VdpError> {
+        let source = u32::from(self.registers[0x13])
+            | (u32::from(self.registers[0x14]) << 8)
+            | (u32::from(self.registers[0x15] & 0x3F) << 16);
+        let length =
+            u16::from(self.registers[0x16]) | (u16::from(self.registers[0x17] & 0x3F) << 8);
+        let mode = match (self.registers[0x17] >> 6) & 0x03 {
+            0 => DmaMode::MemoryToVram,
+            1 => DmaMode::MemoryToCram,
+            2 => DmaMode::MemoryToVsram,
+            _ => DmaMode::Fill,
+        };
+        self.start_dma(source, length, mode)
+    }
+
+    /// Returns whether the eager DMA transfer's busy window is still open.
+    #[must_use]
+    pub const fn dma_active(&self) -> bool {
+        self.dma.active()
+    }
+
+    /// Returns how many words the current transfer still has to move.
+    ///
+    /// The transfer is eager, so a completed transfer reports zero.
+    #[must_use]
+    pub const fn dma_words_remaining(&self) -> u32 {
+        0
+    }
+
+    /// Takes the DMA slot cost recorded by the last transfer, in master cycles.
+    ///
+    /// Taking the cost closes the `DMA_BUSY` window; the count is then zero.
+    pub fn take_dma_cycles(&mut self) -> u32 {
+        let cycles = self.dma_cycles;
+        self.dma_cycles = 0;
+        if self.dma.active() {
+            self.dma =
+                DmaState::from_parts(self.dma.source(), self.dma.length(), self.dma.mode(), false);
+        }
+        cycles
     }
 
     /// Reads one byte from the VDP port at `offset`.
@@ -908,6 +1108,7 @@ impl Vdp {
         self.dot = dot;
         self.video = video;
         self.sprite_limit_reached = false;
+        self.dma_cycles = 0;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
@@ -948,7 +1149,10 @@ impl Vdp {
             return Err(VdpError::UnsupportedTarget { code: self.code });
         }
         if self.code & CODE_DMA != 0 {
-            return Err(VdpError::DmaUnsupported { code: self.code });
+            // A data-port access while the DMA command code is latched triggers
+            // the transfer programmed through registers 0x13..0x17.
+            self.start_dma_from_registers()?;
+            return Ok(());
         }
         let target = match self.code & 0x0F {
             CODE_VRAM_WRITE => VramTarget::Vram,
@@ -1012,6 +1216,12 @@ impl Vdp {
         Ok(())
     }
 
+    /// Reads a big-endian VRAM word for the DMA engine.
+    fn read_vram_word(&self, address: u16) -> u16 {
+        let index = usize::from(address & 0xFFFE);
+        u16::from_be_bytes([self.vram[index], self.vram[index + 1]])
+    }
+
     fn increment_address(&mut self) {
         let increment = u16::from(self.registers[AUTO_INCREMENT_REGISTER]);
         self.address = self.address.wrapping_add(increment);
@@ -1042,6 +1252,7 @@ impl fmt::Debug for Vdp {
             .field("dot", &self.dot)
             .field("video", &self.video)
             .field("sprite_limit_reached", &self.sprite_limit_reached)
+            .field("dma_cycles", &self.dma_cycles)
             .field("vram_len", &self.vram.len())
             .finish()
     }
@@ -1353,15 +1564,14 @@ mod tests {
             Err(VdpError::UnsupportedTarget { code: 0x05 })
         );
 
-        // DMA transfer: CD5 set in the second command word.
+        // DMA transfer: CD5 set in the second command word. The registers are
+        // still zero, so the trigger performs a zero-length transfer.
         vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
             .expect("dma first half");
         vdp.write16(CONTROL_PORT_OFFSET, 0x0080)
             .expect("dma second half");
-        assert_eq!(
-            vdp.write16(DATA_PORT_OFFSET, 0),
-            Err(VdpError::DmaUnsupported { code: 0x21 })
-        );
+        vdp.write16(DATA_PORT_OFFSET, 0).expect("dma trigger");
+        assert_eq!(vdp.take_dma_cycles(), 0);
 
         // A register write leaves the data-port target invalid.
         vdp.write16(CONTROL_PORT_OFFSET, 0x8F02)
