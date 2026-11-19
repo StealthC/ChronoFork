@@ -243,6 +243,14 @@ fn register_dma_takes_the_destination_from_the_command_code() {
     assert_eq!(vdp.vsram_word(0), Some(0x0EEE));
     assert_eq!(vdp.vsram_word(1), Some(0x0123));
     assert_eq!(vdp.take_dma_cycles(), 4);
+
+    // Mode 01 has the same 68k-to-VDP meaning; the destination still comes from
+    // the command code (here CRAM).
+    program_dma(&mut vdp, 0x0100, 2, 0x40);
+    trigger_dma(&mut vdp, 0x23, 0x0000);
+    assert_eq!(vdp.cram_entry(0), Some(0x0EEE));
+    assert_eq!(vdp.cram_entry(1), Some(0x0123));
+    assert_eq!(vdp.take_dma_cycles(), 4);
 }
 
 #[test]
