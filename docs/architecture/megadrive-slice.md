@@ -25,8 +25,9 @@
   is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
   with 11/11 address, per-instruction cycle and final-state differential evidence) is
   implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
-  through the phase-8.2 PR (issue #15). Phase 8.3 (the VDP) is implemented on the phase
-  branch; verification, review and merge follow. M8 then completes the remaining slice
+  through the phase-8.2 PR (issue #15). Phase 8.3 (the complete VDP) is implemented,
+  verified (rounds 1–3) and independently reviewed (rounds 2–3), and merged to `main`
+  through the phase-8.3 PR (issue #16). M8 then completes the remaining slice
   (Z80, YM2612/PSG audio and capture); cartridge and controllers are already implemented
   as described below. This page remains the canonical capability/limitation home; it is
   updated as each phase lands, never in advance.

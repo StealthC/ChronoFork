@@ -14,8 +14,9 @@ at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 merged at
 `0c4e9f0`, PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`). The repository
 builds and tests a
 deterministic synthetic backend, the generic session layer, and a minimal 68000 +
-ROM/RAM Mega Drive backend with a VDP
-status/control/VRAM port window and a master-cycle deterministic interrupt
+ROM/RAM Mega Drive backend with a complete VDP (CRAM/VSRAM, plane/window/sprite
+composition, DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
+requests) and a master-cycle deterministic interrupt
 scheduler, including 68000 SR-mask interrupt gating (level 7 always admitted; other
 levels only when strictly above the mask), `RTE` handler return and VDP VINT
 pending/acknowledge. It implements the documented MC68000 instruction set with
@@ -28,8 +29,9 @@ earlier two-ROM run is preserved as pre-E2-15 controlled-condition history. Rema
 limits: only HBlank level 4 / VBlank level 6 sources are modelled, with level 7 a
 predicate rule only; guest bus-error (2) and trace (9) delivery are absent; no
 interrupt-timing equivalence is claimed; and VDP interrupt-enable/acknowledge logic
-is absent.
-Rendering, DMA, audio and Z80 are not implemented, and controller input covers only the
+is implemented (phase 8.3, with the residual limits recorded in the slice page).
+Audio and Z80 are not implemented; rendering and DMA are implemented (phase 8.3), and
+controller input covers only the
 TH-high 3-button subset. The final M3 increment — real-hardware input TAS on the minimal
 Mega Drive slice — is implemented and independently verified
 ([ADR-0009](adr/0009-real-hardware-input-tas.md); **Accepted**, owner-approved
@@ -125,11 +127,13 @@ byte-identical with the frozen M6 crates unchanged. Limits: v1 presents text and
 static HTML document only — **no native toolkit window, no picture and no sound**, no
 browser/JS frontend, no streaming transport, no live audio output, no GUI input
 injection, no GUI state persistence and no VDP/bus/disassembly/trace panel content
-(M6-FU1). Real video/audio sources and sinks remain H2/H3, so the pipeline honestly
-reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration, and
+(M6-FU1). Real video/audio sources and sinks remain H2/H3, so the GUI pipeline honestly
+reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration (the
+backend capability is `rendering=true` since phase 8.3; the pipeline still has no video
+source/sink), and
 no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
 controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phase 8.2), with M9 multi-backend after it.**
+made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it.**
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -205,7 +209,7 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phase 8.2), with M9 multi-backend after it. The
+`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it. The
 parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The

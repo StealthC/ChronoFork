@@ -4,9 +4,11 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** M8 phase 8.3 (complete VDP) is **implemented on
-`agent/8.3-vdp`** and awaits its independent verification/review; the phase gate is defined
-below. The latest dated verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
+**Current status:** M8 phase 8.3 (complete VDP) is **implemented, independently verified
+(rounds 1–3) and reviewed (rounds 2–3)**, and merged to `main` through the phase-8.3 PR
+(issue #16); the phase gate below was executed and passed (evidence in the
+[VDP state differential](../research/vdp-state-differential-evidence.md)). The latest dated
+verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
 region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
 (81 targets / 1,047 passed, 0 failed, 0 ignored; both demos byte-identical or explained only
 by the documented v3 state-hash bump; GUI run deterministic), which verified the worktree on
@@ -52,13 +54,18 @@ Or run the repository script:
 The script sets `PATH` for a user-local rustup install and stops on the first
 failure.
 
-## Phase 8.3 VDP gate (defined; record the executed result before claiming the phase)
+## Phase 8.3 VDP gate (executed; PASS — evidence recorded)
 
 ```sh
 cargo test --workspace
 ./scripts/check.sh
 python3 scripts/oracle-vdp-diff.py --out-dir .research/evidence/8.3
 ```
+
+Executed at the merged phase-8.3 HEAD: all three commands exit 0 (workspace tests,
+`./scripts/check.sh` and the VDP differential); the run artifacts are under
+`.research/evidence/8.3` and summarized in the
+[VDP state differential](../research/vdp-state-differential-evidence.md).
 
 The first two commands are the required local gate. The VDP differential drives the
 pinned Exodus oracle (`exodus-mcpd`, revision `ec005615…`) and ChronoFork over

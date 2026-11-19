@@ -29,8 +29,9 @@ complete and merged to `main` (M4 merged at `4c595a2`, verified on
 verified on `agent/m6-agent-interfaces` and `agent/m7-gui` at base `93d47ed`); and the
 hardware-depth tracks H1–H5 are partial or planned. The repository contains a
 deterministic synthetic test backend and a minimal Mega Drive backend with the
-documented MC68000 instruction set, ROM/RAM, a VDP status/control/VRAM port window
-and a deterministic master-cycle VBlank/HBlank interrupt scheduler. The slice includes 68000 SR-mask
+documented MC68000 instruction set, ROM/RAM, a complete VDP (CRAM/VSRAM, plane/window/sprite
+composition, DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
+requests) and a deterministic master-cycle VBlank/HBlank interrupt scheduler. The slice includes 68000 SR-mask
 interrupt gating (level 7 always admitted, other levels only when strictly above the
 mask), `RTE` handler return, VDP VINT pending/acknowledge and per-step controller reads
 of `0x00A10003`/`0x00A10005` for the TH-high 3-button subset on ports 1–2. Pinned-oracle
@@ -61,15 +62,15 @@ read-only `.cfmovie` timeline and attach/detach proven non-perturbative. M7 was 
 real video/audio sources and sinks remain H2/H3, so the pipeline honestly reports both as
 unavailable in every v1 process configuration, and no CLI process builds the host clock
 (playback is the deterministic `pulse`).
-Rendering, DMA, audio, Z80, timer interrupts, ROM header/region detection and
+Audio, Z80, timer interrupts, ROM header/region detection and
 cartridge mapping, the rest of the controller protocol (A/Start, TH/6-button, port 3,
 analog/keyboard), guest bus-error/trace delivery, other exception groups and cycle
 accuracy remain absent. The documented MC68000 instruction set and privilege
 enforcement for the implemented system instructions are present. Do not present either
 backend as a complete emulator or claim game compatibility.
 
-**M8 (functional Mega Drive emulator) is the active milestone.** Phase 8.2 (complete
-68000 and cycle model) is complete and merged; phases 8.3–8.8 are planned in
+**M8 (functional Mega Drive emulator) is the active milestone.** Phases 8.2 (complete
+68000 and cycle model) and 8.3 (complete VDP) are complete and merged; phases 8.4–8.8 are planned in
 [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md); M0–M7 are complete and merged. M8 completes the Mega Drive backend — the full 68000 and Z80, a complete VDP with
 rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
 with cycle-based canonical time, deterministic headless capture of frames and audio and an
@@ -86,7 +87,7 @@ evidence. Lifecycle state and the next action live in
 | `crates/chronofork-backend-api/` | Backend, capability, snapshot, inspection traits |
 | `crates/chronofork-sessions/` | Session lifecycle, checkpoints, lineage, forks |
 | `crates/chronofork-test-backend/` | Synthetic deterministic validation backend |
-| `crates/chronofork-megadrive/` | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler + controller-read Mega Drive slice; debug/disassembly/inspector views |
+| `crates/chronofork-megadrive/` | Mega Drive slice: 68000 + ROM/RAM + cartridge + complete VDP (rendering/DMA/timing/interrupts) + interrupt scheduler + controller reads; debug/disassembly/inspector views |
 | `crates/chronofork-debug/` | Host debugger layer: breakpoints, watchpoints, event breakpoints/logpoints |
 | `crates/chronofork-trace/` | Host trace layer: canonical `CFTRACE1` v1 format, capture/triggers/ring, queries, comparison and TSV export |
 | `crates/chronofork-script/` | Sandboxed deterministic script DSL: lexer/parser/evaluator, limits, sandbox, session/trace/TAS/report bindings |
