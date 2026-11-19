@@ -1,5 +1,15 @@
 # Execution Model
 
+
+> **Phase 8.2 supersession:** the instruction-quantum statements in this page are
+> superseded for the Mega Drive slice. Canonical time is the master-clock cycle:
+> each instruction advances the backend by `InstructionOutcome.cycles * 7` and one
+> scanline is exactly 3420 master cycles. See
+> [Mega Drive slice timing](megadrive-slice.md#deterministic-interrupt-scheduler)
+> and [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
+> The regenerated 11-ROM differential matches 11/11 address projections, per-instruction
+> cycle costs and selected final states, with 11/11 negative controls.
+
 ## Virtual time
 
 Emulated time is a `Tick`: a monotonically increasing `u64` quantum defined by the
@@ -49,8 +59,9 @@ and verified for the deterministic minimal-slice scope. The backend reads the Me
 controller data registers `0xA10003`/`0xA10005` from `InputFrame` ports 0 and 1 with
 stateless per-step semantics: the input is visible only during the executed step, is
 cleared on every exit path including typed failures, and is never serialized into the
-snapshot or state hash. The canonical payload (`CFMD68K2` v2), state body, state hash and
-configuration hash are unchanged, so a restored machine uses the next step's input; the
+snapshot or state hash. The canonical payload is now `CFMD68K4` v4 (the M3 increment
+used v2; Phase 8.2 added the extended CPU and master-cycle scheduler state and rejects
+v1-v3), so a restored machine uses the next step's input; the
 differential probe, demos, M1 oracle/state probes and all existing M2/M3 movie fixtures are
 byte-identical to baseline. The verified subset is the TH-high 3-button phase
 (Up/Down/Left/Right/B/C, active-low; neutral `0x7F`) on ports 1–2; A, Start, TH/6-button
@@ -283,13 +294,15 @@ best-effort parse.
 
 ## Known limitations
 
-- No cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The Mega
-  Drive slice has an instruction-quantum VBlank/HBlank scheduler, and 68000
-  interrupt entry with SR-mask gating, `RTE` handler return and VDP VINT-pending
-  wiring implemented for the modelled slice. Remaining limits: privilege is not
-  enforced; only HBlank (level 4) and VBlank (level 6) sources are modelled, with
-  level 7 a predicate rule rather than a wired source; no interrupt-timing
-  equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
+- No fully cycle-accurate hardware timing, DMA, timer/Z80 interrupts or audio. The
+  Mega Drive slice uses a 3420-master-cycle scanline timeline, with 68000 interrupt
+  entry on that timeline, SR-mask gating, `RTE` handler return, VDP VINT-pending
+  wiring, privilege enforcement for the implemented system instructions and
+  exception vectors 1-9/24-31/32+n. Remaining limits: functional prefetch, bus
+  contention and DMA stalls are not cycle-modelled; only HBlank (level 4) and
+  VBlank (level 6) sources are modelled, with level 7 a predicate rule rather than
+  a wired source; no interrupt-latency equivalence is claimed; and VDP
+  interrupt-enable/acknowledge logic is absent.
 - No general structured/timestamped trace format, conditional breakpoints or
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
@@ -328,5 +341,5 @@ best-effort parse.
   claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
-  slice hash covers CPU, RAM, VDP and scheduler state (`CFMDSTATE2`). A cross-backend
+  slice hash covers the extended CPU, RAM, VDP and scheduler state (`CFMDSTATE4`). A cross-backend
   canonicalization remains undefined.

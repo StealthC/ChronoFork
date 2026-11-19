@@ -40,7 +40,7 @@ scope, exit criteria, dependencies and non-goals.
 | Stage | Milestone | Focus |
 |---|---|---|
 | [Stage 0 — Bootstrap foundation](#stage-0--bootstrap-foundation) | [M0](milestones.md#m0--bootstrap-foundation) | Architecture, workspace, synthetic validator, docs, gates |
-| [Stage 1 — Real backend decision and minimal hardware core](#stage-1--real-backend-decision-and-minimal-hardware-core) | [M1](milestones.md#m1--backend-decision-and-minimal-hardware-slice) | ADR-0002, 68000 subset, ROM/RAM, VDP port window, interrupt scheduler, oracle differential |
+| [Stage 1 — Real backend decision and minimal hardware core](#stage-1--real-backend-decision-and-minimal-hardware-core) | [M1](milestones.md#m1--backend-decision-and-minimal-hardware-slice) | ADR-0002, documented 68000 set, ROM/RAM, VDP port window, interrupt scheduler, oracle differential |
 | [Stage 2 — Sessions, forks and save states at product quality](#stage-2--sessions-forks-and-save-states-at-product-quality) | [M2](milestones.md#m2--durable-sessions) | Durable checkpoints, metadata, compatibility, writer ownership |
 | [Stage 3 — TAS and deterministic replay](#stage-3--tas-and-deterministic-replay) | [M3](milestones.md#m3--tas-and-replay) | Movies, replay/seek, rewind, rerecord/edit, hardware input TAS |
 | [Stage 4 — Debugging depth](#stage-4--debugging-depth) | [M4](milestones.md#m4--debugging-depth) | Debug observation, breakpoints/watchpoints, views, inspectors, debug CLI |
@@ -92,8 +92,9 @@ scope, exit criteria, dependencies and non-goals.
 
 - Accepted [ADR-0002](../adr/0002-backend-boundaries.md) (Option E, Rust-native staged
   hybrid).
-- A documented 68000 subset with ROM/RAM map, reset vectors and a deterministic
-  instruction-quantum tick.
+- The documented MC68000 instruction set with ROM/RAM map, reset vectors and a
+  deterministic master-cycle tick (the M1 subset and instruction quantum are
+  superseded).
 - ROM identity (`config_hash`) and an independently authored synthetic ROM.
 - Snapshot/restore/fork on the real core, with slice state in snapshots and state hashes.
 - Minimal VDP status/control port window with 64 KiB VRAM.
@@ -101,8 +102,9 @@ scope, exit criteria, dependencies and non-goals.
   gating (level 7 always admitted, other levels only when strictly above the mask), `RTE`
   handler return and CPU-side VDP VINT pending/acknowledge.
 - Bounded debug-only instruction trace and the `megadrive trace` CLI.
-- Pinned-oracle differential evidence for three synthetic ROMs, including a default-quantum
-  masked-ROM negative gating control.
+- Pinned-oracle differential evidence for eleven synthetic ROMs on the master-cycle
+  timeline, with address, per-instruction cycle, final-state and negative-control
+  comparisons; the historical masked-ROM default-quantum control is preserved.
 
 ### Exit criteria
 
@@ -120,17 +122,18 @@ scope, exit criteria, dependencies and non-goals.
 ### Non-goals and tracked elsewhere
 
 - **Production hardware completeness is not a Stage 1 exit criterion.** Rendering, DMA,
-  CRAM/VSRAM, audio, Z80, cartridge identity/mapper, timers, the full controller protocol,
-  privilege and cycle accuracy belong to the parallel
+  CRAM/VSRAM, audio, Z80, cartridge identity/mapper, timers, the full controller protocol
+  and cycle accuracy belong to the parallel
   [H1–H5](#hardware-depth-parallel-track-h1h5) track; Stage 1 stays complete for the
   modelled slice while that work continues.
-- The slice keeps its documented limits: privilege is not enforced; only HBlank level 4 and
-  VBlank level 6 sources exist, with level 7 a predicate rule only; no interrupt-timing
-  equivalence is claimed; VDP interrupt-enable registers and VDP-side acknowledge logic are
-  not modelled (the CPU-side pending/acknowledge path exists); controller input is the
-  TH-high 3-button subset on ports 1–2. See [Mega Drive
+- The slice keeps its documented limits: privilege is enforced for the implemented system
+  instructions; only HBlank level 4 and VBlank level 6 sources exist, with level 7 a
+  predicate rule only; guest bus-error/trace delivery and cycle accuracy remain absent; no
+  interrupt-timing equivalence is claimed; VDP interrupt-enable registers and VDP-side
+  acknowledge logic are not modelled (the CPU-side pending/acknowledge path exists);
+  controller input is the TH-high 3-button subset on ports 1–2. See [Mega Drive
   slice](../architecture/megadrive-slice.md#not-implemented).
-- Broader instruction/addressing coverage is [H1](#h1--cpu-and-instruction-completeness);
+- Coverage beyond the documented MC68000 set is [H1](#h1--cpu-and-instruction-completeness);
   the remaining controller protocol, cartridge identity and timers are
   [H4](#h4--cartridge-controllers-and-timers).
 
@@ -426,8 +429,9 @@ scope, exit criteria, dependencies and non-goals.
 ### Scope and deliverables
 
 - Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM.
-- Complete 68000: full instruction set, addressing modes, privilege, exception groups and
-  cycle accounting; canonical emulated time in CPU cycles.
+- Documented MC68000 instruction set, addressing modes and privilege enforcement are
+  delivered by phase 8.2, with canonical time in master cycles; remaining exception
+  groups and cycle/prefetch accuracy stay in H1/H5.
 - Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
   256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
 - Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
@@ -502,18 +506,18 @@ carrying an unchecked hardware box.
 
 ### H1 — CPU and instruction completeness
 
-- **Goal:** a documented, testable 68000 model instead of a subset that happens to run the
-  current fixtures.
+- **Goal:** a documented, testable 68000 model; the documented set and privilege are
+  delivered, with remaining exception groups and coverage beyond that set.
 - **Milestone:** [H1](milestones.md#h1--cpu-and-instruction-completeness).
 - **Depends on:** the Stage 1 slice and its differential harness.
 
 #### Scope and deliverables
 
-- Broader 68000 instruction and addressing-mode coverage (EPIC-0002 E2-13 continued),
-  driven by differential tests.
-- Privilege enforcement, separate user/supervisor stacks and the resulting exception
-  behavior.
-- Exception groups beyond the implemented interrupt path.
+- Coverage beyond the documented MC68000 instruction set and broader differential cases
+  (EPIC-0002 E2-13 continued).
+- Exception groups beyond the implemented interrupt path (guest bus error and trace).
+- Privilege enforcement and separate user/supervisor stacks are delivered; keep them
+  regression-tested rather than listing them as open scope.
 - A wired level-7 interrupt source instead of a predicate rule only.
 - Cycle and prefetch behavior only as far as [H5](#h5--accuracy-and-evidence) requires it.
 
@@ -635,7 +639,7 @@ carrying an unchecked hardware box.
 
 #### Scope and deliverables
 
-- A broader differential corpus beyond the three synthetic ROMs.
+- A broader differential corpus beyond the current eleven synthetic ROMs.
 - Positive differential comparison of interrupt delivery and timing, which needs an oracle
   model of those semantics.
 - Cycle accuracy, including prefetch and bus timing, at a documented level.

@@ -7,11 +7,11 @@
 produced its first slice: a minimal 68000 + ROM/RAM backend under
 `crates/chronofork-megadrive`. The Exodus oracle path is now instantiated as an
 external harness: the pinned headless oracle was built under ignored `.research/`
-and the final differential evidence passes all three synthetic ROMs (projected
-address streams, selected final state and negative controls, including the
-masked-ROM default-quantum negative gating control); the earlier two-ROM run is
-preserved as pre-E2-15 controlled-condition history. See
-[Oracle differential evidence](../research/oracle-differential-evidence.md).
+and the final differential evidence passes all eleven synthetic ROMs (projected
+address streams, per-instruction 68000 cycle costs, selected final state and
+negative controls); the earlier two-ROM run is preserved as pre-E2-15
+controlled-condition history. See
+[68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
 ## Requirements that discriminate between options
 

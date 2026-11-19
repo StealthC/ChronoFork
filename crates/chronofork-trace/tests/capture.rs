@@ -15,7 +15,7 @@ use chronofork_backend_api::{
 };
 use chronofork_core::{InputFrame, Tick};
 use chronofork_megadrive::{
-    MegadriveFactory, SchedulerConfig, VideoStandard, controller_rom, demo_rom, interrupt_rom,
+    MegadriveFactory, SchedulerConfig, controller_rom, demo_rom, interrupt_rom,
 };
 use chronofork_test_backend::{SyntheticBackendFactory, SyntheticProgram};
 use chronofork_trace::{
@@ -198,9 +198,9 @@ fn captures_instruction_records_on_the_megadrive_slice() -> Result<(), Box<dyn E
     let instructions = instruction_pcs(&trace);
     assert_eq!(instructions.len(), 10);
     let mut previous_tick = 0_u64;
-    for (position, (pc, opcode, tick)) in instructions.iter().enumerate() {
+    for (pc, opcode, tick) in &instructions {
         let inspection = reference.inspect()?;
-        assert_eq!(u64::try_from(position)?, *tick);
+        assert_eq!(inspection.tick.raw(), *tick);
         assert!(tick >= &previous_tick);
         previous_tick = *tick;
         assert_eq!(*pc, program_counter(&inspection)?);
@@ -264,7 +264,7 @@ fn captures_bus_write_and_controller_records() -> Result<(), Box<dyn Error>> {
                 width,
                 tick,
                 ..
-            } if *address == 0x00FF_0000 && *value == 0x7F && *width == 1 && tick.raw() == 6
+            } if *address == 0x00FF_0000 && *value == 0x7F && *width == 1 && tick.raw() == 252
         )),
         "the bus write must carry the pre-step tick"
     );
@@ -276,7 +276,7 @@ fn captures_bus_write_and_controller_records() -> Result<(), Box<dyn Error>> {
                 value,
                 tick,
                 ..
-            } if *port == 1 && *value == 0x7F && tick.raw() == 4
+            } if *port == 1 && *value == 0x7F && tick.raw() == 112
         )),
         "the controller read must carry the pre-step tick"
     );
@@ -404,11 +404,11 @@ fn captures_vdp_port_records() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
-    let scheduler = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
+    let scheduler = SchedulerConfig::ntsc();
     let factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), scheduler)?;
     let mut backend = factory.create()?;
     let config = TraceConfig::new(512)?;
-    let trace = capture(backend.as_mut(), &config, 20)?;
+    let trace = capture(backend.as_mut(), &config, 200)?;
     let phases = interrupts(&trace);
     assert!(
         phases.len() >= 3,
@@ -416,11 +416,15 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         phases[0],
-        (4, InterruptPhase::Requested, 3),
+        (4, InterruptPhase::Requested, 3388),
         "the retained HBlank request is stamped with its pre-step tick"
     );
-    assert_eq!(phases[1], (4, InterruptPhase::Delivered, 8));
-    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, 8));
+    assert_eq!(phases[1], (4, InterruptPhase::Delivered, 7378));
+    assert_eq!(phases[2], (4, InterruptPhase::Acknowledged, 7378));
+    assert_eq!(
+        phases[1].2, phases[2].2,
+        "delivery and acknowledgement share the delivering step"
+    );
     for (level, _, _) in &phases {
         assert!(
             (1..=7).contains(level),
@@ -431,13 +435,21 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
     // A fully masked run records the request but no delivery or acknowledgement.
     let masked_factory = MegadriveFactory::with_scheduler_config(interrupt_rom(7), scheduler)?;
     let mut masked_backend = masked_factory.create()?;
-    let masked = capture(masked_backend.as_mut(), &config, 20)?;
+    let masked = capture(masked_backend.as_mut(), &config, 200)?;
     let masked_phases = interrupts(&masked);
-    assert!(
+    assert_eq!(
         masked_phases
             .iter()
-            .any(|(level, phase, _)| *level == 4 && *phase == InterruptPhase::Requested),
-        "the masked HBlank request must still be observed"
+            .filter(|(level, phase, _)| *level == 4 && *phase == InterruptPhase::Requested)
+            .count(),
+        1,
+        "the masked HBlank request is observed once and coalesced"
+    );
+    assert!(
+        masked_phases.iter().any(|(level, phase, tick)| *level == 4
+            && *phase == InterruptPhase::Requested
+            && *tick == 3388),
+        "the masked HBlank request keeps its pre-step tick"
     );
     assert!(
         !masked_phases.iter().any(|(_, phase, _)| {
@@ -455,12 +467,10 @@ fn captures_interrupt_records() -> Result<(), Box<dyn Error>> {
     );
     assert_events_share_instruction_ticks(&masked);
 
-    let mut repeat_backend = MegadriveFactory::with_scheduler_config(
-        interrupt_rom(3),
-        SchedulerConfig::new(VideoStandard::Ntsc, 4)?,
-    )?
-    .create()?;
-    let repeat = capture(repeat_backend.as_mut(), &config, 20)?;
+    let mut repeat_backend =
+        MegadriveFactory::with_scheduler_config(interrupt_rom(3), SchedulerConfig::ntsc())?
+            .create()?;
+    let repeat = capture(repeat_backend.as_mut(), &config, 200)?;
     assert_eq!(trace.to_bytes(), repeat.to_bytes());
     Ok(())
 }
@@ -619,11 +629,11 @@ fn circular_retention_reports_dropped_and_first_index() -> Result<(), Box<dyn Er
 
     // A tiny backend event ring that overflows inside one step is a typed error,
     // never silent loss. Interrupt delivery observes two phases in one step.
-    let scheduler = SchedulerConfig::new(VideoStandard::Ntsc, 4)?;
+    let scheduler = SchedulerConfig::ntsc();
     let interrupt_factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), scheduler)?;
     let mut overflow_backend = interrupt_factory.create()?;
     let overflow_config = TraceConfig::new(64)?.with_event_capacity(1)?;
-    let overflow = capture_error(overflow_backend.as_mut(), &overflow_config, 20)?;
+    let overflow = capture_error(overflow_backend.as_mut(), &overflow_config, 200)?;
     assert_eq!(overflow.code(), "event_ring_overflow");
     assert!(matches!(overflow, TraceError::EventRingOverflow));
 

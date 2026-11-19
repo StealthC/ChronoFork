@@ -1009,11 +1009,6 @@ fn write_inspect_block(
     );
     let _ = writeln!(
         output,
-        "scheduler_instructions_per_line={}",
-        interrupts.instructions_per_line()
-    );
-    let _ = writeln!(
-        output,
         "scheduler_lines_per_frame={}",
         interrupts.lines_per_frame()
     );
@@ -1024,7 +1019,11 @@ fn write_inspect_block(
     );
     let _ = writeln!(output, "scheduler_frame={}", interrupts.frame());
     let _ = writeln!(output, "scheduler_line={}", interrupts.line());
-    let _ = writeln!(output, "scheduler_quantum={}", interrupts.quantum());
+    let _ = writeln!(
+        output,
+        "scheduler_master_cycle_in_line={}",
+        interrupts.master_cycle_in_line()
+    );
 }
 
 /// Options for `debug memory`.
@@ -1373,16 +1372,15 @@ fn debug_interrupts(args: &[String]) -> Result<(), Box<dyn Error>> {
     let _ = writeln!(output, "tick={}", inspection.tick.raw());
     let _ = writeln!(output, "state_hash={}", inspection.state_hash);
     let _ = writeln!(output, "video={}", video_standard_name(view.standard()));
-    let _ = writeln!(
-        output,
-        "instructions_per_line={}",
-        view.instructions_per_line()
-    );
     let _ = writeln!(output, "lines_per_frame={}", view.lines_per_frame());
     let _ = writeln!(output, "active_lines={}", view.active_lines());
     let _ = writeln!(output, "frame={}", view.frame());
     let _ = writeln!(output, "line={}", view.line());
-    let _ = writeln!(output, "quantum={}", view.quantum());
+    let _ = writeln!(
+        output,
+        "master_cycle_in_line={}",
+        view.master_cycle_in_line()
+    );
     let _ = writeln!(output, "pending={}", view.pending().len());
     for (index, pending) in view.pending().iter().enumerate() {
         let _ = writeln!(output, "pending_{index}_level={}", pending.level().level());
@@ -1538,7 +1536,7 @@ fn print_help() {
     println!("                     (default 0)");
     println!("  Prints one `record=debug-inspect` block: tick, state hash, halted, steps, PC, SR,");
     println!("  supervisor, trace, interrupt mask, X/N/Z/V/C, VDP status/VBlank/VINT-pending/");
-    println!("  address/auto-increment and scheduler standard/frame/line/quantum.");
+    println!("  address/auto-increment and scheduler standard/frame/line/master-cycle position.");
     println!();
     println!("memory:");
     println!("  --address <ADDR>   Required even start address (cartridge image or work RAM)");
@@ -1573,8 +1571,8 @@ fn print_help() {
     println!();
     println!("interrupts:");
     println!("  Prints `record=debug-interrupts` with tick, state hash, video standard,");
-    println!("  instructions per line, lines per frame, active lines, frame/line/quantum");
-    println!("  position, the pending request count, each pending request's level, issue tick");
+    println!("  lines per frame, active lines, frame/line/master-cycle position, the pending");
+    println!("  request count, each pending request's level, issue tick");
     println!("  and CPU-mask `deliverable` flag, and the per-level issued/coalesced counters in");
     println!("  HBlank, VBlank order. A masked request stays pending and reports deliverable=0.");
     println!();

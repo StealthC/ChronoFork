@@ -55,8 +55,9 @@ fn trace_and_state_are_byte_stable_across_two_runs() {
     assert_eq!(state.lines().next(), Some("chronofork-megadrive-state v1"));
     for line in [
         "executed=5",
-        "tick=5",
-        "instructions_per_line=64",
+        "tick=224",
+        "master_cycles=224",
+        "cpu_cycles=32",
         "video=ntsc",
         "halted=0",
         "pc=0000020e",
@@ -144,7 +145,7 @@ fn trace_writes_to_stdout_when_no_trace_file_is_given() {
 }
 
 #[test]
-fn default_scheduler_quantum_is_still_64_and_is_never_hidden() {
+fn default_master_cycle_timeline_is_reported() {
     let dir = temp_dir("default-quantum");
     let rom = write_rom(&dir);
     let state_path = dir.join("state.txt");
@@ -165,11 +166,15 @@ fn default_scheduler_quantum_is_still_64_and_is_never_hidden() {
     assert!(output.status.success(), "trace run failed: {stderr}");
     let state = std::fs::read_to_string(&state_path).expect("state file");
     assert!(
-        state.lines().any(|line| line == "instructions_per_line=64"),
-        "the default quantum must still be 64: {state}"
+        state.lines().any(|line| line == "master_cycles=1904"),
+        "the state records the master-cycle clock: {state}"
+    );
+    assert!(
+        state.lines().any(|line| line.starts_with("cpu_cycles=")),
+        "the state records the 68000 cycle count: {state}"
     );
     for expected in [
-        "the default is 64",
+        "master-cycle timeline",
         "interrupt-priority mask",
         "level 7 is always taken",
         "stays pending",
@@ -189,7 +194,7 @@ fn default_scheduler_quantum_is_still_64_and_is_never_hidden() {
 }
 
 #[test]
-fn explicit_quantum_is_still_recorded_in_state() {
+fn instructions_per_line_is_no_longer_an_option() {
     let dir = temp_dir("explicit-quantum");
     let rom = write_rom(&dir);
     let state_path = dir.join("state.txt");
@@ -206,16 +211,15 @@ fn explicit_quantum_is_still_recorded_in_state() {
         path_str(&state_path),
     ]);
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(output.status.success(), "trace run failed: {stderr}");
-    let state = std::fs::read_to_string(&state_path).expect("state file");
     assert!(
-        state.lines().any(|line| line == "instructions_per_line=8"),
-        "explicit quantum must be recorded: {state}"
+        !output.status.success(),
+        "the removed option must be rejected"
     );
     assert!(
-        !stderr.contains("note: scheduler quantum"),
-        "three instructions do not complete a line at quantum 8: {stderr}"
+        stderr.contains("unknown `megadrive trace` option `--instructions-per-line`"),
+        "typed rejection names the removed option: {stderr}"
     );
+    assert!(!state_path.exists(), "no state is written on rejection");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -228,7 +232,6 @@ fn trace_help_documents_formats_and_options() {
         "Usage:",
         "--rom <path>",
         "--state-out <path>",
-        "--instructions-per-line",
         "Trace format:",
         r"<index>\t<pc_hex>\t<opcode_hex>",
         "Final-state format:",
@@ -237,8 +240,8 @@ fn trace_help_documents_formats_and_options() {
         "level 7 is always taken",
         "stays pending",
         "RTE",
-        "not cycle-accurate",
-        "never changed implicitly",
+        "master-cycle timeline",
+        "3420",
     ] {
         assert!(
             stdout.contains(expected),
@@ -256,10 +259,6 @@ fn trace_help_documents_formats_and_options() {
             "stale interrupt help `{stale}` must be gone: {stdout}"
         );
     }
-    assert!(
-        stdout.contains("The default is 64"),
-        "help must state the default quantum: {stdout}"
-    );
 }
 
 #[test]
@@ -722,8 +721,8 @@ fn trace_capture_targets_the_megadrive_slice() {
     assert_eq!(field(&capture, "backend"), "chronofork.megadrive.m68000");
     assert!(!field(&capture, "backend_version").is_empty());
     assert_eq!(field(&capture, "start_tick"), "0");
-    assert_eq!(field(&capture, "end_tick"), "40");
-    assert_eq!(field(&capture, "steps"), "40");
+    assert_eq!(field(&capture, "end_tick"), "3052");
+    assert_eq!(field(&capture, "steps"), "3052");
     assert_eq!(field(&capture, "capacity"), "4096");
     assert_eq!(field(&capture, "stop_reason"), "step_limit");
     assert_eq!(field(&capture, "triggered"), "1");
@@ -899,19 +898,19 @@ fn trace_capture_targets_the_megadrive_slice() {
         "--kind",
         "instruction",
         "--from-tick",
-        "10",
+        "28",
         "--to-tick",
-        "12",
+        "84",
     ]);
     let window_summary = block(&window, "trace_query");
     assert_eq!(field(&window_summary, "matched"), "3");
-    assert_eq!(field(&window_summary, "from_tick"), "10");
-    assert_eq!(field(&window_summary, "to_tick"), "12");
+    assert_eq!(field(&window_summary, "from_tick"), "28");
+    assert_eq!(field(&window_summary, "to_tick"), "84");
     let ticks: Vec<String> = record_blocks(&window)
         .iter()
         .map(|row| field(row, "tick"))
         .collect();
-    assert_eq!(ticks, vec!["10", "11", "12"]);
+    assert_eq!(ticks, vec!["28", "56", "84"]);
 
     // A zero-match query prints the summary only.
     let empty = cli(&[
@@ -982,7 +981,7 @@ fn trace_capture_targets_the_megadrive_slice() {
         ]);
         assert_eq!(
             field(&block(&stdout, "trace_capture"), "steps"),
-            "20",
+            "1526",
             "capture steps for --input {input}"
         );
     }
@@ -1031,7 +1030,7 @@ fn trace_capture_targets_the_megadrive_slice() {
         "--rom",
         path_str(&interrupts),
         "--steps",
-        "80",
+        "400",
         "--out",
         path_str(&interrupt_out),
     ]);
@@ -1105,7 +1104,7 @@ fn trace_capture_targets_the_megadrive_slice() {
     ]);
     let stop_block = block(&stop_stdout, "trace_capture");
     assert_eq!(field(&stop_block, "stop_reason"), "stop_condition");
-    assert_eq!(field(&stop_block, "end_tick"), "3");
+    assert_eq!(field(&stop_block, "end_tick"), "84");
     assert_eq!(field(&stop_block, "records"), "3");
     let stop_trace = decode(&stop);
     let stopped_pcs: Vec<u32> = stop_trace
@@ -1671,7 +1670,7 @@ fn trace_help_and_typed_rejections_follow_the_contract() {
         "--rom",
         path_str(&interrupt_rom_path),
         "--steps",
-        "80",
+        "400",
         "--event-capacity",
         "1",
         "--out",

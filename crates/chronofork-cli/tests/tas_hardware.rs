@@ -229,7 +229,7 @@ fn hardware_record_play_verify_and_rom_non_mutation() -> TestResult {
     assert_eq!(field(&recorded, "input_schema")?, "1");
     assert_eq!(field(&recorded, "steps")?, "64");
     assert_eq!(field(&recorded, "start_tick")?, "0");
-    assert_eq!(field(&recorded, "end_tick")?, "64");
+    assert_eq!(field(&recorded, "end_tick")?, "5404");
     let final_hash = field(&recorded, "final_state_hash")?;
     let movie_hash = field(&recorded, "movie_sha256")?;
 
@@ -262,7 +262,7 @@ fn hardware_record_play_verify_and_rom_non_mutation() -> TestResult {
     );
     assert_eq!(field(&verified, "end_tick")?, field(&recorded, "end_tick")?);
     assert_eq!(field(&verified, "steps")?, "64");
-    assert_eq!(field(&verified, "final_tick")?, "64");
+    assert_eq!(field(&verified, "final_tick")?, "5404");
     assert_eq!(field(&verified, "final_state_hash")?, final_hash);
 
     let played = single_block(&ok(&[
@@ -270,7 +270,7 @@ fn hardware_record_play_verify_and_rom_non_mutation() -> TestResult {
     ])?)?;
     record_block(&played, "playback")?;
     assert_eq!(played.get("verified"), None);
-    assert_eq!(field(&played, "final_tick")?, "64");
+    assert_eq!(field(&played, "final_tick")?, "5404");
     assert_eq!(field(&played, "final_state_hash")?, final_hash);
     Ok(())
 }
@@ -741,13 +741,13 @@ fn studio_rewind_matches_fresh_replay_and_writes_nothing() -> TestResult {
 
     // A fresh ranged replay defines the expected state at the rewind target.
     let replayed = single_block(&ok(&[
-        "tas", "play", "--rom", rom_path, "--movie", movie_path, "--until", "24",
+        "tas", "play", "--rom", rom_path, "--movie", movie_path, "--until", "1848",
     ])?)?;
     let target_hash = field(&replayed, "final_state_hash")?;
 
     let output = run_with_stdin(
         &["tas", "studio", "--rom", rom_path, "--movie", movie_path],
-        "state\ngoto 24\nback\ngoto 48\nquit\n",
+        "state\ngoto 1848\nback\ngoto 4032\nquit\n",
     )?;
     let (stdout, stderr) = streams(&output)?;
     if !output.status.success() {
@@ -768,20 +768,20 @@ fn studio_rewind_matches_fresh_replay_and_writes_nothing() -> TestResult {
     assert_eq!(field(&blocks[0], "movie_version")?, "1");
     assert_eq!(field(&blocks[0], "input_schema")?, "1");
     assert_eq!(field(&blocks[0], "start_tick")?, "0");
-    assert_eq!(field(&blocks[0], "end_tick")?, "48");
+    assert_eq!(field(&blocks[0], "end_tick")?, "4032");
     assert_eq!(field(&blocks[0], "steps")?, "48");
     assert_eq!(field(&blocks[0], "tick")?, "0");
 
     record_block(&blocks[1], "seek")?;
-    assert_eq!(field(&blocks[1], "tick")?, "24");
-    assert_eq!(field(&blocks[1], "target_tick")?, "24");
+    assert_eq!(field(&blocks[1], "tick")?, "1848");
+    assert_eq!(field(&blocks[1], "target_tick")?, "1848");
     assert_eq!(field(&blocks[1], "state_hash")?, target_hash);
 
     record_block(&blocks[2], "seek")?;
-    assert_eq!(field(&blocks[2], "tick")?, "23");
+    assert_eq!(field(&blocks[2], "tick")?, "1820");
 
     record_block(&blocks[3], "seek")?;
-    assert_eq!(field(&blocks[3], "tick")?, "48");
+    assert_eq!(field(&blocks[3], "tick")?, "4032");
     assert_eq!(
         field(&blocks[3], "state_hash")?,
         field(&recorded, "final_state_hash")?
@@ -789,7 +789,7 @@ fn studio_rewind_matches_fresh_replay_and_writes_nothing() -> TestResult {
 
     record_block(&blocks[4], "quit")?;
     assert_eq!(field(&blocks[4], "reason")?, "command");
-    assert_eq!(field(&blocks[4], "tick")?, "48");
+    assert_eq!(field(&blocks[4], "tick")?, "4032");
 
     // studio writes nothing and never rewrites the movie; the movie still verifies.
     assert_eq!(hash_bytes(&std::fs::read(&movie)?), movie_hash);
@@ -1092,12 +1092,13 @@ fn hardware_v2_anchored_ranged_replay_stays_exact() -> TestResult {
     // A ranged replay starts at the nearest anchor at or before --from and
     // reports `prefix_verified=0`; the end state is still the recorded one.
     let ranged = single_block(&ok(&[
-        "tas", "play", "--rom", rom_path, "--movie", movie_path, "--from", "16", "--until", "48",
+        "tas", "play", "--rom", rom_path, "--movie", movie_path, "--from", "1162", "--until",
+        "4032",
     ])?)?;
     assert_eq!(field(&ranged, "anchored")?, "1");
-    assert_eq!(field(&ranged, "anchor_tick")?, "16");
+    assert_eq!(field(&ranged, "anchor_tick")?, "1162");
     assert_eq!(field(&ranged, "prefix_verified")?, "0");
-    assert_eq!(field(&ranged, "final_tick")?, "48");
+    assert_eq!(field(&ranged, "final_tick")?, "4032");
     assert_eq!(
         field(&ranged, "final_state_hash")?,
         field(&recorded, "final_state_hash")?

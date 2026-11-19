@@ -1,36 +1,35 @@
-//! A deliberately small, documented subset of the Motorola 68000.
+//! The documented Motorola MC68000 instruction set with per-instruction cycle
+//! accounting.
 //!
-//! This is the first real-hardware slice of ChronoFork, not a complete 68000.
-//! It exists to prove reset-vector loading, big-endian execution, deterministic
-//! state, snapshots and session forking with an independently authored program.
+//! The opcode classifier in [`decode`] is the single dispatcher; the execution
+//! groups in [`exec`] implement data movement (including `EXG`, `MOVEM`, `MOVEP`
+//! and `TAS`), arithmetic (including `ADDX`/`SUBX` and multiply/divide), logic,
+//! shifts/rotates, BCD, bit operations, control flow and the privileged system
+//! instructions. Every executed instruction reports its documented 68000-cycle
+//! cost through [`InstructionOutcome::cycles`]; effective-address cost is added
+//! exactly once per operand.
 //!
-//! Implemented today:
+//! Exceptions: interrupt-priority-mask gating through
+//! [`interrupt_level_deliverable`] (level 7 always, every other level only when
+//! strictly above the `SR` mask), atomic interrupt and exception entry, the
+//! six-byte short and fourteen-byte address-error frames with the documented
+//! function-code word, privilege enforcement for the implemented system
+//! instructions, and guest illegal-instruction delivery for unrecognised or
+//! reserved encodings. Unmapped or write-protected guest data accesses take the
+//! address-error path (vector 3); host errors remain for a frame or vector fetch
+//! that cannot complete, overflow and trace-capacity failures. `RTE` restores the
+//! raw `SR` and program counter from its frame and advances `A7` by six.
 //!
-//! - `MOVEQ`, `MOVE.B/W/L` between `Dn`, immediate and absolute-long operands;
-//! - `ADD.B/W/L`/`SUB.B/W/L` between data registers, plus `ADDQ`/`SUBQ` word/long;
-//! - `CMP.B/W/L Dn,Dn`, `TST.B/W/L Dn`, `CLR.W/L`, `LEA (abs).L,An`, `PEA (abs).L`;
-//! - `NOP`, `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL`, `DBRA`,
-//!   `JMP`, `JSR`, `RTS`;
-//! - interrupt-priority-mask gating through [`interrupt_level_deliverable`]: an
-//!   interrupt at level 7 is always taken, and every other level is taken only
-//!   when it is strictly greater than the `SR` interrupt-priority mask. The
-//!   CPU exposes the same rule as [`M68000::accepts_interrupt_level`];
-//! - interrupt exception entry ([`M68000::interrupt`]) at an explicit accepted
-//!   level: the previous raw `SR` and return PC are pushed, `S` is set, the CCR
-//!   is preserved and the interrupt-priority mask becomes the accepted level;
-//!   `RTE` (0x4E73) restores the raw `SR` and program counter from that frame
-//!   and advances `A7` by six;
-//! - `MOVE.W #imm,SR` (0x46FC), so a program can change its interrupt mask;
-//! - an optional bounded instruction trace (see [`crate::trace`]) recording each
-//!   fetched address/opcode pair. It is disabled by default and is debug data:
-//!   it is not part of snapshots, state hashes or registers.
+//! The register file carries separate user and supervisor stack pointers
+//! (`USP`/`SSP`) selected by `SR` bit 13. Instruction writes to `A7` update the
+//! active mirror, and exception/interrupt entry from user mode switches to `SSP`
+//! while saving `USP`; `RTE` restores the user stack when its frame selects user
+//! mode.
 //!
-//! Not implemented: effective-address modes beyond the listed forms, automatic
-//! interrupt-vector selection (the caller supplies the vector address), other
-//! exception groups, privilege enforcement (`RTE` and `MOVE.W #imm,SR` execute
-//! in either mode here), separate user/supervisor stack pointers, prefetch,
-//! cycle-accurate timing, and the rest of the instruction set. Unsupported
-//! opcodes are errors, never silently skipped.
+//! Not modelled: functional prefetch, bus-cycle contention, DMA stalls,
+//! interrupt latency, and guest bus-error (vector 2) and trace (vector 9)
+//! delivery. Unrecognised opcodes raise the guest illegal-instruction exception
+//! (vector 4); they are never silently executed as another instruction.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -39,14 +38,107 @@ use std::fmt;
 use crate::bus::{BusError, MegadriveBus};
 use crate::trace::{InstructionTrace, TraceError};
 
-const FLAG_C: u16 = 0x0001;
-const FLAG_V: u16 = 0x0002;
-const FLAG_Z: u16 = 0x0004;
-const FLAG_N: u16 = 0x0008;
-const FLAG_X: u16 = 0x0010;
-const SR_SUPERVISOR: u16 = 0x2000;
+pub mod decode;
+pub mod ea;
+pub mod exec;
+pub mod timing;
+
+use decode::InstructionClass;
+
+pub use ea::{Ea, Size, decode_ea, ea_address, read_ea, write_ea};
+pub use timing::{InstructionOutcome, base_cycles, ea_cycles};
+
+pub(crate) const FLAG_C: u16 = 0x0001;
+pub(crate) const FLAG_V: u16 = 0x0002;
+pub(crate) const FLAG_Z: u16 = 0x0004;
+pub(crate) const FLAG_N: u16 = 0x0008;
+pub(crate) const FLAG_X: u16 = 0x0010;
+pub(crate) const SR_SUPERVISOR: u16 = 0x2000;
 const SR_INTERRUPT_MASK: u16 = 0x0700;
+const SR_TRACE: u16 = 0x8000;
 const RESET_SR: u16 = SR_SUPERVISOR | SR_INTERRUPT_MASK;
+
+/// 68000 reset vector (initial supervisor stack pointer and program counter).
+pub const VECTOR_RESET: u8 = 1;
+/// Bus-error exception vector.
+pub const VECTOR_BUS_ERROR: u8 = 2;
+/// Address-error exception vector.
+pub const VECTOR_ADDRESS_ERROR: u8 = 3;
+/// Illegal-instruction exception vector.
+pub const VECTOR_ILLEGAL: u8 = 4;
+/// Zero-divide exception vector.
+pub const VECTOR_ZERO_DIVIDE: u8 = 5;
+/// `CHK` exception vector.
+pub const VECTOR_CHK: u8 = 6;
+/// `TRAPV` exception vector.
+pub const VECTOR_TRAPV: u8 = 7;
+/// Privilege-violation exception vector.
+pub const VECTOR_PRIVILEGE_VIOLATION: u8 = 8;
+/// Trace exception vector.
+pub const VECTOR_TRACE: u8 = 9;
+/// First autovector interrupt vector (level 1); add the interrupt level.
+pub const VECTOR_IRQ_BASE: u8 = 24;
+/// First `TRAP #n` vector; add the trap number.
+pub const VECTOR_TRAP_BASE: u8 = 32;
+
+/// The kind of access that raised an address error.
+///
+/// The 68000 exception frame's status word encodes the access function code and
+/// the read/write direction; this enum is the single source of that mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressAccess {
+    /// A data read from memory.
+    DataRead,
+    /// A data write to memory.
+    DataWrite,
+    /// An instruction fetch or program-space read.
+    ProgramRead,
+}
+
+impl AddressAccess {
+    const fn function_code(self, supervisor: bool) -> u16 {
+        let code = match (self, supervisor) {
+            (Self::DataRead | Self::DataWrite, true) => 5,
+            (Self::DataRead | Self::DataWrite, false) => 1,
+            (Self::ProgramRead, true) => 6,
+            (Self::ProgramRead, false) => 2,
+        };
+        let read_bit = if matches!(self, Self::DataRead | Self::ProgramRead) {
+            0x10
+        } else {
+            0
+        };
+        code | read_bit
+    }
+}
+
+/// The frame an exception pushes on the supervisor stack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExceptionFrame {
+    /// Six bytes: status register and program counter.
+    Short,
+    /// Six bytes: status register and program counter, with trace entry.
+    Trace,
+    /// Fourteen bytes: SR, PC, the faulting address, the opcode and a
+    /// function-code word.
+    AddressError {
+        /// Address that faulted.
+        address: u32,
+        /// Instruction word that was executing.
+        opcode: u16,
+        /// Access that faulted, encoded into the function-code word.
+        access: AddressAccess,
+    },
+}
+
+impl ExceptionFrame {
+    const fn size(self) -> u32 {
+        match self {
+            Self::Short | Self::Trace => 6,
+            Self::AddressError { .. } => 14,
+        }
+    }
+}
 
 /// Returns the 68000 interrupt-priority mask (IPM) encoded in
 /// `status_register` (bits 10-8).
@@ -81,18 +173,28 @@ pub enum CpuError {
     /// The CPU was already halted.
     Halted,
     /// The opcode is not implemented by this slice.
+    ///
+    /// This is the internal signal the execution groups use for an
+    /// unrecognised or reserved encoding. [`M68000::step`] converts it to the
+    /// guest illegal-instruction exception (vector 4), so callers of `step`
+    /// do not observe it.
     IllegalOpcode {
         /// Address of the opcode.
         pc: u32,
         /// Fetched opcode.
         opcode: u16,
     },
-    /// A recognized opcode uses an addressing/size form not implemented here.
+    /// A recognized opcode uses a reserved or invalid addressing/size form.
+    ///
+    /// Like [`CpuError::IllegalOpcode`], this is an internal execution signal;
+    /// [`M68000::step`] delivers it as the guest illegal-instruction exception.
     Unsupported(String),
     /// The program counter or branch target is not word-aligned.
     AddressError {
         /// Offending address.
         address: u32,
+        /// Access that faulted.
+        access: AddressAccess,
     },
     /// Address arithmetic overflowed.
     AddressOverflow,
@@ -115,7 +217,7 @@ impl fmt::Display for CpuError {
                 write!(f, "illegal opcode 0x{opcode:04X} at 0x{pc:06X}")
             }
             Self::Unsupported(message) => write!(f, "unsupported 68000 form: {message}"),
-            Self::AddressError { address } => {
+            Self::AddressError { address, .. } => {
                 write!(f, "68000 address error at 0x{address:06X}")
             }
             Self::AddressOverflow => f.write_str("68000 address overflow"),
@@ -146,31 +248,6 @@ impl From<BusError> for CpuError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Size {
-    Byte,
-    Word,
-    Long,
-}
-
-impl Size {
-    const fn mask(self) -> u32 {
-        match self {
-            Self::Byte => 0x0000_00FF,
-            Self::Word => 0x0000_FFFF,
-            Self::Long => 0xFFFF_FFFF,
-        }
-    }
-
-    const fn sign_bit(self) -> u32 {
-        match self {
-            Self::Byte => 0x0000_0080,
-            Self::Word => 0x0000_8000,
-            Self::Long => 0x8000_0000,
-        }
-    }
-}
-
 /// 68000 architectural state for the implemented slice.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct M68000 {
@@ -178,7 +255,15 @@ pub struct M68000 {
     a: [u32; 8],
     pc: u32,
     sr: u16,
+    /// User stack pointer (`USP`), active while `SR` bit 13 is clear.
+    usp: u32,
+    /// Supervisor stack pointer (`SSP`), active while `SR` bit 13 is set.
+    ssp: u32,
     halted: bool,
+    /// Set when a `STOP` instruction suspends the processor.
+    stopped: bool,
+    /// 68000 cycle accumulator for the instruction timing layer.
+    cycles: u64,
     /// Debug-only instruction trace; never part of snapshots or state hashes.
     trace: Option<InstructionTrace>,
 }
@@ -192,7 +277,11 @@ impl M68000 {
             a: [0; 8],
             pc: 0,
             sr: RESET_SR,
+            usp: 0,
+            ssp: 0,
             halted: false,
+            stopped: false,
+            cycles: 0,
             trace: None,
         }
     }
@@ -206,9 +295,13 @@ impl M68000 {
         self.d = [0; 8];
         self.a = [0; 8];
         self.a[7] = bus.read32(0)?;
+        self.ssp = self.a[7];
         self.pc = bus.read32(4)?;
         self.sr = RESET_SR;
+        self.usp = 0;
         self.halted = false;
+        self.stopped = false;
+        self.cycles = 0;
         self.ensure_even_pc()
     }
 
@@ -240,10 +333,10 @@ impl M68000 {
     /// to apply the 68000 priority-mask rule before calling this method.
     /// Automatic vector selection, pending-request bookkeeping and the other
     /// exception groups are not modelled.
-    /// An odd or unmapped `vector_address`, a stack pointer without six bytes
-    /// below it, or a vector entry holding an odd program counter is an error.
-    /// The frame is pushed and the new `SR` applied before the vector is fetched,
-    /// like real hardware, so a bad vector leaves both behind.
+    /// An odd or unmapped `vector_address`, a supervisor stack pointer without
+    /// six bytes below it, or a vector entry holding an odd program counter is an
+    /// error. The vector and frame range are validated before any canonical
+    /// state is written, so a failed entry is atomic.
     pub fn interrupt(
         &mut self,
         level: u8,
@@ -254,21 +347,101 @@ impl M68000 {
             return Err(CpuError::InvalidInterruptLevel { level });
         }
 
-        let stack = self.a[7].checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        // Validate the vector and the complete frame before touching any
+        // canonical state, so a failed entry is atomic.
+        let target = bus.read32(vector_address)?;
+        self.ensure_even(target)?;
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
+        let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
+        let stack = saved_ssp.checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        bus.validate_write_range(stack, 6)?;
+
         let return_pc = self.pc;
         let previous_sr = self.sr;
-
         bus.write16(stack, previous_sr)?;
         let return_pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         bus.write32(return_pc_address, return_pc)?;
+
+        self.usp = saved_usp;
+        self.ssp = stack;
         self.a[7] = stack;
         self.sr = (previous_sr & !SR_INTERRUPT_MASK) | (u16::from(level) << 8) | SR_SUPERVISOR;
-
-        let target = bus.read32(vector_address)?;
         self.write_pc(target)?;
 
         self.halted = false;
         Ok(())
+    }
+
+    /// Enters an exception through `vector`.
+    ///
+    /// The vector table is read and its target validated, then the complete
+    /// frame range is checked before any canonical state is written, so a failed
+    /// frame or vector is a typed host error that leaves the architectural state
+    /// untouched. The frame is pushed on the supervisor stack (saving the active
+    /// `USP` when entering from user mode), `S` is set and the trace bit cleared,
+    /// and execution jumps to the handler. The returned value is the 34-cycle
+    /// exception-entry cost.
+    ///
+    /// [`ExceptionFrame::Short`] and [`ExceptionFrame::Trace`] push six bytes
+    /// (status register and return program counter); an address error pushes
+    /// the documented fourteen-byte frame (SR, PC, access address, instruction
+    /// register and a function-code word).
+    pub fn raise_exception(
+        &mut self,
+        bus: &mut MegadriveBus,
+        vector: u8,
+        frame: ExceptionFrame,
+    ) -> Result<u16, CpuError> {
+        let vector_address = u32::from(vector)
+            .checked_mul(4)
+            .ok_or(CpuError::AddressOverflow)?;
+        let target = bus.read32(vector_address)?;
+        self.ensure_even(target)?;
+
+        let frame_size = frame.size();
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
+        let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
+        let stack = saved_ssp
+            .checked_sub(frame_size)
+            .ok_or(CpuError::StackOverflow)?;
+        bus.validate_write_range(
+            stack,
+            usize::try_from(frame_size).map_err(|_| CpuError::AddressOverflow)?,
+        )?;
+
+        let return_pc = self.pc;
+        let supervisor = was_supervisor;
+        bus.write16(stack, self.sr)?;
+        let pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        bus.write32(pc_address, return_pc)?;
+        if let ExceptionFrame::AddressError {
+            address,
+            opcode,
+            access,
+        } = frame
+        {
+            let address_address = stack.checked_add(6).ok_or(CpuError::AddressOverflow)?;
+            bus.write32(address_address, address)?;
+            let opcode_address = stack.checked_add(10).ok_or(CpuError::AddressOverflow)?;
+            bus.write16(opcode_address, opcode)?;
+            let function_code_address = stack.checked_add(12).ok_or(CpuError::AddressOverflow)?;
+            bus.write16(function_code_address, access.function_code(supervisor))?;
+        }
+
+        self.usp = saved_usp;
+        self.ssp = stack;
+        self.a[7] = stack;
+        let mut new_sr = (self.sr | SR_SUPERVISOR) & !SR_TRACE;
+        if matches!(frame, ExceptionFrame::Trace) {
+            new_sr |= SR_INTERRUPT_MASK;
+        }
+        self.sr = new_sr;
+        self.pc = target;
+        self.halted = false;
+        self.stopped = false;
+        Ok(34)
     }
 
     /// Returns the program counter.
@@ -281,6 +454,105 @@ impl M68000 {
     #[must_use]
     pub const fn sr(&self) -> u16 {
         self.sr
+    }
+
+    /// Replaces the status register and selects the matching active stack.
+    ///
+    /// This is [`M68000::apply_sr`]: the current stack pointer is saved and,
+    /// when the new value changes the supervisor bit, the other stack pointer
+    /// becomes active.
+    pub fn set_sr(&mut self, value: u16) {
+        self.apply_sr(value);
+    }
+
+    /// Writes the status register, preserving the inactive stack pointer.
+    ///
+    /// `SR` bit 13 (`S`) selects which saved stack pointer is the live `A7`:
+    /// with `S` set, `A7` is the supervisor stack pointer, and with `S` clear
+    /// it is the user stack pointer. The current `A7` is first saved into the
+    /// stack it belongs to; when the write changes `S`, the other saved stack
+    /// pointer is loaded into `A7`, so a mode switch never loses a stack.
+    pub fn apply_sr(&mut self, value: u16) {
+        let was_supervisor = self.sr & SR_SUPERVISOR != 0;
+        if was_supervisor {
+            self.ssp = self.a[7];
+        } else {
+            self.usp = self.a[7];
+        }
+        self.sr = value;
+        let is_supervisor = value & SR_SUPERVISOR != 0;
+        if is_supervisor != was_supervisor {
+            self.a[7] = if is_supervisor { self.ssp } else { self.usp };
+        }
+    }
+
+    /// Returns the user stack pointer (`USP`).
+    ///
+    /// `USP` is active as `A7` while `SR` bit 13 is clear; while the processor
+    /// is in supervisor mode it holds the saved user stack.
+    #[must_use]
+    pub const fn usp(&self) -> u32 {
+        self.usp
+    }
+
+    /// Returns the supervisor stack pointer (`SSP`).
+    ///
+    /// `SSP` is active as `A7` while `SR` bit 13 is set (the reset state);
+    /// while the processor is in user mode it holds the saved supervisor stack.
+    #[must_use]
+    pub const fn ssp(&self) -> u32 {
+        self.ssp
+    }
+
+    /// Returns the active address register 7, the current stack pointer.
+    ///
+    /// This is `SSP` in supervisor mode and `USP` in user mode.
+    #[must_use]
+    pub const fn a7(&self) -> u32 {
+        self.a[7]
+    }
+
+    /// Sets the active address register 7, the current stack pointer.
+    ///
+    /// The value is written to `A7` and mirrored into the stack pointer that
+    /// `SR` bit 13 selects, so [`M68000::usp`] or [`M68000::ssp`] reports it
+    /// immediately. The inactive stack is left unchanged.
+    pub fn set_a7(&mut self, value: u32) {
+        self.a[7] = value;
+        if self.sr & SR_SUPERVISOR != 0 {
+            self.ssp = value;
+        } else {
+            self.usp = value;
+        }
+    }
+
+    /// Returns the accumulated 68000 cycle count.
+    ///
+    /// The value is accounted by the instruction timing layer; it is zero
+    /// until per-instruction cycle accounting is added.
+    #[must_use]
+    pub const fn cycles(&self) -> u64 {
+        self.cycles
+    }
+
+    /// Suspends the processor until the next interrupt, like `STOP`.
+    pub(crate) fn stop(&mut self) {
+        self.halted = true;
+        self.stopped = true;
+    }
+
+    /// Writes the saved user stack pointer.
+    pub(crate) fn set_usp(&mut self, value: u32) {
+        self.usp = value;
+    }
+
+    /// Returns whether a `STOP` instruction has suspended the processor.
+    ///
+    /// No instruction sets this yet; it exists so the register file carries
+    /// the complete architectural state from the start of the CPU split.
+    #[must_use]
+    pub const fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Returns the interrupt-priority mask currently encoded in `SR`.
@@ -317,6 +589,27 @@ impl M68000 {
     #[must_use]
     pub fn address_register(&self, register: usize) -> Option<u32> {
         self.a.get(register).copied()
+    }
+
+    /// Writes a data register.
+    ///
+    /// The register index is masked to `0..=7`, matching the internal data
+    /// register helpers; the 68000 has exactly eight data registers.
+    pub fn set_d(&mut self, register: usize, value: u32) {
+        self.d[register & 0x7] = value;
+    }
+
+    /// Writes an address register.
+    ///
+    /// The register index is masked to `0..=7`. Writing `A7` goes through
+    /// [`M68000::set_a7`], so the active supervisor or user stack pointer is
+    /// updated as well.
+    pub fn set_a(&mut self, register: usize, value: u32) {
+        if register & 0x7 == 7 {
+            self.set_a7(value);
+        } else {
+            self.a[register & 0x7] = value;
+        }
     }
 
     /// Returns a debugger-friendly register map.
@@ -389,6 +682,25 @@ impl M68000 {
         (self.d, self.a, self.pc, self.sr, self.halted)
     }
 
+    /// Returns the extended register-file state carried by the v4 snapshot.
+    pub(crate) const fn extended_state(&self) -> (u32, u32, bool, u64) {
+        (self.usp, self.ssp, self.stopped, self.cycles)
+    }
+
+    /// Restores the extended register-file state carried by the v4 snapshot.
+    pub(crate) fn restore_extended_state(
+        &mut self,
+        usp: u32,
+        ssp: u32,
+        stopped: bool,
+        cycles: u64,
+    ) {
+        self.usp = usp;
+        self.ssp = ssp;
+        self.stopped = stopped;
+        self.cycles = cycles;
+    }
+
     pub(crate) fn restore_state(
         &mut self,
         d: [u32; 8],
@@ -401,15 +713,26 @@ impl M68000 {
         self.a = a;
         self.pc = pc;
         self.sr = sr;
+        // The v4 snapshot carries USP and SSP separately; the backend applies
+        // them through `restore_extended_state` after this base register restore.
+        // This mode-consistent fallback keeps the mirror coherent for callers
+        // that restore only the base register file.
+        if sr & SR_SUPERVISOR != 0 {
+            self.ssp = a[7];
+        } else {
+            self.usp = a[7];
+        }
         self.halted = halted;
     }
 
-    /// Executes one instruction.
+    /// Executes one instruction and returns its documented cycle cost.
     ///
     /// When the instruction trace is enabled, the fetched instruction is recorded
     /// before decoding, so an instruction that fails as illegal or unsupported is
-    /// still present in the trace.
-    pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+    /// still present in the trace. The opcode is classified exactly once by
+    /// [`decode::classify`]; the selected execution group performs the operation
+    /// and reports the 68000-cycle cost from [`timing`].
+    pub fn step(&mut self, bus: &mut MegadriveBus) -> Result<InstructionOutcome, CpuError> {
         if self.halted {
             return Err(CpuError::Halted);
         }
@@ -419,339 +742,93 @@ impl M68000 {
             trace.record(instruction_pc, opcode);
         }
 
-        // 0111 rrr 0 dddddddd
-        if (opcode & 0xF100) == 0x7000 {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
-            self.d[register] = value as u32;
-            self.set_logic_flags(value as u32, Size::Long);
-            return Ok(());
-        }
-
-        // Branches and BSR.
-        if (opcode & 0xF000) == 0x6000 {
-            return self.execute_branch(bus, opcode);
-        }
-
-        match opcode {
-            0x46FC => {
-                // MOVE.W #imm,SR. Privileged on real hardware; privilege is not
-                // enforced in this slice. The immediate word replaces the raw
-                // SR, including the interrupt-priority mask.
-                let value = self.fetch_u16(bus)?;
-                self.sr = value;
-                Ok(())
+        // RTE handles its own frame faults as host errors: those are not guest
+        // address errors, and a failed return must not try to enter another
+        // exception.
+        if decode::classify(opcode) == InstructionClass::Rte {
+            let cycles = self.execute_rte(bus)?;
+            self.cycles += u64::from(cycles);
+            if let Some(trace) = &mut self.trace {
+                trace.set_last_cycles(cycles);
             }
-            0x4E71 => Ok(()),
-            0x4E73 => self.execute_rte(bus),
-            0x4E75 => {
-                let pc = self.pop_long(bus)?;
-                self.write_pc(pc)
+            return Ok(InstructionOutcome { cycles });
+        }
+
+        let outcome: Result<u16, CpuError> = match decode::classify(opcode) {
+            InstructionClass::Move
+            | InstructionClass::Moveq
+            | InstructionClass::Movem
+            | InstructionClass::Movep
+            | InstructionClass::Lea
+            | InstructionClass::Pea
+            | InstructionClass::Clr
+            | InstructionClass::Tst
+            | InstructionClass::Ext
+            | InstructionClass::Swap
+            | InstructionClass::Exg => exec::r#move::execute(self, bus, opcode),
+            InstructionClass::Branch
+            | InstructionClass::Dbra
+            | InstructionClass::Scc
+            | InstructionClass::Jmp
+            | InstructionClass::Jsr
+            | InstructionClass::Rts => exec::control::execute(self, bus, opcode),
+            InstructionClass::Nop => Ok(4),
+            InstructionClass::System => exec::system::execute(self, bus, opcode),
+            InstructionClass::And
+            | InstructionClass::Andi
+            | InstructionClass::Or
+            | InstructionClass::Ori
+            | InstructionClass::Eor
+            | InstructionClass::Eori
+            | InstructionClass::Not => exec::logic::execute(self, bus, opcode),
+            InstructionClass::Shift => exec::shift::execute(self, bus, opcode),
+            InstructionClass::MulDiv | InstructionClass::Bcd => {
+                exec::arith::execute(self, bus, opcode)
             }
-            0x4EF9 => {
-                let target = self.fetch_u32(bus)?;
-                self.write_pc(target)
-            }
-            0x4EB9 => {
-                let target = self.fetch_u32(bus)?;
-                self.ensure_even(target)?;
-                let return_pc = self.pc;
-                self.push_long(bus, return_pc)?;
-                self.pc = target;
-                Ok(())
-            }
-            _ => self.execute_other(bus, opcode, instruction_pc),
-        }
-    }
-
-    fn execute_other(
-        &mut self,
-        bus: &mut MegadriveBus,
-        opcode: u16,
-        instruction_pc: u32,
-    ) -> Result<(), CpuError> {
-        // CLR.W / CLR.L Dn
-        if (opcode & 0xFFC0) == 0x4240 {
-            let register = usize::from(opcode & 0x7);
-            self.write_dn(register, 0, Size::Word);
-            self.set_logic_flags(0, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xFFC0) == 0x4280 {
-            let register = usize::from(opcode & 0x7);
-            self.d[register] = 0;
-            self.set_logic_flags(0, Size::Long);
-            return Ok(());
-        }
-
-        // LEA (abs).L,An. The absolute-long encoding ends in 0xF9; the
-        // absolute-word (0xF8) and PC-relative (0xFA/0xFB) forms are not
-        // implemented and must fall through to the illegal-opcode error.
-        if (opcode & 0xF1FF) == 0x41F9 {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            self.a[register] = address;
-            return Ok(());
-        }
-
-        // PEA (abs).L, whose full opcode is 0x4879. Do not accept the
-        // absolute-word (0x4878) or PC-relative (0x487A) encodings.
-        if opcode == 0x4879 {
-            let address = self.fetch_u32(bus)?;
-            self.push_long(bus, address)?;
-            return Ok(());
-        }
-
-        // TST.B/W/L Dn
-        if (opcode & 0xFFF8) == 0x4A00 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.read_dn(register, Size::Byte);
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x4A40 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.read_dn(register, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x4A80 {
-            let register = usize::from(opcode & 0x7);
-            let value = self.d[register];
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-
-        // MOVE.W/L #imm,Dn
-        if (opcode & 0xF1FF) == 0x303C {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = u32::from(self.fetch_u16(bus)?);
-            self.write_dn(register, value, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x203C {
-            let register = usize::from((opcode >> 9) & 0x7);
-            let value = self.fetch_u32(bus)?;
-            self.d[register] = value;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-
-        // MOVE.B/W/L Dn,Dm
-        if (opcode & 0x01C0) == 0 && (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            match opcode & 0xF000 {
-                0x1000 => {
-                    let value = self.read_dn(source, Size::Byte);
-                    self.write_dn(destination, value, Size::Byte);
-                    self.set_logic_flags(value, Size::Byte);
-                    return Ok(());
-                }
-                0x2000 => {
-                    let value = self.d[source];
-                    self.d[destination] = value;
-                    self.set_logic_flags(value, Size::Long);
-                    return Ok(());
-                }
-                0x3000 => {
-                    let value = self.read_dn(source, Size::Word);
-                    self.write_dn(destination, value, Size::Word);
-                    self.set_logic_flags(value, Size::Word);
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
-        // MOVE.B/W/L Dn,(abs).L
-        if (opcode & 0xFFF8) == 0x13C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.read_dn(source, Size::Byte);
-            bus.write8(address, value as u8)?;
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x23C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.d[source];
-            bus.write32(address, value)?;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-        if (opcode & 0xFFF8) == 0x33C0 {
-            let source = usize::from(opcode & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = self.read_dn(source, Size::Word);
-            bus.write16(address, value as u16)?;
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-
-        // MOVE.B/W/L (abs).L,Dn. The 68000 encodes source mode/register
-        // 111/001 (absolute-long) as low byte 0x39. The absolute-word form
-        // (111/000, low byte 0x38) and the PC-relative forms are not in this
-        // subset and fall through to the illegal-opcode error rather than being
-        // executed with a 32-bit fetch.
-        if (opcode & 0xF1FF) == 0x1039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = u32::from(bus.read8(address)?);
-            self.write_dn(destination, value, Size::Byte);
-            self.set_logic_flags(value, Size::Byte);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x2039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = bus.read32(address)?;
-            self.d[destination] = value;
-            self.set_logic_flags(value, Size::Long);
-            return Ok(());
-        }
-        if (opcode & 0xF1FF) == 0x3039 {
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let address = self.fetch_u32(bus)?;
-            let value = u32::from(bus.read16(address)?);
-            self.write_dn(destination, value, Size::Word);
-            self.set_logic_flags(value, Size::Word);
-            return Ok(());
-        }
-
-        // CMP.B/W/L Dn,Dn. As with ADD/SUB, the destination mode is bits 5-3
-        // and the size is bits 7-6; bit 8 distinguishes CMP from EOR.
-        if (opcode & 0xF100) == 0xB000 && (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let size = match opcode & 0x00C0 {
-                0x0000 => Size::Byte,
-                0x0040 => Size::Word,
-                0x0080 => Size::Long,
-                _ => {
-                    return Err(CpuError::Unsupported(
-                        "CMP only supports data-register operands".to_owned(),
-                    ));
-                }
-            };
-            let source_value = self.read_dn(source, size);
-            let destination_value = self.read_dn(destination, size);
-            self.set_cmp_flags(destination_value, source_value, size);
-            return Ok(());
-        }
-
-        // DBRA Dn,disp16 (the DBcc encoding with condition 0x1).
-        if (opcode & 0xFFF8) == 0x51C8 {
-            let register = usize::from(opcode & 0x7);
-            let displacement = self.fetch_u16(bus)? as i16;
-            let counter = self.read_dn(register, Size::Word);
-            let decremented = counter.wrapping_sub(1) & Size::Word.mask();
-            self.write_dn(register, decremented, Size::Word);
-            if decremented == 0xFFFF {
-                return Ok(());
-            }
-            let target = self.relative_target(i32::from(displacement))?;
-            return self.write_pc(target);
-        }
-
-        // ADDQ / SUBQ (Dn only).
-        if (opcode & 0xF000) == 0x5000 {
-            let subtract = opcode & 0x0100 != 0;
-            let mut immediate = u32::from((opcode >> 9) & 0x7);
-            if immediate == 0 {
-                immediate = 8;
-            }
-            let mode = (opcode >> 3) & 0x7;
-            let size_bits = (opcode >> 6) & 0x3;
-            let destination = usize::from(opcode & 0x7);
-            if mode != 0 {
-                return Err(CpuError::Unsupported(
-                    "ADDQ/SUBQ only supports data-register destinations".to_owned(),
-                ));
-            }
-            let size = match size_bits {
-                1 => Size::Word,
-                2 => Size::Long,
-                _ => {
-                    return Err(CpuError::Unsupported(
-                        "ADDQ/SUBQ only supports word and long sizes".to_owned(),
-                    ));
-                }
-            };
-            if subtract {
-                self.subtract(destination, immediate, size);
-            } else {
-                self.add(destination, immediate, size);
-            }
-            return Ok(());
-        }
-
-        // ADD/SUB Dn,Dn (byte/word/long). For this form the destination
-        // mode is bits 5-3; the size is bits 7-6.
-        if (opcode & 0x0038) == 0 {
-            let source = usize::from(opcode & 0x7);
-            let destination = usize::from((opcode >> 9) & 0x7);
-            let size = match opcode & 0x00C0 {
-                0x0000 => Some(Size::Byte),
-                0x0040 => Some(Size::Word),
-                0x0080 => Some(Size::Long),
-                _ => None,
-            };
-            if let Some(size) = size {
-                let source_value = self.read_dn(source, size);
-                if (opcode & 0xF000) == 0xD000 {
-                    self.add(destination, source_value, size);
-                    return Ok(());
-                }
-                if (opcode & 0xF000) == 0x9000 {
-                    self.subtract(destination, source_value, size);
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(CpuError::IllegalOpcode {
-            pc: instruction_pc,
-            opcode,
-        })
-    }
-
-    fn execute_branch(&mut self, bus: &mut MegadriveBus, opcode: u16) -> Result<(), CpuError> {
-        let displacement = i32::from(i8::from_be_bytes([(opcode & 0xFF) as u8]));
-        let condition = (opcode >> 8) & 0xF;
-        let taken = match condition {
-            // BRA, and BSR which also pushes a return address.
-            0x0 | 0x1 => true,
-            // BCC/BCS.
-            0x4 => !self.flag(FLAG_C),
-            0x5 => self.flag(FLAG_C),
-            // BEQ/BNE.
-            0x6 => !self.flag(FLAG_Z),
-            0x7 => self.flag(FLAG_Z),
-            // BMI/BPL.
-            0xA => !self.flag(FLAG_N),
-            0xB => self.flag(FLAG_N),
-            _ => {
-                return Err(CpuError::Unsupported(format!(
-                    "branch condition 0x{condition:X} is not implemented"
-                )));
-            }
+            InstructionClass::Bit | InstructionClass::Tas => exec::bit::execute(self, bus, opcode),
+            InstructionClass::Add
+            | InstructionClass::Adda
+            | InstructionClass::Addq
+            | InstructionClass::Addi
+            | InstructionClass::Sub
+            | InstructionClass::Suba
+            | InstructionClass::Subq
+            | InstructionClass::Subi
+            | InstructionClass::Addx
+            | InstructionClass::Subx
+            | InstructionClass::Cmp
+            | InstructionClass::Cmpa
+            | InstructionClass::Cmpi
+            | InstructionClass::Cmpm
+            | InstructionClass::Neg
+            | InstructionClass::Negx => exec::arith::execute(self, bus, opcode),
+            _ => Err(CpuError::IllegalOpcode {
+                pc: instruction_pc,
+                opcode,
+            }),
         };
-        let target = if taken {
-            Some(self.relative_target(displacement)?)
-        } else {
-            None
+
+        let cycles = match outcome {
+            Ok(cycles) => cycles,
+            Err(CpuError::IllegalOpcode { .. } | CpuError::Unsupported(_)) => {
+                self.raise_exception(bus, VECTOR_ILLEGAL, ExceptionFrame::Short)?
+            }
+            Err(CpuError::AddressError { address, access }) => self.raise_exception(
+                bus,
+                VECTOR_ADDRESS_ERROR,
+                ExceptionFrame::AddressError {
+                    address,
+                    opcode,
+                    access,
+                },
+            )?,
+            Err(error) => return Err(error),
         };
-        if condition == 0x1 {
-            let return_pc = self.pc;
-            self.push_long(bus, return_pc)?;
+        self.cycles += u64::from(cycles);
+        if let Some(trace) = &mut self.trace {
+            trace.set_last_cycles(cycles);
         }
-        match target {
-            Some(target) => self.write_pc(target),
-            None => Ok(()),
-        }
+        Ok(InstructionOutcome { cycles })
     }
 
     /// Executes `RTE` (0x4E73).
@@ -764,7 +841,10 @@ impl M68000 {
     /// `A7` untouched. On success the exact raw `SR` word is restored (IPM, `S`
     /// and CCR, with no implicit supervisor re-entry), the program counter is
     /// set to the restored value, and `A7` advances by six.
-    fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<(), CpuError> {
+    fn execute_rte(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+        if self.sr & SR_SUPERVISOR == 0 {
+            return self.raise_exception(bus, VECTOR_PRIVILEGE_VIOLATION, ExceptionFrame::Short);
+        }
         let frame = self.a[7];
         let return_pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
         let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
@@ -773,10 +853,14 @@ impl M68000 {
         let restored_pc = bus.read32(return_pc_address)?;
         self.ensure_even(restored_pc)?;
 
-        self.sr = restored_sr;
-        self.pc = restored_pc;
+        // The frame is popped from the supervisor stack; `apply_sr` then saves
+        // the advanced SSP and selects USP when returning to user mode.
         self.a[7] = restored_a7;
-        Ok(())
+        self.apply_sr(restored_sr);
+        self.pc = restored_pc;
+        self.halted = false;
+        self.stopped = false;
+        Ok(20)
     }
 
     /// Computes a branch target from the current program counter and a signed
@@ -797,35 +881,38 @@ impl M68000 {
         Ok(target)
     }
 
-    fn add(&mut self, destination: usize, source: u32, size: Size) {
-        let destination_value = self.read_dn(destination, size);
-        let source_value = source & size.mask();
-        let result = destination_value.wrapping_add(source_value) & size.mask();
-        self.write_dn(destination, result, size);
-        self.set_add_flags(destination_value, source_value, result, size);
-    }
-
-    fn subtract(&mut self, destination: usize, source: u32, size: Size) {
-        let destination_value = self.read_dn(destination, size);
-        let source_value = source & size.mask();
-        let result = destination_value.wrapping_sub(source_value) & size.mask();
-        self.write_dn(destination, result, size);
-        self.set_sub_flags(destination_value, source_value, result, size);
-    }
-
     /// Reads data register `register`, narrowed to `size`.
     ///
     /// The 68000 has exactly eight data registers and every caller extracts the
     /// index with `& 0x7`, so the masked lookup is total: there is no
     /// out-of-range case to fall back from.
-    fn read_dn(&self, register: usize, size: Size) -> u32 {
+    pub(crate) fn read_dn(&self, register: usize, size: Size) -> u32 {
         self.d[register & 0x7] & size.mask()
+    }
+
+    /// Reads address register `register`.
+    pub(crate) const fn read_an(&self, register: usize) -> u32 {
+        self.a[register & 0x7]
+    }
+
+    /// Writes address register `register`, mirroring `A7` into the active
+    /// stack pointer.
+    ///
+    /// Every instruction write to `A7` goes through this method so the
+    /// selected `USP`/`SSP` mirror stays consistent with the v4 state and its
+    /// hash. The inactive stack pointer is left unchanged.
+    pub(crate) fn write_an(&mut self, register: usize, value: u32) {
+        if register & 0x7 == 7 {
+            self.set_a7(value);
+        } else {
+            self.a[register & 0x7] = value;
+        }
     }
 
     /// Writes the low `size` bytes of `value` into data register `register`.
     ///
     /// The index is masked for the same reason as in [`Self::read_dn`].
-    fn write_dn(&mut self, register: usize, value: u32, size: Size) {
+    pub(crate) fn write_dn(&mut self, register: usize, value: u32, size: Size) {
         let register = &mut self.d[register & 0x7];
         *register = match size {
             Size::Byte => (*register & 0xFFFF_FF00) | (value & 0xFF),
@@ -834,7 +921,16 @@ impl M68000 {
         };
     }
 
-    fn set_logic_flags(&mut self, value: u32, size: Size) {
+    /// Sets or clears one condition-code bit and leaves every other flag alone.
+    pub(crate) fn set_condition(&mut self, mask: u16, set: bool) {
+        if set {
+            self.sr |= mask;
+        } else {
+            self.sr &= !mask;
+        }
+    }
+
+    pub(crate) fn set_logic_flags(&mut self, value: u32, size: Size) {
         let masked = value & size.mask();
         let negative = masked & size.sign_bit() != 0;
         let zero = masked == 0;
@@ -842,7 +938,7 @@ impl M68000 {
         self.set_ccr(false, false, zero, negative, extend);
     }
 
-    fn set_add_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
+    pub(crate) fn set_add_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
         let mask = size.mask();
         let destination = destination & mask;
         let source = source & mask;
@@ -862,14 +958,14 @@ impl M68000 {
         );
     }
 
-    fn set_sub_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
+    pub(crate) fn set_sub_flags(&mut self, destination: u32, source: u32, result: u32, size: Size) {
         let (carry, overflow, zero, negative) =
             Self::subtract_condition_codes(destination, source, result, size);
         self.set_ccr(carry, overflow, zero, negative, carry);
     }
 
     /// Sets flags for `CMP`, which is a subtraction that leaves `X` untouched.
-    fn set_cmp_flags(&mut self, destination: u32, source: u32, size: Size) {
+    pub(crate) fn set_cmp_flags(&mut self, destination: u32, source: u32, size: Size) {
         let mask = size.mask();
         let result = (destination & mask).wrapping_sub(source & mask) & mask;
         let (carry, overflow, zero, negative) =
@@ -893,7 +989,14 @@ impl M68000 {
         (borrow, overflow, result == 0, result & size.sign_bit() != 0)
     }
 
-    fn set_ccr(&mut self, carry: bool, overflow: bool, zero: bool, negative: bool, extend: bool) {
+    pub(crate) fn set_ccr(
+        &mut self,
+        carry: bool,
+        overflow: bool,
+        zero: bool,
+        negative: bool,
+        extend: bool,
+    ) {
         let mut ccr = self.sr & 0xFF00;
         if carry {
             ccr |= FLAG_C;
@@ -913,33 +1016,34 @@ impl M68000 {
         self.sr = ccr;
     }
 
-    fn flag(&self, flag: u16) -> bool {
+    pub(crate) fn flag(&self, flag: u16) -> bool {
         self.sr & flag != 0
     }
 
-    fn fetch_u16(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+    pub(crate) fn fetch_u16(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
         let value = bus.read16(self.pc)?;
         self.pc = self.pc.checked_add(2).ok_or(CpuError::AddressOverflow)?;
         Ok(value)
     }
 
-    fn fetch_u32(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
+    pub(crate) fn fetch_u32(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
         let high = u32::from(self.fetch_u16(bus)?);
         let low = u32::from(self.fetch_u16(bus)?);
         Ok((high << 16) | low)
     }
 
-    fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
+    pub(crate) fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
         let stack = self.a[7].checked_sub(4).ok_or(CpuError::StackOverflow)?;
         bus.write32(stack, value)?;
-        self.a[7] = stack;
+        self.set_a7(stack);
         Ok(())
     }
 
     fn pop_long(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
         let stack = self.a[7];
         let value = bus.read32(stack)?;
-        self.a[7] = stack.checked_add(4).ok_or(CpuError::StackOverflow)?;
+        let next = stack.checked_add(4).ok_or(CpuError::StackOverflow)?;
+        self.set_a7(next);
         Ok(value)
     }
 
@@ -955,7 +1059,10 @@ impl M68000 {
 
     fn ensure_even(&self, address: u32) -> Result<(), CpuError> {
         if address & 1 != 0 {
-            Err(CpuError::AddressError { address })
+            Err(CpuError::AddressError {
+                address,
+                access: AddressAccess::ProgramRead,
+            })
         } else {
             Ok(())
         }
@@ -970,7 +1077,9 @@ impl Default for M68000 {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask};
+    use super::{
+        AddressAccess, CpuError, M68000, Size, interrupt_level_deliverable, interrupt_priority_mask,
+    };
     use crate::bus::{BusError, MegadriveBus};
     use crate::trace::TraceError;
 
@@ -1102,25 +1211,34 @@ mod tests {
     }
 
     #[test]
-    fn absolute_word_and_pc_relative_forms_are_rejected_as_illegal() {
-        // These encodings are LEA/PEA, but not absolute-long: the old masks
-        // silently executed them with a 32-bit fetch. They must be errors.
-        for (bytes, opcode) in [
-            ([0x41, 0xF8], 0x41F8_u16), // LEA (abs).W,A0
-            ([0x48, 0x78], 0x4878),     // PEA (abs).W
-            ([0x41, 0xFA], 0x41FA),     // LEA (d16,PC),A0
-            ([0x48, 0x7A], 0x487A),     // PEA (d16,PC)
-        ] {
-            let (mut cpu, mut bus) = cpu_at_program(&bytes);
-            assert_eq!(
-                cpu.step(&mut bus),
-                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
-                "opcode 0x{opcode:04X} must not be executed as absolute-long"
-            );
-            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
-            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
-            assert_eq!(cpu.sr(), 0x2700);
-        }
+    fn absolute_word_and_pc_relative_control_forms_are_supported() {
+        // LEA (0x0300).W,A0; the absolute-short address sign-extends.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x41, 0xF8, 0x03, 0x00]);
+        cpu.step(&mut bus).expect("lea (abs).w");
+        assert_eq!(cpu.address_register(0), Some(0x0300));
+        assert_eq!(cpu.pc(), 0x204);
+
+        // PEA (0x0300).W pushes the absolute-short address.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x48, 0x78, 0x03, 0x00]);
+        cpu.step(&mut bus).expect("pea (abs).w");
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 4));
+        assert_eq!(
+            bus.read32(INITIAL_STACK - 4).expect("pushed address"),
+            0x0300
+        );
+
+        // LEA (d16,PC),A0: base 0x202 + 4 = 0x206.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x41, 0xFA, 0x00, 0x04]);
+        cpu.step(&mut bus).expect("lea (d16,pc)");
+        assert_eq!(cpu.address_register(0), Some(0x0206));
+
+        // PEA (d16,PC)
+        let (mut cpu, mut bus) = cpu_at_program(&[0x48, 0x7A, 0x00, 0x04]);
+        cpu.step(&mut bus).expect("pea (d16,pc)");
+        assert_eq!(
+            bus.read32(INITIAL_STACK - 4).expect("pushed address"),
+            0x0206
+        );
     }
 
     #[test]
@@ -1206,13 +1324,22 @@ mod tests {
     }
 
     #[test]
-    fn dbra_odd_target_is_an_address_error() {
-        // DBRA D0,-3 targets 0x201 after the two displacement bytes.
+    fn dbra_odd_target_delivers_an_address_error_exception() {
+        // DBRA D0,-3 targets 0x201 after the two displacement bytes. The ROM
+        // vector-3 entry is zero, so the exception handler target is 0.
         let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFD]);
         cpu.d[0] = 2;
+        assert!(cpu.step(&mut bus).is_ok());
+        assert_eq!(cpu.pc(), 0);
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 14));
+        assert_eq!(bus.read16(INITIAL_STACK - 14), Ok(0x2700));
+        assert_eq!(bus.read32(INITIAL_STACK - 12), Ok(0x204));
+        assert_eq!(bus.read32(INITIAL_STACK - 8), Ok(0x0000_0201));
+        assert_eq!(bus.read16(INITIAL_STACK - 4), Ok(0x51C8));
         assert_eq!(
-            cpu.step(&mut bus),
-            Err(CpuError::AddressError { address: 0x201 })
+            bus.read16(INITIAL_STACK - 2),
+            Ok(0x0016),
+            "function code: supervisor program read"
         );
     }
 
@@ -1230,7 +1357,8 @@ mod tests {
         assert_eq!(
             cpu.relative_target(1),
             Err(CpuError::AddressError {
-                address: 0xFFFF_FFFF
+                address: 0xFFFF_FFFF,
+                access: AddressAccess::ProgramRead,
             })
         );
     }
@@ -1331,15 +1459,16 @@ mod tests {
     #[test]
     fn interrupt_rejects_a_rom_stack() {
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
-        cpu.a[7] = 0x0000_0300;
-        cpu.sr = 0x0000;
+        cpu.set_sr(0x2000);
+        cpu.set_a7(0x0000_0300);
         assert_eq!(
             cpu.interrupt(6, 0x78, &mut bus),
             Err(CpuError::Bus(BusError::WriteProtected {
                 address: 0x0000_02FA
             }))
         );
-        assert_eq!(cpu.sr(), 0x0000, "a failed first push leaves SR untouched");
+        assert_eq!(cpu.sr(), 0x2000, "a failed push leaves SR untouched");
+        assert_eq!(cpu.address_register(7), Some(0x0000_0300));
         assert_eq!(cpu.pc(), 0x200);
     }
 
@@ -1352,11 +1481,11 @@ mod tests {
                 address: 0x0080_0000
             }))
         );
-        // The exception frame is pushed and supervisor mode entered before the
-        // vector fetch fails.
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
+        // The vector is validated before the frame is pushed, so a failed
+        // vector leaves the stack, PC and SR untouched.
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
         assert_eq!(cpu.pc(), 0x200);
-        assert_ne!(cpu.sr() & 0x2000, 0);
+        assert_eq!(cpu.sr(), 0x2700);
     }
 
     #[test]
@@ -1375,15 +1504,14 @@ mod tests {
         cpu.sr = 0x0000;
         assert_eq!(
             cpu.interrupt(6, 0x78, &mut bus),
-            Err(CpuError::AddressError { address: 0x301 })
+            Err(CpuError::AddressError {
+                address: 0x301,
+                access: AddressAccess::ProgramRead,
+            })
         );
         assert_eq!(cpu.pc(), 0x200);
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK - 6));
-        assert_eq!(
-            cpu.sr(),
-            0x2600,
-            "supervisor mode and the accepted IPM are applied before the jump"
-        );
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        assert_eq!(cpu.sr(), 0x0000, "a bad target leaves SR untouched");
     }
 
     #[test]
@@ -1514,16 +1642,12 @@ mod tests {
     }
 
     #[test]
-    fn trace_still_records_an_instruction_that_fails_after_the_fetch() {
+    fn trace_still_records_an_instruction_that_raises_the_illegal_exception() {
         let (mut cpu, mut bus) = cpu_at_program(&[0xFF, 0xFF]);
         cpu.enable_trace(4).expect("trace capacity 4");
-        assert_eq!(
-            cpu.step(&mut bus),
-            Err(CpuError::IllegalOpcode {
-                pc: 0x200,
-                opcode: 0xFFFF
-            })
-        );
+        let outcome = cpu.step(&mut bus).expect("illegal-instruction delivery");
+        assert_eq!(outcome.cycles, 34);
+        assert_eq!(cpu.pc(), 0, "vector 4 entry is zero in this ROM");
         let trace = cpu.trace().expect("trace enabled");
         assert_eq!(trace.len(), 1);
         let entry = trace.get(0).expect("recorded instruction");
@@ -1628,19 +1752,18 @@ mod tests {
     }
 
     #[test]
-    fn move_abs_word_load_encodings_are_illegal() {
-        // 0x..38 is source mode/register 111/000 (absolute-word), which is not in
-        // the subset; it must not be executed with a 32-bit address fetch.
+    fn move_abs_word_load_encodings_are_supported() {
+        // 0x..38 is source mode/register 111/000 (absolute-word). The address
+        // extension word selects 0x0300, which is zero-filled ROM.
         for opcode in [0x1038_u16, 0x1238, 0x2038, 0x2438, 0x3038, 0x3638] {
-            let (mut cpu, mut bus) = cpu_at_program(&opcode.to_be_bytes());
-            assert_eq!(
-                cpu.step(&mut bus),
-                Err(CpuError::IllegalOpcode { pc: 0x200, opcode }),
-                "opcode 0x{opcode:04X} must be an illegal absolute-word form"
-            );
-            assert_eq!(cpu.pc(), 0x202, "only the opcode word is fetched");
-            assert_eq!(cpu.sr(), 0x2700);
-            assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+            let mut program = opcode.to_be_bytes().to_vec();
+            program.extend_from_slice(&0x0300_u16.to_be_bytes());
+            let (mut cpu, mut bus) = cpu_at_program(&program);
+            cpu.step(&mut bus).expect("move (abs).w source");
+            assert_eq!(cpu.pc(), 0x204);
+            assert_eq!(cpu.sr(), 0x2704, "zero source sets Z and clears V/C");
+            let destination = usize::from((opcode >> 9) & 0x7);
+            assert_eq!(cpu.data_register(destination), Some(0));
         }
     }
 
@@ -1782,11 +1905,13 @@ mod tests {
         bus.write32(INITIAL_STACK + 2, 0x0000_0300)
             .expect("frame pc");
 
+        cpu.usp = INITIAL_STACK;
         cpu.step(&mut bus).expect("rte");
         assert_eq!(cpu.sr(), 0x0015, "user mode and CCR are restored verbatim");
         assert_eq!(cpu.sr() & 0x2000, 0, "RTE does not force supervisor mode");
         assert_eq!(cpu.pc(), 0x300);
-        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK + 6));
+        assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));
+        assert_eq!(cpu.ssp(), INITIAL_STACK + 6);
     }
 
     #[test]
@@ -1842,7 +1967,10 @@ mod tests {
             .expect("frame pc");
         assert_eq!(
             cpu.step(&mut bus),
-            Err(CpuError::AddressError { address: 0x401 })
+            Err(CpuError::AddressError {
+                address: 0x401,
+                access: AddressAccess::ProgramRead,
+            })
         );
         assert_eq!(cpu.sr(), 0x2700);
         assert_eq!(cpu.address_register(7), Some(INITIAL_STACK));

@@ -121,11 +121,11 @@ Features not yet demonstrated must stay `false` in capabilities.
 contract for a minimal 68000 + ROM/RAM + VDP-port machine with a deterministic
 interrupt scheduler:
 
-- 68000 reset vectors, a documented instruction subset, big-endian ROM/RAM bus.
+- 68000 reset vectors, the documented MC68000 instruction set, big-endian ROM/RAM bus.
 - VDP status/control ports and a 64 KiB VRAM window at `0xC00000..=0xC0000F`, with
   typed errors for PSG/Z80, controller writes and controller-window addresses other
   than the two mapped data-register reads, and other unmapped windows.
-- An instruction-quantum VBlank/HBlank interrupt scheduler whose pending requests
+- A master-cycle VBlank/HBlank interrupt scheduler whose pending requests
   are delivered through the 68000 interrupt-entry API only when the SR mask admits
   them (level 7 always; every other level strictly above the interrupt-priority
   mask), VBlank before HBlank, with `RTE` restoring the interrupted raw `SR` and PC.
@@ -139,15 +139,16 @@ interrupt scheduler:
 It does **not** yet satisfy a production Mega Drive backend: rendering, DMA, audio,
 Z80, the controller protocol beyond the TH-high 3-button data-register reads,
 mapper/SRAM and cycle accuracy remain absent. `RTE`, SR-mask
-interrupt gating and VDP VINT-pending/acknowledge status are implemented for the
-modelled slice, with the remaining limits documented in
-[Mega Drive 68000 slice](megadrive-slice.md): privilege is not enforced; only
-HBlank (level 4) and VBlank (level 6) sources are modelled, with level 7 a predicate
-rule rather than a wired source; no interrupt-timing equivalence is claimed; and VDP
-interrupt-enable/acknowledge logic is absent. Differential oracle evidence now
-exists for three synthetic ROMs (projected address streams, selected final state and
-negative controls); see
-[Oracle differential evidence](../research/oracle-differential-evidence.md). The VDP
+interrupt gating, privilege enforcement for the implemented system instructions and
+VDP VINT-pending/acknowledge status are implemented for the modelled slice, with the
+remaining limits documented in
+[Mega Drive 68000 slice](megadrive-slice.md): only HBlank (level 4) and VBlank
+(level 6) sources are modelled, with level 7 a predicate rule rather than a wired
+source; guest bus-error (2) and trace (9) delivery are absent; no interrupt-timing
+equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
+Differential oracle evidence now exists for eleven synthetic ROMs (projected address
+streams, per-instruction cycle costs, selected final state and negative controls);
+see [cycle differential evidence](../research/cpu-cycle-differential-evidence.md). The VDP
 port window and interrupt scheduler are partial slices, not a complete VDP or
 hardware-timed interrupt controller. Capabilities report rendering/audio and the
 generic `tracing` capability as `false`/absent; structured tracing is host-provided by

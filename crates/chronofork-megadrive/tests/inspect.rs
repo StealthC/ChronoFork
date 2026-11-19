@@ -11,10 +11,10 @@ use std::error::Error;
 
 use chronofork_core::hash_bytes;
 use chronofork_megadrive::{
-    BusView, CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, Cartridge, CpuView,
-    DEFAULT_INSTRUCTIONS_PER_LINE, InterruptLevel, InterruptScheduler, InterruptView, M68000,
-    MegadriveBus, MegadriveFactory, PendingInterruptView, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE,
-    ROM_END, SchedulerConfig, VDP_BASE, VDP_END, Vdp, VdpView, VideoStandard, demo_rom,
+    BusView, CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, Cartridge, CpuView, InterruptLevel,
+    InterruptScheduler, InterruptView, M68000, MegadriveBus, MegadriveFactory,
+    PendingInterruptView, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END, SchedulerConfig,
+    VDP_BASE, VDP_END, Vdp, VdpView, VideoStandard, demo_rom,
     vdp::{AUTO_INCREMENT_REGISTER, CONTROL_PORT_OFFSET, DATA_PORT_OFFSET},
 };
 
@@ -139,32 +139,34 @@ fn vdp_view_matches_direct_device_accessors() -> TestResult {
 fn interrupt_view_matches_scheduler_state() -> TestResult {
     let config = SchedulerConfig::ntsc();
     assert_eq!(
-        config.instructions_per_line(),
-        DEFAULT_INSTRUCTIONS_PER_LINE
+        config.master_cycles_per_line(),
+        chronofork_megadrive::cycles::MASTER_CYCLES_PER_LINE
     );
     let mut scheduler = InterruptScheduler::new(config);
 
     // One line raises HBlank, a second coalesces into it, and the active-region
     // end raises VBlank while HBlank stays pending.
-    let quantum = u64::from(config.instructions_per_line());
-    scheduler.advance(quantum)?;
-    scheduler.advance(quantum)?;
-    scheduler.advance(quantum * u64::from(config.active_lines() - 2))?;
+    let line = config.master_cycles_per_line();
+    scheduler.advance_master(line)?;
+    scheduler.advance_master(line)?;
+    scheduler.advance_master(line * u64::from(config.active_lines() - 2))?;
 
     let before = scheduler.snapshot_bytes();
     let view = InterruptView::new(&scheduler, 0x2700);
 
     assert_eq!(view.standard(), VideoStandard::Ntsc);
     assert_eq!(view.standard(), config.standard());
-    assert_eq!(view.instructions_per_line(), config.instructions_per_line());
     assert_eq!(view.lines_per_frame(), config.lines_per_frame());
     assert_eq!(view.active_lines(), config.active_lines());
     assert_eq!(view.ticks(), scheduler.ticks());
     assert_eq!(view.frame(), scheduler.frame());
     assert_eq!(view.line(), scheduler.line_in_frame());
-    assert_eq!(view.quantum(), scheduler.quantum_in_line());
+    assert_eq!(
+        view.master_cycle_in_line(),
+        scheduler.master_cycle_in_line()
+    );
     assert_eq!(view.line(), config.active_lines());
-    assert_eq!(view.quantum(), 0);
+    assert_eq!(view.master_cycle_in_line(), 0);
 
     // Pending requests equal the scheduler's, in delivery-priority order.
     assert_eq!(view.pending().len(), scheduler.pending_len());
@@ -176,10 +178,10 @@ fn interrupt_view_matches_scheduler_state() -> TestResult {
     assert_eq!(view.pending()[0].level(), InterruptLevel::VBlank);
     assert_eq!(
         view.pending()[0].issued_tick(),
-        quantum * u64::from(config.active_lines())
+        line * u64::from(config.active_lines())
     );
     assert_eq!(view.pending()[1].level(), InterruptLevel::HBlank);
-    assert_eq!(view.pending()[1].issued_tick(), quantum);
+    assert_eq!(view.pending()[1].issued_tick(), line);
 
     // Per-level counters equal the scheduler accessors, in ALL order.
     for counter in view.counters() {

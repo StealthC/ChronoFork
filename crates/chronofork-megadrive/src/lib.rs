@@ -1,14 +1,14 @@
 //! Minimal deterministic Sega Mega Drive / Genesis backend slice.
 //!
-//! **Scope:** 68000 reset vectors, a documented instruction subset (including
-//! `RTE` and `MOVE.W #imm,SR`), ROM + 64 KiB work RAM, the VDP
+//! **Scope:** 68000 reset vectors, the documented MC68000 instruction set
+//! (including `RTE` and `MOVE.W #imm,SR`), ROM + 64 KiB work RAM, the VDP
 //! status/control/VRAM port window with a derived VINT-pending status bit, a
 //! per-step 3-button controller data-register subset for ports 1 and 2, a
-//! deterministic instruction-quantum VBlank/HBlank interrupt scheduler whose
+//! deterministic master-cycle VBlank/HBlank interrupt scheduler whose
 //! delivery honours the 68000 `SR` interrupt-priority mask (level 7 always,
 //! otherwise strictly above the mask), a modelled cartridge (header, region,
 //! Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register),
-//! versioned v3 snapshots and session integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
+//! versioned v4 snapshots and session integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
 //! bounded, execution-cross-checked 68000-subset disassembler are available
 //! without changing canonical state. **Not implemented:** rendering, audio, Z80,
 //! DMA, TH-latched and 6-button controller protocols (A/Start are not readable),
@@ -22,6 +22,7 @@ pub mod backend;
 pub mod bus;
 pub mod cartridge;
 pub mod cpu;
+pub mod cycles;
 mod debug;
 pub mod disasm;
 pub mod inspect;
@@ -45,7 +46,12 @@ pub use cartridge::{
     MAPPER_REGISTER_END, MAX_IMAGE_SIZE, Region, SRAM_BASE, SRAM_END, SRAM_SIZE, SramSpec,
     TMSS_REGISTER_BASE, TMSS_REGISTER_END, Tmss, TmssModel, VERSION_REGISTER,
 };
-pub use cpu::{CpuError, M68000};
+pub use cpu::{
+    AddressAccess, CpuError, Ea, ExceptionFrame, InstructionOutcome, M68000, Size,
+    VECTOR_ADDRESS_ERROR, VECTOR_BUS_ERROR, VECTOR_CHK, VECTOR_ILLEGAL, VECTOR_IRQ_BASE,
+    VECTOR_PRIVILEGE_VIOLATION, VECTOR_RESET, VECTOR_TRACE, VECTOR_TRAP_BASE, VECTOR_TRAPV,
+    VECTOR_ZERO_DIVIDE, base_cycles, decode_ea, ea_address, ea_cycles, read_ea, write_ea,
+};
 pub use disasm::{
     DisasmError, DisasmInstruction, DisasmMemory, MAX_DISASSEMBLY_COUNT, RomMemory, WindowMemory,
     disassemble,
@@ -55,8 +61,8 @@ pub use inspect::{
     PendingInterruptView, VdpView,
 };
 pub use interrupts::{
-    DEFAULT_INSTRUCTIONS_PER_LINE, HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler,
-    PendingInterrupt, SchedulerConfig, SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
+    HBLANK_INTERRUPT_LEVEL, InterruptLevel, InterruptScheduler, PendingInterrupt, SchedulerConfig,
+    SchedulerError, VBLANK_INTERRUPT_LEVEL, VideoStandard,
 };
 pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};

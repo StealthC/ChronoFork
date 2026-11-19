@@ -2,9 +2,10 @@
 
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
-  VINT-pending/acknowledge + bounded debug instruction trace, with passing
-  three-ROM oracle differential evidence including a default-quantum masked-ROM
-  control); not a complete emulator. Controller-port data-register reads for real-hardware
+  VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
+  timeline, with eleven-ROM oracle differential evidence: address projections,
+  per-instruction cycle costs and selected final states all match 11/11); not a
+  complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
   the canonical state, demos and M1 evidence unchanged. A/Start, TH/6-button/Start
@@ -13,12 +14,18 @@
   CPU/VDP/interrupt/bus inspectors) is implemented and independently verified for this
   slice (t5 PASS, 2026-11-16). M8 phase 8.1 adds a modelled cartridge — header/region/
   checksum, Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register — with
-  payload/state/config v3 (implemented, reviewed and verified 2026-11-17; booting a
-  commercial title is phase 8.6 evidence, not claimed here).
-- **Next:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
-  is the milestone that completes this slice (full 68000/Z80, VDP rendering/DMA/timing,
-  YM2612/PSG audio, cartridge, controllers and capture). This page remains the canonical
-  capability/limitation home; it is updated as each phase lands, never in advance.
+  payload/state/config v3 (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`; implemented, reviewed and
+  verified 2026-11-17). Phase 8.2 moves the identity to v4
+  (`CFMD68K4`/`CFMDSTATE4`/`CFMDCONF4`) with the master-cycle timeline and extended CPU
+  snapshot fields; booting a commercial title is phase 8.6 evidence, not claimed here.
+- **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
+  is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
+  with 11/11 address, per-instruction cycle and final-state differential evidence) is
+  implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
+  through the phase-8.2 PR (issue #15). M8 then completes the
+  remaining slice (Z80, VDP rendering/DMA/timing, YM2612/PSG audio, cartridge,
+  controllers and capture). This page remains the canonical capability/limitation home;
+  it is updated as each phase lands, never in advance.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -65,43 +72,38 @@ fixtures are independently authored synthetic data.
   Debugger reads (`read_memory`) are side-effect free: they use `peek8`, which
   rejects the side-effecting VDP window instead of changing device state.
 
-### 68000 subset
+### 68000 instruction set
 
-Implemented:
+The Phase 8.2 implementation covers the documented MC68000 instruction groups:
 
-| Instruction | Forms |
+| Group | Instructions |
 |---|---|
-| `MOVEQ` | `#imm,Dn` |
-| `MOVE` | `B/W/L` between `Dn`, `#imm` and absolute-long operands |
-| `ADD` / `SUB` | `B/W/L` between data registers |
-| `ADDQ` / `SUBQ` | word/long, data-register destination |
-| `CMP` | `B/W/L`, data-register operands; `X` preserved |
-| `TST` | `B/W/L`, data-register operand |
-| `CLR` | `W/L`, data-register destination |
-| `LEA` | `(abs).L,An` |
-| `PEA` | `(abs).L` |
-| `NOP` | — |
-| `BRA`, `BSR`, `BEQ`, `BNE`, `BCC`, `BCS`, `BMI`, `BPL` | 8-bit displacement |
-| `DBRA` | `Dn,disp16` |
-| `JMP`, `JSR` | absolute-long operand |
-| `RTS` | — |
-| `RTE` | `0x4E73`; restores raw `SR` and PC from the six-byte frame, advances A7 |
-| `MOVE.W #imm,SR` | `0x46FC`; replaces raw `SR`, including the interrupt mask |
-| Interrupt exception entry | `M68000::interrupt(level, vector_address)`: pushes raw `SR` + PC, sets `S`, preserves CCR, loads the accepted level into the IPM |
+| Data movement | `MOVE`/`MOVEA` (all documented source/destination modes), `MOVEQ`, `MOVEM`, `MOVEP`, `LEA`, `PEA`, `CLR`, `TST`, `EXT`, `SWAP`, `EXG` |
+| Arithmetic | `ADD`/`ADDA`/`ADDQ`/`ADDI`/`ADDX`, `SUB`/`SUBA`/`SUBQ`/`SUBI`/`SUBX`, `CMP`/`CMPA`/`CMPI`/`CMPM`, `NEG`, `NEGX`, `MULU`, `MULS`, `DIVU`, `DIVS` |
+| Logic | `AND`/`ANDI`, `OR`/`ORI`, `EOR`/`EORI`, `NOT` |
+| Shifts/rotates | `ASL`, `ASR`, `LSL`, `LSR`, `ROL`, `ROR`, `ROXL`, `ROXR` in register and memory forms |
+| BCD | `ABCD`, `SBCD`, `NBCD` |
+| Bit operations | `BTST`, `BCHG`, `BCLR`, `BSET` (static and dynamic bit number), `TAS` (register and memory) |
+| Control flow | `BRA`, `BSR` and every `Bcc` condition in 8- and 16-bit displacement forms, `DBcc`, `Scc`, `JMP`, `JSR`, `RTS`, `NOP`, `RTR` |
+| System/privileged | `RTE`, `TRAP`, `TRAPV`, `CHK`, `ILLEGAL`, `LINK`, `UNLK`, `MOVE` to `SR`/`CCR` and from `SR` (MC68000), `MOVE` from `CCR` (68010 extension; see below), `MOVE` to/from `USP`, `ORI`/`ANDI`/`EORI` to `CCR`/`SR`, `STOP`, `RESET`, interrupt entry |
 
-Absolute-long `MOVE` loads use the real 68000 source mode/register `111/001`
-(`0x1039`/`0x2039`/`0x3039`) and fetch a 4-byte address. The absolute-*word* source
-forms (`0x1038`/`0x2038`/`0x3038`) are not in this subset and return the typed
-`IllegalOpcode` error instead of being executed with a 32-bit fetch. An earlier
-decoder accepted the `0x..38` load forms; EPIC-0002 E2-13 repaired it and regression
-tests cover byte/word/long `(abs).L,Dn` loads, rejection of the `0x..38` forms and
-the `Dn,(abs).L` store encodings.
+Every documented MC68000 instruction reports the instruction-boundary cycle cost
+used by the oracle-backed timing table (see the timing and differential sections
+below); effective-address cost is added exactly once per operand. One oracle-model
+difference is recorded rather than hidden: the pinned oracle charges a flat 6
+cycles for `MOVE from SR` to memory instead of a write-EA table, and ChronoFork
+matches the oracle for the differential. `MOVE to CCR` (`0x44C0`) is a documented
+MC68000 instruction and is exercised by the differential ROM; only `MOVE from CCR`
+(`0x42C0`) is the 68010 addition. `MOVE from CCR` is implemented for compatibility
+but is outside the MC68000 timing table and the differential corpus. Unrecognised
+and reserved encodings raise the guest illegal-instruction exception (vector 4)
+with the documented six-byte frame rather than a host error.
 
 Reset loads the supervisor stack pointer from address `0x000000` and the program
 counter from `0x000004`; `SR = 0x2700`, all general registers clear.
 
-Flags implemented: `N`, `Z`, `V`, `C`, `X` for the listed arithmetic/logic
-operations. `SR` upper bits are preserved.
+Flags implemented: `N`, `Z`, `V`, `C`, `X` for the documented arithmetic, logic,
+shift, BCD and bit operations. `SR` upper bits are preserved.
 
 The interrupt entry API pushes a word raw `SR` and a long return `PC` (six bytes),
 sets the supervisor bit, preserves the CCR, loads the accepted interrupt level into
@@ -112,10 +114,12 @@ push leaves `SR`/`PC` untouched, while the six-byte frame can already be pushed
 before a later vector or target fault). `RTE` validates the complete frame before
 changing canonical state, restores the exact raw `SR` (IPM, `S`, CCR), restores the
 PC and advances A7 by six. `MOVE.W #imm,SR` (`0x46FC`) replaces the raw `SR` so a
-program can change its mask. On real hardware `MOVE.W #imm,SR`, `RTE`, `STOP` and
-other privileged operations require supervisor mode; **privilege is not enforced in
-this slice**. `STOP`, `ORI`/`ANDI`/`EORI` to `SR` and the other exception groups are
-not implemented.
+program can change its mask. Privileged operations (`MOVE` to `SR`, `STOP`, `RESET`,
+`RTE`, `MOVE` to/from `USP`) raise the privilege-violation exception (vector 8) in
+user mode. Guest exception vectors actually delivered are address error (3), illegal
+instruction (4), zero divide (5), `CHK` (6), `TRAPV` (7), privilege violation (8),
+autovector levels 4 and 6 (28/30) and `TRAP #n` (32+n); vector 1 is the reset
+vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 
 ### VDP status/control/VRAM slice
 
@@ -149,13 +153,17 @@ FIFO/access timing and H/V counters.
 
 ### Deterministic interrupt scheduler
 
-- Instruction-quantum model: one scheduler tick equals one completed 68000
-  instruction, not one CPU cycle. This is explicitly **not** cycle-accurate
-  hardware timing.
-- NTSC constants (262 lines/frame, 224 active) and PAL constants (313/240), with a
-  configurable instruction quantum per scanline (default 64).
-- HBlank is requested when each active scanline completes; VBlank when vertical
-  blanking begins. Blanking lines are quiet.
+- Master-cycle model: canonical time is the master-clock cycle. Each executed
+  instruction advances the backend by its 68000 cycle cost times seven, and one
+  scanline is exactly 3420 master cycles (`MASTER_CYCLES_PER_LINE`). This is
+  explicitly **not** fully cycle-accurate hardware timing: functional prefetch,
+  bus contention, DMA stalls and interrupt latency are not modelled. The former M3
+  instruction-quantum model is superseded.
+- NTSC constants (262 lines/frame, 224 active) and PAL constants (313/240), with
+  the fixed 3420-master-cycle scanline; `SchedulerConfig::new(video)/ntsc()/pal()`
+  carries only the video standard.
+- HBlank is requested when each active scanline completes at a master-cycle
+  boundary; VBlank when vertical blanking begins. Blanking lines are quiet.
 - At most one request per level is retained; repeated requests coalesce with
   diagnostic counters, and a masked request keeps its original issue tick. Delivery
   order is VBlank (level 6) before HBlank (level 4).
@@ -169,16 +177,17 @@ FIFO/access timing and H/V counters.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM and the scheduler configuration into `config_hash` (`CFMDCONF2`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF4`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K2`, payload version **2**, followed by the
-  68000 register file, `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete VDP
-  snapshot and the complete scheduler snapshot. Version 1 payloads are rejected
-  rather than reinterpreted.
-- The state hash (`CFMDSTATE2`) covers the 68000 state, tick, RAM, VDP snapshot and
-  scheduler snapshot, so pending interrupts and VRAM changes are part of
-  checkpoint identity.
+- Snapshot payload magic is `CFMD68K4`, payload version **4**, followed by the
+  68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
+  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete VDP snapshot
+  and the complete master-cycle scheduler snapshot. Versions 1-3 are rejected rather
+  than reinterpreted.
+- The state hash (`CFMDSTATE4`) covers the extended 68000 state, tick, RAM, VDP
+  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors and
+  VRAM changes are part of checkpoint identity.
 - Restore validates backend identity, backend version, envelope version, config
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
   recomputed state hash. The replacement bus and scheduler are built before they
@@ -228,22 +237,24 @@ FIFO/access timing and H/V counters.
 - Debug data only: enabling the trace leaves snapshot payload bytes, versions, state
   hashes and configuration hashes identical, and restore does not rewind the trace.
 - CLI `megadrive trace` runs an instruction budget or stops before `--stop-pc`,
-  writes TSV `index<TAB>pc_hex<TAB>opcode_hex` and a deterministic key=value final
-  state (executed, tick, quantum, video, halted, D0–D7, A0–A7, PC, raw SR,
-  RAM base/length/hex), and honours `--instructions-per-line`, `--video`,
-  `--trace-capacity`, `--trace-out` (default stdout) and required `--state-out`.
-  The default quantum of 64 is unchanged.
+  writes TSV `index<TAB>pc_hex<TAB>opcode_hex` (and, with `--cycles`, a fourth
+  decimal 68000-cycle field) and a deterministic key=value final state (executed,
+  tick/master_cycles, cpu_cycles, USP/SSP, video, halted, D0–D7, A0–A7, PC, raw
+  SR, RAM base/length/hex), and honours `--video`, `--trace-capacity`, `--out`/
+  `--trace-out` (default stdout) and required `--state-out`. The instruction-quantum
+  flag is removed.
 
 ### Oracle differential method and limits
 
 The reproducible harness `scripts/oracle-diff.py` compares the minimal core against
-a pinned Exodus headless oracle for three independently authored synthetic ROMs; the
-full numbers, commands and limitations are in
-[Oracle differential instruction-trace evidence](../research/oracle-differential-evidence.md).
+a pinned Exodus headless oracle for eleven independently authored synthetic ROMs; the
+full numbers, commands and limitations are in the
+[68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
 - Both sides produce an instruction trace; the harness projects each to the ordered
-  sequence of executed instruction **addresses** before a marker self-loop. The
-  oracle's `cycle` and `time` columns are ignored. Because the oracle renders
+  sequence of executed instruction **addresses** before a marker self-loop and
+  compares the per-instruction 68000 cycle cost (`cycle` column delta versus
+  ChronoFork's fourth trace field). Because the oracle renders
   opcodes as mnemonic+args while ChronoFork stores raw words, every ChronoFork
   projected opcode is checked against the ROM word at that address instead of being
   compared directly to the oracle column.
@@ -254,33 +265,24 @@ full numbers, commands and limitations are in
 - Final state is compared through the oracle's MCP `cpu.registers` and
   `cpu.read_memory` calls: D0–D7, A0–A7, PC, effective SR fields (IPM/S/CCR) and 64
   work-RAM bytes at `0xFF0000`. Raw SR words differ and are not compared.
-- The harness records the per-ROM scheduler quantum read back from the state file
-  and, for `rom_masked`, checks the masked gating control.
-- Controlled conditions: `rom_alu` and `rom_mem_vdp` use an explicit
-  `--instructions-per-line 1000000` to keep their short measured windows
-  interrupt-free. `rom_masked` **omits** the flag, runs at the CLI default quantum of
-  64, contains no SR-writing opcode (so both sides stay at mask 7), executes 155
-  instructions and crosses HBlank boundaries at ticks 64 and 128 with no handler
-  entry. This masked pass is negative evidence for gating, not an interrupt-delivery
-  comparison. Every ROM initialises the compared data/address registers it uses and
-  the reset vector sets the same stack pointer, because the oracle's reset D/A
-  values are undefined; VDP control/data-port writes are executed but VDP data-port
-  reads are excluded because oracle prefetch differs from this VDP model.
-- Current result: **PASS 3/3** (3/3 trace, 3/3 final state, 3/3 negative controls,
-  3/3 scheduler controls, exit 0). `rom_alu`: 2375 oracle total / 99 projected,
-  99/99 ChronoFork, projection SHA-256 `2b6f191c…` on both sides, negative control
-  index 49. `rom_mem_vdp`: 2363 / 51, 51/51, `ba4f3948…`, negative control index 25.
-  `rom_masked`: 2388 / 155, 155/155, `02891e15…`, negative control index 77; quantum
-  64 (CLI default, flag omitted), SR mask 7 on both sides, two HBlank boundaries
-  crossed and zero handler entries.
-- History: the pre-repair run passed `rom_alu` but `rom_mem_vdp` diverged at
-  projected index 28 (`0x00027A`, opcode `0x2239`, `MOVE.L $00FF0020,D1`) because
-  the core decoded the absolute-word (`0x..38`) form for absolute-long loads. The
-  real encoding is `0x..39`; E2-13 repaired the decoder and the post-repair run is
-  current evidence. The pre-repair artifacts are preserved under ignored
-  `.research/evidence/before-repair/`. The earlier canonical two-ROM Phase-10 run at
-  the explicit 1,000,000-instruction quantum is preserved unchanged under ignored
-  `.research/evidence/before-e2-15/` as controlled-condition history.
+- Phase 8.2 compares the master-cycle timeline: the oracle's accumulated `cycle`
+  column difference per instruction is checked against ChronoFork's fourth trace
+  field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
+  and the oracle `time` column are not compared. M3's per-ROM instruction quantum
+  and masked-boundary control are superseded.
+- The eleven synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX, system/status-register and bit/DBcc
+  fixtures under `scripts/fixtures/`. The regenerated repair run passes: address projections
+  11/11, per-instruction cycle comparisons 11/11, selected final states 11/11, and
+  address/cycle/final-state negative controls 11/11; the harness exits 0. No
+  divergence remains in the compared observables and no expectation was edited to
+  obtain the pass. Full numbers, commands and the pinned
+  oracle revision `ec005615…` are in the
+  [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
+- History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
+  remains recorded in the historical
+  [oracle differential evidence](../research/oracle-differential-evidence.md); the
+  M3 quantum/masked-boundary results there are marked superseded for timing.
 
 **This is not cycle, interrupt-timing or interrupt-delivery equivalence.** The
 masked-ROM pass shows that no handler executes while the SR mask is 7 and that the
@@ -291,19 +293,29 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 ### Known limitations of the integration
 
-- **Privilege is not enforced.** `MOVE.W #imm,SR` and `RTE` execute in either mode;
-  `STOP`, `ORI`/`ANDI`/`EORI` to `SR` and separate user/supervisor stack pointers
-  are absent.
+- **Privilege is enforced for the implemented system instructions.** `MOVE` to
+  `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
+  the exception framework provides vectors 3-8/24-31/32+n, short frames and the
+  documented 14-byte address-error frame. The documented MC68000 instruction set
+  is implemented; guest bus-error (vector 2) and trace (vector 9) delivery,
+  automatic trace mode and the remaining exception-group edge cases are absent.
 - **Only VBlank (level 6) and HBlank (level 4) sources are modelled.** The "level 7
   is always deliverable" branch is a tested predicate rule in the shared
   68000/scheduler API, not a wired level-7 interrupt source. Other exception groups
-  (timers, Z80, address/bus errors as 68000 exceptions, `TRAP`, etc.) are absent;
-  unsupported instructions and bus faults surface as typed Rust errors, not 68000
-  exception vectors.
+  (timers, Z80, bus-error recovery and trace) are absent. Unmapped and
+  write-protected guest data accesses take the guest address-error exception
+  (vector 3) with the documented 14-byte frame and function code; odd/misaligned EA
+  accesses, unrecognised/reserved encodings and the implemented
+  `TRAP`/`TRAPV`/`CHK`/`ILLEGAL` forms also use 68000 vectors. Host errors are
+  reserved for host-level failures (a frame or vector fetch that cannot complete,
+  stack/address overflow, trace capacity), not for guest data accesses. Instruction
+  and extension-word fetches are not converted: an unmapped or protected fetch
+  remains a typed host bus error, which is the declared guest bus-error (vector 2)
+  residual, distinct from the data accesses that take vector 3.
 - **No interrupt-timing equivalence is claimed.** Delivery happens at instruction
-  boundaries in the instruction-quantum model (one instruction equals one tick), at
-  most one exception per boundary; the oracle differential evidence does not compare
-  delivery order, latency, acknowledge semantics, vector fetch or handler execution.
+  boundaries on the master-cycle timeline (cycle cost added at the boundary), at
+  most one exception per boundary; the oracle differential does not compare delivery
+  order, latency, acknowledge semantics, vector fetch or handler execution.
 - **VINT pending/acknowledge semantics are minimal.** Status bit 7 is driven only by
   the scheduler's pending VBlank request. VDP interrupt-enable registers, VDP-side
   acknowledge logic, controller-port interrupt acknowledge and other VDP interrupt
@@ -313,11 +325,12 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 - **Pending requests are one per level.** A masked request is retained with its
   original issue tick and repeated requests of the same level coalesce (diagnostic
   counters record coalescing); there is no interrupt queue.
-- Reset CCR/X differs before ROM arithmetic: the oracle powers on with SR `0x7FFF`
-  (CCR `0x1F`, `X=1`), ChronoFork resets to `0x2700` (CCR `0`), and `MOVE` preserves
-  `X`. A MOVE-only differential window can therefore differ in `X` while
-  `N`/`Z`/`V`/`C` match; the harness ROMs clear `X` with arithmetic, so their
-  recorded final effective-SR equality remains valid.
+- Reset CCR/X is architecturally undefined: the oracle powers on with `X=1` and
+  unused raw-SR bits set (raw `SR 0x7FE0`), while ChronoFork resets to raw `SR
+  0x2700` (CCR `0`). Effective fields are compared and the harness ROMs clear `X`
+  explicitly with `ADD.B D0,D0` before the measured section, so an unwritten reset
+  flag cannot masquerade as a state divergence. Raw `SR` words are still not
+  compared.
 
 ### Tests
 
@@ -370,10 +383,10 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 CLI integration tests cover deterministic trace and state files across two runs,
 `--stop-pc`, stdout trace mode, a zero instruction budget, option validation, help
-text, the default scheduler quantum staying 64 and never being hidden, explicit
-quantum recording, and deterministic `megadrive demo` output including masked
-HBlank/VBlank retention, VINT status, mask lowering, handler IPM, `RTE` restoration
-and no nested HBlank handler. The `tas_hardware.rs` CLI process target (13 tests) covers
+text, the master-cycle timeline and removed instruction-quantum flag, and
+deterministic `megadrive demo` output including masked HBlank/VBlank retention,
+VINT status, mask lowering, handler IPM, `RTE` restoration and no nested HBlank
+handler. The `tas_hardware.rs` CLI process target (13 tests) covers
 hardware record/play/verify/edit/studio with `--rom`, two-controller v2 input, the
 synthetic-default regression and the typed ROM/backend errors. `cargo test --workspace`
 is the source of truth for the current count.
@@ -436,13 +449,16 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State.** Payload v3 (`CFMD68K3`), state hash v3 (`CFMDSTATE3`) and configuration hash
-  v3 (`CFMDCONF3`). The snapshot adds the seven mapper banks, the SRAM control byte, 64 KiB
-  SRAM and the TMSS model/lock latch; v1 and v2 payloads are rejected, a payload carrying
-  another TMSS model is rejected even when its hash was recomputed, and a rejected restore
-  leaves the machine untouched. The configuration hash covers the ROM SHA-256, video
-  standard, TMSS model, a mapper/SRAM feature tag and the instruction quantum; SRAM bytes
-  are state and never configuration.
+- **State (current, after phase 8.2).** Payload v4 (`CFMD68K4`), state hash v4
+  (`CFMDSTATE4`) and configuration hash v4 (`CFMDCONF4`). Phase 8.1 used v3
+  (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`); phase 8.2 moved the identity to v4 for the
+  master-cycle timeline and extended 68000/scheduler state. The snapshot adds the seven
+  mapper banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch and the
+  extended 68000/scheduler state; v1-v3 payloads are rejected, a payload carrying another
+  TMSS model is rejected even when its hash was recomputed, and a rejected restore leaves
+  the machine untouched. The configuration hash
+  covers the ROM SHA-256, video standard, TMSS model and a mapper/SRAM feature tag; SRAM
+  bytes are state and never configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
   and `tmss.locked` pseudo-registers.
 - **CLI.** `chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>]
@@ -459,8 +475,9 @@ window to it.
 
 - VDP rendering, planes, sprites, scrolling, CRAM/VSRAM, DMA and raster timing.
 - YM2612, PSG or audio.
-- Z80, bus arbitration, timer/other interrupt sources, controller-port interrupt
-  acknowledge, other 68000 exception groups and privilege enforcement.
+- Z80, bus arbitration, timer/other interrupt sources and controller-port interrupt
+  acknowledge. Guest bus-error (vector 2) and trace (vector 9) exception delivery are
+  not implemented; privileges are enforced for the implemented system instructions.
 - Controller input beyond the TH-high 3-button subset: A and Start, the TH latch/direction
   register and TH-low phase, 6-button pad (X/Y/Z/Mode), controller timing/interrupts, port 3,
   and analog/keyboard hardware. The implemented data-register reads are described above and
@@ -468,11 +485,17 @@ window to it.
 - Cartridge mapper variants beyond the Sega banking above (interleaved dumps, 32X/Pico
   hardware, images above the 64 MiB mapper ceiling) and SRAM banking schemes other than the
   64 KiB window.
-- 68000 prefetch, bus-cycle timing, separate user/supervisor stacks, most
-  addressing modes and most instructions.
-- Cycle accuracy. One executed instruction equals one ChronoFork tick in this
-  slice; the scheduler maps instruction quanta to scanlines with configurable
-  constants. This is deterministic but not hardware timing.
+- 68000 prefetch, bus-cycle timing, bus contention, DMA stalls and interrupt
+  latency. The instruction set and documented addressing modes are implemented, and
+  the register file carries separate user/supervisor stacks.
+- The Mega Drive TAS read-modify-write write-back quirk (some consoles suppress the
+  write-back phase) is a bus/hardware behaviour, not a 68000-core behaviour; the
+  core performs the documented write. The oracle fixture therefore exercises the
+  TAS register forms and the memory write is covered by unit tests.
+- Hardware cycle accuracy. Each instruction advances the master-cycle timeline by
+  its documented 68000 cycle cost times seven; cost is added at the instruction
+  boundary rather than distributed across internal microcycles. This is
+  deterministic instruction-level timing, not a bus-cycle model.
 - A ROM database, region-mismatch handling beyond the derived standard and its explicit
   override, or any commercial-ROM boot. Header/checksum/region parsing and the Sega mapper
   are implemented; the `megadrive trace` and TAS `--rom` commands accept an explicitly
@@ -480,14 +503,15 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond three synthetic ROMs, positive differential
+- Differential evidence beyond the eleven synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about
   interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  timing or game compatibility. The masked-ROM run is negative gating evidence
-  only.
+  full-hardware timing or game compatibility. The 11-ROM run matches instruction
+  addresses, per-instruction cycle costs and selected final state; the masked-ROM
+  run is negative gating evidence only.
 
-Unsupported opcodes and port accesses return errors; they are never silently
-skipped.
+Unrecognised and reserved opcodes raise the guest illegal-instruction exception;
+unmapped port accesses return typed errors. Neither is silently skipped.
 
 ## CLI demo
 
@@ -496,44 +520,45 @@ cargo run -p chronofork-cli -- megadrive demo
 ```
 
 The demo executes `1 + 2`, programs VDP register `0x0F` (auto-increment 2), writes
-and reads back VRAM word `0x1234`, and captures the VDP status. With the default
-quantum 64 and the reset mask 7 it shows an HBlank request pending at tick 64 with
-no handler at tick 65, then demonstrates snapshot/fork/restore with the pending
-request preserved. At a shorter demonstration quantum it shows a masked VBlank at
-tick 896 with VDP VBlank and VINT-pending status bits set and restored from a
-checkpoint. Using the independently authored interrupt ROM it shows
-`MOVE.W #$2300,SR` lowering the mask to 3 at tick 8, the retained HBlank delivered
-at tick 9 with the handler at IPM 4, and `RTE` at tick 11 returning to PC
-`0x000214` with raw `SR` `0x2300` (mask and CCR restored). VBlank is then entered at
-IPM 6 before the pending HBlank, so no HBlank handler nests before `RTE` restores the
-program mask; the checkpoint preserves the pending VBlank/VINT state. It prints
-`chronofork megadrive demo: PASS`.
+and reads back VRAM word `0x1234`, and captures the VDP status. On the master-cycle
+timeline with the reset mask 7 it shows the first HBlank request pending at tick
+3472 with no handler, then demonstrates snapshot/fork/restore with the pending
+request preserved. A mask-7 interrupt ROM reaches masked VBlank with the VDP
+VBlank/VINT-pending status bits set and restored from a checkpoint. The mask-3
+interrupt ROM delays past two scanlines, lowers the mask at tick 7378, delivers the
+retained HBlank at tick 7406 with the handler at IPM 4, and `RTE` at tick 7574
+returns to PC `0x000210` with raw `SR` `0x2300` (mask and CCR restored). VBlank is
+then entered at IPM 6 before the pending HBlank, so no HBlank handler nests before
+`RTE` restores the program mask; the checkpoint preserves the pending VBlank/VINT
+state. It prints `chronofork megadrive demo: PASS`.
+
+Timing note: the round-4 system-timing correction moved the interrupt ROM's
+retained-HBlank line from tick 3472 to tick 3458; the demo's first masked-HBlank
+line remains 3472.
 
 ## CLI instruction trace
 
 ```sh
 cargo run -p chronofork-cli -- megadrive trace \
   --rom <rom-path> --state-out <state-path> \
-  --instructions 10000 --stop-pc 0x352 \
-  --instructions-per-line 1000000 --ram-bytes 64 \
-  --trace-out <trace-path>
+  --instructions 10000 --stop-pc 0x352 --cycles \
+  --ram-bytes 64 --trace-out <trace-path>
 ```
 
 `megadrive trace` is the evidence-producing CLI surface. It runs a decimal
 instruction budget (or stops before `--stop-pc`), records a bounded ring of
-executed `index`/`pc`/`opcode` records and writes the TSV trace plus a deterministic
-key=value final state. `--trace-capacity` bounds the ring (default: the instruction
-budget, capped); `--video` selects NTSC/PAL scheduler constants; `--trace-out`
-defaults to stdout; `--state-out` is required. The trace is debug data: it does not
-change snapshots, state hashes or the payload version.
+executed `index`/`pc`/`opcode` records (plus a fourth 68000-cycle field with
+`--cycles`) and writes the TSV trace plus a deterministic key=value final state.
+`--trace-capacity` bounds the ring (default: the instruction budget, capped);
+`--video` selects NTSC/PAL timeline constants; `--trace-out` defaults to stdout;
+`--state-out` is required. The trace is debug data: it does not change snapshots,
+state hashes or the payload version.
 
 Interrupt delivery is gated by the 68000 SR interrupt-priority mask, so a
-differential window that must be interrupt-free can either use a program that never
-writes `SR` (the reset mask 7 suppresses VDP levels) or pass a large explicit
-`--instructions-per-line` (for example `1000000`). The default remains 64 and is
-never changed implicitly; the CLI records the effective quantum in the state file
-and prints a note on stderr when the requested instruction window exceeds the
-configured quantum, describing the instruction-quantum model and SR-mask gating.
+differential window that must be interrupt-free uses a program that never writes
+`SR` (the reset mask 7 suppresses VDP levels). There is no instruction-quantum flag:
+canonical time is the 3420-master-cycle scanline, and the state file records
+`tick`/`master_cycles` and the accumulated 68000 `cpu_cycles`.
 
 ## Debugging depth (M4, implemented and verified)
 
@@ -556,15 +581,15 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
 1. Boot a curated commercial title to its main loop with video and audio, and record the
    compatibility matrix (phase 8.6). The cartridge device, header identity, Sega mapper,
    SRAM and TMSS landed in phase 8.1.
-2. More 68000 addressing modes, instructions and exception groups (EPIC-0002
-   E2-13 continued), driven by differential tests.
-3. Broaden the differential corpus beyond the three synthetic ROMs while keeping
-   address/state comparison distinct from cycle/timing equivalence. A positive
-   comparison of interrupt delivery or timing would need an oracle model of those
-   semantics; the current masked-ROM pass is negative gating evidence only.
-4. Privilege enforcement and separate user/supervisor stacks; additional interrupt
-   sources (a wired level-7 source, timers, VDP interrupt-enable registers) if the
-   slice grows to model them.
+2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
+   remaining exception-edge behaviour, driven by differential tests.
+3. Broaden the differential corpus beyond the eleven synthetic ROMs while keeping
+   instruction-address/cycle/state comparison distinct from hardware timing
+   equivalence. A positive comparison of interrupt delivery or latency would need
+   an oracle model of those semantics; the current masked-ROM pass is negative
+   gating evidence only.
+4. Additional interrupt sources (a wired level-7 source, timers, VDP
+   interrupt-enable registers) if the slice grows to model them.
 5. Deeper controller protocol (TH latch/TH-low phase, A/Start, 6-button pad, port 3) only
    if the slice grows to model it; the TH-high 3-button reads and `--rom` hardware TAS are
    implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).

@@ -9,9 +9,8 @@
 //!
 //! One [`TraceEntry`] is appended after the opcode word has been fetched
 //! successfully and before it is decoded. An instruction that is recorded and then
-//! fails with [`crate::CpuError::IllegalOpcode`] or
-//! [`crate::CpuError::Unsupported`] is still in the trace, which is what a
-//! differential run needs in order to explain the divergence. A fetch that fails
+//! raises the guest illegal-instruction exception is still in the trace, which
+//! is what a differential run needs in order to explain the divergence. A fetch that fails
 //! before the opcode word is available records nothing. Interrupt exception entry
 //! is not an instruction and is not recorded.
 //!
@@ -39,11 +38,17 @@ pub struct TraceEntry {
     index: u64,
     pc: u32,
     opcode: u16,
+    cycles: u16,
 }
 
 impl TraceEntry {
     const fn new(index: u64, pc: u32, opcode: u16) -> Self {
-        Self { index, pc, opcode }
+        Self {
+            index,
+            pc,
+            opcode,
+            cycles: 0,
+        }
     }
 
     /// Returns the zero-based instruction index since the trace was last enabled,
@@ -63,6 +68,13 @@ impl TraceEntry {
     #[must_use]
     pub const fn opcode(self) -> u16 {
         self.opcode
+    }
+
+    /// Returns the instruction's 68000 cycle cost, or zero when the instruction
+    /// failed before completing (for example an illegal opcode).
+    #[must_use]
+    pub const fn cycles(self) -> u16 {
+        self.cycles
     }
 }
 
@@ -185,6 +197,16 @@ impl InstructionTrace {
         }
         self.entries.push_back(entry);
         self.next_index = self.next_index.saturating_add(1);
+    }
+
+    /// Stamps the most recent record with its completed 68000 cycle cost.
+    ///
+    /// Called after a successful step; a failed instruction keeps zero cycles so a
+    /// consumer can distinguish "not completed" from a completed zero-cost step.
+    pub(crate) fn set_last_cycles(&mut self, cycles: u16) {
+        if let Some(entry) = self.entries.back_mut() {
+            entry.cycles = cycles;
+        }
     }
 }
 

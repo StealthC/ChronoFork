@@ -18,8 +18,8 @@ use chronofork_backend_api::{
 };
 use chronofork_core::{InputFrame, Tick};
 use chronofork_megadrive::{
-    MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION, SchedulerConfig, VideoStandard,
-    controller_rom, demo_rom, interrupt_rom,
+    MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION, SchedulerConfig, controller_rom, demo_rom,
+    interrupt_rom,
 };
 
 const RAM_BASE: u32 = 0x00FF_0000;
@@ -32,7 +32,7 @@ fn new_machine(rom: Vec<u8>) -> MegadriveBackend {
 }
 
 fn interrupt_machine(mask: u8) -> MegadriveBackend {
-    let config = SchedulerConfig::new(VideoStandard::Ntsc, 4).expect("positive quantum");
+    let config = SchedulerConfig::ntsc();
     MegadriveFactory::with_scheduler_config(interrupt_rom(mask), config)
         .expect("valid interrupt ROM")
         .create_machine()
@@ -74,6 +74,18 @@ fn event(tick: u64, kind: DebugEventKind) -> DebugEvent {
     }
 }
 
+fn requested(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptRequested { level }
+}
+
+fn delivered(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptDelivered { level }
+}
+
+fn acknowledged(level: u8) -> DebugEventKind {
+    DebugEventKind::InterruptAcknowledged { level }
+}
+
 fn watchpoint(id: u32, access: WatchpointAccess, address: u32, value: u32) -> DebugEventKind {
     DebugEventKind::Watchpoint {
         watchpoint_id: id,
@@ -103,18 +115,6 @@ fn vdp_port(offset: u8, value: u32, width: u8, write: bool) -> DebugEventKind {
 
 fn controller_read(port: u8, value: u8) -> DebugEventKind {
     DebugEventKind::ControllerRead { port, value }
-}
-
-fn requested(level: u8) -> DebugEventKind {
-    DebugEventKind::InterruptRequested { level }
-}
-
-fn delivered(level: u8) -> DebugEventKind {
-    DebugEventKind::InterruptDelivered { level }
-}
-
-fn acknowledged(level: u8) -> DebugEventKind {
-    DebugEventKind::InterruptAcknowledged { level }
 }
 
 /// Independently authored ROM for byte-granular VDP port observation.
@@ -177,16 +177,22 @@ fn watchpoints_report_emulated_reads_and_writes() {
     assert_eq!(
         events(&mut machine),
         vec![
-            event(3, bus_write(RAM_BASE, 0x00)),
-            event(3, watchpoint(0x10, WatchpointAccess::Write, RAM_BASE, 0x00)),
-            event(3, bus_write(RAM_BASE + 1, 0x03)),
+            event(84, bus_write(RAM_BASE, 0x00)),
             event(
-                3,
+                84,
+                watchpoint(0x10, WatchpointAccess::Write, RAM_BASE, 0x00)
+            ),
+            event(84, bus_write(RAM_BASE + 1, 0x03)),
+            event(
+                84,
                 watchpoint(0x11, WatchpointAccess::Write, RAM_BASE + 1, 0x03)
             ),
-            event(5, watchpoint(0x12, WatchpointAccess::Read, RAM_BASE, 0x00)),
             event(
-                5,
+                224,
+                watchpoint(0x12, WatchpointAccess::Read, RAM_BASE, 0x00)
+            ),
+            event(
+                224,
                 watchpoint(0x12, WatchpointAccess::Read, RAM_BASE + 1, 0x03)
             ),
         ],
@@ -216,16 +222,16 @@ fn watchpoints_report_emulated_reads_and_writes() {
     assert_eq!(
         events(&mut controller),
         vec![
-            event(4, controller_read(1, 0x7E)),
+            event(112, controller_read(1, 0x7E)),
             event(
-                4,
+                112,
                 watchpoint(0x20, WatchpointAccess::Read, 0x00A1_0003, 0x7E)
             ),
-            event(6, bus_write(0x00FF_0000, 0x7E)),
-            event(7, bus_write(0x00FF_0002, 0x7E)),
-            event(8, controller_read(2, 0x5F)),
+            event(252, bus_write(0x00FF_0000, 0x7E)),
+            event(364, bus_write(0x00FF_0002, 0x7E)),
+            event(476, controller_read(2, 0x5F)),
             event(
-                8,
+                476,
                 watchpoint(0x20, WatchpointAccess::Read, 0x00A1_0005, 0x5F)
             ),
         ],
@@ -494,19 +500,19 @@ fn debug_observation_does_not_change_state_or_payload() {
     assert_eq!(
         after_restore[recorded..].to_vec(),
         vec![
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x22C, 0x33)),
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x22D, 0xC0)),
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x22E, 0x00)),
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x22F, 0xC0)),
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x230, 0x00)),
-            event(11, watchpoint(3, WatchpointAccess::Read, 0x231, 0x04)),
-            event(11, vdp_port(4, 0x0000, 2, true)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x22C, 0x33)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x22D, 0xC0)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x22E, 0x00)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x22F, 0xC0)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x230, 0x00)),
+            event(728, watchpoint(3, WatchpointAccess::Read, 0x231, 0x04)),
+            event(728, vdp_port(4, 0x0000, 2, true)),
             event(
-                11,
+                728,
                 watchpoint(5, WatchpointAccess::Write, 0x00C0_0004, 0x00)
             ),
             event(
-                11,
+                728,
                 watchpoint(5, WatchpointAccess::Write, 0x00C0_0005, 0x00)
             ),
         ],
@@ -559,54 +565,51 @@ fn interrupt_events(events: &[DebugEvent]) -> Vec<DebugEvent> {
 /// M4-A9 — interrupt request/delivery/acknowledgement observation.
 #[test]
 fn interrupt_events_are_requested_delivered_and_acknowledged() {
-    // Mask 3 run: the first HBlank is requested while masked, its second issue
-    // coalesces into the pending request (no duplicate event), the mask is
-    // lowered at instruction 8 and the retained request is delivered at
-    // instruction 9.
+    // Mask 3 run: the first HBlank is requested while masked, its later issues
+    // coalesce into the pending request (no duplicate event), and the retained
+    // request is delivered after the ROM lowers the mask.
     let mut machine = interrupt_machine(3);
-    configure(&mut machine, 4096, Vec::new());
-    for _ in 0..900 {
+    configure(&mut machine, 65_536, Vec::new());
+    for _ in 0..12_000 {
         machine.step(InputFrame::NEUTRAL).expect("interrupt step");
     }
+    assert_eq!(log_ref(&mut machine).dropped(), 0, "ring overflow");
     let all = interrupt_events(&events(&mut machine));
-    assert_eq!(
-        log_ref(&mut machine).dropped(),
-        0,
-        "the four-thousand-event ring must hold the whole run"
-    );
+    assert_eq!(log_ref(&mut machine).dropped(), 0, "ring overflow");
     let head: Vec<DebugEvent> = all
         .iter()
         .copied()
-        .filter(|event| event.tick <= Tick::from_raw(8))
+        .filter(|event| event.tick <= Tick::from_raw(7378))
         .collect();
     assert_eq!(
         head,
         vec![
-            event(3, requested(4)),
-            event(8, delivered(4)),
-            event(8, acknowledged(4)),
+            event(3388, requested(4)),
+            event(7378, delivered(4)),
+            event(7378, acknowledged(4)),
         ],
         "requested at the raising step, then delivered and acknowledged after the \
          successful entry, in that order"
     );
 
-    // The VBlank request is raised at tick 896 and delivered first at tick 897.
-    // The pending HBlank is retained (its request was not acknowledged) and is
-    // delivered only after RTE restores mask 3, at tick 900.
+    // VBlank is raised at the end of the active region; it is delivered first,
+    // then the retained HBlank is delivered after RTE restores mask 3.
     let tail: Vec<DebugEvent> = all
         .iter()
         .copied()
-        .filter(|event| event.tick >= Tick::from_raw(895))
+        .filter(|event| {
+            event.tick >= Tick::from_raw(765_996) && event.tick <= Tick::from_raw(766_304)
+        })
         .collect();
     assert_eq!(
         tail,
         vec![
-            event(895, requested(4)),
-            event(895, requested(6)),
-            event(896, delivered(6)),
-            event(896, acknowledged(6)),
-            event(899, delivered(4)),
-            event(899, acknowledged(4)),
+            event(765_996, requested(4)),
+            event(765_996, requested(6)),
+            event(766_108, delivered(6)),
+            event(766_108, acknowledged(6)),
+            event(766_304, delivered(4)),
+            event(766_304, acknowledged(4)),
         ],
         "only the delivered level is acknowledged and the other level stays pending"
     );
@@ -614,14 +617,14 @@ fn interrupt_events_are_requested_delivered_and_acknowledged() {
     // Mask 7 run: the request is raised but never delivered or acknowledged, and
     // a coalesced reissue of the same level produces no duplicate request event.
     let mut masked = interrupt_machine(7);
-    configure(&mut masked, 4096, Vec::new());
-    for _ in 0..900 {
+    configure(&mut masked, 65_536, Vec::new());
+    for _ in 0..12_000 {
         masked.step(InputFrame::NEUTRAL).expect("masked step");
     }
-    assert_eq!(log_ref(&mut masked).dropped(), 0);
+    assert_eq!(log_ref(&mut masked).dropped(), 0, "ring overflow");
     assert_eq!(
         interrupt_events(&events(&mut masked)),
-        vec![event(3, requested(4)), event(895, requested(6))],
+        vec![event(3388, requested(4)), event(765_982, requested(6))],
         "a masked pending request is requested once and never delivered or acknowledged"
     );
 }
@@ -639,20 +642,20 @@ fn bus_and_device_events_capture_the_documented_windows() {
     assert_eq!(
         events(&mut machine),
         vec![
-            event(3, bus_write(0x00FF_0000, 0x00)),
-            event(3, bus_write(0x00FF_0001, 0x03)),
-            event(7, vdp_port(4, 0x8F02, 2, true)),
-            event(9, vdp_port(4, 0x4000, 2, true)),
-            event(11, vdp_port(4, 0x0000, 2, true)),
-            event(13, vdp_port(0, 0x1234, 2, true)),
-            event(15, vdp_port(4, 0x0000, 2, true)),
-            event(17, vdp_port(4, 0x0000, 2, true)),
-            event(18, vdp_port(0, 0x1234, 2, false)),
-            event(19, bus_write(0x00FF_0004, 0x12)),
-            event(19, bus_write(0x00FF_0005, 0x34)),
-            event(20, vdp_port(4, 0x0100, 2, false)),
-            event(21, bus_write(0x00FF_0006, 0x01)),
-            event(21, bus_write(0x00FF_0007, 0x00)),
+            event(84, bus_write(0x00FF_0000, 0x00)),
+            event(84, bus_write(0x00FF_0001, 0x03)),
+            event(392, vdp_port(4, 0x8F02, 2, true)),
+            event(560, vdp_port(4, 0x4000, 2, true)),
+            event(728, vdp_port(4, 0x0000, 2, true)),
+            event(896, vdp_port(0, 0x1234, 2, true)),
+            event(1064, vdp_port(4, 0x0000, 2, true)),
+            event(1232, vdp_port(4, 0x0000, 2, true)),
+            event(1344, vdp_port(0, 0x1234, 2, false)),
+            event(1456, bus_write(0x00FF_0004, 0x12)),
+            event(1456, bus_write(0x00FF_0005, 0x34)),
+            event(1568, vdp_port(4, 0x0100, 2, false)),
+            event(1680, bus_write(0x00FF_0006, 0x01)),
+            event(1680, bus_write(0x00FF_0007, 0x00)),
         ],
         "RAM byte writes and VDP word accesses with exact offsets, values, widths and ticks"
     );
@@ -668,10 +671,10 @@ fn bus_and_device_events_capture_the_documented_windows() {
     assert_eq!(
         events(&mut controller),
         vec![
-            event(4, controller_read(1, 0x7E)),
-            event(6, bus_write(0x00FF_0000, 0x7E)),
-            event(7, bus_write(0x00FF_0002, 0x7E)),
-            event(8, controller_read(2, 0x5F)),
+            event(112, controller_read(1, 0x7E)),
+            event(252, bus_write(0x00FF_0000, 0x7E)),
+            event(364, bus_write(0x00FF_0002, 0x7E)),
+            event(476, controller_read(2, 0x5F)),
         ],
         "controller port 1 and 2 data registers report their byte value"
     );
@@ -686,8 +689,8 @@ fn bus_and_device_events_capture_the_documented_windows() {
     assert_eq!(
         events(&mut byte_vdp),
         vec![
-            event(1, vdp_port(4, 0x02, 1, true)),
-            event(2, vdp_port(8, 0x00, 1, false)),
+            event(28, vdp_port(4, 0x02, 1, true)),
+            event(140, vdp_port(8, 0x00, 1, false)),
         ],
         "byte VDP writes and reads report width 1"
     );
@@ -738,10 +741,10 @@ fn event_log_is_bounded_and_deterministic() {
     assert_eq!(
         retained,
         vec![
-            event(19, bus_write(0x00FF_0005, 0x34)),
-            event(20, vdp_port(4, 0x0100, 2, false)),
-            event(21, bus_write(0x00FF_0006, 0x01)),
-            event(21, bus_write(0x00FF_0007, 0x00)),
+            event(1456, bus_write(0x00FF_0005, 0x34)),
+            event(1568, vdp_port(4, 0x0100, 2, false)),
+            event(1680, bus_write(0x00FF_0006, 0x01)),
+            event(1680, bus_write(0x00FF_0007, 0x00)),
         ],
         "the ring retains the newest events"
     );

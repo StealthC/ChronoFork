@@ -1,10 +1,10 @@
 //! ChronoFork's first real-hardware backend slice.
 //!
 //! It is a minimal 68000 + cartridge/RAM + VDP-port machine with a deterministic
-//! instruction-quantum interrupt scheduler, **not** a complete Mega Drive.
+//! master-cycle interrupt scheduler, **not** a complete Mega Drive.
 //! The cartridge device models the header, region, Sega mapper, 64 KiB battery
 //! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
-//! v3. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
+//! v4. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
 //! cycle-accurate timing are not implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
@@ -13,8 +13,9 @@
 //!
 //! # Interrupt policy
 //!
-//! One executed instruction advances one scheduler quantum. Before each
-//! instruction, **at most one** pending VBlank (level 6) or HBlank (level 4)
+//! Each executed instruction advances the scheduler by its 68000 cycle cost times
+//! seven master cycles (3420 master cycles per scanline). Before each instruction,
+//! **at most one** pending VBlank (level 6) or HBlank (level 4)
 //! request is delivered through [`M68000::interrupt`] using the 68000 autovector
 //! address (`0x78` or `0x70`); VBlank is delivered first when both are
 //! deliverable. Delivery is gated by the single 68000 rule exposed as
@@ -110,11 +111,10 @@
 //! machine or inspection. It is not serialized and not hashed; a restored machine
 //! uses the next caller-supplied frame. See ADR-0009.
 //!
-//! Differential runs that must remain interrupt-free can rely on the reset mask
-//! 7 (a program that never writes `SR` takes no VDP interrupt), or construct
-//! their machine with an explicit large scheduler quantum such as `1_000_000`
-//! instructions per line. The default remains 64 instructions per line and is
-//! never changed implicitly.
+//! Differential runs that must remain interrupt-free can rely on the reset mask 7
+//! (a program that never writes `SR` takes no VDP interrupt); there is no
+//! instruction-quantum knob and the master-cycle timeline is never changed
+//! implicitly.
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
@@ -127,9 +127,9 @@ use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
 use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
 use crate::cpu::{CpuError, M68000};
+use crate::cycles::MASTER_CYCLES_PER_68000_CYCLE;
 use crate::interrupts::{
-    DEFAULT_INSTRUCTIONS_PER_LINE, InterruptLevel, InterruptScheduler, SchedulerConfig,
-    SchedulerError, VideoStandard,
+    InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
 };
 use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp};
@@ -141,18 +141,18 @@ pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
 /// Version 3 adds the cartridge state: the seven mapper banks, the SRAM control
 /// byte, the 64 KiB battery SRAM and the TMSS model/lock latch. Version 1 and 2
 /// payloads are rejected instead of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 3;
+pub const PAYLOAD_VERSION: u16 = 4;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 3.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K3";
-/// State-hash magic for state hash version 3.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE3";
-/// Configuration-hash magic for configuration hash version 3.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF3";
+/// Snapshot payload magic for payload version 4.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K4";
+/// State-hash magic for state hash version 4.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE4";
+/// Configuration-hash magic for configuration hash version 4.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF4";
 
 /// Cartridge capability tag folded into the configuration hash.
 ///
@@ -205,8 +205,7 @@ impl MegadriveFactory {
         let video = config
             .video
             .unwrap_or_else(|| cartridge.derived_video_standard());
-        let scheduler_config = SchedulerConfig::new(video, DEFAULT_INSTRUCTIONS_PER_LINE)
-            .map_err(|error| BackendError::InvalidConfiguration(error.to_string()))?;
+        let scheduler_config = SchedulerConfig::new(video);
         Self::from_parts(cartridge, config.tmss, scheduler_config)
     }
 
@@ -214,8 +213,7 @@ impl MegadriveFactory {
     ///
     /// The scheduler standard is the machine's video standard and TMSS defaults
     /// to [`TmssModel::Disabled`]. The configuration is part of the configuration
-    /// hash, so a snapshot made with a different video standard or instruction
-    /// quantum is rejected.
+    /// hash, so a snapshot made with a different video standard is rejected.
     pub fn with_scheduler_config(
         rom: Vec<u8>,
         scheduler_config: SchedulerConfig,
@@ -230,7 +228,7 @@ impl MegadriveFactory {
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, BackendError> {
         let video = scheduler_config.standard();
-        let config_hash = config_hash_for(cartridge.rom(), video, tmss, scheduler_config);
+        let config_hash = config_hash_for(cartridge.rom(), video, tmss);
         let capabilities = Capabilities {
             execution: true,
             save_states: true,
@@ -326,10 +324,16 @@ pub struct MegadriveBackend {
 }
 
 impl MegadriveBackend {
-    /// Returns the current tick.
+    /// Returns the current canonical tick, measured in master-clock cycles.
     #[must_use]
     pub const fn tick(&self) -> Tick {
         self.tick
+    }
+
+    /// Returns the canonical master-clock cycle counter.
+    #[must_use]
+    pub const fn master_cycles(&self) -> u64 {
+        self.tick.raw()
     }
 
     /// Returns the current 68000.
@@ -434,6 +438,7 @@ impl MegadriveBackend {
     /// state hash from the returned bytes.
     fn state_body_bytes(&self) -> Vec<u8> {
         let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
+        let (usp, ssp, stopped, cycles) = self.cpu.extended_state();
         let vdp = self.bus.vdp().snapshot_bytes();
         let scheduler = self.scheduler.snapshot_bytes();
         state_body(&StateView {
@@ -442,6 +447,10 @@ impl MegadriveBackend {
             pc,
             sr,
             halted,
+            usp,
+            ssp,
+            cpu_cycles: cycles,
+            stopped,
             tick: self.tick,
             ram: self.bus.ram(),
             vdp: &vdp,
@@ -463,6 +472,7 @@ impl MegadriveBackend {
     /// [`state_body`].
     fn state_hash(&self) -> StateHash {
         let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
+        let (usp, ssp, stopped, cycles) = self.cpu.extended_state();
         let vdp = self.bus.vdp().snapshot_bytes();
         let scheduler = self.scheduler.snapshot_bytes();
         state_hash_for(&StateView {
@@ -471,6 +481,10 @@ impl MegadriveBackend {
             pc,
             sr,
             halted,
+            usp,
+            ssp,
+            cpu_cycles: cycles,
+            stopped,
             tick: self.tick,
             ram: self.bus.ram(),
             vdp: &vdp,
@@ -576,9 +590,19 @@ impl MegadriveBackend {
         // one instruction. This models the 68000 taking one request between
         // instructions instead of nesting several handlers in a single tick.
         self.deliver_pending_interrupt()?;
-        self.cpu.step(&mut self.bus).map_err(map_cpu)?;
-        self.tick = self.tick.next().map_err(|_| BackendError::TickOverflow)?;
-        self.scheduler.tick().map_err(map_scheduler)?;
+        let outcome = self.cpu.step(&mut self.bus).map_err(map_cpu)?;
+        let master_cycles = u64::from(outcome.cycles)
+            .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
+            .ok_or(BackendError::TickOverflow)?;
+        let next_tick = self
+            .tick
+            .raw()
+            .checked_add(master_cycles)
+            .ok_or(BackendError::TickOverflow)?;
+        self.scheduler
+            .advance_master(master_cycles)
+            .map_err(map_scheduler)?;
+        self.tick = Tick::from_raw(next_tick);
         self.observe_scheduler_requests();
         self.sync_vdp_status();
         Ok(StepOutcome {
@@ -637,6 +661,10 @@ impl Backend for MegadriveBackend {
             pc: parsed.pc,
             sr: parsed.sr,
             halted: parsed.halted,
+            usp: parsed.usp,
+            ssp: parsed.ssp,
+            cpu_cycles: parsed.cpu_cycles,
+            stopped: parsed.stopped,
             tick: parsed.tick,
             ram: parsed.ram,
             vdp: parsed.vdp,
@@ -696,6 +724,8 @@ impl Backend for MegadriveBackend {
         self.scheduler = scheduler;
         self.cpu
             .restore_state(parsed.d, parsed.a, parsed.pc, parsed.sr, parsed.halted);
+        self.cpu
+            .restore_extended_state(parsed.usp, parsed.ssp, parsed.stopped, parsed.cpu_cycles);
         self.tick = parsed.tick;
         // The VINT-pending status bit is derived from the restored scheduler
         // state, so recompute it before anything can inspect the machine. The
@@ -742,10 +772,19 @@ impl Backend for MegadriveBackend {
             "irq_vector".to_owned(),
             u64::from(pending.map_or(0, vector_address)),
         );
+        registers.insert("master_cycles".to_owned(), self.tick.raw());
+        registers.insert("cpu_cycles".to_owned(), self.cpu.cycles());
+        registers.insert("usp".to_owned(), u64::from(self.cpu.usp()));
+        registers.insert("ssp".to_owned(), u64::from(self.cpu.ssp()));
+        registers.insert("stopped".to_owned(), u64::from(self.cpu.stopped()));
         registers.insert("scheduler_frame".to_owned(), self.scheduler.frame());
         registers.insert(
             "scheduler_line".to_owned(),
             u64::from(self.scheduler.line_in_frame()),
+        );
+        registers.insert(
+            "scheduler_master_cycle_in_line".to_owned(),
+            self.scheduler.master_cycle_in_line(),
         );
         // Bounded cartridge pseudo-registers. The full serial text is exposed by
         // `CartridgeView`; the register map is a canonical-range `u64`, so
@@ -959,13 +998,8 @@ fn map_scheduler(error: SchedulerError) -> BackendError {
     }
 }
 
-fn config_hash_for(
-    rom: &[u8],
-    video: VideoStandard,
-    tmss: TmssModel,
-    scheduler_config: SchedulerConfig,
-) -> StateHash {
-    let mut bytes = Writer::with_capacity(CONFIG_MAGIC.len() + 32 + 1 + 1 + 16 + 4);
+fn config_hash_for(rom: &[u8], video: VideoStandard, tmss: TmssModel) -> StateHash {
+    let mut bytes = Writer::with_capacity(CONFIG_MAGIC.len() + 32 + 1 + 1 + 16);
     bytes.write_bytes(CONFIG_MAGIC);
     // The ROM identity is a SHA-256 digest; SRAM bytes are state and are never
     // part of the configuration.
@@ -973,7 +1007,6 @@ fn config_hash_for(
     bytes.write_u8(video.code());
     bytes.write_u8(tmss_model_code(tmss));
     bytes.write_bytes(CONFIG_FEATURE_TAG);
-    bytes.write_u32_be(scheduler_config.instructions_per_line());
     hash_bytes(&bytes.into_bytes())
 }
 
@@ -1001,6 +1034,10 @@ struct StateView<'a> {
     pc: u32,
     sr: u16,
     halted: bool,
+    usp: u32,
+    ssp: u32,
+    cpu_cycles: u64,
+    stopped: bool,
     tick: Tick,
     ram: &'a [u8],
     vdp: &'a [u8],
@@ -1030,6 +1067,10 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
             + 2
             + 1
             + 8
+            + 4
+            + 4
+            + 8
+            + 1
             + state.ram.len()
             + state.vdp.len()
             + 14
@@ -1048,6 +1089,10 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
     body.write_u16_be(state.sr);
     body.write_u8(u8::from(state.halted));
     body.write_u64_be(state.tick.raw());
+    body.write_u32_be(state.usp);
+    body.write_u32_be(state.ssp);
+    body.write_u64_be(state.cpu_cycles);
+    body.write_u8(u8::from(state.stopped));
     body.write_bytes(state.ram);
     body.write_bytes(state.vdp);
     for bank in state.banks {
@@ -1087,6 +1132,10 @@ struct ParsedState<'a> {
     pc: u32,
     sr: u16,
     halted: bool,
+    usp: u32,
+    ssp: u32,
+    cpu_cycles: u64,
+    stopped: bool,
     tick: Tick,
     ram: &'a [u8],
     vdp: &'a [u8],
@@ -1123,6 +1172,18 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
     let sr = reader.read_u16_be().map_err(payload_error)?;
     let halted = reader.read_u8().map_err(payload_error)? != 0;
     let tick = Tick::from_raw(reader.read_u64_be().map_err(payload_error)?);
+    let usp = reader.read_u32_be().map_err(payload_error)?;
+    let ssp = reader.read_u32_be().map_err(payload_error)?;
+    let cpu_cycles = reader.read_u64_be().map_err(payload_error)?;
+    let stopped = match reader.read_u8().map_err(payload_error)? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(BackendError::InvalidSnapshot(
+                "invalid CPU stopped tag".to_owned(),
+            ));
+        }
+    };
     let ram = reader.read_exact(RAM_SIZE).map_err(payload_error)?;
     let vdp = reader.read_exact(VDP_SNAPSHOT_LEN).map_err(payload_error)?;
     let mut banks = [0_u16; 7];
@@ -1150,6 +1211,10 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
         pc,
         sr,
         halted,
+        usp,
+        ssp,
+        cpu_cycles,
+        stopped,
         tick,
         ram,
         vdp,
@@ -1245,9 +1310,8 @@ pub fn demo_rom() -> Vec<u8> {
 /// The main program at `0x200`:
 ///
 /// 1. explicitly masks both VDP interrupt levels with `MOVE.W #$2700,SR`;
-/// 2. idles for six `NOP`s, so with a small scheduler quantum (for example four
-///    instructions per line) an HBlank request is raised and retained while it is
-///    masked;
+/// 2. idles for six `NOP`s, so the first HBlank request is raised and retained
+///    while it is masked;
 /// 3. installs the 68000 interrupt-priority mask `mask` with
 ///    `MOVE.W #(0x2000 | mask << 8),SR`, which is the mask-lowering step;
 /// 4. clears `D0` and enters a loop that reads the VDP status port into `D5` and
@@ -1263,10 +1327,9 @@ pub fn demo_rom() -> Vec<u8> {
 /// mask ([`M68000::interrupt`]): a HBlank handler runs with mask 4 and a VBlank
 /// handler with mask 6, so a pending lower-priority VDP request is not delivered
 /// while the handler runs. `RTE` restores the interrupted program's raw `SR`,
-/// after which a retained request can be delivered. With a quantum of four
-/// instructions per line, the first HBlank is raised while the mask is still 7,
-/// the lowering instruction executes at instruction 8, and the retained request
-/// is delivered at instruction 9.
+/// after which a retained request can be delivered. The first HBlank is raised
+/// while the mask is still 7, the lowering instruction executes at instruction 8,
+/// and the retained request is delivered at instruction 9.
 ///
 /// Passing `3` builds the delivery scenario: HBlank (level 4) and VBlank
 /// (level 6) are both above mask 3, so both are eventually delivered. Passing `7`
@@ -1295,12 +1358,8 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
 
     let mut main = vec![
         0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR (explicitly mask the VDP levels)
-        0x4E, 0x71, // NOP
-        0x4E, 0x71, // NOP
-        0x4E, 0x71, // NOP
-        0x4E, 0x71, // NOP
-        0x4E, 0x71, // NOP
-        0x4E, 0x71, // NOP
+        0x30, 0x3C, 0x00, 0x64, // MOVE.W #100,D0 (busy delay over two scanlines)
+        0x51, 0xC8, 0xFF, 0xFC, // DBRA D0,*-4 (10 cycles per iteration)
         0x46, 0xFC, // MOVE.W #imm,SR: lower the mask to `mask`
     ];
     let lowered_status = 0x2000_u16 | (u16::from(mask) << 8);
@@ -1460,7 +1519,11 @@ mod tests {
         BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, RAM_BASE, RAM_END,
         RAM_SIZE, ROM_END,
     };
-    use crate::interrupts::{InterruptLevel, InterruptScheduler, SchedulerConfig, VideoStandard};
+    use crate::cycles::MASTER_CYCLES_PER_LINE;
+    use crate::interrupts::{
+        InterruptLevel, InterruptScheduler, NTSC_ACTIVE_LINES, NTSC_LINES_PER_FRAME,
+        SchedulerConfig,
+    };
     use crate::vdp::{
         SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING, VdpError,
     };
@@ -1469,14 +1532,9 @@ mod tests {
         MegadriveFactory::new(demo_rom()).expect("valid demo ROM")
     }
 
-    fn fast_factory() -> MegadriveFactory {
-        let config = SchedulerConfig::new(VideoStandard::Ntsc, 4).expect("positive quantum");
-        MegadriveFactory::with_scheduler_config(demo_rom(), config).expect("valid demo ROM")
-    }
-
     /// Factory for the mask-gating synthetic ROM with a four-instruction line.
     fn interrupt_factory(mask: u8) -> MegadriveFactory {
-        let config = SchedulerConfig::new(VideoStandard::Ntsc, 4).expect("positive quantum");
+        let config = SchedulerConfig::ntsc();
         MegadriveFactory::with_scheduler_config(interrupt_rom(mask), config)
             .expect("valid interrupt ROM")
     }
@@ -1515,15 +1573,19 @@ mod tests {
     }
 
     /// Steps until the scheduler tick reaches `tick`.
-    fn step_to_tick(machine: &mut MegadriveBackend, tick: u64) {
-        while machine.tick().raw() < tick {
-            machine.step(InputFrame::NEUTRAL).expect("step to tick");
+    /// Steps until `predicate` holds, failing rather than looping forever.
+    fn step_until(
+        machine: &mut MegadriveBackend,
+        predicate: impl Fn(&MegadriveBackend) -> bool,
+        what: &str,
+    ) {
+        for _ in 0..2_000_000 {
+            if predicate(machine) {
+                return;
+            }
+            machine.step(InputFrame::NEUTRAL).expect("step until");
         }
-        assert_eq!(
-            machine.tick().raw(),
-            tick,
-            "stepped past the requested tick"
-        );
+        unreachable!("timed out waiting for {what}");
     }
 
     fn register(machine: &MegadriveBackend, name: &str) -> u64 {
@@ -1546,7 +1608,8 @@ mod tests {
         assert_eq!(state.registers["d1"], 2);
         assert_eq!(state.registers["d2"], 3);
         assert_eq!(state.memory[0..2], [0x00, 0x03]);
-        assert_eq!(state.tick.raw(), 6);
+        assert_eq!(state.tick.raw(), 336);
+        assert_eq!(state.tick.raw(), machine.cpu().cycles() * 7);
     }
 
     #[test]
@@ -1580,22 +1643,17 @@ mod tests {
         assert_eq!(&rom[0x70..0x74], &0x0000_02C0_u32.to_be_bytes());
         assert_eq!(&rom[0x78..0x7C], &0x0000_02E0_u32.to_be_bytes());
 
-        // MOVE.W #$2700,SR, six NOPs, then MOVE.W #$2300,SR.
+        // MOVE.W #$2700,SR, a 100-iteration DBRA delay, then MOVE.W #$2300,SR.
         assert_eq!(&rom[0x200..0x204], &[0x46, 0xFC, 0x27, 0x00]);
-        for offset in [0x204, 0x206, 0x208, 0x20A, 0x20C, 0x20E] {
-            assert_eq!(
-                &rom[offset..offset + 2],
-                &[0x4E, 0x71],
-                "NOP at {offset:#X}"
-            );
-        }
-        assert_eq!(&rom[0x210..0x214], &[0x46, 0xFC, 0x23, 0x00]);
-        assert_eq!(&rom[0x214..0x216], &[0x70, 0x00]); // MOVEQ #0,D0
+        assert_eq!(&rom[0x204..0x208], &[0x30, 0x3C, 0x00, 0x64]);
+        assert_eq!(&rom[0x208..0x20C], &[0x51, 0xC8, 0xFF, 0xFC]);
+        assert_eq!(&rom[0x20C..0x210], &[0x46, 0xFC, 0x23, 0x00]);
+        assert_eq!(&rom[0x210..0x212], &[0x70, 0x00]); // MOVEQ #0,D0
         assert_eq!(
-            &rom[0x216..0x21C],
+            &rom[0x212..0x218],
             &[0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04] // MOVE.W (0x00C00004).L,D5
         );
-        assert_eq!(&rom[0x21C..0x21E], &[0x60, 0xF8]); // BRA.S status read
+        assert_eq!(&rom[0x218..0x21A], &[0x60, 0xF8]); // BRA.S status read
 
         // Both handlers increment their counter, set N with MOVEQ #-1,D3 and RTE.
         // There is no MOVE.W #$2700,SR handler prologue: exception entry loads the
@@ -1614,8 +1672,8 @@ mod tests {
         );
 
         // The mask parameter is encoded as SR = 0x2000 | mask << 8.
-        assert_eq!(&interrupt_rom(7)[0x210..0x214], &[0x46, 0xFC, 0x27, 0x00]);
-        assert_eq!(&interrupt_rom(0)[0x210..0x214], &[0x46, 0xFC, 0x20, 0x00]);
+        assert_eq!(&interrupt_rom(7)[0x20C..0x210], &[0x46, 0xFC, 0x27, 0x00]);
+        assert_eq!(&interrupt_rom(0)[0x20C..0x210], &[0x46, 0xFC, 0x20, 0x00]);
     }
 
     #[test]
@@ -1892,9 +1950,14 @@ mod tests {
     fn masked_hblank_is_retained_until_the_program_lowers_the_mask() {
         let mut machine = interrupt_machine(3);
 
-        step_to_tick(&mut machine, 4);
+        // The first HBlank is crossed inside the DBRA delay while the reset mask
+        // 7 is still installed.
+        step_until(
+            &mut machine,
+            |machine| machine.tick().raw() >= MASTER_CYCLES_PER_LINE,
+            "first scanline",
+        );
         let masked = machine.inspect().expect("inspect");
-        assert_eq!(masked.registers["pc"], 0x20A);
         assert_eq!(masked.registers["irq_mask"], 7);
         assert_eq!(
             masked.registers["irq_pending_level"],
@@ -1911,10 +1974,14 @@ mod tests {
         assert_eq!(masked.registers["d7"], 0, "no handler may run while masked");
         assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
 
-        // Seven quanta run with the request pending and the mask still at 7.
-        step_to_tick(&mut machine, 7);
+        // The second line completes while the request and the mask are unchanged:
+        // the new request coalesces into the retained one.
+        step_until(
+            &mut machine,
+            |machine| machine.tick().raw() >= 2 * MASTER_CYCLES_PER_LINE,
+            "second scanline",
+        );
         let still_masked = machine.inspect().expect("inspect");
-        assert_eq!(still_masked.registers["pc"], 0x210);
         assert_eq!(still_masked.registers["irq_mask"], 7);
         assert_eq!(still_masked.registers["irq_pending_level"], 4);
         assert_eq!(still_masked.registers["irq_deliverable"], 0);
@@ -1923,29 +1990,7 @@ mod tests {
         assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
         assert_eq!(
             machine.interrupts().requests_issued(InterruptLevel::HBlank),
-            1
-        );
-        assert_eq!(
-            machine
-                .interrupts()
-                .requests_coalesced(InterruptLevel::HBlank),
-            0
-        );
-
-        // Instruction 8 lowers the mask with MOVE.W #$2300,SR. Delivery is only
-        // evaluated at the *next* instruction boundary, so the request is still
-        // pending — but it is now deliverable.
-        step_to_tick(&mut machine, 8);
-        let lowered = machine.inspect().expect("inspect");
-        assert_eq!(lowered.registers["irq_mask"], 3);
-        assert_eq!(lowered.registers["irq_pending_level"], 4);
-        assert_eq!(lowered.registers["irq_deliverable"], 1);
-        assert_eq!(lowered.registers["d7"], 0);
-        assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
-        assert_eq!(
-            machine.interrupts().requests_issued(InterruptLevel::HBlank),
-            2,
-            "the line completed by instruction 8 raised a second HBlank"
+            2
         );
         assert_eq!(
             machine
@@ -1955,13 +2000,31 @@ mod tests {
             "the second masked HBlank coalesces into the retained request"
         );
 
-        // Instruction 9 delivers exactly the retained HBlank request and runs the
-        // handler's first instruction. Exception entry loads the accepted level 4
-        // into the IPM, so the handler runs at mask 4 even though the program that
-        // lowered its mask to 3 is interrupted.
+        // The program now lowers the mask with MOVE.W #$2300,SR. Delivery is
+        // evaluated at the next instruction boundary, so the request is still
+        // retained but is now deliverable.
+        step_until(
+            &mut machine,
+            |machine| machine.cpu().pc() == 0x210,
+            "mask lowering",
+        );
+        let lowered = machine.inspect().expect("inspect");
+        assert_eq!(lowered.registers["irq_mask"], 3);
+        assert_eq!(lowered.registers["irq_pending_level"], 4);
+        assert_eq!(lowered.registers["irq_deliverable"], 1);
+        assert_eq!(lowered.registers["d7"], 0);
+        assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
+
+        // The next boundary delivers exactly the retained HBlank request, pushes
+        // the six-byte frame that points at the lowered-mask program and loads
+        // IPM 4 for the handler.
         machine.step(InputFrame::NEUTRAL).expect("deliver HBlank");
         let delivered = machine.inspect().expect("inspect");
-        assert_eq!(delivered.tick.raw(), 9);
+        assert_eq!(
+            delivered.tick.raw(),
+            machine.cpu().cycles() * 7,
+            "the backend advances canonical time only by instruction cycles"
+        );
         assert_eq!(delivered.registers["d7"], 1, "the handler counter ran");
         assert_eq!(delivered.registers["pc"], 0x2C2);
         assert_eq!(
@@ -1970,7 +2033,6 @@ mod tests {
         );
         assert_eq!(machine.cpu().interrupt_priority_mask(), 4);
         assert_eq!(delivered.registers["irq_pending_level"], 0);
-        assert_eq!(delivered.registers["irq_deliverable"], 0);
         assert!(!machine.interrupts().is_pending(InterruptLevel::HBlank));
         assert_eq!(
             machine.interrupts().requests_issued(InterruptLevel::HBlank),
@@ -1978,7 +2040,6 @@ mod tests {
             "delivery acknowledges the request, it does not reissue it"
         );
 
-        // The frame holds the pre-interrupt raw SR and PC, which RTE must restore.
         let stack = delivered.registers["a7"];
         assert_eq!(stack, 0x00FF_FFFA, "a six-byte exception frame was pushed");
         let frame = usize::try_from(stack - u64::from(RAM_BASE)).expect("frame offset");
@@ -1990,13 +2051,12 @@ mod tests {
             delivered.memory[frame + 5],
         ]);
         assert_eq!(saved_sr, 0x2300);
-        assert_eq!(saved_pc, 0x214);
+        assert_eq!(saved_pc, 0x210);
         assert_eq!(
             delivered.memory[frame..frame + 6],
-            [0x23, 0x00, 0x00, 0x00, 0x02, 0x14]
+            [0x23, 0x00, 0x00, 0x00, 0x02, 0x10]
         );
 
-        // The handler changes CCR (MOVEQ #-1,D3 sets N) before RTE.
         machine.step(InputFrame::NEUTRAL).expect("handler MOVEQ");
         let in_handler = machine.inspect().expect("inspect");
         assert_eq!(in_handler.registers["pc"], 0x2C4);
@@ -2009,9 +2069,8 @@ mod tests {
 
         machine.step(InputFrame::NEUTRAL).expect("RTE");
         let returned = machine.inspect().expect("inspect");
-        assert_eq!(returned.tick.raw(), 11);
         assert_eq!(
-            returned.registers["pc"], 0x214,
+            returned.registers["pc"], 0x210,
             "RTE returns to the interrupted PC"
         );
         assert_eq!(machine.cpu().sr(), 0x2300, "RTE restores the saved raw SR");
@@ -2027,10 +2086,16 @@ mod tests {
 
     #[test]
     fn vblank_is_delivered_first_and_acknowledged_without_losing_hblank() {
-        let mut machine = interrupt_machine(3);
-        step_to_tick(&mut machine, 896);
+        // Mask 5 admits level 6 (VBlank) but keeps level 4 (HBlank) pending, so
+        // both requests exist together when the last active line completes.
+        let mut machine = interrupt_machine(5);
+        step_until(
+            &mut machine,
+            |machine| machine.tick().raw() >= MASTER_CYCLES_PER_LINE * u64::from(NTSC_ACTIVE_LINES),
+            "vertical blanking",
+        );
         let pending = machine.inspect().expect("inspect");
-        assert_eq!(pending.registers["irq_mask"], 3);
+        assert_eq!(pending.registers["irq_mask"], 5);
         assert_eq!(
             pending.registers["irq_pending_level"],
             u64::from(InterruptLevel::VBlank.level())
@@ -2049,13 +2114,11 @@ mod tests {
         assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
         let pre_pc = pending.registers["pc"];
         let pre_sr = machine.cpu().sr();
-        let d7_before_vblank = pending.registers["d7"];
 
         // VBlank (level 6) is delivered before the pending HBlank (level 4).
         // Exception entry loads IPM 6, so the pending HBlank cannot nest.
         machine.step(InputFrame::NEUTRAL).expect("deliver VBlank");
         let delivered = machine.inspect().expect("inspect");
-        assert_eq!(delivered.tick.raw(), 897);
         assert_eq!(delivered.registers["d6"], 1, "the VBlank handler ran");
         assert_eq!(delivered.registers["pc"], 0x2E2);
         assert_eq!(
@@ -2069,117 +2132,52 @@ mod tests {
                 .accepts_interrupt_level(InterruptLevel::HBlank.level()),
             "IPM 6 blocks the pending level-4 HBlank"
         );
+        assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
+        assert!(!machine.interrupts().is_pending(InterruptLevel::VBlank));
+        let stack = delivered.registers["a7"];
+        let frame = usize::try_from(stack - u64::from(RAM_BASE)).expect("frame offset");
         assert_eq!(
-            machine.interrupts().requests_issued(InterruptLevel::VBlank),
-            1
+            u16::from_be_bytes([delivered.memory[frame], delivered.memory[frame + 1]]),
+            pre_sr
         );
-        assert!(
-            !machine.interrupts().is_pending(InterruptLevel::VBlank),
-            "the delivered VBlank request is acknowledged exactly once"
-        );
-        assert!(
-            machine.interrupts().is_pending(InterruptLevel::HBlank),
-            "acknowledging VBlank must retain the pending HBlank"
-        );
-        assert_eq!(
-            delivered.registers["irq_pending_level"],
-            u64::from(InterruptLevel::HBlank.level())
-        );
-        assert_eq!(
-            delivered.registers["irq_vector"],
-            u64::from(HBLANK_VECTOR_ADDRESS)
-        );
-        assert_eq!(
-            delivered.registers["vdp_status"] & u64::from(STATUS_VINT_PENDING),
-            0,
-            "VINT pending clears when the VBlank request is acknowledged"
-        );
-        assert_eq!(
-            delivered.registers["vdp_status"] & u64::from(STATUS_VBLANK),
-            u64::from(STATUS_VBLANK),
-            "the video VBlank flag is independent of the interrupt latch"
-        );
+        let saved_pc = u32::from_be_bytes([
+            delivered.memory[frame + 2],
+            delivered.memory[frame + 3],
+            delivered.memory[frame + 4],
+            delivered.memory[frame + 5],
+        ]);
+        assert_eq!(u64::from(saved_pc), pre_pc);
 
-        // The next instruction boundary must not deliver the pending HBlank while
-        // the handler runs at IPM 6: no nested HBlank handler, one frame only.
-        machine
-            .step(InputFrame::NEUTRAL)
-            .expect("handler MOVEQ, no nested HBlank");
-        let in_handler = machine.inspect().expect("inspect");
-        assert_eq!(in_handler.registers["d3"], 0xFFFF_FFFF);
-        assert_eq!(in_handler.registers["pc"], 0x2E4);
-        assert_eq!(machine.cpu().interrupt_priority_mask(), 6);
-        assert_eq!(
-            in_handler.registers["a7"], 0x00FF_FFFA,
-            "only the VBlank frame is on the stack"
-        );
-        assert!(
-            machine.interrupts().is_pending(InterruptLevel::HBlank),
-            "the HBlank request must remain pending while IPM is 6"
-        );
-        assert_eq!(in_handler.registers["irq_pending_level"], 4);
-        assert_eq!(
-            in_handler.registers["d7"], d7_before_vblank,
-            "no nested HBlank handler ran"
-        );
-
-        machine.step(InputFrame::NEUTRAL).expect("VBlank RTE");
+        machine.step(InputFrame::NEUTRAL).expect("handler MOVEQ");
+        machine.step(InputFrame::NEUTRAL).expect("RTE");
         let returned = machine.inspect().expect("inspect");
-        assert_eq!(returned.tick.raw(), 899);
-        assert_eq!(
-            returned.registers["pc"], pre_pc,
-            "RTE returns to the interrupted PC"
-        );
-        assert_eq!(machine.cpu().sr(), pre_sr, "RTE restores the saved raw SR");
-        assert_eq!(returned.registers["irq_mask"], 3);
-        assert!(
-            machine
-                .cpu()
-                .accepts_interrupt_level(InterruptLevel::HBlank.level()),
-            "RTE restores mask 3, so HBlank is deliverable again"
-        );
         assert_eq!(returned.registers["d6"], 1);
         assert_eq!(
             returned.registers["a7"], 0x0100_0000,
             "RTE pops the six-byte frame"
         );
+        assert_eq!(returned.registers["irq_mask"], 5);
         assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
-
-        // The retained HBlank is delivered exactly once after RTE restored mask 3.
-        let d7_before = returned.registers["d7"];
-        machine
-            .step(InputFrame::NEUTRAL)
-            .expect("deliver retained HBlank");
-        let hblank = machine.inspect().expect("inspect");
         assert_eq!(
-            hblank.registers["d7"],
-            d7_before + 1,
-            "the retained HBlank is delivered exactly once"
+            machine.interrupts().requests_issued(InterruptLevel::HBlank),
+            u64::from(NTSC_ACTIVE_LINES),
+            "one HBlank per active line"
         );
-        assert_eq!(hblank.registers["pc"], 0x2C2);
         assert_eq!(
-            hblank.registers["irq_mask"], 4,
-            "HBlank handler runs at IPM 4"
-        );
-        assert!(!machine.interrupts().is_pending(InterruptLevel::VBlank));
-        assert_eq!(
-            hblank.registers["vdp_status"] & u64::from(STATUS_VINT_PENDING),
-            0
-        );
-        machine
-            .step(InputFrame::NEUTRAL)
-            .expect("HBlank handler MOVEQ");
-        machine.step(InputFrame::NEUTRAL).expect("HBlank RTE");
-        assert_eq!(
-            machine.inspect().expect("inspect").registers["a7"],
-            0x0100_0000
+            returned.registers["vdp_status"] & u64::from(STATUS_VINT_PENDING),
+            0,
+            "delivery acknowledges VINT"
         );
     }
 
     #[test]
     fn vblank_handler_ipm_six_blocks_hblank_reentry_until_rte() {
         let mut machine = interrupt_machine(3);
-        step_to_tick(&mut machine, 896);
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
         let pending = machine.inspect().expect("inspect");
         assert_eq!(
             pending.registers["irq_pending_level"],
@@ -2239,7 +2237,16 @@ mod tests {
     #[test]
     fn masked_vblank_keeps_vint_pending_across_many_steps_without_acknowledging() {
         let mut machine = interrupt_machine(7);
-        step_to_tick(&mut machine, 898);
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
+        step_until(
+            &mut machine,
+            |machine| machine.inspect().expect("inspect").registers["d5"] & 0x0080 == 0x0080,
+            "status-port read after VBlank",
+        );
         let pending = machine.inspect().expect("inspect");
         assert_eq!(pending.registers["irq_mask"], 7);
         assert_eq!(
@@ -2264,7 +2271,13 @@ mod tests {
         // More than a full frame of further masked quanta never acknowledges or
         // loses the request; frame 1 raises a second, coalesced VBlank at tick
         // 1944, and by tick 2100 vertical blanking has ended again.
-        step_to_tick(&mut machine, 2100);
+        step_until(
+            &mut machine,
+            |machine| {
+                machine.tick().raw() >= 2 * MASTER_CYCLES_PER_LINE * u64::from(NTSC_LINES_PER_FRAME)
+            },
+            "two full frames",
+        );
         let later = machine.inspect().expect("inspect");
         assert_eq!(later.registers["irq_mask"], 7);
         assert_eq!(later.registers["irq_pending_level"], 6);
@@ -2295,7 +2308,11 @@ mod tests {
     #[test]
     fn status_port_reads_do_not_acknowledge_masked_requests() {
         let mut machine = interrupt_machine(7);
-        step_to_tick(&mut machine, 898);
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
         assert!(machine.interrupts().is_pending(InterruptLevel::VBlank));
         let issued = machine.interrupts().requests_issued(InterruptLevel::VBlank);
 
@@ -2323,10 +2340,12 @@ mod tests {
         // The backend can only take VBlank first (68000 priority), so the reverse
         // acknowledgement order is exercised through the same scheduler primitive
         // the backend acknowledges with.
-        let config = SchedulerConfig::new(VideoStandard::Ntsc, 4).expect("positive quantum");
+        let config = SchedulerConfig::ntsc();
 
         let mut vblank_first = InterruptScheduler::new(config);
-        vblank_first.advance(896).expect("advance to VBlank");
+        vblank_first
+            .advance_master(MASTER_CYCLES_PER_LINE * 224)
+            .expect("advance to VBlank");
         assert!(vblank_first.is_pending(InterruptLevel::VBlank));
         assert!(vblank_first.is_pending(InterruptLevel::HBlank));
         assert!(vblank_first.acknowledge(InterruptLevel::VBlank));
@@ -2334,7 +2353,9 @@ mod tests {
         assert!(vblank_first.is_pending(InterruptLevel::HBlank));
 
         let mut hblank_first = InterruptScheduler::new(config);
-        hblank_first.advance(896).expect("advance to VBlank");
+        hblank_first
+            .advance_master(MASTER_CYCLES_PER_LINE * 224)
+            .expect("advance to VBlank");
         assert!(hblank_first.acknowledge(InterruptLevel::HBlank));
         assert!(!hblank_first.is_pending(InterruptLevel::HBlank));
         assert!(hblank_first.is_pending(InterruptLevel::VBlank));
@@ -2355,7 +2376,7 @@ mod tests {
             snapshot.format_version(),
             chronofork_backend_api::BACKEND_SNAPSHOT_FORMAT_VERSION
         );
-        assert_eq!(snapshot.tick().raw(), 64);
+        assert_eq!(snapshot.tick().raw(), machine.cpu().cycles() * 7);
 
         let vdp_bytes = machine.vdp().snapshot_bytes();
         let scheduler_bytes = machine.interrupts().snapshot_bytes();
@@ -2385,7 +2406,7 @@ mod tests {
         machine.restore(&snapshot).expect("restore");
         let restored = machine.inspect().expect("inspect");
         assert_eq!(restored.state_hash, expected);
-        assert_eq!(restored.tick.raw(), 64);
+        assert_eq!(restored.tick.raw(), snapshot.tick().raw());
         assert_eq!(
             restored.registers["irq_pending_level"],
             u64::from(InterruptLevel::HBlank.level())
@@ -2405,7 +2426,11 @@ mod tests {
     #[test]
     fn snapshot_restore_preserves_masked_pending_requests_and_vint_state() {
         let mut machine = interrupt_machine(7);
-        step_to_tick(&mut machine, 898);
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
         let snapshot = machine.snapshot().expect("snapshot");
         let expected = machine.inspect().expect("inspect").state_hash;
         assert_eq!(snapshot.state_hash(), expected);
@@ -2424,7 +2449,7 @@ mod tests {
         machine.restore(&snapshot).expect("restore");
         let restored = machine.inspect().expect("inspect");
         assert_eq!(restored.state_hash, expected);
-        assert_eq!(restored.tick.raw(), 898);
+        assert_eq!(restored.tick.raw(), snapshot.tick().raw());
         assert_eq!(restored.registers["irq_mask"], 7);
         assert_eq!(restored.registers["irq_pending_level"], 6);
         assert_eq!(restored.registers["irq_deliverable"], 0);
@@ -2454,7 +2479,11 @@ mod tests {
     #[test]
     fn pending_vblank_state_survives_snapshot_restore() {
         let mut machine = interrupt_machine(3);
-        step_to_tick(&mut machine, 896);
+        step_until(
+            &mut machine,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
         assert!(machine.interrupts().is_pending(InterruptLevel::VBlank));
         let snapshot = machine.snapshot().expect("snapshot");
         let expected = machine.inspect().expect("inspect").state_hash;
@@ -2477,7 +2506,7 @@ mod tests {
         machine.restore(&snapshot).expect("restore");
         let restored = machine.inspect().expect("inspect");
         assert_eq!(restored.state_hash, expected);
-        assert_eq!(restored.tick.raw(), 896);
+        assert_eq!(restored.tick.raw(), snapshot.tick().raw());
         assert_eq!(
             restored.registers["irq_pending_level"],
             u64::from(InterruptLevel::VBlank.level())
@@ -2519,7 +2548,10 @@ mod tests {
         let mut other_machine = other.create_machine().expect("other machine");
         assert!(other_machine.restore(&snapshot).is_err());
 
-        let mut other_timing = fast_factory().create_machine().expect("timing machine");
+        let pal_factory =
+            MegadriveFactory::with_scheduler_config(demo_rom(), SchedulerConfig::pal())
+                .expect("PAL factory");
+        let mut other_timing = pal_factory.create_machine().expect("timing machine");
         assert!(other_timing.restore(&snapshot).is_err());
     }
 
@@ -2578,7 +2610,7 @@ mod tests {
         assert!(machine.restore(&short).is_err());
 
         // A rejected restore leaves the machine at its current tick.
-        assert_eq!(machine.inspect().expect("inspect").tick.raw(), 6);
+        assert_eq!(machine.inspect().expect("inspect").tick.raw(), 336);
     }
 
     #[test]
@@ -2651,12 +2683,21 @@ mod tests {
     fn sessions_fork_masked_request_then_deliver_after_mask_lowering() {
         let mut manager = SessionManager::new(Arc::new(interrupt_factory(3)));
         let source = manager.create_session().expect("source");
-        for _ in 0..7 {
+        for _ in 0..2_000_000 {
+            if manager.inspect(source).expect("inspect").machine.registers["irq_pending_level"]
+                == u64::from(InterruptLevel::HBlank.level())
+            {
+                break;
+            }
             manager.step(source, InputFrame::NEUTRAL).expect("step");
         }
         let checkpoint = manager.snapshot(source).expect("checkpoint");
         let masked = manager.inspect(source).expect("inspect");
-        assert_eq!(masked.machine.tick.raw(), 7);
+        assert_eq!(
+            masked.machine.tick.raw(),
+            masked.machine.registers["master_cycles"],
+            "tick is the master-cycle counter"
+        );
         assert_eq!(masked.machine.registers["irq_mask"], 7);
         assert_eq!(masked.machine.registers["irq_pending_level"], 4);
         assert_eq!(masked.machine.registers["irq_deliverable"], 0);
@@ -2670,9 +2711,14 @@ mod tests {
             masked.machine.state_hash
         );
 
-        // The fork lowers the mask with instruction 8 and takes the retained
-        // HBlank at instruction 9.
-        manager.step(fork, InputFrame::NEUTRAL).expect("lower mask");
+        // The fork finishes its delay loop, lowers the mask and takes the
+        // retained HBlank at the next instruction boundary.
+        for _ in 0..1_000_000 {
+            if manager.inspect(fork).expect("inspect").machine.registers["pc"] == 0x210 {
+                break;
+            }
+            manager.step(fork, InputFrame::NEUTRAL).expect("lower mask");
+        }
         let lowered = manager.inspect(fork).expect("lowered");
         assert_eq!(lowered.machine.registers["irq_mask"], 3);
         assert_eq!(lowered.machine.registers["irq_deliverable"], 1);
@@ -2733,15 +2779,27 @@ mod tests {
         let factory = interrupt_factory(3);
         let mut left = factory.create_machine().expect("left");
         let mut right = factory.create_machine().expect("right");
-        step_to_tick(&mut left, 950);
-        step_to_tick(&mut right, 950);
+        step_until(
+            &mut left,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
+        step_until(
+            &mut right,
+            |machine| machine.interrupts().is_pending(InterruptLevel::VBlank),
+            "VBlank pending",
+        );
+        left.step(InputFrame::NEUTRAL).expect("deliver left VBlank");
+        right
+            .step(InputFrame::NEUTRAL)
+            .expect("deliver right VBlank");
         let left_view = left.inspect().expect("left");
         let right_view = right.inspect().expect("right");
         assert_eq!(left_view.state_hash, right_view.state_hash);
         assert_eq!(left.vdp().status(), right.vdp().status());
         assert!(
             left_view.registers["d6"] >= 1,
-            "both machines must have delivered VBlank by tick 950"
+            "both machines must have delivered VBlank"
         );
         assert_eq!(left_view.registers["d6"], right_view.registers["d6"]);
         assert_eq!(left_view.registers["d7"], right_view.registers["d7"]);
@@ -3126,26 +3184,26 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v3 / state hash v3 / configuration hash v3
-        // (six steps of the demo ROM with the default scheduler quantum). The
-        // v3 bump is the documented cartridge-state format change.
+        // Golden values for payload v4 / state hash v4 / configuration hash v4
+        // (six steps of the demo ROM on the master-cycle timeline). The v4 bump
+        // is the documented master-cycle, extended-snapshot and timing change.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 196_808);
+        assert_eq!(snapshot.payload().len(), 196_821);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "1b524d1c960fefc0765c41968711913aedfbbffcd6b0f10e39a1152f27259d53"
+            "8f24b601f08606c537c57af74ca5569ad7b68351ed7f5e6aa4e1d976520b594a"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "170c3f1dc5ab27634f5c10b067c61e5568140511a1b1907cda6aa0409229773e"
+            "dafc89a301f1e1a4b799ff2cb6df655e0d64463c3fc9ab6236214236e013ca1a"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "dd737169e93124492ec087e8677bc48b68d815836378ee8d5b024e4a7e9a33f3"
+            "1ac706deb485d0b521b67533d2b17e6aed87db900609eed810874482f656eca4"
         );
     }
 }

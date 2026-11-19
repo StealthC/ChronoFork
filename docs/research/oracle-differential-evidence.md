@@ -1,18 +1,32 @@
 # Oracle Differential Instruction-Trace Evidence
 
-- **Status:** Current evidence **PASS 3/3** against the pinned Exodus headless
-  oracle: three independently authored synthetic ROMs have identical projected
-  address streams, equal selected final state and passing negative controls. The
-  E2-15 addition `rom_masked` omits `--instructions-per-line`, runs at the CLI
-  default quantum of 64, crosses two HBlank boundaries while the 68000 SR
-  interrupt mask stays 7, and enters no interrupt handler. The earlier
-  pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect) is
-  preserved below as history and was fixed under
+
+> **Superseded for timing (Phase 8.2):** the instruction-quantum scheduler and
+> per-ROM quantum/masked-boundary control described on this page are superseded by
+> the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
+> The address-projection and final-state results below remain historical evidence;
+> they are not a cycle-timing claim. The current Phase 8.2 differential runs eleven
+> synthetic ROMs and passes 11/11 address projections, 11/11 per-instruction cycle
+> comparisons, 11/11 selected final states and 11/11 negative controls; see the
+> [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
+
+- **Status:** Historical 3-ROM evidence **PASS 3/3** against the pinned Exodus
+  headless oracle: the three original independently authored synthetic ROMs have
+  identical projected address streams, equal selected final state and passing
+  negative controls. The E2-15 addition `rom_masked` omitted
+  `--instructions-per-line`, ran at the then-default quantum of 64, crossed two
+  HBlank boundaries while the 68000 SR interrupt mask stayed 7, and entered no
+  interrupt handler. This page is preserved history; the current harness and
+  result are the eleven-ROM master-cycle differential in the
+  [68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The
+  earlier pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect)
+  is preserved below as history and was fixed under
   [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md) E2-13.
-- **Scope:** instruction-address streams, opcode/ROM-byte consistency and selected
-  final architectural state for three synthetic ROMs, plus a negative gating
-  control on the masked ROM. **Not** cycle accuracy, interrupt timing, interrupt
-  delivery equivalence, rendering, audio, Z80, DMA or game compatibility.
+- **Scope (historical):** instruction-address streams, opcode/ROM-byte
+  consistency and selected final architectural state for the original three
+  synthetic ROMs, plus a negative gating control on the masked ROM. **Not** cycle
+  accuracy, interrupt timing, interrupt delivery equivalence, rendering, audio,
+  Z80, DMA or game compatibility.
 - **Related:** [Mega Drive 68000 slice](../architecture/megadrive-slice.md),
   [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md),
   [provenance](../licensing/provenance.md),
@@ -32,7 +46,7 @@ checks the instruction-quantum HBlank crossing and mask-7 gating control.
 | `rom_mem_vdp` | 1,000,000 (explicit) | 51/51 identical | `ba4f3948…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 25 caught, exit 1 |
 | `rom_masked` | **64 (CLI default, flag omitted)** | 155/155 identical | `02891e15…` on both sides | D0–D7, A0–A7, PC, effective SR and 64 work-RAM bytes equal | index 77 caught, exit 1 |
 
-Current summary: `status: pass`, 3/3 trace matches, 3/3 final-state matches,
+Historical 3-ROM summary: `status: pass`, 3/3 trace matches, 3/3 final-state matches,
 3/3 negative controls, 3/3 scheduler controls (masked gating 1/1), harness exit 0.
 `rom_masked` executed 155 instructions at quantum 64, completed two scanlines
 (boundaries at ticks 64 and 128) with the SR mask at 7 on both sides, executed no
@@ -196,7 +210,7 @@ stream.
    entry. Derived boundary counts are ChronoFork control quantities, not oracle
    timing comparisons.
 8. **Determinism.** Run the oracle probe twice and the ChronoFork trace twice per
-   ROM; require byte-identical trace files and states across runs. The current
+   ROM; require byte-identical trace files and states across runs. This historical
    evidence was also reproduced into fresh output directories (an ignored
    `.research/evidence/repro-e2-15/` directory and `/tmp/chronofork-e2-15-verify/`)
    with identical behavioral evidence.
@@ -269,7 +283,7 @@ encodings. The pre-repair evidence is preserved under
 `.research/evidence/before-repair/` (JSON, Markdown and artifacts); it was copied,
 not overwritten.
 
-## Current trace results (three ROMs)
+## Historical 3-ROM trace results (preserved)
 
 Projection = executed-address sequence up to but excluding the marker loop.
 
@@ -373,7 +387,7 @@ final-state comparisons. The pass is therefore **negative evidence for mask
 gating** — no handler executes while masked — not a positive comparison of
 interrupt delivery, acknowledge, nesting or interrupt timing.
 
-## Current final-state comparison
+## Historical 3-ROM final-state comparison (preserved)
 
 Method: after one frame, one MCP session per ROM reads `cpu.registers` for
 `Main 68000` and `cpu.read_memory` for 64 bytes at `0xFF0000`; ChronoFork writes the
@@ -425,7 +439,7 @@ match on registers, effective SR and 64 work-RAM bytes.
 
 The comparator is driven from the oracle projection; one projected record is
 corrupted in a copy and the comparator must exit 1 and report the corrupted index.
-All three current controls pass.
+All three historical controls passed.
 
 | ROM | Corrupted index | Reported index | Exit code | Status |
 |---|---:|---:|---:|---|
@@ -474,8 +488,10 @@ All of this is ignored by Git and is not distributed with ChronoFork:
 
 ## Evidence commands
 
-Harness (generates the ROMs, runs both tools twice per ROM, compares, checks the
-per-ROM quantum/gating control and writes the evidence files):
+Harness (the current script generates the eleven-ROM corpus, runs both tools twice
+per ROM, compares address streams, per-instruction cycles and final state, runs
+negative controls and writes the evidence files). The commands below are
+historical: they now run the current corpus, not the 3-ROM result on this page.
 
 ```sh
 python3 scripts/oracle-diff.py --out-dir .research/evidence
@@ -647,20 +663,22 @@ cp build/exodus-probe build/exodus-mcpd ../../oracle/build/
 cd ../../..
 cargo build -p chronofork-cli
 
-# 4. Run the differential harness with its own evidence directory.
+# 4. Run the current eleven-ROM differential harness with its own evidence directory.
 python3 scripts/oracle-diff.py --out-dir .research/evidence
 
 # 5. Inspect the recorded result and per-ROM artifacts.
 sha256sum .research/evidence/oracle-diff.json .research/evidence/oracle-diff.md
 ```
 
-Expected exit code: **0** — all three ROMs pass projection, final-state and
-negative-control comparisons, and the scheduler/gating control passes (3/3
-scheduler controls, masked gating 1/1). The harness verifies that `rom_masked`
-recorded quantum 64 with the flag omitted and that `rom_alu`/`rom_mem_vdp` recorded
-the explicit 1,000,000 quantum. To reproduce the historical pre-repair FAIL, check
-out the pre-repair core revision and harness and preserve its output under a
-separate directory before running again.
+Expected exit code: **0** — the command above runs the **current eleven-ROM
+master-cycle** harness, not the 3-ROM result documented on this page. The current
+run passes 11/11 address projections, per-instruction cycle comparisons, final
+states and address/cycle/final-state negative controls; see the
+[68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The 3/3
+and quantum-64 material on this page is retained historical evidence and is **not**
+reproduced by this command. To reproduce the historical pre-repair FAIL, check out
+the pre-repair core revision and harness and preserve its output under a separate
+directory before running again.
 
 The harness writes `oracle-diff.json` (machine-readable, schema v2) and
 `oracle-diff.md` (human-readable) plus per-ROM artifacts under

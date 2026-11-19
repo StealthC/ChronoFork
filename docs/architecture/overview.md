@@ -176,10 +176,10 @@ mutable state with its source.
 | Deterministic synthetic backend | Implemented |
 | Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Implemented (partial hardware) |
 | VDP status/control/VRAM port window | Implemented (no rendering/DMA) |
-| Deterministic VBlank/HBlank interrupt scheduler | Implemented (instruction-quantum, not cycle-accurate) |
+| Deterministic VBlank/HBlank interrupt scheduler | Implemented on the master-cycle timeline (3420 master cycles per scanline; instruction-boundary costs, not full hardware cycle accuracy). The superseded instruction-quantum model is historical. |
 | TH-high 3-button controller-read subset (ports 1–2) | Implemented for the minimal slice — see [Mega Drive slice](megadrive-slice.md) |
 | VDP rendering/DMA, audio, Z80, controller protocol beyond TH-high 3-button, mapper/SRAM | Not implemented |
-| `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege not enforced; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
+| `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege enforced for the implemented system instructions; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
 | HTTP/MCP/GUI | **Implemented** for the documented scope: HTTP and MCP (M6) — see [agent interfaces](agent-interfaces.md), [ADR-0012](../adr/0012-agent-native-interfaces.md) and [M6 acceptance](../quality/m6-agent-interfaces-acceptance.md); GUI presentation (M7) — see [GUI architecture](gui.md), [ADR-0013](../adr/0013-human-facing-gui.md) and [M7 acceptance](../quality/m7-gui-acceptance.md). The GUI is text/HTML only (no native toolkit, picture or sound); M6/M7 are verified and merged to `main` at `cb05836` (PR #6) |
 | Transport-agnostic service + bounded HTTP/1.1 and MCP adapters | Implemented (M6): 16-operation catalog, canonical JSON, token/scope/ownership, manager lock + writer leases, daemon and typed client; HTTP/1.1 loopback/sidecar scope with **no TLS, SSE, keep-alive or chunked bodies** |
 | Debug/trace/script/TAS operations over transport | Not implemented (M6-FU1): those surfaces stay CLI-local |

@@ -48,22 +48,22 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `Next` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phases 8.2–8.8 not started |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phases 8.3–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
 
 | Track | Status | Objective |
 |---|---|---|
-| [H1 — CPU and instruction completeness](#h1--cpu-and-instruction-completeness) | `Partial` | Broader 68000 instruction/addressing coverage, privilege, exception groups |
+| [H1 — CPU and instruction completeness](#h1--cpu-and-instruction-completeness) | `Partial` | Documented MC68000 set and privilege delivered; remaining exception groups and coverage beyond the documented set |
 | [H2 — Video, VDP and DMA](#h2--video-vdp-and-dma) | `Partial` | Rendering, CRAM/VSRAM, DMA, raster and H/V timing |
 | [H3 — Audio and Z80](#h3--audio-and-z80) | `Planned` | Z80, bus arbitration, YM2612 and PSG |
 | [H4 — Cartridge, controllers and timers](#h4--cartridge-controllers-and-timers) | `Partial` | ROM identity, mapper/SRAM, full controller protocol, timers |
 | [H5 — Accuracy and evidence](#h5--accuracy-and-evidence) | `Partial` | Differential corpus, interrupt timing, cycle accuracy, cross-platform determinism |
 
-## Next
+## Current milestone
 
-**M8 — Functional Mega Drive is `Next`.** The owner redefined M8 on 2026-11-17: the former
+**M8 — Functional Mega Drive is `In progress`.** The owner redefined M8 on 2026-11-17: the former
 multi-backend milestone became M9, and M8 now completes the Mega Drive model (full 68000 and
 Z80, VDP rendering/timing/DMA, YM2612/PSG audio, cartridge, controllers) so a curated set of
 commercial ROMs plays, with deterministic headless capture and an optional native window.
@@ -77,8 +77,9 @@ also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-inte
 the same base. M5 was merged to `main` at `0c4e9f0` (PR #4) after being independently
 verified on `agent/m5-tracing-scripting` at base `84f1476`. M8 is the first unblocked
 milestone and has started: phase 8.1 (cartridge, region, TMSS and boot) was implemented,
-independently reviewed and merged to `main` at `f024b7b` (PR #25), and phases 8.2–8.8 are not
-started; it depends on the M1–M7 layers and consumes the H1–H5
+independently reviewed and merged to `main` at `f024b7b` (PR #25); phase 8.2 is implemented,
+verified (round 12) and independently reviewed (round 11), and merged to `main` through the
+phase-8.2 PR (issue #15); phases 8.3–8.8 are planned. M8 depends on the M1–M7 layers and consumes the H1–H5
 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
@@ -148,11 +149,12 @@ phases.
 - [x] Deterministic interrupt/tick scheduler with SR-mask gating, `RTE` return and
       CPU-side VINT pending/acknowledge.
 - [x] VDP and interrupt scheduler integrated into backend snapshots, state hashes and CLI.
-- [x] Differential trace evidence against the pinned Exodus oracle: three synthetic ROMs
-      match on projected address streams and selected final state, negative controls are
-      caught, and the masked-ROM default-quantum control crosses two HBlank boundaries with
-      the SR mask at 7 and no handler entry. Current run, controlled windows and pre-repair
-      history are in [oracle differential
+- [x] Differential trace evidence against the pinned Exodus oracle: the historical three
+      synthetic ROMs match on projected address streams and selected final state, and the
+      current Phase 8.2 harness covers eleven ROMs at 11/11 address, per-instruction cycle,
+      final-state and negative controls. The historical masked-ROM default-quantum control
+      crossed two HBlank boundaries with the SR mask at 7 and no handler entry. Current
+      evidence, controlled windows and pre-repair history are in [oracle differential
       evidence](../research/oracle-differential-evidence.md); the masked run is negative
       gating evidence, not interrupt-delivery or interrupt-timing equivalence.
 - [x] Capabilities report matches reality for the implemented slice.
@@ -169,11 +171,12 @@ phases.
 - M1 has no follow-up scope: the hardware gaps it exposed are hardware depth, tracked in
   [H1](#h1--cpu-and-instruction-completeness) through [H5](#h5--accuracy-and-evidence), not
   as M1 items.
-- Limits carried by the modelled slice and owned by H: privilege is not enforced; only
-  HBlank level 4 and VBlank level 6 sources exist, with level 7 a predicate rule only; no
-  interrupt-timing equivalence is claimed; VDP interrupt-enable registers and VDP-side
-  acknowledge logic are not modelled; controller input is the TH-high 3-button subset on
-  ports 1–2 ([Mega Drive slice](../architecture/megadrive-slice.md#not-implemented)).
+- Limits carried by the modelled slice and owned by H: privilege is enforced for the
+  implemented system instructions; only HBlank level 4 and VBlank level 6 sources exist,
+  with level 7 a predicate rule only; guest bus-error/trace delivery and cycle accuracy
+  remain absent; no interrupt-timing equivalence is claimed; VDP interrupt-enable registers
+  and VDP-side acknowledge logic are not modelled; controller input is the TH-high 3-button
+  subset on ports 1–2 ([Mega Drive slice](../architecture/megadrive-slice.md#not-implemented)).
 - Reopening follows the [closed-milestone rule](#how-to-read-this-document).
 
 ## M2 — Durable sessions
@@ -405,7 +408,7 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
       record blocks, exit codes and typed errors.
 - [x] Non-perturbation evidence: the per-step observation off/on probe found zero canonical
       differences, demo and movie bytes were unchanged, and the pinned-oracle differential
-      stayed PASS 3/3.
+      stayed at its then-current PASS 3/3 (now superseded by the 11/11 run).
 - [x] Independent verification of every M4-A1–A17 row, the full gate, the demo/regression
       comparison and the claim audit (t5 PASS 2026-11-16 at `df98321`).
 - [x] Post-PASS capability-report/wording fix at `6b2a567` re-gated, then promotion audit
@@ -699,9 +702,10 @@ and do not reopen it.
 ## M8 — Functional Mega Drive
 
 - **Roadmap stage:** [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive)
-- **Status:** `Next`
+- **Status:** `In progress`
 - **Integration state:** phase 8.1 (cartridge, region, TMSS and boot) merged to `main` at
-  `f024b7b` (PR #25); phases 8.2–8.8 not started
+  `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed
+  (round 11), merged to `main` through the phase-8.2 PR (issue #15); phases 8.3–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic
@@ -719,8 +723,10 @@ and do not reopen it.
 
 - [x] Cartridge header/region/TMSS/checksum, images above 4 MiB, a banking mapper and SRAM
       (phase 8.1, reviewed PASS 2026-11-17).
-- [ ] Complete 68000 instruction set, addressing modes, privilege, exception groups and cycle
-      accounting.
+- [x] Documented MC68000 instruction set, addressing modes, privilege enforcement and
+      cycle accounting (phase 8.2; verified round 12, reviewed round 11 and merged).
+- [ ] Remaining 68000 exception groups (guest bus error/trace), a wired level-7 source
+      and cycle/prefetch behavior only as far as H5 requires.
 - [ ] Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight,
       256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge.
 - [ ] Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
@@ -796,22 +802,24 @@ and do not reopen it.
   hardware-depth track, not a stage.
 - **Status:** `Partial`
 - **Integration state:** n/a (track)
-- **Objective:** a documented, testable 68000 model instead of a subset that happens to run
-  the current fixtures.
+- **Objective:** a documented, testable 68000 model; the documented MC68000 set and
+  privilege are delivered, and the remaining track work is exception groups and
+  coverage beyond the documented set.
 - **Depends on:** the M1 slice and its differential harness.
-- **Evidence:** implemented subset in [Mega Drive
-  slice](../architecture/megadrive-slice.md#68000-subset); [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
+- **Evidence:** the documented instruction set in [Mega Drive
+  slice](../architecture/megadrive-slice.md#68000-instruction-set); [EPIC-0002](../epics/EPIC-0002-megadrive-slice.md)
   E2-03/E2-13; FR-MD-002 and FR-MD-009 in
   [functional requirements](../requirements/functional.md).
 
 ### Work items
 
-- [x] Documented 68000 subset with reset vectors, flags and big-endian bus discipline.
+- [x] Documented MC68000 instruction set with reset vectors, flags and big-endian bus discipline.
 - [x] E2-13 absolute-long `MOVE` decoding repair, verified by differential evidence.
-- [ ] Broader instruction and addressing-mode coverage, driven by differential tests
-      (EPIC-0002 E2-13 continued).
-- [ ] Privilege enforcement and separate user/supervisor stacks.
-- [ ] 68000 exception groups beyond the implemented interrupt path.
+- [ ] Coverage beyond the documented MC68000 instruction set and broader differential
+      cases (EPIC-0002 E2-13 continued).
+- [x] Privilege enforcement and separate user/supervisor stacks, with RTE restore.
+- [ ] 68000 exception groups beyond the implemented interrupt path (guest bus error and
+      trace).
 - [ ] A wired level-7 interrupt source instead of a predicate rule only.
 
 ### Exit criteria
@@ -969,9 +977,11 @@ and do not reopen it.
 
 ### Work items
 
-- [x] Pinned-oracle differential for three synthetic ROMs, with negative controls and a
-      default-quantum masked-ROM negative gating control.
-- [ ] A broader differential corpus beyond the three synthetic ROMs.
+- [x] Pinned-oracle differential for the historical three synthetic ROMs, with negative
+      controls and a default-quantum masked-ROM negative gating control.
+- [x] A broader differential corpus beyond the historical three synthetic ROMs: eleven
+      synthetic ROMs on the master-cycle timeline at 11/11 address, cycle, final-state and
+      negative-control comparisons.
 - [ ] Positive differential comparison of interrupt delivery and timing, which needs an
       oracle model of those semantics.
 - [ ] Cycle accuracy including prefetch and bus timing, at a documented level.
