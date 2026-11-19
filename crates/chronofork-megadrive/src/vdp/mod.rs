@@ -119,6 +119,9 @@ pub use regs::{
     STATUS_SPRITE_OVERFLOW, STATUS_VBLANK, STATUS_VINT_PENDING, StatusLatches, VRAM_SIZE,
     VSRAM_WORDS, VramTarget,
 };
+pub use render::{
+    FrameBuffer, HIGHLIGHT_FLAG, MAX_FRAME_HEIGHT, MAX_FRAME_WIDTH, PALETTE_INDEX_MASK, SHADOW_FLAG,
+};
 pub use timing::VdpTick;
 
 /// Magic prefix of a serialized VDP snapshot.
