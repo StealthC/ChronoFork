@@ -17,10 +17,13 @@
   payload/state/config v4 (implemented, reviewed and verified 2026-11-17; phase 8.2
   adds the master-cycle timeline, extended CPU snapshot fields and the 8.2 cycle
   differential; booting a commercial title is phase 8.6 evidence, not claimed here).
-- **Next:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
-  is the milestone that completes this slice (full 68000/Z80, VDP rendering/DMA/timing,
-  YM2612/PSG audio, cartridge, controllers and capture). This page remains the canonical
-  capability/limitation home; it is updated as each phase lands, never in advance.
+- **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
+  is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
+  with 11/11 address, per-instruction cycle and final-state differential evidence) is
+  implemented; final verification/review and merge are pending. M8 then completes the
+  remaining slice (Z80, VDP rendering/DMA/timing, YM2612/PSG audio, cartridge,
+  controllers and capture). This page remains the canonical capability/limitation home;
+  it is updated as each phase lands, never in advance.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
