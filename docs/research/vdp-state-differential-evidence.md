@@ -137,12 +137,18 @@ classification.
 ## Frame hashes and limits
 
 - **Frames are deterministic but not cross-emulator compared.** The headless
-  oracle has no framebuffer, so pixels are pinned internally: the
+  oracle has no framebuffer, so pixels are pinned internally. The
   `crates/chronofork-megadrive/tests/vdp_frame.rs` tests assert one frame per
-  frame boundary, RGBA alpha `0xFF`, and identical frame checksums across
-  identical runs. No numeric frame fixture is copied into this page because the
-  checksum follows the renderer; the deterministic VRAM SHA-256 values above are
-  the scene fixtures this differential records.
+  frame boundary, RGBA alpha `0xFF`, identical checksums across identical runs,
+  and fixed full-frame SHA-256 fixtures for a deterministic scene with plane
+  pixels plus shadow/highlight operators: H32 (256x224)
+  `43e111026c99e6fe3b30693aed707bf3cb5ce1143d2bfffd507c2d03e49d638f` and H40
+  (320x224) `3fb74d04b24dd9b355365b375da8edaadef5cddd97624e687587513da3517056`.
+  Those fixtures hash the canonical width/height plus palette-index frame bytes,
+  so a renderer change that is internally consistent still fails them. The media
+  layer's RGBA conversion is covered separately by the frame tests. No
+  cross-emulator pixel comparison is made, and the deterministic VRAM SHA-256
+  values above remain the scene fixtures for this differential.
 - H counter is approximate; the H counter and the power-on scanline phase are
   the recorded scoped counter divergences. Absolute H/V values at matched
   instruction indices are not claimed equal.

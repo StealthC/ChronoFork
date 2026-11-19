@@ -41,9 +41,9 @@ pub const STATUS_DMA_BUSY: u16 = 0x0002;
 pub const STATUS_HBLANK: u16 = 0x0004;
 /// VBlank flag (status bit 3).
 ///
-/// Driven by [`crate::vdp::Vdp::advance_master`] from the active-line count, or
-/// by the owning backend through `set_vblank` while the VDP is not yet driven
-/// on its own timeline.
+/// Driven by [`crate::vdp::Vdp::advance_master`] from the active-line count and
+/// re-synced by the owning backend through `set_vblank` to the scheduler's
+/// deterministic scanline position.
 pub const STATUS_VBLANK: u16 = 0x0008;
 /// Odd interlace frame flag (status bit 4).
 pub const STATUS_ODD_FRAME: u16 = 0x0010;

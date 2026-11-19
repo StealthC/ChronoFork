@@ -4,8 +4,12 @@
 //! master-cycle interrupt scheduler, **not** a complete Mega Drive.
 //! The cartridge device models the header, region, Sega mapper, 64 KiB battery
 //! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
-//! v4. Rendering, audio, Z80, DMA, TH-latched/6-button controller protocols and
-//! cycle-accurate timing are not implemented. Controller port
+//! v5. The VDP implements CRAM/VSRAM addressing, plane/window/sprite composition,
+//! DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
+//! interrupt pending/acknowledge. Audio, Z80, TH-latched/6-button controller
+//! protocols, VSRAM data-port reads, interlace, the byte-swapped physical VRAM
+//! layout, dot-exact H/V counters and cycle-accurate timing are not
+//! implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
 //! advertises only what it actually provides and uses an independently authored
@@ -3401,16 +3405,14 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v4 / state hash v4 / configuration hash v4
-        // (six steps of the demo ROM on the master-cycle timeline). The v4 bump
-        // is the documented master-cycle, extended-snapshot and timing change.
-        //
-        // Phase 8.3 re-pinned the length and the two hashes: payload v4 embeds
-        // the VDP snapshot, and VDP snapshot v2 (`CFVDP002`) adds the device
-        // state, so the body grew by 237 bytes. Phase 8.3 tasks 9–10 also drive
-        // the VDP line/dot timeline from the backend, so the six-step state
-        // includes a non-zero VDP position; the outer payload is still v4.
-        // Phase 8.3 task 12 bumps the outer payload to v5 and re-pins again.
+        // Golden values for payload v5 / state hash v5 / configuration hash v5
+        // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
+        // moved the outer identity from v4 to v5 and the body now embeds the
+        // CFVDP002 VDP snapshot (registers, CRAM, VSRAM, FIFO, DMA, frame index,
+        // line/dot and VRAM). The VDP also advances on the master-cycle
+        // timeline, so the six-step state includes a non-zero line/dot
+        // position. The length and both hashes below are the current v5 golden;
+        // v1-v4 payloads are rejected before any body byte is reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");

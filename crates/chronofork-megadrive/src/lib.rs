@@ -7,14 +7,18 @@
 //! deterministic master-cycle VBlank/HBlank interrupt scheduler whose
 //! delivery honours the 68000 `SR` interrupt-priority mask (level 7 always,
 //! otherwise strictly above the mask), a modelled cartridge (header, region,
-//! Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register),
-//! versioned v4 snapshots and session integration. Debug-only observation, pure CPU/VDP/interrupt/bus views and a
-//! bounded, execution-cross-checked 68000-subset disassembler are available
-//! without changing canonical state. **Not implemented:** rendering, audio, Z80,
-//! DMA, TH-latched and 6-button controller protocols (A/Start are not readable),
-//! SRAM banking schemes other than the Sega mapper, VDP interrupt-enable/
-//! acknowledge registers and cycle-accurate timing. This is real-hardware
-//! groundwork, not a playable emulator.
+//! Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register), the
+//! phase-8.3 VDP (CRAM/VSRAM, planes/window/sprites/scroll composition, DMA,
+//! FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
+//! interrupt pending/acknowledge), deterministic headless video frames,
+//! versioned v5 snapshots and session integration. Debug-only observation, pure
+//! CPU/VDP/interrupt/bus views and a bounded, execution-cross-checked
+//! 68000-subset disassembler are available without changing canonical state.
+//! **Not implemented:** audio, Z80, TH-latched and 6-button controller protocols
+//! (A/Start are not readable), SRAM banking schemes other than the Sega mapper,
+//! VSRAM data-port reads, interlace, the byte-swapped physical VRAM layout,
+//! dot-exact H/V counters and cycle-accurate (prefetch/bus) timing. This is
+//! real-hardware groundwork, not a playable emulator.
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 

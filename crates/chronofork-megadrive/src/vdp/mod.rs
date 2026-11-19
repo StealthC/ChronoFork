@@ -587,11 +587,11 @@ impl Vdp {
 
     /// Sets or clears the video VBlank status latch (bit 3).
     ///
-    /// [`Vdp::advance_master`] drives this latch from the line position. Until
-    /// the backend advances the VDP on its own timeline, the minimal Mega Drive
-    /// backend may keep driving it from the scheduler's deterministic scanline
-    /// position, so it reflects the vertical blanking interval rather than a
-    /// pending CPU request.
+    /// [`Vdp::advance_master`] derives this latch from the VDP's own line/dot
+    /// position; the minimal Mega Drive backend also re-syncs it to the
+    /// scheduler's deterministic scanline position after each step so the two
+    /// canonical timelines agree. It reflects the vertical blanking interval,
+    /// not a pending CPU request.
     pub fn set_vblank(&mut self, active: bool) {
         self.status_latches.vblank = active;
     }
