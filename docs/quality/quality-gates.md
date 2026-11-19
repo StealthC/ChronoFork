@@ -4,7 +4,9 @@ A feature is not complete because it compiles. These gates must be executed and
 recorded. Results below are from the bootstrap host; update them when the
 toolchain or environment changes.
 
-**Current status:** the latest dated block is the [2026-11-17 M8 phase 8.1 cartridge,
+**Current status:** M8 phase 8.3 (complete VDP) is **implemented on
+`agent/8.3-vdp`** and awaits its independent verification/review; the phase gate is defined
+below. The latest dated verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
 region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
 (81 targets / 1,047 passed, 0 failed, 0 ignored; both demos byte-identical or explained only
 by the documented v3 state-hash bump; GUI run deterministic), which verified the worktree on
@@ -49,6 +51,38 @@ Or run the repository script:
 
 The script sets `PATH` for a user-local rustup install and stops on the first
 failure.
+
+## Phase 8.3 VDP gate (defined; record the executed result before claiming the phase)
+
+```sh
+cargo test --workspace
+./scripts/check.sh
+python3 scripts/oracle-vdp-diff.py --out-dir .research/evidence/8.3
+```
+
+The first two commands are the required local gate. The VDP differential drives the
+pinned Exodus oracle (`exodus-mcpd`, revision `ec005615…`) and ChronoFork over
+independently authored synthetic VDP programs at synchronized instruction boundaries. It
+records per-program ROM/state/VRAM hashes, the first mismatch with register/address
+context, a negative control and a skip-with-reason when the oracle or the built CLI is
+absent (exit 3, never a pass). What it proves and what it does **not** claim:
+
+- It compares the oracle-visible status and H/V counter readbacks, CPU state and work RAM
+  at the stop marker, and ChronoFork's canonical VDP registers, full 64 KiB VRAM and CRAM
+  readback against the values the synthetic program programmed and wrote.
+- The pinned headless oracle exposes no VDP register or memory reflection and its
+  data-port reads return the stale write latch, so VRAM/CRAM/VSRAM content is not
+  byte-compared against Exodus. Pixels are pinned internally by `vdp_frame`; there is no
+  cross-emulator framebuffer comparison.
+- The absolute status bits and H/V counter values differ at reset because the two models
+  start at different scanline phases and the H counter is approximate. These values are
+  recorded as scoped divergences with their deltas, not treated as equal.
+- VSRAM data-port reads are undecoded in ChronoFork; DMA state is not externally
+  observable. Both are covered by backend unit tests, not by this oracle differential.
+- A full workspace count is recorded with the run; do not copy a count from this
+  definition into a verification claim.
+
+See [VDP state differential evidence](../research/vdp-state-differential-evidence.md).
 
 ## Historical bootstrap results (2026-11-13; superseded, not a current claim)
 
@@ -1021,7 +1055,7 @@ passed without a command and an exit code recorded there or in your own run.
 | Corruption/version rejection | Implemented |
 | Property-based tests | Implemented: codec/snapshot property tests ([evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting)) |
 | Fuzz testing | Planned |
-| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); full emulator differential remains planned |
+| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the CPU oracle differential (11 synthetic ROMs) and the phase-8.3 VDP state differential are implemented as external harnesses; full emulator/pixel differential remains out of scope |
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Implemented: M6 service manager lock and per-session writer lease (typed retryable `conflict`, reads allowed during a mutation) |
 | Transport/wire tests | Implemented: M6 bounded HTTP/1.1 and MCP wire contracts, rejection matrices, server bounds, typed client and direct/HTTP/MCP byte parity |

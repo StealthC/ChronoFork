@@ -15,17 +15,21 @@
   slice (t5 PASS, 2026-11-16). M8 phase 8.1 adds a modelled cartridge — header/region/
   checksum, Sega mapper, 64 KiB battery SRAM, TMSS lockout and version register — with
   payload/state/config v3 (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`; implemented, reviewed and
-  verified 2026-11-17). Phase 8.2 moves the identity to v4
-  (`CFMD68K4`/`CFMDSTATE4`/`CFMDCONF4`) with the master-cycle timeline and extended CPU
-  snapshot fields; booting a commercial title is phase 8.6 evidence, not claimed here.
+  verified 2026-11-17). Phase 8.2 moved the identity to v4 with the master-cycle timeline
+  and extended CPU snapshot fields. Phase 8.3 (complete VDP) adds the plane/window/sprite
+  compositor, DMA, the FIFO/CPU wait model, VDP-owned VBlank/HBlank requests, H/V counters
+  and deterministic headless video frames, and moves the payload to v5
+  (`CFMD68K5`/`CFMDSTATE5`/`CFMDCONF5`); booting a commercial title is phase 8.6 evidence,
+  not claimed here.
 - **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
   with 11/11 address, per-instruction cycle and final-state differential evidence) is
   implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
-  through the phase-8.2 PR (issue #15). M8 then completes the
-  remaining slice (Z80, VDP rendering/DMA/timing, YM2612/PSG audio, cartridge,
-  controllers and capture). This page remains the canonical capability/limitation home;
-  it is updated as each phase lands, never in advance.
+  through the phase-8.2 PR (issue #15). Phase 8.3 (the VDP) is implemented on the phase
+  branch; verification, review and merge follow. M8 then completes the remaining slice
+  (Z80, YM2612/PSG audio and capture); cartridge and controllers are already implemented
+  as described below. This page remains the canonical capability/limitation home; it is
+  updated as each phase lands, never in advance.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -121,35 +125,52 @@ instruction (4), zero divide (5), `CHK` (6), `TRAPV` (7), privilege violation (8
 autovector levels 4 and 6 (28/30) and `TRAP #n` (32+n); vector 1 is the reset
 vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 
-### VDP status/control/VRAM slice
+### VDP (phase 8.3)
 
-- 64 KiB flat VRAM, zeroed at reset, big-endian.
+- 64 KiB flat VRAM, 64 CRAM words and 40 VSRAM words, big-endian, zeroed at reset.
 - Data port (`0xC00000..=0xC00003`), control/status port
   (`0xC00004..=0xC00007`) and HV-counter port (`0xC00008..=0xC0000F`).
-- Two-word command setup (command code and 14+2 address bits) and register writes
-  `0x8000 | register << 8 | value` for registers `0x00..=0x17`.
-- Data-port VRAM reads/writes with auto-increment from register `0x0F`, wrapping
-  at 64 KiB. Byte accesses transfer a full word; byte writes duplicate into both
-  halves; byte reads select a lane.
-- Status register with VBlank (bit 3, driven by the scheduler's line position),
-  VINT-pending (bit 7, derived from the backend's pending VBlank request) and
-  FIFO-empty (bit 8, always set because no FIFO is modelled). The VINT latch is set
-  while a VBlank (level 6) request is pending — including while the `SR` mask blocks
-  it — and clears when that request is delivered and acknowledged; a status-port
-  read returns the current status and cancels only a half-latched command word, and
-  never acknowledges, clears or consumes an interrupt. The latch is derived state,
-  not serialized into the VDP snapshot; the backend recomputes it after every step
-  and after restore. All other status bits are documented constants.
-- VDP interrupt-enable registers and VDP-side acknowledge logic are not modelled:
-  the status bit is driven by the external scheduler, and only delivery of the VDP
-  source acknowledges it.
-- Rejected targets are typed errors: DMA, CRAM, VSRAM, half-completed commands,
-  out-of-range registers, HV-counter writes and offsets above `0x0F`.
-- Versioned, fixed-length VDP snapshot (`CFVDP001`, 65 574 bytes) with atomic
-  validated restore.
-
-Not implemented: rendering, planes, window, sprites, scrolling, CRAM, VSRAM, DMA,
-FIFO/access timing and H/V counters.
+- Two-word command setup and register writes `0x8000 | register << 8 | value` for
+  registers `0x00..=0x17`. Data-port addressing decodes VRAM write/read, CRAM
+  write/read (6-bit word index aliasing) and VSRAM write (9-bit modulo-40 wrap);
+  one auto-increment per word including byte accesses, with byte writes duplicated
+  into both halves and byte reads selecting a lane. VSRAM data-port reads are
+  **not decoded**; they raise a typed rejection.
+- Status register fully derived from the dot/line position: PAL, DMA busy, HBlank,
+  VBlank, odd frame, sprite collision/overflow latches, VINT pending, FIFO empty and
+  FIFO full. A control-port status read reports the current value, cancels only a
+  half-latched command word and never acknowledges an interrupt.
+- HBlank/VBlank requests are generated by the VDP at the line/dot boundary and gated
+  by register `0x00` bits 4/5; VBlank (level 6) is delivered before HBlank (level 4)
+  and the 68000 `SR` mask still decides admission. Acknowledging the delivered source
+  leaves the other request pending.
+- Line timing: 3420 master cycles per line, 262-line NTSC and 313-line PAL frames,
+  a monotonic frame counter, and strict line/dot snapshot validation. The H counter
+  and the power-on scanline phase are documented as approximate.
+- Rendering: plane A/B and window nametables with horizontal/vertical scrolling,
+  sprite attribute-table entries with collision and overflow latches, priority
+  composition, shadow/highlight palette flags, the register-`0x07` border and a
+  deterministic H40/H32 frame buffer. The compositor is a pure function of the
+  canonical VDP state and the master-cycle timeline. H32 window geometry, line-mode
+  vertical scrolling and column-scroll details are approximations; interlace is
+  absent and physical byte-swapped VRAM is not modelled.
+- DMA: memory-to-VRAM, memory-to-CRAM, memory-to-VSRAM, VRAM fill and VRAM copy,
+  pre-validated with typed errors, DMA-busy status and deterministic busy windows.
+  The DMA source is a VRAM address in this slice; 68000-side DMA is not modelled.
+- FIFO: a bounded four-word write queue with occupancy/backpressure; full-queue
+  writes cost a 68000 wait slot that the backend converts to master cycles.
+- Snapshot (`CFVDP002`) carries the registers, CRAM, VSRAM, FIFO, DMA, frame index,
+  line/dot and VRAM with atomic validated restore; `CFVDP001` v1 is rejected.
+- Media: `MegadriveBackend` implements `MediaSource` and emits one deterministic
+  `VideoFrame` per completed VDP frame (`256x224`/`320x224` in NTSC and `256x240`/
+  `320x240` in PAL), converting palette indices through 9-bit CRAM RGB to RGBA8 with
+  opaque alpha. A one-frame queue returns `None` on a second take before a new frame;
+  audio remains absent.
+- Evidence: the pinned Exodus VDP state differential is recorded in
+  [vdp-state-differential-evidence.md](../research/vdp-state-differential-evidence.md);
+  the backend tests `vdp_ports`, `vdp_timing`, `vdp_planes`, `vdp_sprites`,
+  `vdp_compose`, `vdp_dma`, `vdp_fifo`, `vdp_interrupts`, `vdp_snapshot` and
+  `vdp_frame` cover the same surface.
 
 ### Deterministic interrupt scheduler
 
@@ -162,8 +183,9 @@ FIFO/access timing and H/V counters.
 - NTSC constants (262 lines/frame, 224 active) and PAL constants (313/240), with
   the fixed 3420-master-cycle scanline; `SchedulerConfig::new(video)/ntsc()/pal()`
   carries only the video standard.
-- HBlank is requested when each active scanline completes at a master-cycle
-  boundary; VBlank when vertical blanking begins. Blanking lines are quiet.
+- The VDP requests HBlank when each active scanline completes at a line/dot boundary
+  and VBlank when vertical blanking begins; blanking lines are otherwise quiet. The
+  scheduler delivers, acknowledges and snapshots pending requests as described here.
 - At most one request per level is retained; repeated requests coalesce with
   diagnostic counters, and a masked request keeps its original issue tick. Delivery
   order is VBlank (level 6) before HBlank (level 4).
@@ -177,17 +199,18 @@ FIFO/access timing and H/V counters.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF4`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF5`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K4`, payload version **4**, followed by the
+- Snapshot payload magic is `CFMD68K5`, payload version **5**, followed by the
   68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
-  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete VDP snapshot
-  and the complete master-cycle scheduler snapshot. Versions 1-3 are rejected rather
-  than reinterpreted.
-- The state hash (`CFMDSTATE4`) covers the extended 68000 state, tick, RAM, VDP
-  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors and
-  VRAM changes are part of checkpoint identity.
+  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP002`
+  VDP snapshot (including the frame index), the cartridge state and the complete
+  master-cycle scheduler snapshot. Versions 1-4 are rejected with a typed error
+  rather than reinterpreted.
+- The state hash (`CFMDSTATE5`) covers the extended 68000 state, tick, RAM, VDP
+  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors,
+  VRAM/CRAM/VSRAM and the frame index are part of checkpoint identity.
 - Restore validates backend identity, backend version, envelope version, config
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
   recomputed state hash. The replacement bus and scheduler are built before they
@@ -218,8 +241,9 @@ FIFO/access timing and H/V counters.
 - Capabilities truthfully report `breakpoints = false` and `tracing = false`: host
   breakpoints are a debugger feature and the bounded trace is a concrete-type debug
   facility, not the generic `Backend` `tracing` capability. Since M4 the slice reports
-  `watchpoints = true` and `debug_events = true` for its optional observation layer, and
-  `rendering = false` / `audio = false`.
+  `watchpoints = true` and `debug_events = true` for its optional observation layer; since
+  phase 8.3 it reports `rendering = true` (deterministic headless frames) and keeps
+  `audio = false`.
 
 ### Bounded instruction trace (debug only)
 
@@ -449,14 +473,13 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State (current, after phase 8.2).** Payload v4 (`CFMD68K4`), state hash v4
-  (`CFMDSTATE4`) and configuration hash v4 (`CFMDCONF4`). Phase 8.1 used v3
-  (`CFMD68K3`/`CFMDSTATE3`/`CFMDCONF3`); phase 8.2 moved the identity to v4 for the
-  master-cycle timeline and extended 68000/scheduler state. The snapshot adds the seven
-  mapper banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch and the
-  extended 68000/scheduler state; v1-v3 payloads are rejected, a payload carrying another
-  TMSS model is rejected even when its hash was recomputed, and a rejected restore leaves
-  the machine untouched. The configuration hash
+- **State (current, after phase 8.3).** Payload v5 (`CFMD68K5`), state hash v5
+  (`CFMDSTATE5`) and configuration hash v5 (`CFMDCONF5`). Phase 8.1 used v3 and phase 8.2
+  v4; phase 8.3 adds the `CFVDP002` VDP snapshot with its frame index. The snapshot adds
+  the seven mapper banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch,
+  the extended 68000/scheduler state and the complete VDP state; v1-v4 payloads are
+  rejected, a payload carrying another TMSS model is rejected even when its hash was
+  recomputed, and a rejected restore leaves the machine untouched. The configuration hash
   covers the ROM SHA-256, video standard, TMSS model and a mapper/SRAM feature tag; SRAM
   bytes are state and never configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
@@ -473,7 +496,10 @@ window to it.
 
 ## Not implemented
 
-- VDP rendering, planes, sprites, scrolling, CRAM/VSRAM, DMA and raster timing.
+- VDP interlace, physical byte-swapped VRAM layout, exact H32 window geometry,
+  line-mode vertical scrolling, column-scroll details, dot-exact H/V counters and
+  VSRAM data-port reads. VDP rendering, planes, window, sprites, scrolling, CRAM/VSRAM
+  addressing, DMA, FIFO/CPU wait cycles and line timing are implemented (phase 8.3).
 - YM2612, PSG or audio.
 - Z80, bus arbitration, timer/other interrupt sources and controller-port interrupt
   acknowledge. Guest bus-error (vector 2) and trace (vector 9) exception delivery are
@@ -504,11 +530,15 @@ window to it.
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
 - Differential evidence beyond the eleven synthetic ROMs, positive differential
-  comparison of interrupt delivery/timing, and any differential claim about
-  interrupts as hardware behavior, VDP data reads, VRAM contents, audio, Z80, DMA,
-  full-hardware timing or game compatibility. The 11-ROM run matches instruction
-  addresses, per-instruction cycle costs and selected final state; the masked-ROM
-  run is negative gating evidence only.
+  comparison of interrupt delivery/timing, and any differential claim about audio,
+  Z80, DMA content, full-hardware timing or game compatibility. The 11-ROM run matches
+  instruction addresses, per-instruction cycle costs and selected final state; the
+  masked-ROM run is negative gating evidence only. The phase-8.3 VDP differential
+  compares the oracle-visible status/counter readbacks at synchronized boundaries and
+  ChronoFork's canonical registers/VRAM/CRAM against the programmed scenes; the oracle
+  cannot expose VDP memory content, and the absolute status/counter phase is recorded
+  as a scoped divergence in
+  [vdp-state-differential-evidence.md](../research/vdp-state-differential-evidence.md).
 
 Unrecognised and reserved opcodes raise the guest illegal-instruction exception;
 unmapped port accesses return typed errors. Neither is silently skipped.
