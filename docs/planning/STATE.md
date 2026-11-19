@@ -39,10 +39,15 @@
   groomed at [2026-11-17-8.4-z80-audio.md](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
   (issue #17), so a fresh session routes `resume-work` → `start-next-phase` →
   `executing-plans`.
-- **Immediate engineering follow-up (user request, right after 8.3):** CI runtime
-  improvements are recorded in [issue #28](https://github.com/StealthC/ChronoFork/issues/28)
-  and in the M8 follow-up list — the ~20 min `Test` job and the slow `megadrive demo` are to
-  be studied and implemented before or alongside 8.4.
+- **CI runtime follow-up (issue #28): complete and merged** (PR #30). The workflow now
+  triggers only on `main` pushes and PRs (the duplicate branch-push run is gone), cancels
+  superseded PR runs, runs the deterministic demos from the release binary (output
+  byte-identical to debug) and splits the workspace tests into four parallel crate groups.
+  Measured on the PR run: total workflow ~29.5 → **14m34s**; `Test` critical path 28m21s →
+  **14m31s** (`cpu`), with `apps` 5m56s, `host` 1m13s and `core` 35s; demos 3m16s → **1m39s**.
+  Non-blocking follow-ups recorded in the PR: a `cargo metadata` vs group-union guard when a
+  crate is added, an optional per-group cache-key suffix, and listing all four `Test (…)`
+  checks if branch protection is ever enabled.
 
 ## Open Decisions
 
@@ -61,5 +66,4 @@
 
 Resume with `resume-work` → `start-next-phase`: phase 8.4 (Z80, bus arbitration and audio)
 already has an approved design and groomed plan and branches from the current `main`, which
-now includes phases 8.1–8.3. Before or alongside it, pick up the CI runtime follow-up
-(issue #28) as the first engineering task after this phase.
+now includes phases 8.1–8.3 and the CI runtime follow-up.
