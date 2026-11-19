@@ -377,3 +377,33 @@ fn user_mode_interrupt_uses_ssp_and_rte_restores_usp() -> Result<(), Box<dyn Err
     assert_eq!(cpu.sr(), 0x0700);
     Ok(())
 }
+
+#[test]
+fn write_protected_rom_takes_vector_3_with_the_documented_frame() -> Result<(), Box<dyn Error>> {
+    // MOVE.L D0,(0x00000800).L targets the ROM window; the cartridge rejects the
+    // write and the guest must see an address error, not a host bus error.
+    let (mut cpu, mut bus) = machine(
+        &[0x23, 0xC0, 0x00, 0x00, 0x08, 0x00, 0x4E, 0x71],
+        &[(3, HANDLER)],
+        Some(&[0x4E, 0x73]),
+    )?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER, "guest vector 3, not a host bus error");
+    assert_eq!(cpu.address_register(7), Some(STACK - 14));
+    assert_eq!(bus.read16(STACK - 14)?, 0x2700, "SR");
+    assert_eq!(bus.read32(STACK - 12)?, 0x206, "return PC");
+    assert_eq!(bus.read32(STACK - 8)?, 0x0000_0800, "access address");
+    assert_eq!(bus.read16(STACK - 4)?, 0x23C0, "instruction register");
+    assert_eq!(
+        bus.read16(STACK - 2)?,
+        0x0005,
+        "function code: supervisor data write"
+    );
+    cpu.step(&mut bus)?;
+    assert_eq!(
+        cpu.pc(),
+        0x206,
+        "RTE returns after the faulting instruction"
+    );
+    Ok(())
+}
