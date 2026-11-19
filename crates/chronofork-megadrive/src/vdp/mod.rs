@@ -379,6 +379,9 @@ pub struct Vdp {
     /// Derived VINT-pending latch driven by the owning machine's interrupt
     /// source. Deliberately absent from the serialized snapshot.
     vint_pending: bool,
+    /// Whether the most recently rendered line reached the per-line sprite
+    /// count or pixel budget. Derived render observation, not serialized.
+    sprite_limit_reached: bool,
 }
 
 impl Vdp {
@@ -403,6 +406,7 @@ impl Vdp {
             video: VideoStandard::Ntsc,
             status_latches: StatusLatches::default(),
             vint_pending: false,
+            sprite_limit_reached: false,
         }
     }
 
@@ -889,6 +893,7 @@ impl Vdp {
         self.line = line;
         self.dot = dot;
         self.video = video;
+        self.sprite_limit_reached = false;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
         Ok(())
     }
@@ -1022,6 +1027,7 @@ impl fmt::Debug for Vdp {
             .field("line", &self.line)
             .field("dot", &self.dot)
             .field("video", &self.video)
+            .field("sprite_limit_reached", &self.sprite_limit_reached)
             .field("vram_len", &self.vram.len())
             .finish()
     }
