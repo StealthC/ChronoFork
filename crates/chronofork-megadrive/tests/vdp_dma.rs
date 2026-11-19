@@ -9,7 +9,8 @@
 //! no external memory view), documented as a modelling limit.
 
 use chronofork_megadrive::vdp::{
-    CONTROL_PORT_OFFSET, DATA_PORT_OFFSET, DmaMode, STATUS_DMA_BUSY, Vdp, VdpError, VramTarget,
+    CONTROL_PORT_OFFSET, DATA_PORT_OFFSET, DmaMode, STATUS_DMA_BUSY, Vdp, VdpError,
+    VdpInterruptSource, VramTarget,
 };
 
 fn write_register(vdp: &mut Vdp, register: u8, value: u8) -> Result<(), VdpError> {

@@ -960,13 +960,15 @@ impl Vdp {
 
     /// Takes the DMA slot cost recorded by the last transfer, in master cycles.
     ///
-    /// Taking the cost closes the `DMA_BUSY` window; the count is then zero.
+    /// Taking the cost closes the `DMA_BUSY` window; the count is then zero. It
+    /// leaves the FIFO wait accounting and the VBlank/HBlank pending requests
+    /// untouched: those are owned by [`Vdp::take_fifo_wait_cycles`] and
+    /// [`Vdp::acknowledge`]/[`Vdp::take_interrupts`] respectively, so an owner
+    /// that only consumes the DMA cost cannot silently lose waits or
+    /// interrupts.
     pub fn take_dma_cycles(&mut self) -> u32 {
         let cycles = self.dma_cycles;
         self.dma_cycles = 0;
-        self.fifo_wait_cycles = 0;
-        self.vblank_pending = false;
-        self.hblank_pending = false;
         if self.dma.active() {
             self.dma =
                 DmaState::from_parts(self.dma.source(), self.dma.length(), self.dma.mode(), false);

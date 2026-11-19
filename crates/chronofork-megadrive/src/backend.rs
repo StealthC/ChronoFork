@@ -658,7 +658,11 @@ impl MegadriveBackend {
             .advance_master(master_cycles)
             .map_err(map_scheduler)?;
         // The VDP advances on the same master-cycle timeline, then its FIFO
-        // drains and any eager DMA busy window closes for the next step.
+        // drains and any eager DMA busy window closes for the next step. Taking
+        // the DMA cost only closes DMA_BUSY; FIFO waits were already taken above
+        // and VDP interrupt pendings are untouched, so the status re-sync below
+        // is purely the derived-state recomputation (scheduler mirror + VINT
+        // latch), not a repair of an incidental clear.
         let standard = self.scheduler.config().standard();
         let vdp_tick = self.bus.vdp_mut().advance_master(master_cycles, standard);
         self.bus.vdp_mut().drain_fifo();
