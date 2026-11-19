@@ -141,21 +141,23 @@ use crate::vdp::{
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
 /// Payload format version.
 ///
-/// Version 3 adds the cartridge state: the seven mapper banks, the SRAM control
-/// byte, the 64 KiB battery SRAM and the TMSS model/lock latch. Version 1 and 2
-/// payloads are rejected instead of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 4;
+/// Version 3 added the cartridge state (seven mapper banks, SRAM control byte,
+/// 64 KiB battery SRAM, TMSS model/lock latch); version 5 adds the rendered
+/// frame counter through the embedded VDP snapshot and is the only accepted
+/// version. Payloads v1-v4 are rejected with a typed error instead of being
+/// reinterpreted.
+pub const PAYLOAD_VERSION: u16 = 5;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 4.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K4";
-/// State-hash magic for state hash version 4.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE4";
-/// Configuration-hash magic for configuration hash version 4.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF4";
+/// Snapshot payload magic for payload version 5.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K5";
+/// State-hash magic for state hash version 5.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE5";
+/// Configuration-hash magic for configuration hash version 5.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF5";
 
 /// Cartridge capability tag folded into the configuration hash.
 ///
@@ -245,12 +247,15 @@ impl MegadriveFactory {
             debug_events: true,
             state_cloning: true,
             deterministic_replay: true,
+            // Frame production is implemented and covered by `vdp_frame`;
+            // audio remains unimplemented for this slice.
+            rendering: true,
             ..Capabilities::none()
         };
         Ok(Self {
             descriptor: BackendDescriptor::new(
                 BackendId::new(BACKEND_ID),
-                "ChronoFork Mega Drive 68000 (VDP port + interrupt scheduler, no rendering/audio)",
+                "ChronoFork Mega Drive 68000 (VDP port, interrupts, deterministic video frames; no audio)",
                 env!("CARGO_PKG_VERSION"),
                 capabilities,
                 false,
@@ -1721,7 +1726,7 @@ mod tests {
     #[test]
     fn reset_vectors_and_demo_program_execute() {
         let factory = factory();
-        assert!(!factory.descriptor().capabilities().rendering);
+        assert!(factory.descriptor().capabilities().rendering);
         let mut machine = factory.create_machine().expect("machine");
         let initial = machine.inspect().expect("inspect");
         assert_eq!(initial.registers["pc"], 0x200);
@@ -3333,15 +3338,15 @@ mod tests {
         assert_eq!(snapshot.payload().len(), 197_058);
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "f7d3d49de6ccb6c5f630660c0d5623f349f2672db5ead789c85d9755e2b77b6f"
+            "8171b3576cac95f3d34652fc89cfccebd681e8d154a9436927b36beaf24c87a2"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "646ac25ae1263679a69831d9ada86d28a7f0dd587f3422998951e79b29c2c41c"
+            "0b783b181af81e902c39b49840c91a4af435d0e6c93cc80b0abc7084b40901fa"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "1ac706deb485d0b521b67533d2b17e6aed87db900609eed810874482f656eca4"
+            "1a0b6125b29dc677ba6860065b5a59f8982cbf3cda11503facd988a520654602"
         );
     }
 

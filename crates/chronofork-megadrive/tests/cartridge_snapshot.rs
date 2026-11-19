@@ -60,10 +60,10 @@ fn factory() -> MegadriveFactory {
 
 #[test]
 fn payload_v4_and_its_magics_are_the_documented_versions() {
-    assert_eq!(PAYLOAD_VERSION, 4);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K4");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE4");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF4");
+    assert_eq!(PAYLOAD_VERSION, 5);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K5");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE5");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF5");
 }
 
 #[test]
