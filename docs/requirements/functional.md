@@ -201,8 +201,8 @@ human/agent handoff. Deferred: native toolkit frontend, real video/audio sources
 (H2/H3), VDP/bus/disassembly/trace panel content (M6-FU1), live host-clock playback, GUI
 input injection, GUI state persistence and multi-window/multi-display. M7 is merged to
 `main` at `cb05836` (PR #6); M8 (functional Mega Drive) is `In progress` — phase 8.2 is
-implemented through repair round 10 and verified (round 12), with review and merge pending —
-and M9 (multi-backend) is `Planned`.
+implemented, verified (round 12) and independently reviewed (round 11), and merged to `main`
+through the phase-8.2 PR (issue #15) — and M9 (multi-backend) is `Planned`.
 
 ## Licensing and provenance
 

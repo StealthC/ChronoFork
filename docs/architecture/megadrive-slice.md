@@ -21,7 +21,8 @@
 - **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
   with 11/11 address, per-instruction cycle and final-state differential evidence) is
-  implemented; verification passed (round 12), with review and merge pending. M8 then completes the
+  implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
+  through the phase-8.2 PR (issue #15). M8 then completes the
   remaining slice (Z80, VDP rendering/DMA/timing, YM2612/PSG audio, cartridge,
   controllers and capture). This page remains the canonical capability/limitation home;
   it is updated as each phase lands, never in advance.
