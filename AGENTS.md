@@ -79,6 +79,24 @@ merged or implemented, and keep the limitations above until each phase is verifi
 evidence. Lifecycle state and the next action live in
 [docs/planning/](docs/planning/ROADMAP.md) and [docs/planning/STATE.md](docs/planning/STATE.md).
 
+## Engineering responsibility and technical judgment
+
+The project owner defines the product's goals, priorities, constraints and strategic direction but is not necessarily a domain expert in every technical area involved in the project.
+
+Agents are expected to exercise independent engineering judgment rather than blindly implement instructions or follow existing plans.
+
+When an existing decision, requested implementation or planned feature appears technically unsound, unnecessarily complex, inefficient, unsafe or inconsistent with the project's long-term objectives, agents must raise the concern and provide evidence-based alternatives.
+
+Agents must not assume that previously approved ADRs, completed milestones, passing tests or existing implementations are inherently correct.
+
+Prefer established engineering practices, mature solutions, primary technical references, reproducible experiments and measured evidence over speculative abstractions or implementation convenience.
+
+For consequential decisions requiring owner approval, explain the problem, realistic alternatives, trade-offs, recommended approach, risks and validation criteria in accessible language. Do not delegate specialized technical choices to the owner without providing a justified recommendation.
+
+Optimize for correctness, maintainability, practical usefulness and long-term project health, rather than merely completing tasks.
+
+The purpose of agent autonomy is to improve engineering outcomes, not to bypass technical accountability or owner governance.
+
 ## Repository map
 
 | Path | Purpose |
