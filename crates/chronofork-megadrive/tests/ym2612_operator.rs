@@ -38,7 +38,10 @@ fn program_channel(
     if lfo_rate != 0 {
         write_register(ym, bank, 0x22, 0x08 | (lfo_rate & 0x07));
     }
-    write_register(ym, bank, 0x28, 0xF0);
+    // The key-on data byte names the channel (bit 2 selects the second group);
+    // the port bank does not select it.
+    let group = u8::from(channel >= 3);
+    write_register(ym, bank, 0x28, 0xF0 | (group << 2));
 }
 
 fn settle(ym: &mut Ym2612) {
@@ -215,15 +218,11 @@ fn sample_clock_is_the_documented_ratio() {
 }
 
 #[test]
-fn bank_two_channels_reach_the_operator_chain() -> Result<(), Box<dyn Error>> {
+fn channel_four_reaches_the_operator_chain_from_the_key_byte() -> Result<(), Box<dyn Error>> {
     let mut ym = Ym2612::new();
-    program_channel(&mut ym, 3, 7, 0, 0xC0, 0, 0); // channel 4, bank 2
+    program_channel(&mut ym, 3, 7, 0, 0xC0, 0, 0); // channel 4
     settle(&mut ym);
-    assert_ne!(
-        ym.sample(),
-        (0, 0),
-        "channel 4 produces audio through bank 2"
-    );
+    assert_ne!(ym.sample(), (0, 0), "channel 4 produces audio");
     assert!(ym.envelope(3, 0).is_some());
     assert_eq!(
         ym.envelope(0, 0).map(|view| view.state),

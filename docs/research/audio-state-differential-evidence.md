@@ -128,6 +128,24 @@ literal request-asserted ROM on the oracle as a probe: the oracle stops the Z80 
 **arbitration-model divergence**; it is not part of the device-state equality claim
 and the harness does not assert 68000 or arbitration equivalence.
 
+> **Superseded by the t5 repair (R1-F3, 2026-11-20).** The section above is the dated
+> record of the run that produced this page; it is kept verbatim. ChronoFork now follows
+> the hardware `ZBR` line: asserting write bit 8 of `0xA11100` stops the Z80 and gives the
+> 68000 the Z80 window, clearing it returns the bus to the Z80, and read bit 8 reports Z80
+> ownership, so the same-ROM probe's divergence no longer holds and the `1`/`0`
+> bus-request-byte difference is no longer needed. The divergence above is historical, not
+> a current limit; no 68000 or arbitration equivalence is claimed either way. The phase-8.4
+> repair also re-based the PSG noise shift periods on the documented `N/512`, `N/1024` and
+> `N/2048` chip-clock divisions (32/64/128 internal ticks) and made the tone-2-clocked mode
+> shift once per full tone-2 period.
+>
+> Re-probe of the internal PCM fixture at the repair HEAD (same command as the table
+> above): 48 000 frames, PCM SHA-256
+> `7385543399a5e19c9bae4f84b0f5eaee8f63d11ee6086eb0f961492a0200d16e` — **unchanged** from
+> the table, because that fixture leaves the PSG noise channel at attenuation 15 (silent)
+> and keys only YM2612 channel 1. Log: `.research/8.4-r2/pcm-probe.log` (ignored,
+> worktree-local).
+
 ## Exclusions (explicit reasons)
 
 - **YM2612 register/channel state is not observable in the pinned oracle.** Its

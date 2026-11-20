@@ -289,16 +289,17 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   window at `0x8000..=0xFFFF`. The 68000 sees the 8 KiB Z80 RAM at
   `0xA00000..=0xA01FFF`, the nine-bit bank register at `0xA06000` and the
   request/reset latches at `0xA11100`/`0xA11200`.
-- **Arbitration:** `0xA11100` requests/releases the Z80 bus (write bit 8, read bit 8
-  reports the latch) and `0xA11200` asserts/releases the active-low reset. The model
-  is functional, not microcycle-exact: while the Z80 owns the bus, a 68000 access to
+- **Arbitration:** `0xA11100` carries the Z80 bus request with the hardware `ZBR`
+  polarity: setting write bit 8 **asserts** the request, which stops the Z80 and gives
+  the 68000 the Z80 window, and clearing it returns the bus to the Z80. Read bit 8
+  reports ownership — one while the Z80 still has the bus, zero once it has yielded — so
+  a guest poll loop on `0xA11100` terminates as on hardware. `0xA11200` asserts/releases
+  the active-low reset. The model
+  is functional, not microcycle-exact: the yield happens on the request write rather than
+  at the Z80 instruction boundary, and while the Z80 owns the bus a 68000 access to
   the Z80 RAM window is stalled by a fixed 60 master cycles per byte lane. The
-  model's Z80 execution condition is the documented functional one used by this
-  slice: the Z80 runs while the request latch is set and the reset is released. The
-  pinned oracle models the hardware `ZBR` polarity instead (request takes the bus
-  away from the Z80); that difference is recorded as a scoped divergence in the
-  [audio state differential](../research/audio-state-differential-evidence.md), not
-  hidden as an equality claim. `Backend::step` runs the Z80 inside each 68000
+  Z80 runs while no request is asserted and the reset is released. `Backend::step` runs
+  the Z80 inside each 68000
   instruction's master-cycle window while arbitration allows it and carries the last
   instruction's overshoot in canonical `z80_credit`; `advance_z80` remains available
   for explicit single-instruction control.
@@ -310,8 +311,11 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   `0x2B` test bits are stored but not applied; the status busy bit is absent; the
   envelope/amplitude curves and LFO are deterministic integer approximations.
 - **PSG:** three square-wave tone channels with ten-bit dividers, a 15-bit maximal
-  white-noise LFSR (period 32767 from the `0x4000` reset value) with periodic mode,
-  the documented 512/1024/2048/tone-2 shift selectors, sixteen attenuation levels
+  white-noise LFSR (period 32767 from the `0x4000` reset value) with periodic mode, the
+  documented noise shift periods — the chip-clock divisions `N/512`, `N/1024` and
+  `N/2048` and the full tone-2 period, i.e. 32/64/128 internal sample ticks, so the
+  fastest shifts at `53 693 175 / (32 × 240)` ≈ 6991 Hz at the NTSC master clock —
+  sixteen attenuation levels
   and the latch/data write protocol. The attenuation table is a monotonic integer
   approximation of the documented 2 dB steps; the PSG is write-only and a read
   returns the open value `0xFF`.
@@ -335,7 +339,9 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 - **Evidence:** the pinned-oracle device-state differential
   ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md))
   compares 25 Z80/PSG/YM2612-status fields at a shared Z80 HALT boundary and records
-  the YM2612-reflection and arbitration-polarity limits; `z80_*`, `psg`,
+  the YM2612-reflection limit; the arbitration-polarity divergence that run documents is
+  superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity (the
+  evidence page carries the attributed supersession note). `z80_*`, `psg`,
   `audio_mix`, `ym2612*`, `arbitration` and `audio_snapshot` tests cover the same
   surface internally. No cross-emulator **sample** equality is claimed.
 
@@ -410,7 +416,8 @@ against the oracle. It also does not compare timing, prefetch, bus cycles, rende
 DMA or audio samples, and it does not establish general 68000 or game
 compatibility. The separate phase-8.4 device-state differential compares Z80, PSG
 and YM2612 status state at a shared Z80 HALT boundary; it is not a sample
-comparison and it records the arbitration-polarity divergence.
+comparison; the arbitration-polarity divergence its recorded run documents is
+superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity.
 
 ### Known limitations of the integration
 
@@ -620,8 +627,9 @@ window to it.
   section and the [audio state differential](../research/audio-state-differential-evidence.md)).
 - Audio sample capture to a file or device (WAV/streaming) belongs to phase 8.7;
   phase 8.4 captures boundedly into `MediaSource` only, with no host audio device.
-- Z80 timer IRQ delivery, microcycle-exact bus arbitration and hardware `ZBR`
-  polarity, timer/other interrupt sources and controller-port interrupt acknowledge.
+- Z80 timer IRQ delivery, microcycle-exact bus arbitration (the model yields on the
+  request write rather than at the Z80 instruction boundary), timer/other interrupt
+  sources and controller-port interrupt acknowledge.
   The phase-8.4 arbitration model is functional and its documented execution
   condition differs from the pinned hardware model; that divergence is recorded.
   Guest bus-error (vector 2) and trace (vector 9) exception delivery are not
@@ -662,8 +670,9 @@ window to it.
   as a scoped divergence in
   [vdp-state-differential-evidence.md](../research/vdp-state-differential-evidence.md).
   The phase-8.4 audio/Z80 differential compares 25 device-state fields at a shared
-  Z80 HALT boundary, records the YM2612-reflection limit and the arbitration-polarity
-  divergence, and claims no cross-emulator sample equality
+  Z80 HALT boundary, records the YM2612-reflection limit (the arbitration-polarity
+  divergence its recorded run documents is superseded by the phase-8.4 repair), and
+  claims no cross-emulator sample equality
   ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md)).
 
 Unrecognised and reserved opcodes raise the guest illegal-instruction exception;

@@ -115,18 +115,36 @@ and `git diff --check` both exit 0. The closure commit is Conventional and scope
 `docs/` + `AGENTS.md`; no `crates/` or `scripts/` file is touched. No test count is
 copied into this record — run the gate yourself.
 
+**Repair round (t5, 2026-11-20).** A review of the closed phase raised five findings and
+all five were repaired: the YM2612 `0x28` key-on channel derivation (R1-F1), the PSG noise
+shift periods and the tone-2-clocked mode (R1-F2), the `0xA11100` bus-request polarity, now
+the hardware `ZBR` line per the owner's decision (R1-F3), the `execution-model.md`
+`CFMDSTATE6` coverage (R1-F4) and the phase-8.4 inspection-surface record (R1-F5).
+R1-F2 and R1-F3 are canonical-state behaviour fixes, so state hashes moved while payload
+lengths and the configuration hash did not; the affected goldens were re-pinned
+mechanically with the cause recorded (`backend::tests::snapshot_payload_and_hashes_are_golden`
+and six `chronofork-cli --test debug` `state_hash` expectations, whose RAM/VRAM dumps stayed
+byte-identical), four regression tests were added and none was removed, ignored or weakened.
+The recorded internal PCM fixture was re-probed and is **unchanged**
+(`73855433…`, 48 000 frames) because that fixture leaves the PSG noise channel silent; see the
+attributed supersession note in the
+[audio state differential](../research/audio-state-differential-evidence.md) and the ignored
+`.research/8.4-r2/` artifacts. The gate was re-run green at the repair HEAD, and the repair
+commit changed no `scripts/` file.
+
 The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
 and ChronoFork over one independently authored synthetic ROM and compares **device
 state only** at a shared Z80 `HALT` boundary: the Z80 register file, the PSG tone/
 volume/noise/source-control registers and the readable YM2612 status byte. It never
 reads or compares audio samples. What it proves and what it does **not** claim:
 
-- The Z80 program and the HALT boundary are identical on both emulators; the 68000
-  fixture differs only in the Z80 bus-request byte because ChronoFork's documented
-  functional arbitration model has the inverse execution polarity of the pinned
-  hardware model. The literal same-ROM probe is recorded as a scoped arbitration
-  divergence (oracle Z80 stops at `PC = 4`, ChronoFork reaches `PC = 186`); no 68000 or
-  arbitration equivalence is claimed.
+- The recorded run predates the phase-8.4 repair round: the 68000 fixture differs in
+  the Z80 bus-request byte because the model then had the inverse execution polarity of
+  the pinned hardware model, and the literal same-ROM probe is recorded as a scoped
+  arbitration divergence (oracle Z80 stops at `PC = 4`, ChronoFork reaches `PC = 186`).
+  The repair implements the hardware `ZBR` polarity (asserting `0xA11100` bit 8 stops the
+  Z80 and gives the 68000 the window; read bit 8 reports ownership), so that divergence is
+  historical. No 68000 or arbitration equivalence is claimed.
 - The pinned oracle publishes no YM2612 register/channel reflection (only Audio
   Logging), so YM2612 register and channel state is **not** compared; only the readable
   status byte is. PSG noise shift state is time-dependent and excluded; the unused

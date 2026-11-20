@@ -918,9 +918,9 @@ and do not reopen it.
 
 - [x] Z80 CPU core and its memory map (phase 8.4: documented limits — `IXH`/`IXL`/`IYH`/`IYL`
       and `WZ`/`MEMPTR` are not modelled and undocumented `ED` opcodes are `NOP`s).
-- [x] Bus arbitration between the 68000 and the Z80 (phase 8.4: functional fixed-stall model,
-      not microcycle-exact; its documented execution polarity differs from the pinned hardware
-      `ZBR` model and the divergence is recorded).
+- [x] Bus arbitration between the 68000 and the Z80 (phase 8.4: hardware `ZBR` request
+      polarity — asserting `0xA11100` bit 8 stops the Z80 and hands the window to the 68000,
+      read bit 8 reports ownership — with a functional fixed-stall model, not microcycle-exact).
 - [ ] VDP bus-master arbitration: the VDP is modelled as a bus target with the phase-8.3
       FIFO/CPU wait accounting, not as an arbiter.
 - [x] YM2612 FM synthesis at a documented accuracy level (phase 8.4: deterministic functional

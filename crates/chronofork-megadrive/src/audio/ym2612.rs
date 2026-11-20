@@ -415,15 +415,20 @@ impl Ym2612 {
                 }
             }
             0x28 => {
-                // The three channel bits select channels inside the bank; the
-                // high nibble keys operators 1-4 individually.
-                for channel_in_bank in 0..3 {
-                    let channel = bank.index() * 3 + channel_in_bank;
-                    let key_bits = (value >> 4) & 0x0F;
-                    for operator in 0..OPERATORS_PER_CHANNEL {
-                        let on = key_bits & (1 << operator) != 0;
-                        self.key_operator(channel, operator, on);
-                    }
+                // The key-on/off data byte names the channel: its low two bits
+                // select the channel inside a group (three is reserved and keys
+                // nothing) and bit 2 selects the group, so `0x28` reaches
+                // channels 4-6 whichever port pair carried it. The high nibble
+                // keys operators 1-4 individually.
+                let ch = usize::from(value & 0x03);
+                if ch == 3 {
+                    return;
+                }
+                let channel = ch + usize::from((value >> 2) & 1) * 3;
+                let key_bits = (value >> 4) & 0x0F;
+                for operator in 0..OPERATORS_PER_CHANNEL {
+                    let on = key_bits & (1 << operator) != 0;
+                    self.key_operator(channel, operator, on);
                 }
             }
             _ => {}

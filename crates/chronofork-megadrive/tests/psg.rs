@@ -8,10 +8,11 @@ use std::error::Error;
 use chronofork_megadrive::MegadriveBus;
 use chronofork_megadrive::audio::Psg;
 use chronofork_megadrive::audio::psg::{
-    ATTENUATION_LEVELS, DIVIDER_MASK, LFSR_RESET_VALUE, MAX_CHANNEL_AMPLITUDE,
-    NOISE_CLOCK_DIVIDERS, OPEN_BUS_VALUE,
+    ATTENUATION_LEVELS, DIVIDER_MASK, LFSR_RESET_VALUE, MASTER_CYCLES_PER_SAMPLE,
+    MAX_CHANNEL_AMPLITUDE, NOISE_CLOCK_DIVIDERS, OPEN_BUS_VALUE,
 };
 use chronofork_megadrive::cartridge::Cartridge;
+use chronofork_megadrive::cycles::MASTER_CLOCK_HZ_NTSC;
 use chronofork_megadrive::z80::{Z80Bus, Z80Error};
 
 /// Programs tone channel 0 with `divider` (low ten bits) at full volume.
@@ -130,6 +131,10 @@ fn tone_channel_toggles_once_per_divider_and_is_a_square_wave() {
 
 #[test]
 fn noise_rates_follow_the_documented_internal_dividers() {
+    // The documented shift periods are the chip-clock divisions N/512, N/1024
+    // and N/2048; one internal tick is 16 chip clocks, so the tick periods are
+    // 32, 64 and 128.
+    assert_eq!(NOISE_CLOCK_DIVIDERS, [32, 64, 128]);
     for (select, divider) in NOISE_CLOCK_DIVIDERS.iter().enumerate() {
         let select = u8::try_from(select).expect("three divisors");
         let mut psg = programmed_noise(select);
@@ -153,9 +158,20 @@ fn noise_rates_follow_the_documented_internal_dividers() {
 }
 
 #[test]
-fn noise_lfsr_repeats_deterministically() {
-    // Tone channel 2 at divider 1 toggles every tick, which clocks the noise
-    // LFSR at the PSG tick rate.
+fn noise_rates_match_the_documented_hardware_frequencies() {
+    // One internal tick is MASTER_CYCLES_PER_SAMPLE master cycles, so the three
+    // selectors shift at MCLK / (32|64|128 * 240) Hz. Selector 0 is the
+    // documented ~6991 Hz SN76489 noise frequency at the NTSC master clock.
+    let rate = |ticks: u16| MASTER_CLOCK_HZ_NTSC / (u64::from(ticks) * MASTER_CYCLES_PER_SAMPLE);
+    assert_eq!(rate(NOISE_CLOCK_DIVIDERS[0]), 6991);
+    assert_eq!(rate(NOISE_CLOCK_DIVIDERS[1]), 3495);
+    assert_eq!(rate(NOISE_CLOCK_DIVIDERS[2]), 1747);
+}
+
+#[test]
+fn noise_lfsr_repeats_deterministically_when_clocked_by_tone_two() {
+    // Tone channel 2 at divider 1 toggles every tick, so the noise register is
+    // clocked once per **full** tone-2 period: one shift every two ticks.
     fn programmed() -> Psg {
         let mut psg = Psg::new();
         psg.write(0xC1); // latch tone 2, divider low nibble 1
@@ -166,13 +182,30 @@ fn noise_lfsr_repeats_deterministically() {
         psg
     }
 
+    // The rising half period does not shift; the falling edge completes the
+    // period and shifts once.
+    let mut edge = programmed();
+    assert_eq!(edge.noise_lfsr(), LFSR_RESET_VALUE);
+    edge.sample();
+    assert_eq!(
+        edge.noise_lfsr(),
+        LFSR_RESET_VALUE,
+        "the half period does not clock the register"
+    );
+    edge.sample();
+    assert_eq!(
+        edge.noise_lfsr(),
+        LFSR_RESET_VALUE >> 1,
+        "the full tone-2 period clocks exactly one shift"
+    );
+
     let mut first = programmed();
     let mut second = programmed();
     assert_eq!(first.noise_lfsr(), LFSR_RESET_VALUE);
     let period = (1 << 15) - 1;
     let mut first_samples = Vec::with_capacity(1024);
     let mut second_samples = Vec::with_capacity(1024);
-    for _ in 0..period {
+    for _ in 0..2 * period {
         let sample = first.sample();
         if first_samples.len() < 1024 {
             first_samples.push(sample);

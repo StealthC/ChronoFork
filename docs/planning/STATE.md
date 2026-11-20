@@ -27,13 +27,26 @@
     `docs/architecture/megadrive-slice.md` (payload/state/config v6, Z80/audio section),
     `docs/quality/quality-gates.md` (phase 8.4 gate section) and the 15-task
     `docs/superpowers/plans/2026-11-17-8.4-z80-audio.md` checklist (75/75 checked).
+  - **Repair round (t5, `8.4 R3`):** an independent review of the closure raised five
+    findings and all five were repaired — YM2612 `0x28` key-on channel derivation (R1-F1),
+    PSG noise shift periods to 32/64/128 internal ticks and the tone-2-clocked mode (R1-F2),
+    `0xA11100` hardware `ZBR` request polarity per the owner's 2026-11-20 decision (R1-F3),
+    `execution-model.md` `CFMDSTATE6` coverage (R1-F4) and the phase-8.4 inspection-surface
+    record (R1-F5). R1-F2/R1-F3 are canonical-state behaviour fixes, so state hashes moved
+    while payload lengths and the configuration hash did not; the affected goldens were
+    re-pinned mechanically with the cause recorded (`backend.rs` golden hashes and six
+    `chronofork-cli --test debug` `state_hash` expectations, RAM/VRAM dumps byte-identical)
+    and four regression tests were added. The recorded internal PCM fixture re-probed
+    unchanged.
 - **Honest limits carried by phase 8.4:** Z80 `IXH`/`IXL`/`IYH`/`IYL` and `WZ`/`MEMPTR` are
-  not modelled and undocumented `ED` opcodes are `NOP`s; bus arbitration is a functional
-  fixed-stall model (60 master cycles per byte lane) whose documented execution polarity is
-  the inverse of the pinned hardware `ZBR` model, recorded as a scoped divergence;
+  not modelled and undocumented `ED` opcodes are `NOP`s; bus arbitration follows the hardware
+  `ZBR` request polarity with a functional fixed-stall model (60 master cycles per byte lane);
   `SSG-EG`, channel-3 special mode, CSM and the `0x21`/`0x2B` test bits are stored but not
   applied; the YM status busy bit is absent; envelope/amplitude/PSG attenuation/LFO are
-  deterministic integer approximations; timer IRQ delivery to the Z80 is phase 8.5; no
+  deterministic integer approximations (the PSG noise shift periods are the documented
+  `N/512`, `N/1024` and `N/2048`, i.e. 32/64/128 internal ticks, ≈6991 Hz for selector 0,
+  and the tone-2-clocked mode shifts once per full tone-2 period);
+  timer IRQ delivery to the Z80 is phase 8.5; no
   cross-emulator audio **sample** equality is claimed, and audio capture to a file or device
   (WAV/streaming) is phase 8.7.
 - **Evidence:** raw artifacts under the ignored `.research/8.4/` and
@@ -57,8 +70,9 @@
 
 ## Recommended Next Step
 
-1. Finish the phase-8.4 closure on `agent/8.4-z80-audio`: independent verification (V1) and
-   independent review (R1) of the cumulative `origin/main..HEAD` diff, then captain
+1. Finish the phase-8.4 closure on `agent/8.4-z80-audio`: the review round 1 (R1) returned
+   `needs_revision` with findings R1-F1–R1-F5, all repaired by t5; re-run independent
+   verification (V1) and the review (R1 round 2) on the repaired HEAD, then captain
    integration (I1: push, PR with `Closes #17`, CI green, merge into `main`, cleanup).
 2. Then start **phase 8.5 — Timers, controllers and interrupts** (issue #18): timer
    interrupts, the full TH latch and 3-/6-button protocol on ports 1–2, Z80 timer IRQ

@@ -310,8 +310,9 @@ best-effort parse.
   limits: functional prefetch, bus contention and 68000-side DMA stalls are not
   cycle-modelled (VDP DMA uses eager transfers with a busy window); only HBlank
   (level 4) and VBlank (level 6) sources exist, with level 7 a predicate rule rather
-  than a wired source; Z80 bus arbitration is a functional fixed-stall model whose
-  documented Z80 execution polarity differs from the pinned hardware model; timer
+  than a wired source; Z80 bus arbitration implements the hardware `ZBR` request polarity with a
+  functional fixed-stall model (the yield happens on the request write, not at the Z80
+  instruction boundary); timer
   interrupts and timer IRQ delivery to the Z80 are absent; no interrupt-latency
   equivalence is claimed; the H counter and power-on scanline phase are approximate;
   interlace is absent. Audio output is deterministic internal 16-bit stereo at 48 kHz;
@@ -356,6 +357,8 @@ best-effort parse.
   claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
-  slice hash covers the extended CPU, RAM, the CFVDP002 VDP state and scheduler state
-  (`CFMDSTATE5`). A cross-backend
+  slice hash (`CFMDSTATE6`) covers the extended CPU, RAM, the CFVDP002 VDP state, the
+  scheduler state, the Z80 register file and 8 KiB Z80 RAM, the Z80 bank register and
+  master-cycle carry, both arbitration latches, the YM2612 and PSG state and the 48 kHz
+  mixer/resampler phase. A cross-backend
   canonicalization remains undefined.

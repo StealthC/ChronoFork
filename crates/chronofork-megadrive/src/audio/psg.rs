@@ -70,8 +70,20 @@ pub const NOISE_SHIFT_BITS: u32 = 15;
 /// Reset value of the noise shift register.
 pub const LFSR_RESET_VALUE: u16 = 1_u16 << (NOISE_SHIFT_BITS - 1);
 
-/// Internal sample-clock divisors selected by noise control bits 1-0.
-pub const NOISE_CLOCK_DIVIDERS: [u16; 3] = [512, 1024, 2048];
+/// Internal sample-clock periods of the three fixed noise rates, in ticks.
+///
+/// The documented SN76489 shift periods are the chip-clock divisions `N/512`,
+/// `N/1024` and `N/2048`; one internal sample tick is [`PSG_CLOCK_DIVIDER`]
+/// chip clocks, so those periods are **32, 64 and 128 ticks**. At the NTSC
+/// master clock the fastest selector therefore shifts at
+/// `53 693 175 / (32 * 240)` ≈ 6991 Hz, the documented SN76489 noise frequency
+/// for that selector. The three assertions below pin that derivation at compile
+/// time so the constants cannot drift away from the clock.
+pub const NOISE_CLOCK_DIVIDERS: [u16; 3] = [32, 64, 128];
+
+const _: () = assert!(NOISE_CLOCK_DIVIDERS[0] as u64 * PSG_CLOCK_DIVIDER == 512);
+const _: () = assert!(NOISE_CLOCK_DIVIDERS[1] as u64 * PSG_CLOCK_DIVIDER == 1024);
+const _: () = assert!(NOISE_CLOCK_DIVIDERS[2] as u64 * PSG_CLOCK_DIVIDER == 2048);
 
 /// Noise control value that clocks the shift register from tone channel 2.
 pub const NOISE_TONE2_SELECT: u8 = 3;
@@ -210,7 +222,10 @@ impl Psg {
             }
         }
         let shift_noise = match self.noise_control & 0x03 {
-            NOISE_TONE2_SELECT => tone_toggled[2],
+            // Tone-2 clocking advances the shift register once per **full**
+            // tone-2 period, which is the falling edge of the square wave, not
+            // once per half period.
+            NOISE_TONE2_SELECT => tone_toggled[2] && !self.tone_output[2],
             select => {
                 self.noise_counter -= 1;
                 if self.noise_counter == 0 {

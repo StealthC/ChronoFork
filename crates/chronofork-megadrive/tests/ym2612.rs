@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use chronofork_megadrive::MegadriveBus;
-use chronofork_megadrive::audio::{Ym2612, YmBank, YmIrq, YmPort};
+use chronofork_megadrive::audio::{EgState, Ym2612, YmBank, YmIrq, YmPort};
 use chronofork_megadrive::bus::{YM2612_BASE, Z80_STALL_MASTER_CYCLES};
 use chronofork_megadrive::cartridge::Cartridge;
 use chronofork_megadrive::z80::Z80Bus;
@@ -12,6 +12,16 @@ fn write_register(ym: &mut Ym2612, bank: YmBank, address: u8, value: u8) {
     ym.write_bank(bank, YmPort::Address, address);
     ym.write_bank(bank, YmPort::Data, value);
 }
+
+/// Reads operator 1's envelope state for all six channels.
+fn key_states(ym: &Ym2612) -> [EgState; 6] {
+    std::array::from_fn(|channel| match ym.envelope(channel, 0) {
+        Some(view) => view.state,
+        None => EgState::Off,
+    })
+}
+
+const ALL_OFF: [EgState; 6] = [EgState::Off; 6];
 
 fn bus() -> Result<MegadriveBus, Box<dyn Error>> {
     let mut image = vec![0_u8; 0x4000];
@@ -50,6 +60,83 @@ fn address_latches_are_separate_per_bank() {
     assert_eq!(ym.register(YmBank::One, 0x40), 0x01);
     assert_eq!(ym.register(YmBank::Two, 0x50), 0x02);
     assert_eq!(ym.register(YmBank::One, 0x50), 0x00);
+}
+
+#[test]
+fn key_on_data_byte_selects_the_channel_ignoring_the_port_bank() {
+    let mut ym = Ym2612::default();
+    assert_eq!(key_states(&ym), ALL_OFF);
+
+    // 0xF0: bits 0-1 = 0 and bit 2 clear, so the channel is 1 and all four
+    // operators are keyed. Channels 3 and 4 must stay Off.
+    write_register(&mut ym, YmBank::One, 0x28, 0xF0);
+    assert_eq!(
+        key_states(&ym),
+        [
+            EgState::Attack,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off
+        ],
+        "0xF0 keys only channel 1"
+    );
+
+    // 0xF4 sets bit 2, which selects the second group: channel 4 only.
+    let mut ym = Ym2612::default();
+    write_register(&mut ym, YmBank::One, 0x28, 0xF4);
+    assert_eq!(
+        key_states(&ym),
+        [
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Attack,
+            EgState::Off,
+            EgState::Off
+        ],
+        "0xF4 keys only channel 4"
+    );
+
+    // The port bank must not select the channel: bank 2 with 0xF4 still keys 4.
+    let mut ym = Ym2612::default();
+    write_register(&mut ym, YmBank::Two, 0x28, 0xF4);
+    assert_eq!(
+        key_states(&ym),
+        [
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Attack,
+            EgState::Off,
+            EgState::Off
+        ],
+        "the data byte names the channel, not the port pair"
+    );
+
+    // Bits 0-1 = 3 are reserved and key nothing.
+    let mut ym = Ym2612::default();
+    write_register(&mut ym, YmBank::One, 0x28, 0xF3);
+    assert_eq!(key_states(&ym), ALL_OFF, "channel selector 3 is reserved");
+
+    // The operator mask applies to the selected channel only.
+    let mut ym = Ym2612::default();
+    write_register(&mut ym, YmBank::One, 0x28, 0x10);
+    assert_eq!(
+        key_states(&ym),
+        [
+            EgState::Attack,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Off
+        ],
+        "0x10 keys operator 1 of channel 1 only"
+    );
+    let envelope = ym.envelope(0, 1).map(|view| view.state);
+    assert_eq!(envelope, Some(EgState::Off), "operator 2 was not keyed");
 }
 
 #[test]
@@ -147,7 +234,8 @@ fn z80_ym2612_window_does_not_alias_ram_or_rom() -> Result<(), Box<dyn Error>> {
 #[test]
 fn ym2612_window_access_does_not_charge_a_z80_stall() -> Result<(), Box<dyn Error>> {
     let mut bus = bus()?;
-    bus.set_arbitration(true, false);
+    // The Z80 owns the bus: no request asserted and out of reset.
+    bus.set_arbitration(false, false);
     let _ = bus.read8(YM2612_BASE)?;
     assert_eq!(bus.take_z80_stall_cycles(), 0);
     let _ = bus.read8(0x00A0_0000)?;

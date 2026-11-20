@@ -131,10 +131,12 @@ pub const PSG_Z80_ALIAS: u16 = 0x7F11;
 pub const Z80_STALL_MASTER_CYCLES: u64 = MASTER_CYCLES_PER_Z80_T_STATE * 4;
 /// 68000/Z80 bus ownership and reset latches.
 ///
-/// `requested` records that the 68000 requested and released the Z80 bus (so
-/// the Z80 owns it and executes); `reset_asserted` records that the 68000 holds
-/// the Z80 in reset through the active-low `0xA11200` bit. Both are canonical
-/// machine state; payload v6 serializes both latches.
+/// The polarity follows the hardware `ZBR` line. `requested` records that the
+/// 68000 **asserted** the Z80 bus request through `0xA11100` bit 8: the Z80 stops
+/// at its next instruction boundary and the 68000 owns the Z80 window. With the
+/// request negated the Z80 owns the bus and executes. `reset_asserted` records
+/// that the 68000 holds the Z80 in reset through the active-low `0xA11200` bit.
+/// Both are canonical machine state; payload v6 serializes both latches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BusArbitration {
     requested: bool,
@@ -142,7 +144,7 @@ pub struct BusArbitration {
 }
 
 impl BusArbitration {
-    /// Returns whether the 68000 released the bus to the Z80.
+    /// Returns whether the 68000 asserted the Z80 bus request.
     #[must_use]
     pub const fn requested(&self) -> bool {
         self.requested
@@ -154,10 +156,21 @@ impl BusArbitration {
         self.reset_asserted
     }
 
-    /// Returns whether the Z80 may execute: bus granted and out of reset.
+    /// Returns whether the Z80 may execute: no bus request and out of reset.
+    ///
+    /// The model yields the bus functionally on the request write rather than
+    /// waiting for the Z80 instruction boundary, so a `0xA11100` poll observes
+    /// the yield immediately. See [`BusArbitration::z80_owns_bus`].
     #[must_use]
     pub const fn z80_runs(&self) -> bool {
-        self.requested && !self.reset_asserted
+        !self.requested && !self.reset_asserted
+    }
+
+    /// Returns whether the Z80 owns the bus, which is what `0xA11100` bit 8
+    /// reports: one while the Z80 has it, zero once it has yielded to the 68000.
+    #[must_use]
+    pub const fn z80_owns_bus(&self) -> bool {
+        !self.requested
     }
 
     /// Rebuilds the latches from a validated snapshot payload.
@@ -512,9 +525,10 @@ impl MegadriveBus {
 
     /// Sets the bus-request and reset latches.
     ///
-    /// `requested` is the requested-bus state (the Z80 owns the bus) and
-    /// `reset` is the active-low reset state (`true` asserts reset). The call is
-    /// idempotent: repeating the same pair leaves the latches unchanged.
+    /// `requested` is the asserted Z80 bus request (the 68000 owns the window and
+    /// the Z80 is stopped) and `reset` is the active-low reset state (`true`
+    /// asserts reset). The call is idempotent: repeating the same pair leaves the
+    /// latches unchanged.
     pub fn set_arbitration(&mut self, requested: bool, reset: bool) {
         self.arbitration = BusArbitration {
             requested,
@@ -899,7 +913,9 @@ impl MegadriveBus {
             return Some(self.z80_ram[offset]);
         }
         match address {
-            Z80_BUS_REQUEST => Some(u8::from(self.arbitration.requested)),
+            // Bit 8 reports whether the Z80 still owns the bus: one until it has
+            // yielded to the 68000's request, zero afterwards.
+            Z80_BUS_REQUEST => Some(u8::from(self.arbitration.z80_owns_bus())),
             address if address == Z80_BUS_REQUEST + 1 => Some(0),
             Z80_RESET => Some(u8::from(!self.arbitration.reset_asserted)),
             address if address == Z80_RESET + 1 => Some(0),
@@ -924,6 +940,9 @@ impl MegadriveBus {
             return true;
         }
         match address {
+            // Hardware polarity: setting bit 8 asserts the bus request, which
+            // stops the Z80 and gives the 68000 the Z80 window; clearing it
+            // returns the bus to the Z80.
             Z80_BUS_REQUEST => {
                 self.arbitration.requested = value & 0x01 != 0;
                 true
@@ -949,8 +968,9 @@ impl MegadriveBus {
 
     /// Charges one Z80-window stall to the current 68000 instruction.
     ///
-    /// Only while the Z80 owns the bus; the charge is one Z80 M1 fetch per
-    /// transferred byte. See [`Z80_STALL_MASTER_CYCLES`].
+    /// Only while the Z80 owns the bus (`0xA11100` request negated, reset
+    /// released); the charge is one Z80 M1 fetch per transferred byte. See
+    /// [`Z80_STALL_MASTER_CYCLES`].
     fn stall_z80_window_access(&mut self, address: u32) {
         if is_z80_ram_window(address) && self.arbitration.z80_runs() {
             self.z80_stall_cycles = self

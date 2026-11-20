@@ -45,10 +45,12 @@ fn emit_move_byte(rom: &mut [u8], offset: &mut usize, value: u8, address: u32) {
 
 /// Builds a synthetic ROM that installs [`z80_program`] and hands the bus over.
 ///
-/// The 68000 writes every Z80 program byte through the `0xA00000` window while
-/// the Z80 is still held in reset, then clears the active-low reset bit at
-/// `0xA11200` and sets the bus request at `0xA11100`. Afterwards it spins on a
-/// `BRA.S` so every step leaves the Z80 a small master-cycle window.
+/// The 68000 asserts the bus request at `0xA11100` (hardware polarity: the
+/// request stops the Z80 and gives the 68000 the Z80 window), writes every Z80
+/// program byte through the `0xA00000` window while the Z80 is held in reset,
+/// then clears the active-low reset bit at `0xA11200` and negates the request at
+/// `0xA11100` so the Z80 owns the bus. Afterwards it spins on a `BRA.S` so every
+/// step leaves the Z80 a small master-cycle window.
 fn z80_step_rom() -> Vec<u8> {
     let mut rom = vec![0_u8; 0x1000];
     for word in rom.chunks_exact_mut(2) {
@@ -57,13 +59,14 @@ fn z80_step_rom() -> Vec<u8> {
     rom[0..4].copy_from_slice(&0x00FF_0000_u32.to_be_bytes());
     rom[4..8].copy_from_slice(&0x0000_0200_u32.to_be_bytes());
     let mut offset = 0x200;
+    emit_move_byte(&mut rom, &mut offset, 0x01, 0x00A1_1100); // assert the bus request
     for (index, byte) in z80_program().iter().enumerate() {
         let address = 0x00A0_0000 + u32::try_from(index).expect("program offset fits");
         emit_move_byte(&mut rom, &mut offset, *byte, address);
     }
     emit_move_byte(&mut rom, &mut offset, 0x01, 0x00A0_6000); // Z80 bank 0x100
     emit_move_byte(&mut rom, &mut offset, 0x01, 0x00A1_1200); // release Z80 reset
-    emit_move_byte(&mut rom, &mut offset, 0x01, 0x00A1_1100); // request the bus
+    emit_move_byte(&mut rom, &mut offset, 0x00, 0x00A1_1100); // release the bus to the Z80
     rom[offset..offset + 2].copy_from_slice(&[0x60, 0xFE]); // BRA.S -2
     assert!(chronofork_megadrive::test_support::stamp_header(
         &mut rom, "JUE"
@@ -128,8 +131,8 @@ fn z80_program_progresses_during_ordinary_steps() -> Result<(), Box<dyn Error>> 
     let mut machine = z80_machine();
     let loop_start = z80_program().len() - 3;
     let loop_pc = u16::try_from(loop_start).expect("program fits the Z80 address space");
-    // The reset starts asserted and the bus unrequested: the Z80 must stay put
-    // until the program hands over both.
+    // Power-on holds the Z80 in reset and asserts no bus request, so the Z80
+    // stays put until the program releases the reset and negates the request.
     assert!(!machine.bus().arbitration().z80_runs());
     let mut saw_running = false;
     let mut entered_loop = false;

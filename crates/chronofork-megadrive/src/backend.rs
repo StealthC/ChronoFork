@@ -3850,13 +3850,18 @@ mod tests {
         }
         let snapshot = machine.snapshot().expect("snapshot");
         assert_eq!(snapshot.payload().len(), 206_251);
+        // Re-pinned by the 8.4 repair round (R1-F2/R1-F3): the PSG noise periods
+        // moved from 512/1024/2048 to 32/64/128 internal ticks, which changes the
+        // canonical noise counter over time, and the 0xA11100 bus request now
+        // follows the hardware ZBR polarity. The payload length and the
+        // configuration hash are unchanged, so only canonical *state* bytes moved.
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "e69b6da1caf16f999bec7cfa30db8a58621927a2ad739322d70c86ca448f31a9"
+            "fa87fe3f519c9f940194f1e7bf0e1db091dbbe43ec39de5cfb859979ae6311e1"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "b45ae6c12ce2e1e6f744c4b3992c8770c13e36bd22a800a01c9028d60467e155"
+            "2e2db861007ad5ab9eee89ae3c5eea87ea05b28505b1b343da42b5788b91998b"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
