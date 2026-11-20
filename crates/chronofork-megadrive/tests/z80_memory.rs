@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+use chronofork_megadrive::audio::YmBank;
 use chronofork_megadrive::bus::{
     PSG_Z80_ALIAS, YM2612_Z80_BASE, YM2612_Z80_END, Z80_BANK_REGISTER, Z80_BANK_REGISTER_ADDRESS,
     Z80_ROM_WINDOW_BASE,
@@ -130,15 +131,15 @@ fn bank_beyond_the_image_is_a_typed_memory_error() -> Result<(), Box<dyn Error>>
 #[test]
 fn device_windows_are_decoded_and_do_not_alias_ram_or_rom() -> Result<(), Box<dyn Error>> {
     let mut bus = bus()?;
-    for address in [
-        YM2612_Z80_BASE,
-        YM2612_Z80_END,
-        0x4004,
-        0x7F00,
-        0x7F03,
-        PSG_Z80_ALIAS,
-        0x7F04,
-    ] {
+    // The YM2612 window is wired and reaches the device.
+    chronofork_megadrive::z80::Z80Bus::write8(&mut bus, YM2612_Z80_BASE, 0x30)?;
+    chronofork_megadrive::z80::Z80Bus::write8(&mut bus, YM2612_Z80_BASE + 1, 0x0B)?;
+    assert_eq!(bus.ym().register(YmBank::One, 0x30), 0x0B);
+    assert_eq!(
+        chronofork_megadrive::z80::Z80Bus::read8(&mut bus, YM2612_Z80_END)?,
+        bus.ym().status()
+    );
+    for address in [0x4004, 0x7F00, 0x7F03, PSG_Z80_ALIAS, 0x7F04] {
         assert!(
             matches!(
                 Z80Bus::read8(&mut bus, address),

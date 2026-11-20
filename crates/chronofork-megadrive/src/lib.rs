@@ -14,6 +14,12 @@
 //! versioned v5 snapshots and session integration. Debug-only observation, pure
 //! CPU/VDP/interrupt/bus views and a bounded, execution-cross-checked
 //! 68000-subset disassembler are available without changing canonical state.
+//! The phase-8.4 audio tree starts with [`audio::ym2612`]: a deterministic
+//! integer YM2612 FM model (six four-operator channels, eight algorithms,
+//! envelopes, LFO, two register port pairs, timers/status and the channel-6
+//! DAC) reachable through the Z80 YM2612 window and a new 68000 window at
+//! `0x00A04000..=0x00A04003`. The PSG, mixer and 48 kHz resampler are separate
+//! tasks of the phase, and timer IRQ delivery to the Z80 is phase 8.5.
 //! The phase-8.4 Z80 core lives in [`z80`]: the documented instruction set with
 //! its T-state counts, register file, interrupt acceptance (IM 0/1/2 and NMI)
 //! and a versioned snapshot. [`bus`] implements the Z80 memory view (8 KiB RAM
@@ -25,7 +31,8 @@
 //! the core explicitly. The Z80 is not yet stepped by [`Backend::step`](chronofork_backend_api::Backend::step) in the
 //! same master-cycle loop and its state is not yet in the v5 payload; both land
 //! with the phase's payload-v6 task.
-//! **Not implemented:** audio, concurrent Z80 execution inside a 68000 step,
+//! **Not implemented:** the PSG, audio mixing/resampling to 48 kHz, timer IRQ
+//! delivery to the Z80, concurrent Z80 execution inside a 68000 step,
 //! Z80/arbitration payload serialization, TH-latched and 6-button controller
 //! protocols (A/Start are not readable), SRAM banking schemes other than the Sega mapper,
 //! VSRAM data-port reads, interlace, the byte-swapped physical VRAM layout,
@@ -34,6 +41,7 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod audio;
 pub mod backend;
 pub mod bus;
 pub mod cartridge;
@@ -47,6 +55,7 @@ pub mod trace;
 pub mod vdp;
 pub mod z80;
 
+pub use audio::{Ym2612, YmBank, YmIrq, YmPort};
 pub use backend::{
     BACKEND_ID, BOOT_MARKER, BOOT_ROM_SIZE, CONFIG_MAGIC, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
     MegadriveConfig, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, STATE_MAGIC,

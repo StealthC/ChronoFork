@@ -17,9 +17,10 @@
 //! The Z80 sees its RAM mirrored through `0x3FFF`, the YM2612 window at
 //! `0x4000..=0x4003`, the bank-register write at `0x6000`, the PSG window at
 //! `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked raw-ROM window at
-//! `0x8000..=0xFFFF`. The YM2612/PSG windows are decoded so they cannot alias
-//! RAM or ROM; their device state arrives with the phase's audio tasks, so the
-//! windows currently report a typed Z80 memory error.
+//! `0x8000..=0xFFFF`. The YM2612 window is wired on both sides (the 68000 side
+//! at `0xA04000..=0xA04003`); the PSG window is decoded so it cannot alias RAM
+//! or banked ROM and reports a typed Z80 memory error until the phase's PSG
+//! task wires the device.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
@@ -44,6 +45,7 @@ use std::fmt;
 use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
 use chronofork_core::Tick;
 
+use crate::audio::{Ym2612, YmBank, YmPort};
 use crate::cartridge::{
     Cartridge, CartridgeError, MAPPER_REGISTER_BASE, MAPPER_REGISTER_END, TMSS_REGISTER_BASE,
     TMSS_REGISTER_END, Tmss, VERSION_REGISTER,
@@ -83,6 +85,12 @@ pub const CONTROLLER_PORT_2: u32 = 0x00A1_0005;
 /// Bit 6 is the TH-high level and bit 7 is the slice's constant zero; the six
 /// active-low button bits are all released.
 pub const CONTROLLER_NEUTRAL: u8 = 0x7F;
+/// First 68000 address of the YM2612 window.
+pub const YM2612_BASE: u32 = 0x00A0_4000;
+/// Size of the 68000-visible YM2612 window in bytes.
+pub const YM2612_WINDOW_SIZE: u32 = 4;
+/// Exclusive end of the 68000-visible YM2612 window.
+pub const YM2612_END: u32 = YM2612_BASE + YM2612_WINDOW_SIZE;
 /// First 68000 address of the Z80 RAM window.
 pub const Z80_RAM_BASE: u32 = 0x00A0_0000;
 /// Size of Z80 RAM in bytes.
@@ -247,6 +255,11 @@ pub struct MegadriveBus {
     video: VideoStandard,
     ram: Vec<u8>,
     vdp: Vdp,
+    /// YM2612 FM synthesiser.
+    ///
+    /// Canonical device state; payload v5 predates the audio subsystem, so its
+    /// serialization lands with the phase's payload-v6 task.
+    ym: Ym2612,
     /// 8 KiB Z80 RAM, canonical machine state.
     ///
     /// Payload v5 predates the Z80 subsystem, so the phase's payload-v6 task
@@ -301,6 +314,7 @@ impl MegadriveBus {
             video,
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
+            ym: Ym2612::new(),
             z80_ram: vec![0; Z80_RAM_SIZE],
             z80_bank: 0,
             // Power-on: the 68000 owns the bus and holds the Z80 in reset.
@@ -434,6 +448,17 @@ impl MegadriveBus {
         &self.ram
     }
 
+    /// Returns the YM2612 synthesiser.
+    #[must_use]
+    pub const fn ym(&self) -> &Ym2612 {
+        &self.ym
+    }
+
+    /// Returns the YM2612 for timer/sample advancement.
+    pub fn ym_mut(&mut self) -> &mut Ym2612 {
+        &mut self.ym
+    }
+
     /// Returns the canonical 8 KiB Z80 RAM.
     #[must_use]
     pub fn z80_ram(&self) -> &[u8] {
@@ -511,6 +536,11 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
             return Ok(value);
         }
+        if let Some(value) = self.read_ym_window(address) {
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
+            return Ok(value);
+        }
         if let Some(value) = self.read_z80_window(address) {
             if is_z80_ram_window(address) {
                 self.stall_z80_window_access(address);
@@ -538,6 +568,9 @@ impl MegadriveBus {
         }
         if controller_port(address).is_some() {
             return Err(BusError::UnmappedRead { address });
+        }
+        if let Some(value) = self.read_ym_window(address) {
+            return Ok(value);
         }
         if let Some(value) = self.read_z80_window(address) {
             return Ok(value);
@@ -652,6 +685,12 @@ impl MegadriveBus {
             self.observe_vdp_access(offset, address, u32::from(value), 1, true);
             return Ok(());
         }
+        if let Some((bank, port)) = ym_port(address) {
+            self.ym.write_bank(bank, port, value);
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
         if self.write_z80_window(address, value) {
             if is_z80_ram_window(address) {
                 self.observe_ram_write(address, value);
@@ -715,6 +754,15 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 2);
             return Ok(());
         }
+        if ym_window_covers(address, 2) {
+            let bytes = value.to_be_bytes();
+            self.write8(address, bytes[0])?;
+            let second = address
+                .checked_add(1)
+                .ok_or(BusError::AddressOverflow { address, length: 2 })?;
+            self.write8(second, bytes[1])?;
+            return Ok(());
+        }
         if z80_window_covers(address, 2) {
             let bytes = value.to_be_bytes();
             self.write8(address, bytes[0])?;
@@ -767,6 +815,18 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, value, 4);
             return Ok(());
         }
+        if ym_window_covers(address, 4) {
+            let bytes = value.to_be_bytes();
+            for (offset, byte) in bytes.iter().enumerate() {
+                let offset =
+                    u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
+                let target = address
+                    .checked_add(offset)
+                    .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+                self.write8(target, *byte)?;
+            }
+            return Ok(());
+        }
         if z80_window_covers(address, 4) {
             let bytes = value.to_be_bytes();
             for (offset, byte) in bytes.iter().enumerate() {
@@ -789,6 +849,14 @@ impl MegadriveBus {
             self.write8(target, *byte)?;
         }
         Ok(())
+    }
+
+    /// Reads the YM2612 status byte for an address in its 68000 window.
+    ///
+    /// Both hardware register read ports return the status byte; the call is
+    /// side-effect free, so debugger views may use it too.
+    fn read_ym_window(&self, address: u32) -> Option<u8> {
+        ym_port(address).map(|_| self.ym.status())
     }
 
     /// Reads one byte from a 68000-visible Z80 window or control register.
@@ -989,6 +1057,39 @@ impl MegadriveBus {
     }
 }
 
+/// Returns the YM2612 bank and latch addressed by a 68000 window byte.
+fn ym_port(address: u32) -> Option<(YmBank, YmPort)> {
+    match address.checked_sub(YM2612_BASE)? {
+        0 => Some((YmBank::One, YmPort::Address)),
+        1 => Some((YmBank::One, YmPort::Data)),
+        2 => Some((YmBank::Two, YmPort::Address)),
+        3 => Some((YmBank::Two, YmPort::Data)),
+        _ => None,
+    }
+}
+
+/// Returns whether every byte of `address..address + length` is a YM2612 byte.
+fn ym_window_covers(address: u32, length: u32) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        if ym_port(address.saturating_add(offset)).is_none() {
+            return false;
+        }
+        offset += 1;
+    }
+    true
+}
+
+/// Maps a Z80 YM2612 window byte to its bank and latch.
+const fn z80_ym_port(address: u16) -> (YmBank, YmPort) {
+    match address & 0x0003 {
+        0 => (YmBank::One, YmPort::Address),
+        1 => (YmBank::One, YmPort::Data),
+        2 => (YmBank::Two, YmPort::Address),
+        _ => (YmBank::Two, YmPort::Data),
+    }
+}
+
 /// Returns whether `address` is inside the 68000-visible Z80 RAM window.
 fn is_z80_ram_window(address: u32) -> bool {
     (Z80_RAM_BASE..Z80_RAM_END).contains(&address)
@@ -1089,9 +1190,10 @@ impl Z80Bus for MegadriveBus {
         match address {
             // 8 KiB of RAM mirrored through the first 16 KiB of the Z80 map.
             0x0000..=0x3FFF => Ok(self.z80_ram[usize::from(address & Z80_RAM_MASK)]),
-            // The YM2612 window is decoded here so it cannot alias RAM or ROM;
-            // its register state arrives with the phase's audio task.
-            YM2612_Z80_BASE..=YM2612_Z80_END => Err(Z80Error::Memory { address }),
+            YM2612_Z80_BASE..=YM2612_Z80_END => {
+                let (bank, port) = z80_ym_port(address);
+                Ok(self.ym.read_bank(bank, port))
+            }
             Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
             // The PSG window (including the `0x7F11` alias) is decoded here and
             // wired to the device by the phase's PSG task.
@@ -1113,10 +1215,14 @@ impl Z80Bus for MegadriveBus {
                 self.z80_bank = u16::from(value);
                 Ok(())
             }
-            YM2612_Z80_BASE..=YM2612_Z80_END
-            | PSG_Z80_BASE..=PSG_Z80_END
-            | PSG_Z80_ALIAS
-            | Z80_ROM_WINDOW_BASE..=0xFFFF => Err(Z80Error::Memory { address }),
+            YM2612_Z80_BASE..=YM2612_Z80_END => {
+                let (bank, port) = z80_ym_port(address);
+                self.ym.write_bank(bank, port, value);
+                Ok(())
+            }
+            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS | Z80_ROM_WINDOW_BASE..=0xFFFF => {
+                Err(Z80Error::Memory { address })
+            }
             _ => Err(Z80Error::Memory { address }),
         }
     }
