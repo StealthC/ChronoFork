@@ -3,9 +3,10 @@
 use std::error::Error;
 
 use chronofork_megadrive::audio::YmBank;
+use chronofork_megadrive::audio::psg::OPEN_BUS_VALUE;
 use chronofork_megadrive::bus::{
-    PSG_Z80_ALIAS, YM2612_Z80_BASE, YM2612_Z80_END, Z80_BANK_REGISTER, Z80_BANK_REGISTER_ADDRESS,
-    Z80_ROM_WINDOW_BASE,
+    PSG_Z80_ALIAS, PSG_Z80_BASE, YM2612_Z80_BASE, YM2612_Z80_END, Z80_BANK_REGISTER,
+    Z80_BANK_REGISTER_ADDRESS, Z80_ROM_WINDOW_BASE,
 };
 use chronofork_megadrive::cartridge::Cartridge;
 use chronofork_megadrive::z80::{Z80Bus, Z80Error};
@@ -139,7 +140,18 @@ fn device_windows_are_decoded_and_do_not_alias_ram_or_rom() -> Result<(), Box<dy
         chronofork_megadrive::z80::Z80Bus::read8(&mut bus, YM2612_Z80_END)?,
         bus.ym().status()
     );
-    for address in [0x4004, 0x7F00, 0x7F03, PSG_Z80_ALIAS, 0x7F04] {
+    // The PSG window is decoded, write-only and cannot alias RAM or ROM: a read
+    // returns the open value and a write reaches the chip's attenuation register.
+    for address in [PSG_Z80_BASE, 0x7F03, PSG_Z80_ALIAS] {
+        assert_eq!(
+            Z80Bus::read8(&mut bus, address),
+            Ok(OPEN_BUS_VALUE),
+            "read {address:#06x} returns the PSG open value"
+        );
+        Z80Bus::write8(&mut bus, address, 0x9F)?;
+        assert_eq!(bus.psg().attenuation(0), Some(0x0F));
+    }
+    for address in [0x4004, 0x7F04] {
         assert!(
             matches!(
                 Z80Bus::read8(&mut bus, address),

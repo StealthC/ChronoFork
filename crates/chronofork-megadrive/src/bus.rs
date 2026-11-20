@@ -18,9 +18,9 @@
 //! `0x4000..=0x4003`, the bank-register write at `0x6000`, the PSG window at
 //! `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked raw-ROM window at
 //! `0x8000..=0xFFFF`. The YM2612 window is wired on both sides (the 68000 side
-//! at `0xA04000..=0xA04003`); the PSG window is decoded so it cannot alias RAM
-//! or banked ROM and reports a typed Z80 memory error until the phase's PSG
-//! task wires the device.
+//! at `0xA04000..=0xA04003`) and the Z80 PSG window writes the PSG latch/data
+//! protocol; a PSG read returns the chip's documented open value. The 68000-side
+//! PSG window is not mapped.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
@@ -45,7 +45,7 @@ use std::fmt;
 use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
 use chronofork_core::Tick;
 
-use crate::audio::{Ym2612, YmBank, YmPort};
+use crate::audio::{Psg, Ym2612, YmBank, YmPort};
 use crate::cartridge::{
     Cartridge, CartridgeError, MAPPER_REGISTER_BASE, MAPPER_REGISTER_END, TMSS_REGISTER_BASE,
     TMSS_REGISTER_END, Tmss, VERSION_REGISTER,
@@ -260,6 +260,11 @@ pub struct MegadriveBus {
     /// Canonical device state; payload v5 predates the audio subsystem, so its
     /// serialization lands with the phase's payload-v6 task.
     ym: Ym2612,
+    /// SN76489-compatible PSG.
+    ///
+    /// Canonical device state; like the YM2612 it is serialized by the phase's
+    /// payload-v6 task.
+    psg: Psg,
     /// 8 KiB Z80 RAM, canonical machine state.
     ///
     /// Payload v5 predates the Z80 subsystem, so the phase's payload-v6 task
@@ -315,6 +320,7 @@ impl MegadriveBus {
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
             ym: Ym2612::new(),
+            psg: Psg::new(),
             z80_ram: vec![0; Z80_RAM_SIZE],
             z80_bank: 0,
             // Power-on: the 68000 owns the bus and holds the Z80 in reset.
@@ -457,6 +463,17 @@ impl MegadriveBus {
     /// Returns the YM2612 for timer/sample advancement.
     pub fn ym_mut(&mut self) -> &mut Ym2612 {
         &mut self.ym
+    }
+
+    /// Returns the PSG.
+    #[must_use]
+    pub const fn psg(&self) -> &Psg {
+        &self.psg
+    }
+
+    /// Returns the PSG for sample advancement by the audio mixer.
+    pub fn psg_mut(&mut self) -> &mut Psg {
+        &mut self.psg
     }
 
     /// Returns the canonical 8 KiB Z80 RAM.
@@ -1195,9 +1212,9 @@ impl Z80Bus for MegadriveBus {
                 Ok(self.ym.read_bank(bank, port))
             }
             Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
-            // The PSG window (including the `0x7F11` alias) is decoded here and
-            // wired to the device by the phase's PSG task.
-            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => Err(Z80Error::Memory { address }),
+            // The PSG is write-only; the decoded window returns the chip's
+            // documented open value.
+            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => Ok(self.psg.read()),
             Z80_ROM_WINDOW_BASE..=0xFFFF => self.read_z80_banked_rom(address),
             _ => Err(Z80Error::Memory { address }),
         }
@@ -1220,9 +1237,11 @@ impl Z80Bus for MegadriveBus {
                 self.ym.write_bank(bank, port, value);
                 Ok(())
             }
-            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS | Z80_ROM_WINDOW_BASE..=0xFFFF => {
-                Err(Z80Error::Memory { address })
+            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => {
+                self.psg.write(value);
+                Ok(())
             }
+            Z80_ROM_WINDOW_BASE..=0xFFFF => Err(Z80Error::Memory { address }),
             _ => Err(Z80Error::Memory { address }),
         }
     }
