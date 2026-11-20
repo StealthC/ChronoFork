@@ -137,7 +137,7 @@ frame-level differential evidence.
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.3-vdp.md)
 **Completed:** 2026-11-19
 
-### Phase 8.4: Z80, bus arbitration and audio [status: pending]
+### Phase 8.4: Z80, bus arbitration and audio [status: active]
 
 **Goal:** Implement the Z80 core and memory map, 68000/Z80/VDP bus arbitration, YM2612
 six-channel FM and PSG, with deterministic mixing/resampling and audio differential evidence.

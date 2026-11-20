@@ -4,66 +4,60 @@
 
 ## Current Position
 
-- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.3 now complete).
-- **Phase 8.3 — Complete VDP: complete and integrated.** Implemented on
-  `agent/8.3-vdp` (24 implementation commits, HEAD `e1433ed`), independently verified
-  (rounds 1–3 PASS) and independently reviewed (rounds 2–3 PASS). The integration commit
-  closes the phase in `docs/planning/ROADMAP.md`/`MILESTONE.md`, pushes the branch and opens
-  the phase-8.3 PR linked to issue #16; the PR is the integration record for the merge into
-  `main`. If a fresh session reads this before the merge lands, check the PR/issue #16 state
-  first.
-- **Delivered:** the complete VDP — CRAM (64 words) and VSRAM (40 words) with word/byte
-  addressing and auto-increment, plane A/B and window nametables with full/column/line
-  scrolling, 80 link-ordered sprites with flips/duplication/collision/overflow latches,
-  six-level priority, shadow/highlight, the H40 border, DMA (memory→VRAM/CRAM/VSRAM, fill,
-  copy) with pre-validation and busy windows, the bounded 4-word FIFO with 68000 wait slots
-  surfaced through the bus and applied as `wait*7` master cycles, VDP-owned VBlank/HBlank
-  pending/acknowledge gated by register `0x00`, H/V counters and line/dot timing, and
-  deterministic 256/320×224/240 RGBA frames through the backend-neutral `MediaSource` seam
-  (one frame per VDP frame, second take `None`). Payload v5
-  (`CFMD68K5`/`CFMDSTATE5`/`CFMDCONF5`) embeds the `CFVDP002` VDP state and frame index, and
-  v1–v4 are rejected with typed errors; `rendering = true`, `audio = false`. Evidence: the
-  pinned-oracle VDP state differential ([VDP state differential](../research/vdp-state-differential-evidence.md))
-  plus the workspace gate and the H32/H40 frame fixtures.
-- **Honest residual limits:** interlace, dot-exact H/V counters, the physical byte-swapped
-  VRAM layout, exact H32 window geometry, line-mode vertical scrolling and column-scroll
-  details are not modelled; DMA's source is a VRAM address (no 68000-memory view) and
-  transfers are eager; VSRAM data-port reads are undecoded; the headless oracle exposes no
-  VDP memory content, so pixels are pinned internally (no cross-emulator pixel comparison);
-  the latched command CD5 is not cleared after an eager DMA, so a later data-port write with
-  no new command could re-trigger a transfer (untested edge, hardware clears CD5 on
-  completion); the `megadrive demo` renders a frame on every `inspect` and takes ~65–70 s.
-  Z80, YM2612/PSG audio, timer interrupts, the full controller protocol, cartridge mapper
-  variants/SRAM banking and headless PNG/WAV capture remain later M8 phases.
-- **Next task:** phase 8.4 — Z80, bus arbitration and audio. Its plan is already
-  groomed at [2026-11-17-8.4-z80-audio.md](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
-  (issue #17), so a fresh session routes `resume-work` → `start-next-phase` →
-  `executing-plans`.
-- **CI runtime follow-up (issue #28): complete and merged** (PR #30). The workflow now
-  triggers only on `main` pushes and PRs (the duplicate branch-push run is gone), cancels
-  superseded PR runs, runs the deterministic demos from the release binary (output
-  byte-identical to debug) and splits the workspace tests into four parallel crate groups.
-  Measured on the PR run: total workflow ~29.5 → **14m34s**; `Test` critical path 28m21s →
-  **14m31s** (`cpu`), with `apps` 5m56s, `host` 1m13s and `core` 35s; demos 3m16s → **1m39s**.
-  Non-blocking follow-ups recorded in the PR: a `cargo metadata` vs group-union guard when a
-  crate is added, an optional per-group cache-key suffix, and listing all four `Test (…)`
-  checks if branch protection is ever enabled.
+- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.4 in progress,
+  paused by the owner).
+- **Phase 8.4 — Z80, bus arbitration and audio: IN PROGRESS.** Work is preserved as local
+  commits on `agent/8.4-z80-audio`, created from `origin/main` at `ab3b484`. Integration HEAD
+  before this handoff: `2f7d815`; this commit adds the pause docs. **Nothing was pushed, no PR
+  was opened, no merge happened**, and issue #17 remains open. The AgentTeams team was archived.
+- **Completed in this session (local commits, each block verified by the implementer):**
+  - **T1 — Z80 core** (plan tasks 1–5): `3fecefe..5a5d7ce`; 82 tests; T-state base
+    (`MASTER_CYCLES_PER_Z80_T_STATE = 15`), main opcode table, CB, ED and DD/FD prefixes.
+    Limits: IXH/IXL/IYH/IYL and WZ absent, undocumented ED opcodes are NOPs, block-op
+    undocumented X/Y flags left clear, repeated DD/FD prefix bounded.
+  - **T2 — Z80 interrupts, memory map and arbitration** (plan tasks 6–8): `44ea857`,
+    `0b79cb5`, `4c2f06e`; 25 tests; IM 0/1/2, NMI, EI delay, HALT wake; 8 KiB mirrored RAM,
+    banked 32 KiB ROM, 68000 Z80 window, `0xA11100`/`0xA11200` latches and a deterministic
+    60-master-cycle stall per byte lane. Limits: YM/PSG windows return typed errors until T4;
+    payload v5 does not serialize Z80/arbitration; `advance_z80` is explicit and is not yet
+    called by `Backend::step` — T5 must close that.
+  - **T3 — YM2612** (plan tasks 9–11): `ce8a2d7`, `af2a4f4`, `2f7d815`; 29 tests; registers,
+    timers/status, DAC, integer FM with eight algorithms, feedback, LFO, envelopes. Limits:
+    functional (not hardware-exact) envelope/amplitude model; SSG-EG, channel-3 special mode,
+    CSM and `0x21`/`0x2B` test bits stored but not applied; busy bit absent; timer IRQ delivery
+    deferred to 8.5; YM state not serialized until payload v6. The task board still shows T3
+    `in_progress` because its completion payload was blocked by `tests/z80_memory.rs` being
+    outside the original `inScope`; the captain amended the contract to include it, but the
+    team was archived before re-submission. The code is committed and green at `2f7d815`.
+- **Remaining work (re-stage only these; do not recreate T1–T3):**
+  - **T4** — PSG + mixer/resampler 48 kHz (plan 12–13).
+  - **T5** — audio `MediaSource` + payload v6 + **Z80 advanced from `Backend::step`** (captain
+    amendment) + all v5 goldens.
+  - **T6** — audio-state oracle + evidence + capability docs.
+  - **V1** — independent verification; **R1** — independent review; **I1** — captain integration
+    (docs closure, PR #17, CI, merge, cleanup).
+- **Evidence:** raw artifacts in ignored `.research/8.4/`; detailed handoff in ignored
+  `.agents/notes/8.4/handoff.md`. Current workspace count is 1425 tests (baseline 1289; +136
+  new, no target lost); `./scripts/check.sh`, fmt, clippy, rustdoc and both demos were green at
+  each task HEAD.
 
 ## Open Decisions
 
-- **None blocking.** The VDP limits above are documented, reviewed and deliberately
-  deferred; they do not block closing 8.3 or starting 8.4.
-- Audio differential tolerance (phase 8.4), port 3/analog/keyboard as H4 residual limits,
-  native frontend dependencies (`winit`/`softbuffer`/`cpal` + ADR superseding ADR-0013,
-  required before 8.8) and the M9 second system remain open as before.
-- The curated commercial ROM set (Kid Chameleon and Chakan) remains phase 8.6 evidence.
+- T5's description was amended by the captain to require `MegadriveBackend::step` to call
+  `advance_z80` when the bus is requested and out of reset, accumulating master cycles
+  deterministically; new agents must follow the amended description.
+- Intermediate per-plan commits are a stack (only the block HEAD builds in isolation); accepted
+  for this phase and to be noted in review.
+- Audio differential evidence is device-state only, never a sample comparison; the audio oracle
+  script belongs to T6.
 
 ## Blockers
 
-- None. Phase 8.3 is complete; the branch is pushed and the PR is the merge record.
+- None. The owner paused the session; the team was archived. No gate is red.
 
 ## Recommended Next Step
 
-Resume with `resume-work` → `start-next-phase`: phase 8.4 (Z80, bus arbitration and audio)
-already has an approved design and groomed plan and branches from the current `main`, which
-now includes phases 8.1–8.3 and the CI runtime follow-up.
+Resume in this same session: read `.agents/notes/8.4/handoff.md` and this file, create a fresh
+AgentTeams run for the **remaining** tasks only (T4–T9) on branch `agent/8.4-z80-audio` at HEAD
+`2f7d815` + this commit, and run the full verification/review before publishing. Do not recreate
+T1–T3 and do not push until V1 and R1 pass.
