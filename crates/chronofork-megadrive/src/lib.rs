@@ -14,7 +14,12 @@
 //! versioned v5 snapshots and session integration. Debug-only observation, pure
 //! CPU/VDP/interrupt/bus views and a bounded, execution-cross-checked
 //! 68000-subset disassembler are available without changing canonical state.
-//! **Not implemented:** audio, Z80, TH-latched and 6-button controller protocols
+//! The phase-8.4 Z80 core lives in [`z80`]: the documented instruction set with
+//! its T-state counts, register file and versioned snapshot. It is a standalone
+//! core; the Z80 memory map, banking, bus arbitration and backend wiring are
+//! later 8.4 tasks, so the machine still executes only the 68000.
+//! **Not implemented:** audio, the Z80 memory map/arbitration/backend
+//! integration, TH-latched and 6-button controller protocols
 //! (A/Start are not readable), SRAM banking schemes other than the Sega mapper,
 //! VSRAM data-port reads, interlace, the byte-swapped physical VRAM layout,
 //! dot-exact H/V counters and cycle-accurate (prefetch/bus) timing. This is
@@ -33,6 +38,7 @@ pub mod inspect;
 pub mod interrupts;
 pub mod trace;
 pub mod vdp;
+pub mod z80;
 
 pub use backend::{
     BACKEND_ID, BOOT_MARKER, BOOT_ROM_SIZE, CONFIG_MAGIC, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
@@ -70,6 +76,7 @@ pub use interrupts::{
 };
 pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};
+pub use z80::{Z80, Z80Bus, Z80Error, Z80Field, Z80Outcome};
 
 /// Test-only support for synthetic images and local commercial-ROM fixtures.
 ///
