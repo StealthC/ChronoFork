@@ -36,15 +36,14 @@ What it does
 
 Synchronisation note (important, and recorded in the report)
 ------------------------------------------------------------
-The pinned oracle models hardware ZBR polarity: asserting the 68000's Z80 bus
-request takes the bus *away* from the Z80, so a running Z80 stops at its next
-instruction boundary. ChronoFork's phase-8.4 arbitration model is the documented
-functional inverse: its Z80 executes while the request latch is set and the
-reset is released. A literal same-ROM run therefore cannot reach a shared Z80
-boundary; the harness runs the same 68000 program with only the bus-request byte
-set per emulator so that both Z80 cores execute the identical program to
-``HALT``. This is a scoped arbitration-model divergence, not a Z80/PSG state
-claim, and the report states it explicitly.
+Both emulators model hardware ZBR polarity: with the request negated the Z80
+owns the bus, so one identical ROM with the same bus-request byte runs both Z80
+cores to the same ``HALT`` boundary. The harness therefore uses one identical
+ROM on both sides. A separate request-asserted probe checks that asserting the
+request stops the Z80 on both emulators at the same PC. The model is still
+functional rather than microcycle-exact (ChronoFork yields on the request write
+rather than at the Z80 instruction boundary), and the report states that limit
+explicitly.
 
 Exit status
 -----------
@@ -261,10 +260,11 @@ def build_rom(z80_program, bus_request):
     """Builds the synthetic ROM.
 
     ``bus_request`` selects the 68000 byte written to the Z80 bus-request latch
-    after the Z80 program has been installed. The two emulators interpret that
-    latch oppositely (see the module docstring), so the harness passes 1 for
-    ChronoFork and 0 for the oracle in the device-state comparison. The 68000
-    program and the Z80 program are otherwise identical.
+    after the Z80 program has been installed: ``0`` leaves the bus with the Z80
+    (the device-state comparison uses one identical ROM on both emulators) and
+    ``1`` asserts the request, which stops the Z80 on both emulators (the
+    arbitration probe). The 68000 program and the Z80 program are otherwise
+    identical.
     """
     rom = bytearray(ROM_SIZE)
     for offset in range(0, ROM_SIZE, 2):
@@ -493,11 +493,11 @@ def oracle_arbitration_probe(binary, root, work, rom_path, z80_program):
             "oracle_z80_pc": z80.get("Registers/Raw Registers/PC"),
             "oracle_z80_af": z80.get("Registers/Raw Registers/AF"),
             "note": (
-                "the pinned oracle treats an asserted 68000 Z80 bus request as the "
-                "68000 owning the bus and stops the Z80; ChronoFork's documented "
-                "functional model runs the Z80 only while the request latch is set. "
-                "This is a scoped arbitration-model divergence, not part of the "
-                "device-state comparison."
+                "asserting the 68000 Z80 bus request stops the Z80 on both "
+                "emulators under the hardware ZBR polarity, so the two recorded PCs "
+                "must agree. The model is still functional: ChronoFork yields on "
+                "the request write rather than at the Z80 instruction boundary. "
+                "This probe is not part of the device-state comparison."
             ),
         }
     finally:
@@ -904,12 +904,12 @@ def write_report(out_dir, evidence):
         "state are not claimed equal."
     )
     lines.append(
-        "- The oracle's Z80 bus-request polarity is the hardware one (request "
-        "takes the bus away from the Z80); ChronoFork's functional model is the "
-        "documented inverse. The compared Z80/PSG state therefore uses the same "
-        "68000 program with only that latch byte set per emulator so both Z80 "
-        "cores execute the same program to HALT. The literal same-ROM probe is "
-        "reported separately as a scoped arbitration divergence."
+        "- Both emulators model the hardware ZBR polarity, so the compared "
+        "Z80/PSG state uses one identical ROM (request negated: the Z80 owns the "
+        "bus) and both Z80 cores execute the same program to HALT. The model is "
+        "still functional rather than microcycle-exact: ChronoFork yields on the "
+        "request write rather than at the Z80 instruction boundary. The "
+        "request-asserted probe is reported separately."
     )
     lines.append(
         "- Time-dependent fields (PSG noise shift register) are excluded; the "
@@ -933,7 +933,7 @@ def write_report(out_dir, evidence):
         )
     )
     lines.append("")
-    lines.append("## Arbitration probe (scoped divergence)")
+    lines.append("## Arbitration probe (request asserted on both emulators)")
     lines.append("")
     probe = evidence.get("arbitration_probe", {})
     if probe:
@@ -1051,8 +1051,16 @@ def main(argv):
     try:
         rom_oracle = work / "audio-state-oracle.rom"
         rom_chronofork = work / "audio-state-chronofork.rom"
+        rom_probe = work / "audio-state-arbitration.rom"
+        probe_work = work / "arbitration"
+        probe_work.mkdir()
+        # Both emulators model the hardware ZBR polarity, so the device-state
+        # comparison uses the same bus-request byte (0: the Z80 owns the bus) on
+        # one identical ROM, and the request-asserted probe checks that asserting
+        # it stops the Z80 on both sides.
         rom_oracle.write_bytes(build_rom(z80_program, 0))
-        rom_chronofork.write_bytes(build_rom(z80_program, 1))
+        rom_chronofork.write_bytes(build_rom(z80_program, 0))
+        rom_probe.write_bytes(build_rom(z80_program, 1))
 
         oracle_z80, oracle_psg, oracle_ym = oracle_state(
             options.oracle_bin_dir / "exodus-mcpd",
@@ -1064,8 +1072,8 @@ def main(argv):
         arbitration = oracle_arbitration_probe(
             options.oracle_bin_dir / "exodus-mcpd",
             options.oracle_root,
-            work,
-            rom_chronofork,
+            probe_work,
+            rom_probe,
             z80_program,
         )
         expected = canonical_oracle(oracle_z80, oracle_psg, oracle_ym)
@@ -1080,7 +1088,11 @@ def main(argv):
             }
         else:
             mismatch = compare(expected, actual)
-        arbitration["chronofork_z80_pc"] = int(report.get("z80_pc", "0"))
+        probe_report = chronofork_state(options.chronofork_bin, rom_probe, probe_work)
+        arbitration["chronofork_z80_pc"] = int(probe_report.get("z80_pc", "0"))
+        arbitration["z80_pc_agrees"] = str(arbitration.get("oracle_z80_pc")) == str(
+            arbitration.get("chronofork_z80_pc")
+        )
         controls = negative_controls(expected, actual)
         controls_ok = all(control["detected"] for control in controls)
         missing = self_missing_oracle_control(Path(__file__).resolve())
@@ -1104,7 +1116,8 @@ def main(argv):
                 "z80_program_sha256": hashlib.sha256(z80_program).hexdigest(),
                 "z80_program_bytes": len(z80_program),
                 "oracle_bus_request": 0,
-                "chronofork_bus_request": 1,
+                "chronofork_bus_request": 0,
+                "probe_bus_request": 1,
                 "synchronisation": "Z80 HALT after the same program on both emulators",
             },
             "chronofork": {

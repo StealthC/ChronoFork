@@ -628,10 +628,9 @@ window to it.
 - Audio sample capture to a file or device (WAV/streaming) belongs to phase 8.7;
   phase 8.4 captures boundedly into `MediaSource` only, with no host audio device.
 - Z80 timer IRQ delivery, microcycle-exact bus arbitration (the model yields on the
-  request write rather than at the Z80 instruction boundary), timer/other interrupt
+  request write rather than at the Z80 instruction boundary; see the **Arbitration**
+  bullet in the phase-8.4 section above), timer/other interrupt
   sources and controller-port interrupt acknowledge.
-  The phase-8.4 arbitration model is functional and its documented execution
-  condition differs from the pinned hardware model; that divergence is recorded.
   Guest bus-error (vector 2) and trace (vector 9) exception delivery are not
   implemented; privileges are enforced for the implemented system instructions.
 - Controller input beyond the TH-high 3-button subset: A and Start, the TH latch/direction

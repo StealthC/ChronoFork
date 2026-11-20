@@ -65,8 +65,9 @@ read-only `.cfmovie` timeline and attach/detach proven non-perturbative. M7 was 
 real video/audio sources and sinks remain H2/H3, so the pipeline honestly reports both as
 unavailable in every v1 process configuration, and no CLI process builds the host clock
 (playback is the deterministic `pulse`).
-Timer interrupts, timer IRQ delivery to the Z80, microcycle-exact bus arbitration and
-hardware `ZBR` arbitration polarity, the rest of the controller protocol (A/Start,
+Timer interrupts, timer IRQ delivery to the Z80, microcycle-exact bus arbitration (the
+model follows the hardware `ZBR` request polarity but yields on the request write rather
+than at the Z80 instruction boundary), the rest of the controller protocol (A/Start,
 TH/6-button, port 3, analog/keyboard), guest bus-error/trace delivery, other exception
 groups, audio output to a device or file and cycle accuracy remain absent. The documented
 MC68000 and Z80 instruction sets and privilege enforcement for the implemented system

@@ -85,6 +85,13 @@ and `ym.status` each produces the expected first mismatch (exit 1 in a direct
 comparator call), and a child invocation pointed at an empty oracle directory
 exits **3** with an explicit reason — there is never a silent PASS.
 
+> **Fixture note (2026-11-20, repair R2-F4).** The paragraph above describes the recorded
+> run's fixtures. The harness now uses the **same** bus-request byte (0, the Z80 owning the
+> bus) on one byte-identical ROM on both emulators, so both sides' `rom_sha256` is
+> `2d7c469e580869ee4e2ead2e7fc14ac761068d3ad1ff48426127b785c7cbb833`; the request-asserted
+> probe ROM carries byte 1 and is reported separately. Re-run artifacts:
+> `.research/8.4-r2/evidence-r3/` (ignored, worktree-local).
+
 ## Internal PCM hash fixtures (exact, not cross-emulator)
 
 The phase pins its internal PCM determinism by hash, not by comparing samples with
@@ -104,8 +111,11 @@ It was produced by an out-of-tree probe that links the same
 source was changed to obtain it. The pinned payload/state/config hashes for the
 six-step demo machine are recorded in `backend::tests::snapshot_payload_and_hashes_are_golden`
 (`CFMD68K6`, payload length `206251`, payload sha256
-`e69b6da1caf16f999bec7cfa30db8a58621927a2ad739322d70c86ca448f31a9`, state hash
-`b45ae6c12ce2e1e6f744c4b3992c8770c13e36bd22a800a01c9028d60467e155`).
+`fa87fe3f519c9f940194f1e7bf0e1db091dbbe43ec39de5cfb859979ae6311e1`, state hash
+`2e2db861007ad5ab9eee89ae3c5eea87ea05b28505b1b343da42b5788b91998b`). The phase-8.4 repair
+round re-pinned the payload and state hashes for R1-F2/R1-F3 (the pre-repair values were
+`e69b6da1…` and `b45ae6c1…`), while the payload length and the configuration hash
+(`695ab251aa18ec298e9461b77d46faccc7e302d5b12c87156d5fc714a3af7268`) are unchanged.
 
 **No cross-emulator sample equality is claimed.** The oracle run never reads audio
 samples, the harness has no sample path, and the emitted WAV/streaming capture
@@ -145,6 +155,21 @@ and the harness does not assert 68000 or arbitration equivalence.
 > the table, because that fixture leaves the PSG noise channel at attenuation 15 (silent)
 > and keys only YM2612 channel 1. Log: `.research/8.4-r2/pcm-probe.log` (ignored,
 > worktree-local).
+>
+> **Re-run result (2026-11-20).** The harness was re-run with the **same** bus-request byte
+> on both emulators (the `1`/`0` workaround removed, one identical ROM on both sides):
+> `python3 scripts/oracle-audio-state-diff.py --out-dir .research/8.4-r2/evidence-r3` exits
+> **0** with **PASS** for all 25 compared device-state fields at the shared Z80 `HALT`
+> boundary (`HALT PC 186`, both corrupted-field controls and the missing-oracle exit-3
+> control pass, no first mismatch). Both sides now run a byte-identical ROM
+> (`sha256 2d7c469e580869ee4e2ead2e7fc14ac761068d3ad1ff48426127b785c7cbb833`,
+> `z80_program_sha256 bbf49612…`). The request-asserted probe that the historical run
+> recorded as a divergence now **agrees**: oracle Z80 `PC = 4`, ChronoFork Z80 `PC = 4`
+> (`z80_pc_agrees: true`), where the recorded run had ChronoFork reaching `PC = 186`. That
+> is the demonstrated effect of the arbitration repair; the analogous PCM re-probe above is
+> unchanged. No cross-emulator **sample** equality is claimed, and the functional
+> (non-microcycle-exact) yield remains a ChronoFork limit. Artifacts:
+> `.research/8.4-r2/evidence-r3/` (ignored, worktree-local).
 
 ## Exclusions (explicit reasons)
 

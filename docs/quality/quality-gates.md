@@ -132,6 +132,25 @@ attributed supersession note in the
 `.research/8.4-r2/` artifacts. The gate was re-run green at the repair HEAD, and the repair
 commit changed no `scripts/` file.
 
+R1-F2 and R1-F3 also move the `megadrive demo` stdout, so the current demo baseline is
+recorded here for the independent verification (three runs each, byte-identical, empty
+stderr): `cargo run -q -p chronofork-cli -- megadrive demo` writes 1994 stdout bytes with
+SHA-256 `e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609`. The closure-head
+value at `8382255` was `794252b3fc3d1c54b95a0d54664fa34ef9916df29c67e321d0009a2f43c138b1`
+(same length), so a verification must compare against the post-repair value. The `demo`
+(986 bytes, `9b4dd564…`) and `gui run` (2842 bytes, `d3abf57a…`) stdout hashes are unchanged
+from the closure head, and raw files are under the ignored `.research/8.4-r2/demos/`.
+
+The phase-8.4 differential harness was also realigned to the repaired polarity and re-run:
+with the **same** bus-request byte on both emulators (the former `1`/`0` workaround removed,
+one byte-identical ROM, `sha256 2d7c469e…`) it exits **0** with **PASS** for all 25 compared
+fields at the shared Z80 `HALT` boundary (HALT PC 186; both corrupted-field controls and the
+missing-oracle exit-3 control pass). The request-asserted probe that previously demonstrated
+the divergence (oracle Z80 `PC = 4`, ChronoFork `PC = 186`) now agrees on `PC = 4` on both
+sides, which is the direct evidence that the `ZBR` polarity repair took effect; the note on
+the [audio state differential](../research/audio-state-differential-evidence.md) records it.
+Raw report: `.research/8.4-r2/evidence-r3/` (ignored).
+
 The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
 and ChronoFork over one independently authored synthetic ROM and compares **device
 state only** at a shared Z80 `HALT` boundary: the Z80 register file, the PSG tone/

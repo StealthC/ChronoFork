@@ -37,7 +37,14 @@
     re-pinned mechanically with the cause recorded (`backend.rs` golden hashes and six
     `chronofork-cli --test debug` `state_hash` expectations, RAM/VRAM dumps byte-identical)
     and four regression tests were added. The recorded internal PCM fixture re-probed
-    unchanged.
+    unchanged. Demo baselines at the repair HEAD (three runs each, byte-identical, empty
+    stderr): `megadrive demo` 1994 stdout bytes /
+    `e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609` (the closure-head
+    value at `8382255` was `794252b3…`, same length, moved by R1-F2/R1-F3), while `demo`
+    (986 B, `9b4dd564…`) and `gui run` (2842 B, `d3abf57a…`) are unchanged. The phase-8.4
+    differential harness was realigned to the repaired polarity (same bus-request byte on
+    both sides) and re-run: exit 0, PASS on all 25 fields, and the request-asserted probe
+    now agrees at Z80 `PC = 4` on both emulators instead of diverging.
 - **Honest limits carried by phase 8.4:** Z80 `IXH`/`IXL`/`IYH`/`IYL` and `WZ`/`MEMPTR` are
   not modelled and undocumented `ED` opcodes are `NOP`s; bus arbitration follows the hardware
   `ZBR` request polarity with a functional fixed-stall model (60 master cycles per byte lane);
