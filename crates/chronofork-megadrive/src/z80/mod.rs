@@ -29,6 +29,7 @@ use crate::cycles::MASTER_CYCLES_PER_Z80_T_STATE;
 
 pub mod cb;
 pub mod ed;
+pub mod interrupts;
 pub mod ops;
 mod target;
 pub mod xy;
@@ -56,15 +57,19 @@ pub const FLAG_C: u8 = 0x01;
 pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFZ80\0\0\0";
 
 /// Version of the fixed-length Z80 snapshot layout.
-pub const SNAPSHOT_VERSION: u8 = 1;
+///
+/// Version 2 adds the latched maskable interrupt request, its vector byte and
+/// the NMI request latch.
+pub const SNAPSHOT_VERSION: u8 = 2;
 
 /// Length in bytes of [`Z80::snapshot_bytes`].
 ///
 /// Layout: eight magic bytes, one version byte, the current byte registers
 /// (`A F B C D E H L`), the alternate set in the same order, `IX`, `IY`, `SP`
 /// and `PC` as little-endian words, `I`, `R`, then one byte each for `IFF1`,
-/// `IFF2`, interrupt mode, `HALT` and the `EI` delay latch.
-pub const SNAPSHOT_LEN: usize = 40;
+/// `IFF2`, interrupt mode, `HALT`, the `EI` delay latch, a maskable interrupt
+/// request latch, its vector byte and the NMI request latch.
+pub const SNAPSHOT_LEN: usize = 43;
 
 /// A typed Z80 failure.
 ///
@@ -112,6 +117,10 @@ pub enum Z80Field {
     Halted,
     /// The `EI` delay latch must be a single boolean byte.
     EiDelay,
+    /// The maskable interrupt request latch must be a single boolean byte.
+    InterruptRequest,
+    /// The NMI request latch must be a single boolean byte.
+    NmiRequest,
 }
 
 impl std::fmt::Display for Z80Error {
@@ -235,6 +244,12 @@ pub struct Z80 {
     im: u8,
     halted: bool,
     ei_delay: bool,
+    /// Latched maskable interrupt request; the vector is supplied by the device.
+    interrupt_pending: bool,
+    /// Vector byte of the latched maskable interrupt request.
+    interrupt_vector: u8,
+    /// Latched non-maskable interrupt request.
+    nmi_pending: bool,
 }
 
 impl Z80 {
@@ -271,6 +286,12 @@ impl Z80 {
     /// Propagates a [`Z80Bus`] failure from any instruction fetch or data access.
     pub fn step(&mut self, bus: &mut impl Z80Bus) -> Result<Z80Outcome, Z80Error> {
         let interrupt_delay_elapsed = self.ei_delay;
+        // An interrupt is accepted at an instruction boundary instead of an
+        // instruction. `EI`'s one-instruction delay is measured in executed
+        // instructions, so an accepted interrupt does not itself clear it.
+        if let Some(t_states) = interrupts::accept(self, bus)? {
+            return Ok(Z80Outcome { t_states });
+        }
         if self.halted {
             if interrupt_delay_elapsed {
                 self.ei_delay = false;
@@ -512,6 +533,9 @@ impl Z80 {
         writer.write_u8(self.im);
         writer.write_u8(u8::from(self.halted));
         writer.write_u8(u8::from(self.ei_delay));
+        writer.write_u8(u8::from(self.interrupt_pending));
+        writer.write_u8(self.interrupt_vector);
+        writer.write_u8(u8::from(self.nmi_pending));
         writer.into_bytes()
     }
 
@@ -568,6 +592,9 @@ impl Z80 {
         }
         let halted = decode_flag(reader.read_u8()?, Z80Field::Halted)?;
         let ei_delay = decode_flag(reader.read_u8()?, Z80Field::EiDelay)?;
+        let interrupt_pending = decode_flag(reader.read_u8()?, Z80Field::InterruptRequest)?;
+        let interrupt_vector = reader.read_u8()?;
+        let nmi_pending = decode_flag(reader.read_u8()?, Z80Field::NmiRequest)?;
         reader.finish()?;
         *self = Self {
             a,
@@ -597,6 +624,9 @@ impl Z80 {
             im,
             halted,
             ei_delay,
+            interrupt_pending,
+            interrupt_vector,
+            nmi_pending,
         };
         Ok(())
     }
