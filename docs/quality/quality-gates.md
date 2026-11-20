@@ -151,6 +151,15 @@ sides, which is the direct evidence that the `ZBR` polarity repair took effect; 
 the [audio state differential](../research/audio-state-differential-evidence.md) records it.
 Raw report: `.research/8.4-r2/evidence-r3/` (ignored).
 
+The same run was reproduced independently by the t10 repair round at commit `2001286`: exit
+0 with **PASS** 25/25 at the shared Z80 `HALT` boundary, all three corrupted-field controls
+(`corrupt-z80-af`, `corrupt-psg-tone`, `corrupt-ym-status`) detected plus the missing-oracle
+child exiting 3, one ROM shared by both emulators
+(`sha256 2d7c469e…`, `oracle_bus_request` = `chronofork_bus_request` = 0) and the
+request-asserted probe agreeing at Z80 `PC = 4`. Artifacts:
+`.research/8.4-t10/evidence/` (ignored). Commit `2001286` is the HEAD the independent
+verification compares against.
+
 The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
 and ChronoFork over one independently authored synthetic ROM and compares **device
 state only** at a shared Z80 `HALT` boundary: the Z80 register file, the PSG tone/
