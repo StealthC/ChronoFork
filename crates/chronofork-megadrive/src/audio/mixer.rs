@@ -21,7 +21,7 @@
 //! both sides. The YM2612 output already carries its documented left/right
 //! channel-enable bits (the channel-6 DAC convention uses those same bits), so
 //! its two samples are resampled independently. YM and PSG meet in exactly one
-//! place, [`saturating_mix`], which clamps to the `i16` range instead of
+//! private helper, which clamps the integer sum to the `i16` range instead of
 //! wrapping.
 //!
 //! Each device's interpolated output lags its newest sample by at most one
