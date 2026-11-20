@@ -42,7 +42,7 @@ fn frame_is_produced_once_per_frame_with_canonical_rgba() {
 }
 
 #[test]
-fn a_second_take_before_a_new_frame_returns_none_and_audio_is_absent() {
+fn a_second_take_before_new_media_returns_none_and_audio_is_captured() {
     let mut machine = machine();
     let mut first = None;
     for _ in 0..200_000 {
@@ -55,8 +55,12 @@ fn a_second_take_before_a_new_frame_returns_none_and_audio_is_absent() {
     assert!(first.is_some(), "a frame was produced");
     assert!(machine.take_video_frame().is_none(), "one-frame queue");
     assert!(
+        machine.take_audio_chunk().is_some(),
+        "the 48 kHz media seam captures audio after enough steps"
+    );
+    assert!(
         machine.take_audio_chunk().is_none(),
-        "audio is not implemented"
+        "one-chunk audio queue"
     );
 }
 

@@ -615,11 +615,12 @@ fn local_mode_requires_create_and_selects_the_backend() {
     let attach = with_record(&blocks, "attach");
     assert_eq!(attach[0].field("backend"), MEGADRIVE_BACKEND_ID);
     assert_eq!(attach[0].field("test_backend"), "false");
-    // The minimal Mega Drive slice advertises deterministic headless rendering;
-    // the GUI video pipeline still has no source or sink, so its status line
-    // remains `rendering=unavailable`.
+    // The minimal Mega Drive slice advertises deterministic headless rendering
+    // and 48 kHz audio capture; the GUI presentation pipeline still has no video
+    // or audio sink, so its status line remains `rendering=unavailable
+    // audio=unavailable`.
     assert_eq!(attach[0].field("rendering"), "true");
-    assert_eq!(attach[0].field("audio"), "false");
+    assert_eq!(attach[0].field("audio"), "true");
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,9 @@
 //! [`OPEN_BUS_VALUE`]. The 68000-side `0xC00011` PSG window remains out of scope
 //! for this phase; the Z80 window `0x7F00..=0x7F03`/`0x7F11` reaches the chip.
 
+use chronofork_core::codec::{Reader, Writer};
+
+use crate::audio::{AudioSnapshotError, decode_flag, snapshot_error};
 use crate::cycles::MASTER_CYCLES_PER_Z80_T_STATE;
 
 /// Number of square-wave tone channels.
@@ -78,6 +81,13 @@ pub const NOISE_TONE2_SELECT: u8 = 3;
 /// The chip is write-only and does not drive the data bus, so the Mega Drive
 /// open bus reads high; tests pin the value.
 pub const OPEN_BUS_VALUE: u8 = 0xFF;
+
+/// Magic and version of [`Psg::snapshot_bytes`].
+pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFPSG\0\0\0";
+/// Version of the fixed PSG snapshot layout.
+pub const SNAPSHOT_VERSION: u8 = 1;
+/// Fixed byte length of [`Psg::snapshot_bytes`].
+pub const SNAPSHOT_LEN: usize = 34;
 
 /// Full-volume amplitude of one channel.
 ///
@@ -248,6 +258,126 @@ impl Psg {
     #[must_use]
     pub const fn noise_lfsr(&self) -> u16 {
         self.noise_shift
+    }
+
+    /// Returns the last latch byte.
+    #[must_use]
+    pub const fn latched_register(&self) -> u8 {
+        self.latch
+    }
+
+    /// Returns the three noise control bits (feedback and shift rate).
+    #[must_use]
+    pub const fn noise_control(&self) -> u8 {
+        self.noise_control
+    }
+
+    /// Serializes the complete mutable PSG state into [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The attenuation table is derived from constants, not serialized. The latch,
+    /// tone dividers and counters, square-wave levels, attenuation registers,
+    /// noise control, counter and shift register are canonical state.
+    #[must_use]
+    pub fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(SNAPSHOT_LEN);
+        writer.write_bytes(&SNAPSHOT_MAGIC);
+        writer.write_u8(SNAPSHOT_VERSION);
+        writer.write_u8(self.latch);
+        for divider in self.tone_divider {
+            writer.write_u16_le(divider);
+        }
+        for counter in self.tone_counter {
+            writer.write_u16_le(counter);
+        }
+        for output in self.tone_output {
+            writer.write_u8(u8::from(output));
+        }
+        writer.write_bytes(&self.attenuation);
+        writer.write_u8(self.noise_control);
+        writer.write_u16_le(self.noise_counter);
+        writer.write_u16_le(self.noise_shift);
+        writer.into_bytes()
+    }
+
+    /// Restores the PSG state from [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The complete snapshot is validated before any field is assigned, so a
+    /// rejected input leaves the device untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioSnapshotError`] for a wrong length, magic or version, or a
+    /// field outside the ten-bit divider, four-bit attenuation, three-bit noise
+    /// control or fifteen-bit shift-register range.
+    pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), AudioSnapshotError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_array::<8>().map_err(snapshot_error)? != SNAPSHOT_MAGIC {
+            return Err(AudioSnapshotError::Magic);
+        }
+        let version = reader.read_u8().map_err(snapshot_error)?;
+        if version != SNAPSHOT_VERSION {
+            return Err(AudioSnapshotError::Version { found: version });
+        }
+        let latch = reader.read_u8().map_err(snapshot_error)?;
+        let mut tone_divider = [0_u16; TONE_CHANNELS];
+        for divider in &mut tone_divider {
+            *divider = reader.read_u16_le().map_err(snapshot_error)?;
+            if *divider > DIVIDER_MASK {
+                return Err(AudioSnapshotError::Value {
+                    field: "tone divider",
+                });
+            }
+        }
+        let mut tone_counter = [0_u16; TONE_CHANNELS];
+        for counter in &mut tone_counter {
+            *counter = reader.read_u16_le().map_err(snapshot_error)?;
+            if *counter > 1_u16 << DIVIDER_BITS {
+                return Err(AudioSnapshotError::Value {
+                    field: "tone counter",
+                });
+            }
+        }
+        let mut tone_output = [false; TONE_CHANNELS];
+        for output in &mut tone_output {
+            *output = decode_flag(reader.read_u8().map_err(snapshot_error)?, "tone output")?;
+        }
+        let mut attenuation = [0_u8; CHANNELS];
+        for level in &mut attenuation {
+            *level = reader.read_u8().map_err(snapshot_error)?;
+            if *level >= ATTENUATION_LEVELS {
+                return Err(AudioSnapshotError::Value {
+                    field: "attenuation",
+                });
+            }
+        }
+        let noise_control = reader.read_u8().map_err(snapshot_error)?;
+        if noise_control > 0x07 {
+            return Err(AudioSnapshotError::Value {
+                field: "noise control",
+            });
+        }
+        let noise_counter = reader.read_u16_le().map_err(snapshot_error)?;
+        if noise_counter > NOISE_CLOCK_DIVIDERS[2] {
+            return Err(AudioSnapshotError::Value {
+                field: "noise counter",
+            });
+        }
+        let noise_shift = reader.read_u16_le().map_err(snapshot_error)?;
+        if noise_shift > (1_u16 << NOISE_SHIFT_BITS) - 1 {
+            return Err(AudioSnapshotError::Value {
+                field: "noise shift register",
+            });
+        }
+        reader.finish().map_err(snapshot_error)?;
+        self.latch = latch;
+        self.tone_divider = tone_divider;
+        self.tone_counter = tone_counter;
+        self.tone_output = tone_output;
+        self.attenuation = attenuation;
+        self.noise_control = noise_control;
+        self.noise_counter = noise_counter;
+        self.noise_shift = noise_shift;
+        Ok(())
     }
 
     /// Latches a noise feedback/rate value and restarts the sequence, which is

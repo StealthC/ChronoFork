@@ -41,12 +41,14 @@
 use std::collections::VecDeque;
 
 use chronofork_backend_api::AudioChunk;
+use chronofork_core::codec::{Reader, Writer};
 
 use crate::audio::psg::MASTER_CYCLES_PER_SAMPLE as PSG_MASTER_CYCLES_PER_SAMPLE;
 use crate::audio::psg::Psg;
 use crate::audio::resample::RationalResampler;
 use crate::audio::ym2612::MASTER_CYCLES_PER_SAMPLE as YM_MASTER_CYCLES_PER_SAMPLE;
 use crate::audio::ym2612::Ym2612;
+use crate::audio::{AudioSnapshotError, decode_flag, snapshot_error};
 use crate::cycles::{MASTER_CLOCK_HZ_NTSC, MASTER_CLOCK_HZ_PAL};
 use crate::interrupts::VideoStandard;
 
@@ -58,6 +60,17 @@ pub const OUTPUT_CHANNELS: u8 = 2;
 
 /// Frames the pending queue holds before it drops the oldest ones.
 pub const MAX_PENDING_FRAMES: usize = OUTPUT_SAMPLE_RATE_HZ as usize;
+
+/// Magic and version of [`AudioMixer::snapshot_bytes`].
+pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFAUDMIX";
+/// Version of the fixed mixer snapshot layout.
+pub const SNAPSHOT_VERSION: u8 = 1;
+/// Fixed byte length of [`AudioMixer::snapshot_bytes`].
+///
+/// The master clock is configuration (the phase's config hash covers the video
+/// standard), so the payload carries only the output-frame phase and the three
+/// device resamplers. Queued frames are derived output and are never serialized.
+pub const SNAPSHOT_LEN: usize = 8 + 1 + 8 + 3 * (8 + 2 + 2 + 1);
 
 /// YM2612 and PSG integer mixer with an exact 48 kHz output clock.
 #[derive(Clone, Debug)]
@@ -160,6 +173,82 @@ impl AudioMixer {
     #[must_use]
     pub const fn dropped_frames(&self) -> u64 {
         self.dropped_frames
+    }
+
+    /// Returns the 48 kHz frame-clock phase as `(elapsed, period)` in scaled
+    /// master-cycle units.
+    #[must_use]
+    pub const fn frame_phase(&self) -> (u64, u64) {
+        (self.frame_accumulator, self.master_clock_hz)
+    }
+
+    /// Serializes the canonical mixer state into [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The output-frame phase and the three device resamplers are canonical; the
+    /// queued frames and the dropped-frame diagnostic are derived output and are
+    /// deliberately excluded.
+    #[must_use]
+    pub fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(SNAPSHOT_LEN);
+        writer.write_bytes(&SNAPSHOT_MAGIC);
+        writer.write_u8(SNAPSHOT_VERSION);
+        writer.write_u64_le(self.frame_accumulator);
+        for resampler in [&self.ym_left, &self.ym_right, &self.psg] {
+            let (phase, previous, current, primed) = resampler.snapshot_parts();
+            writer.write_u64_le(phase);
+            writer.write_u16_le(previous as u16);
+            writer.write_u16_le(current as u16);
+            writer.write_u8(u8::from(primed));
+        }
+        writer.into_bytes()
+    }
+
+    /// Restores the canonical mixer state from [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The snapshot is validated in full before any state is assigned, so a
+    /// rejected input leaves the mixer untouched. The mixer must have been built
+    /// for the same master clock (the configuration hash enforces that).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioSnapshotError`] for a wrong length, magic or version, a
+    /// frame phase outside the master clock, or a resampler phase outside its
+    /// device period.
+    pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), AudioSnapshotError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_array::<8>().map_err(snapshot_error)? != SNAPSHOT_MAGIC {
+            return Err(AudioSnapshotError::Magic);
+        }
+        let version = reader.read_u8().map_err(snapshot_error)?;
+        if version != SNAPSHOT_VERSION {
+            return Err(AudioSnapshotError::Version { found: version });
+        }
+        let frame_accumulator = reader.read_u64_le().map_err(snapshot_error)?;
+        if frame_accumulator >= self.master_clock_hz {
+            return Err(AudioSnapshotError::Value {
+                field: "frame phase",
+            });
+        }
+        let mut parts = [(0_u64, 0_i16, 0_i16, false); 3];
+        for part in &mut parts {
+            let phase = reader.read_u64_le().map_err(snapshot_error)?;
+            let previous = reader.read_u16_le().map_err(snapshot_error)? as i16;
+            let current = reader.read_u16_le().map_err(snapshot_error)? as i16;
+            let primed = decode_flag(
+                reader.read_u8().map_err(snapshot_error)?,
+                "resampler primed flag",
+            )?;
+            *part = (phase, previous, current, primed);
+        }
+        reader.finish().map_err(snapshot_error)?;
+        self.ym_left
+            .restore_parts(parts[0].0, parts[0].1, parts[0].2, parts[0].3)?;
+        self.ym_right
+            .restore_parts(parts[1].0, parts[1].1, parts[1].2, parts[1].3)?;
+        self.psg
+            .restore_parts(parts[2].0, parts[2].1, parts[2].2, parts[2].3)?;
+        self.frame_accumulator = frame_accumulator;
+        Ok(())
     }
 
     /// Returns the whole master cycles needed to reach the next output frame.

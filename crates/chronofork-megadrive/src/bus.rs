@@ -134,9 +134,7 @@ pub const Z80_STALL_MASTER_CYCLES: u64 = MASTER_CYCLES_PER_Z80_T_STATE * 4;
 /// `requested` records that the 68000 requested and released the Z80 bus (so
 /// the Z80 owns it and executes); `reset_asserted` records that the 68000 holds
 /// the Z80 in reset through the active-low `0xA11200` bit. Both are canonical
-/// machine state. Payload v5 predates the Z80 subsystem, so its serialization
-/// lands with the phase's payload-v6 task; until then a restore keeps the
-/// machine's current latches.
+/// machine state; payload v6 serializes both latches.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BusArbitration {
     requested: bool,
@@ -160,6 +158,14 @@ impl BusArbitration {
     #[must_use]
     pub const fn z80_runs(&self) -> bool {
         self.requested && !self.reset_asserted
+    }
+
+    /// Rebuilds the latches from a validated snapshot payload.
+    pub(crate) const fn from_parts(requested: bool, reset_asserted: bool) -> Self {
+        Self {
+            requested,
+            reset_asserted,
+        }
     }
 }
 
@@ -257,19 +263,15 @@ pub struct MegadriveBus {
     vdp: Vdp,
     /// YM2612 FM synthesiser.
     ///
-    /// Canonical device state; payload v5 predates the audio subsystem, so its
-    /// serialization lands with the phase's payload-v6 task.
+    /// Canonical device state; payload v6 serializes the complete chip state.
     ym: Ym2612,
     /// SN76489-compatible PSG.
     ///
-    /// Canonical device state; like the YM2612 it is serialized by the phase's
-    /// payload-v6 task.
+    /// Canonical device state; like the YM2612, payload v6 serializes it.
     psg: Psg,
     /// 8 KiB Z80 RAM, canonical machine state.
     ///
-    /// Payload v5 predates the Z80 subsystem, so the phase's payload-v6 task
-    /// serializes this RAM; until then a restore keeps the machine's current
-    /// contents and the state hash does not cover them.
+    /// Payload v6 serializes this RAM and the state hash covers it.
     z80_ram: Vec<u8>,
     /// Nine-bit Z80 bank register selecting the 32 KiB ROM window at `0x8000`.
     z80_bank: u16,
@@ -474,6 +476,20 @@ impl MegadriveBus {
     /// Returns the PSG for sample advancement by the audio mixer.
     pub fn psg_mut(&mut self) -> &mut Psg {
         &mut self.psg
+    }
+
+    /// Returns both audio devices for one mixer advance.
+    ///
+    /// The two mutable borrows are disjoint fields, so the mixer can advance the
+    /// YM2612 and the PSG in one call without cloning either device.
+    pub fn audio_mut(&mut self) -> (&mut Ym2612, &mut Psg) {
+        (&mut self.ym, &mut self.psg)
+    }
+
+    /// Replaces both audio devices during a validated snapshot restore.
+    pub(crate) fn replace_audio_devices(&mut self, ym: Ym2612, psg: Psg) {
+        self.ym = ym;
+        self.psg = psg;
     }
 
     /// Returns the canonical 8 KiB Z80 RAM.
@@ -1071,6 +1087,28 @@ impl MegadriveBus {
         }
         self.ram = ram;
         Ok(())
+    }
+
+    /// Replaces the complete 8 KiB Z80 RAM during a snapshot restore.
+    pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
+        if ram.len() != Z80_RAM_SIZE {
+            return Err(BusError::UnmappedWrite {
+                address: Z80_RAM_BASE,
+            });
+        }
+        self.z80_ram = ram;
+        Ok(())
+    }
+
+    /// Replaces the 68000/Z80 bus arbitration latches during a restore.
+    pub(crate) fn restore_arbitration(&mut self, arbitration: BusArbitration) {
+        self.arbitration = arbitration;
+    }
+
+    /// Replaces the nine-bit Z80 bank register during a validated restore.
+    pub(crate) fn restore_z80_bank(&mut self, bank: u16) {
+        debug_assert!(bank <= 0x01FF, "the Z80 bank register is nine bits wide");
+        self.z80_bank = bank;
     }
 }
 

@@ -39,6 +39,10 @@
 //! * Timer A/B IRQs only latch the chip's IRQ line ([`Ym2612::take_irq`]);
 //!   delivery to the Z80 is phase 8.5.
 
+use chronofork_core::codec::{Reader, Writer};
+
+use crate::audio::{AudioSnapshotError, decode_flag, snapshot_error};
+
 /// Number of FM channels.
 pub const CHANNELS: usize = 6;
 /// Operators per channel.
@@ -59,6 +63,12 @@ pub const SAMPLE_CLOCK_DIVIDER: u64 = 144;
 pub const MASTER_CYCLES_PER_SAMPLE: u64 = YM_CLOCK_DIVIDER * SAMPLE_CLOCK_DIVIDER;
 /// Phase accumulator bits; one sine period is `1 << PHASE_BITS`.
 pub const PHASE_BITS: u32 = 20;
+/// Magic and version of [`Ym2612::snapshot_bytes`].
+pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFYM2612";
+/// Version of the fixed YM2612 snapshot layout.
+pub const SNAPSHOT_VERSION: u8 = 1;
+/// Fixed byte length of [`Ym2612::snapshot_bytes`].
+pub const SNAPSHOT_LEN: usize = 856;
 /// Detune table in 1/512 units of the base increment.
 const DETUNE: [i32; 8] = [0, 16, 32, 48, 0, -16, -32, -48];
 /// LFO rate table: phase units added to the 16-bit LFO phase per sample.
@@ -244,6 +254,18 @@ impl Ym2612 {
     #[must_use]
     pub const fn status(&self) -> u8 {
         self.status
+    }
+
+    /// Returns the current 16-bit LFO phase.
+    #[must_use]
+    pub const fn lfo_phase(&self) -> u16 {
+        self.lfo_phase
+    }
+
+    /// Returns the latched register address of a port pair.
+    #[must_use]
+    pub const fn address_latch(&self, bank: YmBank) -> u8 {
+        self.address_latch[bank.index()]
     }
 
     /// Takes a latched timer interrupt request, if any.
@@ -689,6 +711,164 @@ impl Ym2612 {
             decay: decay_register & 0x1F,
             release: release_register & 0x0F,
         }
+    }
+
+    /// Serializes the complete mutable YM2612 state into [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The generated sine table is derived from constants, not serialized. The
+    /// register shadow, both address latches, every operator envelope and phase,
+    /// feedback history, last outputs, LFO phase, status/IRQ latches and timer
+    /// accumulators are canonical state and are all covered.
+    #[must_use]
+    pub fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut writer = Writer::with_capacity(SNAPSHOT_LEN);
+        writer.write_bytes(&SNAPSHOT_MAGIC);
+        writer.write_u8(SNAPSHOT_VERSION);
+        for bank in &self.registers {
+            writer.write_bytes(bank);
+        }
+        for latch in self.address_latch {
+            writer.write_u8(latch);
+        }
+        for channel in &self.envelopes {
+            for envelope in channel {
+                writer.write_u8(eg_state_code(envelope.state));
+                writer.write_u16_le(envelope.attenuation as u16);
+            }
+        }
+        for channel in &self.phases {
+            for phase in channel {
+                writer.write_u32_le(*phase);
+            }
+        }
+        for channel in &self.feedback_history {
+            for value in channel {
+                writer.write_u32_le(*value as u32);
+            }
+        }
+        for channel in &self.last_outputs {
+            for value in channel {
+                writer.write_u32_le(*value as u32);
+            }
+        }
+        writer.write_u16_le(self.lfo_phase);
+        writer.write_u8(self.status);
+        writer.write_u8(u8::from(self.irq_timer_a));
+        writer.write_u8(u8::from(self.irq_timer_b));
+        writer.write_u64_le(self.timer_a_accumulator);
+        writer.write_u64_le(self.timer_b_accumulator);
+        writer.into_bytes()
+    }
+
+    /// Restores the YM2612 state from [`SNAPSHOT_LEN`] bytes.
+    ///
+    /// The complete snapshot is validated before any field is assigned, so a
+    /// rejected input leaves the device untouched. The generated sine table is
+    /// not part of the payload and is left as constructed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioSnapshotError`] for a wrong length, magic or version, or a
+    /// non-canonical envelope state or attenuation value.
+    pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), AudioSnapshotError> {
+        let mut reader = Reader::new(bytes);
+        if reader.read_array::<8>().map_err(snapshot_error)? != SNAPSHOT_MAGIC {
+            return Err(AudioSnapshotError::Magic);
+        }
+        let version = reader.read_u8().map_err(snapshot_error)?;
+        if version != SNAPSHOT_VERSION {
+            return Err(AudioSnapshotError::Version { found: version });
+        }
+        let mut registers = [[0_u8; 256]; 2];
+        for bank in &mut registers {
+            *bank = reader.read_array::<256>().map_err(snapshot_error)?;
+        }
+        let mut address_latch = [0_u8; 2];
+        for latch in &mut address_latch {
+            *latch = reader.read_u8().map_err(snapshot_error)?;
+        }
+        let mut envelopes = [[Envelope::default(); OPERATORS_PER_CHANNEL]; CHANNELS];
+        for channel in &mut envelopes {
+            for envelope in channel {
+                let state = eg_state_from_code(reader.read_u8().map_err(snapshot_error)?)?;
+                let attenuation = reader.read_u16_le().map_err(snapshot_error)? as i16;
+                if !(0..=ENVELOPE_MAX).contains(&attenuation) {
+                    return Err(AudioSnapshotError::Value {
+                        field: "envelope attenuation",
+                    });
+                }
+                *envelope = Envelope { state, attenuation };
+            }
+        }
+        let mut phases = [[0_u32; OPERATORS_PER_CHANNEL]; CHANNELS];
+        for channel in &mut phases {
+            for phase in channel {
+                *phase = reader.read_u32_le().map_err(snapshot_error)?;
+            }
+        }
+        let mut feedback_history = [[0_i32; 2]; CHANNELS];
+        for channel in &mut feedback_history {
+            for value in channel {
+                *value = reader.read_u32_le().map_err(snapshot_error)? as i32;
+            }
+        }
+        let mut last_outputs = [[0_i32; OPERATORS_PER_CHANNEL]; CHANNELS];
+        for channel in &mut last_outputs {
+            for value in channel {
+                *value = reader.read_u32_le().map_err(snapshot_error)? as i32;
+            }
+        }
+        let lfo_phase = reader.read_u16_le().map_err(snapshot_error)?;
+        let status = reader.read_u8().map_err(snapshot_error)?;
+        let irq_timer_a = decode_flag(
+            reader.read_u8().map_err(snapshot_error)?,
+            "timer A IRQ latch",
+        )?;
+        let irq_timer_b = decode_flag(
+            reader.read_u8().map_err(snapshot_error)?,
+            "timer B IRQ latch",
+        )?;
+        let timer_a_accumulator = reader.read_u64_le().map_err(snapshot_error)?;
+        let timer_b_accumulator = reader.read_u64_le().map_err(snapshot_error)?;
+        reader.finish().map_err(snapshot_error)?;
+        self.registers = registers;
+        self.address_latch = address_latch;
+        self.envelopes = envelopes;
+        self.phases = phases;
+        self.feedback_history = feedback_history;
+        self.last_outputs = last_outputs;
+        self.lfo_phase = lfo_phase;
+        self.status = status;
+        self.irq_timer_a = irq_timer_a;
+        self.irq_timer_b = irq_timer_b;
+        self.timer_a_accumulator = timer_a_accumulator;
+        self.timer_b_accumulator = timer_b_accumulator;
+        Ok(())
+    }
+}
+
+/// Encodes an envelope state as its canonical snapshot byte.
+const fn eg_state_code(state: EgState) -> u8 {
+    match state {
+        EgState::Off => 0,
+        EgState::Attack => 1,
+        EgState::Decay => 2,
+        EgState::Sustain => 3,
+        EgState::Release => 4,
+    }
+}
+
+/// Decodes an envelope state snapshot byte.
+fn eg_state_from_code(code: u8) -> Result<EgState, AudioSnapshotError> {
+    match code {
+        0 => Ok(EgState::Off),
+        1 => Ok(EgState::Attack),
+        2 => Ok(EgState::Decay),
+        3 => Ok(EgState::Sustain),
+        4 => Ok(EgState::Release),
+        _ => Err(AudioSnapshotError::Value {
+            field: "envelope state",
+        }),
     }
 }
 

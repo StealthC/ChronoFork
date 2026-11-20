@@ -17,6 +17,8 @@
 use std::error::Error;
 use std::fmt;
 
+use crate::audio::AudioSnapshotError;
+
 /// A malformed resampler configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResampleError {
@@ -114,6 +116,31 @@ impl RationalResampler {
     #[must_use]
     pub const fn phase(&self) -> (u64, u64) {
         (self.phase, self.input_period)
+    }
+
+    /// Returns the raw interpolation state for a containing device snapshot.
+    pub(crate) const fn snapshot_parts(&self) -> (u64, i16, i16, bool) {
+        (self.phase, self.previous, self.current, self.primed)
+    }
+
+    /// Restores the raw interpolation state from a containing device snapshot.
+    pub(crate) fn restore_parts(
+        &mut self,
+        phase: u64,
+        previous: i16,
+        current: i16,
+        primed: bool,
+    ) -> Result<(), AudioSnapshotError> {
+        if phase >= self.input_period {
+            return Err(AudioSnapshotError::Value {
+                field: "resampler phase",
+            });
+        }
+        self.phase = phase;
+        self.previous = previous;
+        self.current = current;
+        self.primed = primed;
+        Ok(())
     }
 }
 
