@@ -7,7 +7,11 @@ toolchain or environment changes.
 **Current status:** M8 phase 8.3 (complete VDP) is **implemented, independently verified
 (rounds 1–3) and reviewed (rounds 2–3)**, and merged to `main` through the phase-8.3 PR
 (issue #16); the phase gate below was executed and passed (evidence in the
-[VDP state differential](../research/vdp-state-differential-evidence.md)). The latest dated
+[VDP state differential](../research/vdp-state-differential-evidence.md)). Phase 8.4
+(Z80 core, arbitration, YM2612/PSG, 48 kHz mixer/resampler, payload v6) is
+**implemented and gate-executed on `agent/8.4-z80-audio`, with independent
+verification and integration pending**; the run is recorded on 2026-11-20
+[below](#phase-84-z80-audio-gate-executed-pass--evidence-recorded). The latest dated
 verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
 region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
 (81 targets / 1,047 passed, 0 failed, 0 ignored; both demos byte-identical or explained only
@@ -90,6 +94,46 @@ absent (exit 3, never a pass). What it proves and what it does **not** claim:
   definition into a verification claim.
 
 See [VDP state differential evidence](../research/vdp-state-differential-evidence.md).
+
+## Phase 8.4 Z80 audio gate (executed; PASS — evidence recorded)
+
+```sh
+python3 scripts/oracle-audio-state-diff.py --out-dir .research/evidence/8.4
+./scripts/check.sh
+cargo test -p chronofork-megadrive --test audio_snapshot
+```
+
+Executed at the phase-8.4 branch HEAD on 2026-11-20: the three commands exit 0, the
+audio-state differential reports **PASS** for all 25 compared device-state fields and
+`./scripts/check.sh` remains green (format, check, Clippy, workspace tests and rustdoc).
+Run artifacts are under `.research/evidence/8.4` and summarized in the
+[audio state differential](../research/audio-state-differential-evidence.md).
+
+The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
+and ChronoFork over one independently authored synthetic ROM and compares **device
+state only** at a shared Z80 `HALT` boundary: the Z80 register file, the PSG tone/
+volume/noise/source-control registers and the readable YM2612 status byte. It never
+reads or compares audio samples. What it proves and what it does **not** claim:
+
+- The Z80 program and the HALT boundary are identical on both emulators; the 68000
+  fixture differs only in the Z80 bus-request byte because ChronoFork's documented
+  functional arbitration model has the inverse execution polarity of the pinned
+  hardware model. The literal same-ROM probe is recorded as a scoped arbitration
+  divergence (oracle Z80 stops at `PC = 4`, ChronoFork reaches `PC = 186`); no 68000 or
+  arbitration equivalence is claimed.
+- The pinned oracle publishes no YM2612 register/channel reflection (only Audio
+  Logging), so YM2612 register and channel state is **not** compared; only the readable
+  status byte is. PSG noise shift state is time-dependent and excluded; the unused
+  PSG channel-4 tone register and Z80 alternate registers have no ChronoFork
+  counterpart and are excluded with reasons.
+- Negative controls corrupt a Z80 field, a PSG field and the YM status and require the
+  exact first mismatch; a missing-oracle child invocation must exit **3** with a reason.
+  The harness exits 0 only when every field matches and both controls pass, so it cannot
+  report a silent PASS.
+- Internal PCM determinism is pinned by hash in the backend tests, not by
+  cross-emulator sample equality; no sample-equality claim is made anywhere.
+
+See [audio state differential evidence](../research/audio-state-differential-evidence.md).
 
 ## Historical bootstrap results (2026-11-13; superseded, not a current claim)
 
