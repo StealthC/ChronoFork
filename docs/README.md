@@ -9,9 +9,10 @@ committed in [`planning/`](planning/ROADMAP.md), and design specs/plans live und
 
 ## Status
 
-Bootstrap foundation and milestones M0–M5 are complete and merged to `main` (M4 merged
+Bootstrap foundation and milestones M0–M7 are complete and merged to `main` (M4 merged
 at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 merged at
-`0c4e9f0`, PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`). The repository
+`0c4e9f0`, PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`; M6 and M7
+merged at `cb05836`, PR #6). The repository
 builds and tests a
 deterministic synthetic backend, the generic session layer, and a minimal 68000 +
 ROM/RAM Mega Drive backend with a complete VDP (CRAM/VSRAM, plane/window/sprite
@@ -30,7 +31,8 @@ limits: only HBlank level 4 / VBlank level 6 sources are modelled, with level 7 
 predicate rule only; guest bus-error (2) and trace (9) delivery are absent; no
 interrupt-timing equivalence is claimed; and VDP interrupt-enable/acknowledge logic
 is implemented (phase 8.3, with the residual limits recorded in the slice page).
-Audio and Z80 are not implemented; rendering and DMA are implemented (phase 8.3), and
+Audio and Z80 are implemented (phase 8.4: Z80 core, 68000/Z80 bus arbitration, YM2612/PSG
+and payload v6); rendering, DMA and the rest of the VDP are implemented (phase 8.3), and
 controller input covers only the
 TH-high 3-button subset. The final M3 increment — real-hardware input TAS on the minimal
 Mega Drive slice — is implemented and independently verified
@@ -133,7 +135,9 @@ backend capability is `rendering=true` since phase 8.3; the pipeline still has n
 source/sink), and
 no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
 controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it.**
+made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phases 8.2 and 8.3
+complete and merged; phase 8.4 complete on `agent/8.4-z80-audio` with
+verification/review/integration pending; next: 8.5), with M9 multi-backend after it.**
 
 **M2 durable sessions are complete and independently verified (round 2, after the F1
 repair).** Fase B persists canonical checkpoints under an explicit versioned root
@@ -209,7 +213,7 @@ none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilit
 TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
 synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
 controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it. The
+`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phases 8.2 and 8.3 complete and merged; phase 8.4 complete on `agent/8.4-z80-audio` with verification/review/integration pending; next: 8.5), with M9 multi-backend after it. The
 parallel hardware-depth tracks H1–H5
 (CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
 accuracy/evidence) remain partial or planned. The
@@ -228,7 +232,7 @@ status and integration state.
 | [Session model](architecture/session-model.md) | Identity, lifecycle, fork and isolation |
 | [Execution model](architecture/execution-model.md) | Virtual time, determinism and replay |
 | [Backend strategy](architecture/backend-strategy.md) | Accepted real-backend strategy |
-| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + VDP port + interrupt-scheduler slice and debug trace |
+| [Mega Drive 68000 slice](architecture/megadrive-slice.md) | Implemented 68000 + Z80 + complete VDP + YM2612/PSG audio slice (payload v6), cartridge, interrupt scheduler and debug trace |
 | [Tracing and scripting architecture](architecture/tracing-and-scripting.md) | Host trace and session capture layers, canonical trace/query/compare, script runtime/limits/sandbox and CLI ownership |
 | [Agent interfaces architecture](architecture/agent-interfaces.md) | Service/transport layers, canonical JSON profile, the 16-operation catalog, HTTP/MCP wire contract, authentication/ownership, concurrency, limits and the M6 non-goals |
 | [GUI architecture](architecture/gui.md) | Presentation-only crate and command contract, view/model/render pipeline, attach/detach and run-loop sequences, panels/layouts, capability-gated video/audio, handoff state machine and limits |

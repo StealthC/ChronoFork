@@ -9,8 +9,8 @@ toolchain or environment changes.
 (issue #16); the phase gate below was executed and passed (evidence in the
 [VDP state differential](../research/vdp-state-differential-evidence.md)). Phase 8.4
 (Z80 core, arbitration, YM2612/PSG, 48 kHz mixer/resampler, payload v6) is
-**implemented and gate-executed on `agent/8.4-z80-audio`, with independent
-verification and integration pending**; the run is recorded on 2026-11-20
+**complete on `agent/8.4-z80-audio` and gate-executed there, with independent
+verification, review and integration pending**; the run is recorded on 2026-11-20
 [below](#phase-84-z80-audio-gate-executed-pass--evidence-recorded). The latest dated
 verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
 region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
@@ -108,6 +108,12 @@ audio-state differential reports **PASS** for all 25 compared device-state field
 `./scripts/check.sh` remains green (format, check, Clippy, workspace tests and rustdoc).
 Run artifacts are under `.research/evidence/8.4` and summarized in the
 [audio state differential](../research/audio-state-differential-evidence.md).
+
+The gate was re-executed at the phase-closure HEAD on 2026-11-20, after merging
+`origin/main` `b8d63a1` and applying the documentation closure: `./scripts/check.sh`
+and `git diff --check` both exit 0. The closure commit is Conventional and scoped to
+`docs/` + `AGENTS.md`; no `crates/` or `scripts/` file is touched. No test count is
+copied into this record — run the gate yourself.
 
 The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
 and ChronoFork over one independently authored synthetic ROM and compares **device
@@ -1106,7 +1112,7 @@ passed without a command and an exit code recorded there or in your own run.
 | Corruption/version rejection | Implemented |
 | Property-based tests | Implemented: codec/snapshot property tests ([evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting)) |
 | Fuzz testing | Planned |
-| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the CPU oracle differential (11 synthetic ROMs) and the phase-8.3 VDP state differential are implemented as external harnesses; full emulator/pixel differential remains out of scope |
+| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the CPU oracle differential (11 synthetic ROMs) and the phase-8.3 VDP and phase-8.4 audio-state differentials are implemented as external harnesses; full emulator/pixel differential remains out of scope |
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Implemented: M6 service manager lock and per-session writer lease (typed retryable `conflict`, reads allowed during a mutation) |
 | Transport/wire tests | Implemented: M6 bounded HTTP/1.1 and MCP wire contracts, rejection matrices, server bounds, typed client and direct/HTTP/MCP byte parity |

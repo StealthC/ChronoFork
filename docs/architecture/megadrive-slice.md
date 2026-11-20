@@ -30,9 +30,10 @@
   through the phase-8.3 PR (issue #16). Phase 8.4 adds the Z80 core, the Z80 memory
   map and 68000/Z80 bus arbitration, the YM2612 and PSG models, the deterministic
   48 kHz mixer/resampler and audio capture through `MediaSource`, and moves the
-  payload to v6 (`CFMD68K6`/`CFMDSTATE6`/`CFMDCONF6`); it is implemented and its
-  phase gate was executed on the phase branch, with independent verification and
-  integration pending. Timer IRQ delivery to the
+  payload to v6 (`CFMD68K6`/`CFMDSTATE6`/`CFMDCONF6`); it is implemented, its
+  phase gate was executed on the phase branch and the phase is
+  [closed in the planning lifecycle](../planning/ROADMAP.md), with independent
+  verification, review and integration pending. Timer IRQ delivery to the
   Z80 and the rest of M8 (8.5–8.8) remain. Cartridge and controllers are already
   implemented as described below. This page remains the canonical
   capability/limitation home; it is updated as each phase lands, never in advance.
@@ -219,17 +220,21 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF5`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF6`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K5`, payload version **5**, followed by the
+- Snapshot payload magic is `CFMD68K6`, payload version **6**, followed by the
   68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
   `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP002`
-  VDP snapshot (including the frame index), the cartridge state and the complete
-  master-cycle scheduler snapshot. Versions 1-4 are rejected with a typed error
+  VDP snapshot (including the frame index), the cartridge state, the complete
+  master-cycle scheduler snapshot and the phase-8.4 block (the Z80 register snapshot
+  and 8 KiB RAM, the Z80 bank register and master-cycle carry, both arbitration
+  latches, the complete YM2612 and PSG state and the mixer frame phase plus its three
+  resampler phases/histories). Versions 1-5 are rejected with a typed error
   rather than reinterpreted.
-- The state hash (`CFMDSTATE5`) covers the extended 68000 state, tick, RAM, VDP
-  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors,
+- The state hash (`CFMDSTATE6`) covers the extended 68000 state, tick, RAM, VDP
+  snapshot, scheduler snapshot and the phase-8.4 Z80/arbitration/YM2612/PSG/mixer
+  block, so pending interrupts, stack-pointer mirrors,
   VRAM/CRAM/VSRAM and the frame index are part of checkpoint identity.
 - Restore validates backend identity, backend version, envelope version, config
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
@@ -740,7 +745,8 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    an oracle model of those semantics; the current masked-ROM pass is negative
    gating evidence only.
 4. Additional interrupt sources (a wired level-7 source, timers, VDP
-   interrupt-enable registers) if the slice grows to model them.
+   interrupt-enable registers) and timer IRQ delivery to the Z80 (phase 8.5) if the slice
+   grows to model them.
 5. Deeper controller protocol (TH latch/TH-low phase, A/Start, 6-button pad, port 3) only
    if the slice grows to model it; the TH-high 3-button reads and `--rom` hardware TAS are
    implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).

@@ -54,7 +54,7 @@ normative design is the
 1. Phase 8.1 — Cartridge, region, TMSS and boot [complete]
 2. Phase 8.2 — Complete 68000 and the cycle time model [complete]
 3. Phase 8.3 — Complete VDP [complete]
-4. Phase 8.4 — Z80, bus arbitration and audio [active]
+4. Phase 8.4 — Z80, bus arbitration and audio [complete]
 5. Phase 8.5 — Timers, controllers and interrupts [pending]
 6. Phase 8.6 — Commercial compatibility, accuracy evidence and performance [pending]
 7. Phase 8.7 — Execution modes, pacing and headless capture [pending]

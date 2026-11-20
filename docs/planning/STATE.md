@@ -1,63 +1,68 @@
-# Session State — 2026-11-19
+# Session State — 2026-11-20
 
-**Date:** 2026-11-19
+**Date:** 2026-11-20
 
 ## Current Position
 
-- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.4 in progress,
-  paused by the owner).
-- **Phase 8.4 — Z80, bus arbitration and audio: IN PROGRESS.** Work is preserved as local
-  commits on `agent/8.4-z80-audio`, created from `origin/main` at `ab3b484`. Integration HEAD
-  before this handoff: `2f7d815`; this commit adds the pause docs. **Nothing was pushed, no PR
-  was opened, no merge happened**, and issue #17 remains open. The AgentTeams team was archived.
-- **Completed in this session (local commits, each block verified by the implementer):**
-  - **T1 — Z80 core** (plan tasks 1–5): `3fecefe..5a5d7ce`; 82 tests; T-state base
-    (`MASTER_CYCLES_PER_Z80_T_STATE = 15`), main opcode table, CB, ED and DD/FD prefixes.
-    Limits: IXH/IXL/IYH/IYL and WZ absent, undocumented ED opcodes are NOPs, block-op
-    undocumented X/Y flags left clear, repeated DD/FD prefix bounded.
-  - **T2 — Z80 interrupts, memory map and arbitration** (plan tasks 6–8): `44ea857`,
-    `0b79cb5`, `4c2f06e`; 25 tests; IM 0/1/2, NMI, EI delay, HALT wake; 8 KiB mirrored RAM,
-    banked 32 KiB ROM, 68000 Z80 window, `0xA11100`/`0xA11200` latches and a deterministic
-    60-master-cycle stall per byte lane. Limits: YM/PSG windows return typed errors until T4;
-    payload v5 does not serialize Z80/arbitration; `advance_z80` is explicit and is not yet
-    called by `Backend::step` — T5 must close that.
-  - **T3 — YM2612** (plan tasks 9–11): `ce8a2d7`, `af2a4f4`, `2f7d815`; 29 tests; registers,
-    timers/status, DAC, integer FM with eight algorithms, feedback, LFO, envelopes. Limits:
-    functional (not hardware-exact) envelope/amplitude model; SSG-EG, channel-3 special mode,
-    CSM and `0x21`/`0x2B` test bits stored but not applied; busy bit absent; timer IRQ delivery
-    deferred to 8.5; YM state not serialized until payload v6. The task board still shows T3
-    `in_progress` because its completion payload was blocked by `tests/z80_memory.rs` being
-    outside the original `inScope`; the captain amended the contract to include it, but the
-    team was archived before re-submission. The code is committed and green at `2f7d815`.
-- **Remaining work (re-stage only these; do not recreate T1–T3):**
-  - **T4** — PSG + mixer/resampler 48 kHz (plan 12–13).
-  - **T5** — audio `MediaSource` + payload v6 + **Z80 advanced from `Backend::step`** (captain
-    amendment) + all v5 goldens.
-  - **T6** — audio-state oracle + evidence + capability docs.
-  - **V1** — independent verification; **R1** — independent review; **I1** — captain integration
-    (docs closure, PR #17, CI, merge, cleanup).
-- **Evidence:** raw artifacts in ignored `.research/8.4/`; detailed handoff in ignored
-  `.agents/notes/8.4/handoff.md`. Current workspace count is 1425 tests (baseline 1289; +136
-  new, no target lost); `./scripts/check.sh`, fmt, clippy, rustdoc and both demos were green at
-  each task HEAD.
+- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.4 complete,
+  verification/review/integration pending).
+- **Phase 8.4 — Z80, bus arbitration and audio: COMPLETE** at the implementation and
+  documentation level. Work is preserved as local commits on `agent/8.4-z80-audio`, based on
+  `origin/main` `b8d63a1` after the phase merge of that commit (the branch was created from
+  `origin/main` at `ab3b484`; the T4–T6 block HEAD was `4fe418d`): the T1–T6 phase commits,
+  the `origin/main` merge and this documentation-closure commit sit on top of `b8d63a1`.
+  **Nothing was pushed, no PR was opened, no merge to `main` happened**, and issue #17 remains
+  open. This session's team (`chronofork-8-4-z80-audio-r3`) owns the closure.
+- **Completed in this session (local commits):**
+  - **T1–T6 (previous team, preserved commits):** Z80 core, Z80 interrupts/memory
+    map/arbitration, YM2612, PSG + mixer/resampler, `MediaSource` audio + payload v6 + Z80
+    advanced from `Backend::step`, and the audio-state oracle/evidence/capability docs. See the
+    ignored `.agents/notes/8.4/handoff.md` for the per-task detail and honest limits.
+  - **Merge of `origin/main`:** `b8d63a1` (`docs(agents): add engineering responsibility and
+    technical judgment`) merged into the branch with the new `AGENTS.md` section preserved.
+  - **Documentation closure:** `docs/planning/ROADMAP.md` (8.4 `[status: complete]`,
+    `Completed: 2026-11-20`), `docs/planning/MILESTONE.md`, `AGENTS.md`, `docs/README.md`,
+    `docs/roadmap/milestones.md` (M8 integration state; H3 `Planned` → `Partial`),
+    `docs/requirements/functional.md` (FR-MD-008, FR-MD-011/012 status),
+    `docs/architecture/megadrive-slice.md` (payload/state/config v6, Z80/audio section),
+    `docs/quality/quality-gates.md` (phase 8.4 gate section) and the 15-task
+    `docs/superpowers/plans/2026-11-17-8.4-z80-audio.md` checklist (75/75 checked).
+- **Honest limits carried by phase 8.4:** Z80 `IXH`/`IXL`/`IYH`/`IYL` and `WZ`/`MEMPTR` are
+  not modelled and undocumented `ED` opcodes are `NOP`s; bus arbitration is a functional
+  fixed-stall model (60 master cycles per byte lane) whose documented execution polarity is
+  the inverse of the pinned hardware `ZBR` model, recorded as a scoped divergence;
+  `SSG-EG`, channel-3 special mode, CSM and the `0x21`/`0x2B` test bits are stored but not
+  applied; the YM status busy bit is absent; envelope/amplitude/PSG attenuation/LFO are
+  deterministic integer approximations; timer IRQ delivery to the Z80 is phase 8.5; no
+  cross-emulator audio **sample** equality is claimed, and audio capture to a file or device
+  (WAV/streaming) is phase 8.7.
+- **Evidence:** raw artifacts under the ignored `.research/8.4/` and
+  `.research/evidence/8.4/`; the device-state differential (25 fields, pinned oracle
+  `ec005615`, three negative controls) is summarized in
+  [docs/research/audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md).
 
 ## Open Decisions
 
-- T5's description was amended by the captain to require `MegadriveBackend::step` to call
-  `advance_z80` when the bus is requested and out of reset, accumulating master cycles
-  deterministically; new agents must follow the amended description.
-- Intermediate per-plan commits are a stack (only the block HEAD builds in isolation); accepted
-  for this phase and to be noted in review.
-- Audio differential evidence is device-state only, never a sample comparison; the audio oracle
-  script belongs to T6.
+- Intermediate per-plan commits are a stack (only each block HEAD builds in isolation);
+  accepted for this phase and noted for review.
+- Audio differential evidence is device-state only, never a sample comparison; the pinned
+  oracle publishes no YM2612 register/channel page, so only the readable YM status byte is
+  compared.
+- The owner conditionally authorized push/PR/merge only after independent verification (V1)
+  **and** independent review (R1) pass on the closure HEAD.
 
 ## Blockers
 
-- None. The owner paused the session; the team was archived. No gate is red.
+- None. No gate is red; `./scripts/check.sh` and `git diff --check` exit 0 at the closure HEAD.
 
 ## Recommended Next Step
 
-Resume in this same session: read `.agents/notes/8.4/handoff.md` and this file, create a fresh
-AgentTeams run for the **remaining** tasks only (T4–T9) on branch `agent/8.4-z80-audio` at HEAD
-`2f7d815` + this commit, and run the full verification/review before publishing. Do not recreate
-T1–T3 and do not push until V1 and R1 pass.
+1. Finish the phase-8.4 closure on `agent/8.4-z80-audio`: independent verification (V1) and
+   independent review (R1) of the cumulative `origin/main..HEAD` diff, then captain
+   integration (I1: push, PR with `Closes #17`, CI green, merge into `main`, cleanup).
+2. Then start **phase 8.5 — Timers, controllers and interrupts** (issue #18): timer
+   interrupts, the full TH latch and 3-/6-button protocol on ports 1–2, Z80 timer IRQ
+   delivery, and interrupt delivery integrated with cycle timing, per
+   [plan](../superpowers/plans/2026-11-17-8.5-timers-controllers.md).
+
+Do not recreate T1–T6 and do not push or merge until V1 and R1 pass.
