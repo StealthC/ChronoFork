@@ -140,6 +140,7 @@ use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{
     AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp, VdpInterruptSource,
 };
+use crate::z80::{Z80, Z80Error, Z80Outcome};
 
 /// Stable backend identifier.
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
@@ -303,6 +304,8 @@ impl MegadriveFactory {
         let mut bus = MegadriveBus::with_video_standard(self.cartridge.clone(), self.video);
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).map_err(map_cpu)?;
+        let mut z80 = Z80::new();
+        z80.reset(&mut bus);
         Ok(MegadriveBackend {
             descriptor: self.descriptor.clone(),
             config_hash: self.config_hash,
@@ -310,6 +313,7 @@ impl MegadriveFactory {
             cpu,
             scheduler: InterruptScheduler::new(self.scheduler_config),
             tick: Tick::ZERO,
+            z80,
             pending_frame: None,
         })
     }
@@ -334,6 +338,14 @@ pub struct MegadriveBackend {
     cpu: M68000,
     scheduler: InterruptScheduler,
     tick: Tick,
+    /// The Z80 core.
+    ///
+    /// It is canonical state, but payload v5 predates the Z80 subsystem: its
+    /// registers and snapshot are serialized by the phase's payload-v6 task.
+    /// Until then the core is stepped explicitly through
+    /// [`MegadriveBackend::advance_z80`] and a restore keeps the machine's
+    /// current core.
+    z80: Z80,
     /// Bounded one-frame media queue; derived output, never serialized.
     pending_frame: Option<VideoFrame>,
 }
@@ -650,8 +662,14 @@ impl MegadriveBackend {
         let wait_cycles = u64::from(fifo_wait)
             .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
             .ok_or(BackendError::TickOverflow)?;
+        // A 68000 access to the Z80 window while the Z80 owns the bus is stalled
+        // by a fixed, documented number of master cycles (one Z80 M1 fetch per
+        // byte lane). Folding it into this instruction's cost puts the stall on
+        // the canonical tick and therefore in the state hash.
+        let z80_stall_cycles = self.bus.take_z80_stall_cycles();
         let master_cycles = instruction_cycles
             .checked_add(wait_cycles)
+            .and_then(|cycles| cycles.checked_add(z80_stall_cycles))
             .ok_or(BackendError::TickOverflow)?;
         let next_tick = self
             .tick
@@ -715,6 +733,50 @@ fn rgba_from_indices(indices: &[u8], cram: &[u16; CRAM_WORDS]) -> Vec<u8> {
 }
 
 impl MegadriveBackend {
+    /// Executes one Z80 instruction when bus arbitration allows it.
+    ///
+    /// Returns `Z80Outcome { t_states: 0 }` while the 68000 owns the bus or the
+    /// Z80 is held in reset, so a caller can poll without changing any state.
+    /// When the Z80 executes, its documented T-states convert to master cycles
+    /// with [`Z80Outcome::master_cycles`] and advance the canonical tick, the
+    /// interrupt scheduler and the VDP exactly as a 68000 instruction does.
+    ///
+    /// The Z80 is stepped explicitly, not inside [`Backend::step`]: the phase's
+    /// payload-v6 task wires the two processors into one master-cycle loop. The
+    /// arbitration model is functional, not microcycle-exact: the 68000 is not
+    /// frozen while the Z80 owns the bus, but every 68000 access to the Z80 RAM
+    /// window is stalled by [`Z80_STALL_MASTER_CYCLES`](crate::bus::Z80_STALL_MASTER_CYCLES).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::TickOverflow`] on master-cycle overflow, or a
+    /// mapped Z80/bus failure.
+    pub fn advance_z80(&mut self) -> Result<Z80Outcome, BackendError> {
+        if !self.bus.arbitration().z80_runs() {
+            return Ok(Z80Outcome { t_states: 0 });
+        }
+        let outcome = self.z80.step(&mut self.bus).map_err(map_z80)?;
+        let master_cycles = outcome.master_cycles();
+        let next_tick = self
+            .tick
+            .raw()
+            .checked_add(master_cycles)
+            .ok_or(BackendError::TickOverflow)?;
+        self.scheduler
+            .advance_master(master_cycles)
+            .map_err(map_scheduler)?;
+        let standard = self.scheduler.config().standard();
+        let vdp_tick = self.bus.vdp_mut().advance_master(master_cycles, standard);
+        self.bus.vdp_mut().drain_fifo();
+        self.bus.vdp_mut().take_dma_cycles();
+        self.tick = Tick::from_raw(next_tick);
+        if vdp_tick.frame_started {
+            self.capture_frame()?;
+        }
+        self.sync_vdp_status();
+        Ok(outcome)
+    }
+
     /// Renders the completed frame from a clone of canonical VDP state.
     ///
     /// Rendering on a clone keeps sprite/status latches canonical and makes the
@@ -759,6 +821,9 @@ impl Backend for MegadriveBackend {
         self.bus.set_step_input([ports[0], ports[1]]);
         let outcome = self.step_with_current_input();
         self.bus.clear_step_input();
+        // A failed step never advanced the tick, so a stall it accumulated is
+        // discarded instead of being charged to a later instruction.
+        self.bus.clear_z80_stall_cycles();
         outcome
     }
 
@@ -1122,6 +1187,15 @@ fn vector_address(level: InterruptLevel) -> u32 {
 /// failure: [`BackendError::OutOfBounds`] describes debugger-supplied memory
 /// ranges, not faults inside the emulated program, so classifying those as
 /// bounds errors would misreport the cause.
+/// Maps a Z80/bus failure into the backend error contract.
+///
+/// The backend API has no Z80-specific variant, so a Z80 failure is classified
+/// as [`BackendError::Execution`] with the typed Z80 message preserved; direct
+/// users of the core still receive the typed [`Z80Error`].
+fn map_z80(error: Z80Error) -> BackendError {
+    BackendError::Execution(format!("Z80: {error}"))
+}
+
 fn map_cpu(error: CpuError) -> BackendError {
     match error {
         CpuError::Halted => BackendError::Halted,
