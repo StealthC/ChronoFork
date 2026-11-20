@@ -1,18 +1,24 @@
 # ChronoFork continuous integration.
 #
-# Triggered by every pushed commit (all branches) and by pull requests. The
-# Rust commands mirror scripts/check.sh; keep both in sync. Extra jobs cover
-# release mode, the deterministic demo contract, the declared MSRV and a
+# Triggered by pushes to `main` and by pull requests. Branch pushes do not run
+# the workflow (the pull request is the check for a branch) and superseded PR
+# runs are cancelled, so each commit is validated once. The Rust commands mirror
+# scripts/check.sh; the workspace tests are split into crate groups so the
+# critical path is shorter. Extra jobs cover release mode, the deterministic
+# demo contract (run from the release binary), the declared MSRV and a
 # cross-platform compile check. Third-party actions are pinned to commit SHAs;
-# bump the SHA together with the version comment. There is deliberately no
-# concurrency cancellation: every pushed commit must run the full workflow.
+# bump the SHA together with the version comment.
 name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -69,9 +75,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: Test
+    name: Test (${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, cpu, host, apps]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,13 +102,23 @@ jobs:
           key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-stable-
-      - name: cargo test --workspace
+      - name: cargo test (crate group)
         shell: bash
+        env:
+          GROUP: ${{ matrix.group }}
         run: |
           set -o pipefail
           mkdir -p ci-artifacts
-          cargo test --workspace --locked --no-fail-fast 2>&1 | tee ci-artifacts/test.log
+          case "$GROUP" in
+            core) packages=(-p chronofork-core -p chronofork-backend-api -p chronofork-test-backend) ;;
+            cpu) packages=(-p chronofork-megadrive) ;;
+            host) packages=(-p chronofork-sessions -p chronofork-debug -p chronofork-trace -p chronofork-script) ;;
+            apps) packages=(-p chronofork-service -p chronofork-transport -p chronofork-gui -p chronofork-cli) ;;
+            *) echo "::error::unknown test group $GROUP"; exit 1 ;;
+          esac
+          cargo test "${packages[@]}" --locked --no-fail-fast 2>&1 | tee ci-artifacts/test.log
       - name: Determinism suite, single-threaded
+        if: matrix.group == 'host'
         shell: bash
         run: |
           set -o pipefail
@@ -107,7 +127,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-log-linux
+          name: test-log-linux-${{ matrix.group }}
           path: ci-artifacts/test.log
           if-no-files-found: warn
           retention-days: 7
@@ -160,17 +180,22 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-stable-
-      - name: Build the CLI
-        run: cargo build -p chronofork-cli --locked
+            ${{ runner.os }}-cargo-release-
+      # The release binary is used because every debug step hashes the full
+      # machine state (64 KiB RAM + 64 KiB VRAM), which makes the demo ~7x
+      # slower without changing its output: the demo output is profile-independent
+      # (the debug/text fixtures are byte-identical), so release keeps the check
+      # honest while cutting the job's runtime.
+      - name: Build the CLI (release)
+        run: cargo build -p chronofork-cli --release --locked
       - name: Run each demo three times and compare bytes
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p ci-artifacts/demos
-          binary=target/debug/chronofork
+          binary=target/release/chronofork
 
           run_demo() {
             local slug="$1"
