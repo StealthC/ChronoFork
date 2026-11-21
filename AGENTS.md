@@ -76,8 +76,9 @@ game compatibility.
 
 **M8 (functional Mega Drive emulator) is the active milestone.** Phases 8.2 (complete
 68000 and cycle model) and 8.3 (complete VDP) are complete and merged, and phase 8.4 (Z80, bus
-arbitration and audio, payload v6) is complete on `agent/8.4-z80-audio` with
-verification/review/integration pending; phases 8.5–8.8 are planned in
+arbitration and audio, payload v6) is complete, independently verified and reviewed on
+`agent/8.4-z80-audio`, whose PR (issue #17) is the integration record for the merge into
+`main`; phases 8.5–8.8 are planned in
 [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md); M0–M7 are complete and merged. M8 completes the Mega Drive backend — the full 68000 and Z80, a complete VDP with
 rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
 with cycle-based canonical time, deterministic headless capture of frames and audio and an
