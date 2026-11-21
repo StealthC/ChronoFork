@@ -40,7 +40,8 @@ Both emulators model hardware ZBR polarity: with the request negated the Z80
 owns the bus, so one identical ROM with the same bus-request byte runs both Z80
 cores to the same ``HALT`` boundary. The harness therefore uses one identical
 ROM on both sides. A separate request-asserted probe checks that asserting the
-request stops the Z80 on both emulators at the same PC. The model is still
+request stops the Z80 on both emulators at the same PC, and that agreement is part
+of the exit-0 condition, not just a recorded note. The model is still
 functional rather than microcycle-exact (ChronoFork yields on the request write
 rather than at the Z80 instruction boundary), and the report states that limit
 explicitly.
@@ -49,7 +50,9 @@ Exit status
 -----------
 0  PASS for the compared device-state field set (with the scoped limitations
    recorded in the report).
-1  A compared field diverged, or the Z80 did not reach the shared HALT boundary.
+1  A compared field diverged, the Z80 did not reach the shared HALT boundary, a
+   negative control failed, the missing-oracle control did not exit 3, or the
+   request-asserted arbitration probe gave the two emulators different Z80 PCs.
 2  Harness or setup error (missing ChronoFork binary, bad arguments, unpinned or
    unreadable oracle checkout that is present but not the pinned revision).
 3  The pinned oracle is absent, so no comparison is possible. Never a silent
@@ -497,7 +500,8 @@ def oracle_arbitration_probe(binary, root, work, rom_path, z80_program):
                 "emulators under the hardware ZBR polarity, so the two recorded PCs "
                 "must agree. The model is still functional: ChronoFork yields on "
                 "the request write rather than at the Z80 instruction boundary. "
-                "This probe is not part of the device-state comparison."
+                "This probe is not part of the device-state comparison, but its PC "
+                "agreement is part of the exit-0 condition."
             ),
         }
     finally:
@@ -909,7 +913,8 @@ def write_report(out_dir, evidence):
         "bus) and both Z80 cores execute the same program to HALT. The model is "
         "still functional rather than microcycle-exact: ChronoFork yields on the "
         "request write rather than at the Z80 instruction boundary. The "
-        "request-asserted probe is reported separately."
+        "request-asserted probe is reported separately and its PC agreement is "
+        "part of the exit-0 condition."
     )
     lines.append(
         "- Time-dependent fields (PSG noise shift register) are excluded; the "
@@ -1093,11 +1098,16 @@ def main(argv):
         arbitration["z80_pc_agrees"] = str(arbitration.get("oracle_z80_pc")) == str(
             arbitration.get("chronofork_z80_pc")
         )
+        probe_ok = bool(arbitration.get("z80_pc_agrees"))
         controls = negative_controls(expected, actual)
         controls_ok = all(control["detected"] for control in controls)
         missing = self_missing_oracle_control(Path(__file__).resolve())
         missing_ok = missing["exit_code"] == 3 and bool(missing["reason"])
-        status = "pass" if mismatch is None and controls_ok and missing_ok else "divergence"
+        status = (
+            "pass"
+            if mismatch is None and controls_ok and missing_ok and probe_ok
+            else "divergence"
+        )
         evidence = {
             "generated_utc": datetime.now(timezone.utc).isoformat(),
             "summary": {
@@ -1107,6 +1117,7 @@ def main(argv):
                 "first_mismatch": mismatch,
                 "negative_controls_passed": controls_ok,
                 "missing_oracle_control_passed": missing_ok,
+                "arbitration_probe_agrees": probe_ok,
             },
             "oracle": oracle,
             "fixture": {
@@ -1146,8 +1157,21 @@ def main(argv):
                     mismatch["field"], mismatch["expected"], mismatch["actual"]
                 )
             )
-        else:
+        elif not controls_ok:
             print("oracle-audio-state-diff: a negative control failed")
+        elif not missing_ok:
+            print(
+                "oracle-audio-state-diff: the missing-oracle control did not exit 3 "
+                "with a reason"
+            )
+        else:
+            print(
+                "oracle-audio-state-diff: the request-asserted arbitration probe "
+                "disagreed: oracle Z80 PC {}, ChronoFork Z80 PC {}".format(
+                    arbitration.get("oracle_z80_pc"),
+                    arbitration.get("chronofork_z80_pc"),
+                )
+            )
         return 1
     print(
         "oracle-audio-state-diff: PASS ({} device-state fields, Z80 HALT PC {}, "

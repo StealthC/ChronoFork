@@ -151,14 +151,23 @@ sides, which is the direct evidence that the `ZBR` polarity repair took effect; 
 the [audio state differential](../research/audio-state-differential-evidence.md) records it.
 Raw report: `.research/8.4-r2/evidence-r3/` (ignored).
 
-The same run was reproduced independently by the t10 repair round at commit `2001286`: exit
-0 with **PASS** 25/25 at the shared Z80 `HALT` boundary, all three corrupted-field controls
-(`corrupt-z80-af`, `corrupt-psg-tone`, `corrupt-ym-status`) detected plus the missing-oracle
-child exiting 3, one ROM shared by both emulators
-(`sha256 2d7c469e…`, `oracle_bus_request` = `chronofork_bus_request` = 0) and the
-request-asserted probe agreeing at Z80 `PC = 4`. Artifacts:
-`.research/8.4-t10/evidence/` (ignored). Commit `2001286` is the HEAD the independent
-verification compares against.
+Two harness executions are recorded, both exit 0 with **PASS** 25/25 at the shared Z80
+`HALT` boundary, all three corrupted-field controls (`corrupt-z80-af`, `corrupt-psg-tone`,
+`corrupt-ym-status`) detected plus the missing-oracle child exiting 3, one ROM shared by both
+emulators (`sha256 2d7c469e…`, `oracle_bus_request` = `chronofork_bus_request` = 0) and the
+request-asserted probe agreeing at Z80 `PC = 4` on both sides:
+
+1. at commit `2001286` — artifacts `.research/8.4-t10/evidence/` (ignored). That commit is a
+   **historical** HEAD, not the current one.
+2. at the t12 repair tree, which is the **current HEAD** — this commit — with production code
+   unchanged at `06f5e95`; artifacts `.research/evidence/8.4-final/` (ignored), the
+   artifacts of record. The harness's own recorded `commit` field is `8500a4b` (this commit's
+   parent) because the run predates the commit, and `crates/` is identical in both.
+
+The exit-0 condition now includes the probe: `z80_pc_agrees` is part of the PASS gate (not
+only a report field), so a probe disagreement is a divergence and exits 1. That gate was
+exercised with an out-of-repo negative control (probe agreement forced false: exit 1, status
+`divergence`, `arbitration_probe_agrees: false`).
 
 The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
 and ChronoFork over one independently authored synthetic ROM and compares **device
