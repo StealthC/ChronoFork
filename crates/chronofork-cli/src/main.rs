@@ -1190,17 +1190,17 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let mut manager = SessionManager::new(Arc::new(factory));
     let descriptor = manager.backend_descriptor().clone();
 
-    println!("chronofork megadrive demo: 68000 + VDP port + interrupt scheduler slice");
+    println!("chronofork megadrive demo: 68000 + Z80 + VDP + 48 kHz audio capture slice");
     println!(
         "backend: {} ({})",
         descriptor.display_name(),
         descriptor.version()
     );
     println!(
-        "scope: documented MC68000 instruction set, ROM/RAM, VDP status/control/VRAM window, plane/window/sprite compositor, DMA/FIFO, master-cycle timing and interrupt scheduler"
+        "scope: documented MC68000 instruction set, ROM/RAM, VDP status/control/VRAM window, plane/window/sprite compositor, DMA/FIFO, master-cycle timing, interrupt scheduler, Z80 core with bus arbitration, YM2612/PSG models and a 48 kHz integer audio mixer"
     );
     println!(
-        "limitations: deterministic headless video frames only (no host window); no audio, Z80, interlace or game compatibility; H/V counters and H32 geometry are approximate"
+        "limitations: deterministic headless video frames and 48 kHz stereo audio chunks only (no host window or audio device); no game compatibility; YM timer IRQ delivery to the Z80 and dot-exact H/V counters are not implemented; H32 geometry is approximate"
     );
 
     // The demo is a wiring and output smoke test: the values it prints are read

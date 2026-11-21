@@ -8,8 +8,8 @@
   eleven synthetic ROMs and passes 11/11 address, per-instruction cycle, final-state
   and negative-control comparisons, while the historical three-ROM 3/3 run and its
   default-quantum masked-ROM negative gating control are preserved as history.
-  Broader addressing coverage, E2-11 ROM identity and the remaining hardware are
-  still open, tracked in H1–H5 below)
+  Broader addressing coverage and the remaining hardware are still open, tracked in
+  H1–H5 below; phase 8.1 delivered E2-11)
 - **Milestone:** M1 (core slice, complete and merged); M3 delivered the controller
   input TAS extension and M4 added the debugging surface (merged to `main` at
   `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`). The epic's open
@@ -62,6 +62,19 @@ the contract validator.
 - GUI, HTTP or MCP. TAS movies were delivered by M3 on this slice; this epic does
   not own TAS UI, transports or import/export adapters.
 
+> **Scope note (later phases).** The list above is this epic's original M1 boundary. The
+> slice has since grown past it: phase 8.1 delivered E2-11 (ROM header/region/TMSS/
+> checksum, the Sega mapper and 64 KiB battery SRAM), phase 8.3 delivered VDP rendering
+> (planes/window/sprites/scrolling/priority/shadow-highlight, 256/320 modes), CRAM/VSRAM,
+> DMA, FIFO/CPU wait accounting and H/V timing, and phase 8.4 delivered the Z80 core, the
+> 68000/Z80 bus arbitration, the YM2612/PSG models and the deterministic 48 kHz
+> mixer/resampler (payload v6). Those capabilities are recorded once in the
+> [Mega Drive slice](../architecture/megadrive-slice.md) page. Still open from the list
+> above: timer interrupts and IRQ delivery, the controller protocol beyond the TH-high
+> 3-button subset, mapper variants beyond the Sega banking and images above the 64 MiB
+> ceiling, microcycle-exact timing and the guest bus-error/trace exception groups; booting
+> a commercial title is phase 8.6 work.
+
 ## Workstreams and tasks
 
 | ID | Task | Status |
@@ -76,7 +89,7 @@ the contract validator.
 | E2-08 | Document scope, limitations and next increments | Done |
 | E2-09 | Add VDP status/control and a minimal VRAM window | Done |
 | E2-10 | Add deterministic interrupt/tick scheduler | Done |
-| E2-11 | Add ROM header/region/config identity and cartridge loader | Planned |
+| E2-11 | Add ROM header/region/config identity and cartridge loader | Done — phase 8.1 delivered the ROM header (system signature, bounded names/serial, checksum, region bitfield), the TMSS lockout, the always-present Sega mapper and 64 KiB battery SRAM (payload/state/config v3, now v6); booting a commercial title remains phase 8.6 work |
 | E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
 | E2-13 | Expand instruction/addressing coverage with tests | Done for the documented MC68000 set — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests and the full documented family audit; coverage beyond the documented set (undefined/reserved encodings) and broader differential cases remain future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
@@ -92,15 +105,19 @@ milestone has to be reopened:
 | Open work | Track |
 |---|---|
 | Coverage beyond the documented MC68000 instruction set; the remaining 68000 exception groups (guest bus error and trace) | H1 |
-| VDP rendering, planes, sprites and scrolling; CRAM/VSRAM; DMA; raster and H/V timing; VDP interrupt-enable/acknowledge and FIFO behaviour | H2 |
-| YM2612, PSG, the Z80 and bus arbitration | H3 |
-| E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
+| VDP gaps left after phase 8.3 rendering/DMA/timing: VSRAM data-port reads, interlace, exact H32 window geometry, line-mode scrolling, dot-exact H/V counters and pixel-level differential evidence | H2 |
+| Audio/Z80 gaps left after phase 8.4: timer IRQ delivery to the Z80 (phase 8.5) and bit-exact hardware audio accuracy | H3 |
+| Timer interrupts and IRQ delivery; the controller protocol beyond the delivered TH-high 3-button subset (TH latch and A/Start, 6-button pad, port 3, analog/keyboard); mapper variants beyond the Sega banking and images above the 64 MiB ceiling | H4 |
 | Broader differential corpus, positive interrupt-delivery evidence, cycle accuracy and cross-platform determinism | H5 |
 
 Delivered and not part of that open set: the documented MC68000 instruction set,
 ROM/RAM, the VDP port window and VRAM, the master-cycle interrupt scheduler with
 SR-mask gating/`RTE`/VINT pending-acknowledge, the bounded debug trace, the eleven-ROM
-differential harness and the TH-high 3-button controller reads (M3). The historical
+differential harness and the TH-high 3-button controller reads (M3). Later phases delivered
+more: phase 8.1 the cartridge header/region/TMSS/checksum, Sega mapper and SRAM (E2-11);
+phase 8.3 VDP rendering, CRAM/VSRAM, DMA, FIFO/CPU wait accounting, H/V timing and
+deterministic headless frames; and phase 8.4 the Z80 core, 68000/Z80 bus arbitration, the
+YM2612/PSG models and the 48 kHz mixer/resampler (payload v6). The historical
 three-ROM differential run remains preserved as history. M4 later added the optional
 non-canonical debugging surface; it was verified on `agent/m4-debugging-depth` at
 `6d30243` and is merged to `main` at `4c595a2`.
@@ -251,10 +268,12 @@ errors" now applies to every other controller access. M4 added optional
 non-canonical debug observation ([ADR-0010](../adr/0010-debugging-depth.md)). Neither
 is part of this epic's exit criteria.
 
-Criteria 1–18 pass for the implemented slice; the epic remains open for E2-11, broader
-addressing coverage and the remaining hardware/evidence gaps (rendering and frame
-timing, VDP data reads, DMA, audio, Z80, timers, the remaining controller protocol and
-the guest bus-error/trace exception groups). Privilege enforcement and the documented
+Criteria 1–18 pass for the implemented slice; the epic remains open for broader
+addressing coverage and the remaining hardware/evidence gaps (timer interrupts and timer
+IRQ delivery, the controller protocol beyond the delivered TH-high 3-button subset, VDP
+data-port reads, microcycle-exact timing and the guest bus-error/trace exception groups),
+tracked in the [Mega Drive slice](../architecture/megadrive-slice.md#not-implemented) and the
+[requirements](../requirements/functional.md). Privilege enforcement and the documented
 MC68000 instruction set are delivered.
 E2-12's two-ROM differential run and E2-15's 3/3 masked-ROM control are historical;
 the current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address, cycle,

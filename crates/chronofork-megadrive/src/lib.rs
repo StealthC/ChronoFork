@@ -11,17 +11,45 @@
 //! phase-8.3 VDP (CRAM/VSRAM, planes/window/sprites/scroll composition, DMA,
 //! FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
 //! interrupt pending/acknowledge), deterministic headless video frames,
-//! versioned v5 snapshots and session integration. Debug-only observation, pure
+//! versioned v6 snapshots and session integration. Debug-only observation, pure
 //! CPU/VDP/interrupt/bus views and a bounded, execution-cross-checked
 //! 68000-subset disassembler are available without changing canonical state.
-//! **Not implemented:** audio, Z80, TH-latched and 6-button controller protocols
-//! (A/Start are not readable), SRAM banking schemes other than the Sega mapper,
-//! VSRAM data-port reads, interlace, the byte-swapped physical VRAM layout,
-//! dot-exact H/V counters and cycle-accurate (prefetch/bus) timing. This is
-//! real-hardware groundwork, not a playable emulator.
+//! The phase-8.4 audio tree starts with [`audio::ym2612`]: a deterministic
+//! integer YM2612 FM model (six four-operator channels, eight algorithms,
+//! envelopes, LFO, two register port pairs, timers/status and the channel-6
+//! DAC) reachable through the Z80 YM2612 window and a new 68000 window at
+//! `0x00A04000..=0x00A04003`, and the SN76489-compatible PSG ([`audio::psg`])
+//! with three tone channels, 15-bit noise, sixteen attenuation levels and the
+//! latch/data write protocol on the Z80 window at `0x7F00..=0x7F03`/`0x7F11`.
+//! [`audio::AudioMixer`] advances both devices by elapsed master cycles,
+//! interpolates their rational sample clocks and saturates the integer mix into
+//! exactly 48 000 signed 16-bit stereo frames per second of emulated time and
+//! exposes them as bounded [`chronofork_backend_api::AudioChunk`]s through the
+//! media seam. Timer IRQ delivery to the Z80 is phase 8.5.
+//! The phase-8.4 Z80 core lives in [`z80`]: the documented instruction set with
+//! its T-state counts, register file, interrupt acceptance (IM 0/1/2 and NMI)
+//! and a versioned snapshot. [`bus`] implements the Z80 memory view (8 KiB RAM
+//! mirrored through `0x3FFF`, YM2612/PSG/bank windows, a 32 KiB banked ROM
+//! window) and the 68000-side 8 KiB Z80 RAM window plus the `0xA06000` bank
+//! register and the `0xA11100`/`0xA11200` arbitration registers. The 68000
+//! stalls by a fixed, documented number of master cycles when it touches Z80
+//! RAM while the Z80 owns the bus. [`Backend::step`](chronofork_backend_api::Backend::step)
+//! runs the Z80 inside
+//! each 68000 instruction's master-cycle window while the bus is requested and the
+//! reset is released, carrying instruction overshoot in the canonical state;
+//! [`MegadriveBackend::advance_z80`] remains available for explicit
+//! single-instruction control.
+//! **Not implemented:** timer IRQ delivery to the Z80, microcycle-exact bus
+//! arbitration, the 68000-side `0xC00011` PSG window, TH-latched and 6-button
+//! controller protocols (A/Start are not readable), SRAM banking schemes other
+//! than the Sega mapper, VSRAM data-port reads, interlace, the byte-swapped
+//! physical VRAM layout, dot-exact H/V counters and cycle-accurate
+//! (prefetch/bus) timing. This is real-hardware groundwork, not a playable
+//! emulator.
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod audio;
 pub mod backend;
 pub mod bus;
 pub mod cartridge;
@@ -33,7 +61,9 @@ pub mod inspect;
 pub mod interrupts;
 pub mod trace;
 pub mod vdp;
+pub mod z80;
 
+pub use audio::{AudioMixer, Psg, RationalResampler, ResampleError, Ym2612, YmBank, YmIrq, YmPort};
 pub use backend::{
     BACKEND_ID, BOOT_MARKER, BOOT_ROM_SIZE, CONFIG_MAGIC, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
     MegadriveConfig, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, STATE_MAGIC,
@@ -41,9 +71,9 @@ pub use backend::{
     interrupt_rom,
 };
 pub use bus::{
-    BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, CONTROLLER_WINDOW_BASE,
-    CONTROLLER_WINDOW_END, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END, VDP_BASE,
-    VDP_END, VDP_WINDOW_SIZE,
+    BusArbitration, BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2,
+    CONTROLLER_WINDOW_BASE, CONTROLLER_WINDOW_END, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE,
+    ROM_BASE, ROM_END, VDP_BASE, VDP_END, VDP_WINDOW_SIZE,
 };
 pub use cartridge::{
     Cartridge, CartridgeError, CartridgeHeader, CartridgeSystem, MAPPER_REGISTER_BASE,
@@ -70,6 +100,7 @@ pub use interrupts::{
 };
 pub use trace::{InstructionTrace, TraceEntry, TraceError};
 pub use vdp::{VRAM_SIZE, Vdp, VdpError};
+pub use z80::{Z80, Z80Bus, Z80Error, Z80Field, Z80Outcome};
 
 /// Test-only support for synthetic images and local commercial-ROM fixtures.
 ///

@@ -17,7 +17,8 @@
 > are one-line records; their Definition of Done, work items and evidence stay on the
 > canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone, but
 > M8 is the product milestone that sequences those tracks to completion. M8 is marked active
-> because it is the current milestone: phase 8.3 is complete and merged and phases 8.4–8.8 are
+> because it is the current milestone: phase 8.3 is complete and merged, phase 8.4 is complete
+> on `agent/8.4-z80-audio` with verification/review/integration pending, and phases 8.5–8.8 are
 > pending, so `active` does not mean every phase is implemented. The canonical milestone page
 > records M8 as `In progress` and M9 as `Planned`; this file's `active` and `**Started:**` date
 > record when the lifecycle layer took M8 as the current milestone.
@@ -137,7 +138,7 @@ frame-level differential evidence.
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.3-vdp.md)
 **Completed:** 2026-11-19
 
-### Phase 8.4: Z80, bus arbitration and audio [status: pending]
+### Phase 8.4: Z80, bus arbitration and audio [status: complete]
 
 **Goal:** Implement the Z80 core and memory map, 68000/Z80/VDP bus arbitration, YM2612
 six-channel FM and PSG, with deterministic mixing/resampling and audio differential evidence.
@@ -145,6 +146,7 @@ six-channel FM and PSG, with deterministic mixing/resampling and audio different
 **HelpWanted:** no
 **Issue:** #17
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
+**Completed:** 2026-11-20
 
 ### Phase 8.5: Timers, controllers and interrupts [status: pending]
 

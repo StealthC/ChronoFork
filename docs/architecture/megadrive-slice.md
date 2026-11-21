@@ -27,10 +27,16 @@
   implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
   through the phase-8.2 PR (issue #15). Phase 8.3 (the complete VDP) is implemented,
   verified (rounds 1–3) and independently reviewed (rounds 2–3), and merged to `main`
-  through the phase-8.3 PR (issue #16). M8 then completes the remaining slice
-  (Z80, YM2612/PSG audio and capture); cartridge and controllers are already implemented
-  as described below. This page remains the canonical capability/limitation home; it is
-  updated as each phase lands, never in advance.
+  through the phase-8.3 PR (issue #16). Phase 8.4 adds the Z80 core, the Z80 memory
+  map and 68000/Z80 bus arbitration, the YM2612 and PSG models, the deterministic
+  48 kHz mixer/resampler and audio capture through `MediaSource`, and moves the
+  payload to v6 (`CFMD68K6`/`CFMDSTATE6`/`CFMDCONF6`); it is implemented, its
+  phase gate was executed on the phase branch and the phase is
+  [closed in the planning lifecycle](../planning/ROADMAP.md), with independent
+  verification, review and integration pending. Timer IRQ delivery to the
+  Z80 and the rest of M8 (8.5–8.8) remain. Cartridge and controllers are already
+  implemented as described below. This page remains the canonical
+  capability/limitation home; it is updated as each phase lands, never in advance.
 - **Crate:** `crates/chronofork-megadrive`
 - **Backend ID:** `chronofork.megadrive.m68000`
 - **Related:** [ADR-0002](../adr/0002-backend-boundaries.md),
@@ -60,6 +66,10 @@ fixtures are independently authored synthetic data.
 | Work RAM | `0xFF0000..0xFFFFFF` | 64 KiB, big-endian, mirrored by address bits 15–0 |
 | VDP ports | `0xC00000..0xC0000F` | Data port `0x00..0x03`, control/status port `0x04..0x07`, HV counter `0x08..0x0F` |
 | Controller data registers | `0x00A10003`, `0x00A10005` | Byte reads only, driven by the current step's `InputFrame` ports 0/1; see below |
+| YM2612 registers | `0x00A04000..0x00A04003` | Two address/data port pairs through the bus arbiter; reads return the YM2612 status byte |
+| Z80 RAM window | `0x00A00000..0x00A01FFF` | 8 KiB Z80 RAM; accesses stall while the Z80 owns the bus |
+| Z80 bank register | `0x00A06000` | Write-only nine-bit bank register; reads return the latched value |
+| Z80 bus control | `0x00A11100`, `0x00A11200` | Bus request and active-low reset latches (bit 8 on reads) |
 | Everything else | — | Explicit `UnmappedRead` / `UnmappedWrite` error |
 
 - Word and long accesses require even addresses.
@@ -67,10 +77,16 @@ fixtures are independently authored synthetic data.
   typed `UnmappedRead`.
 - Multi-byte and debugger writes validate the entire range before mutating RAM, so
   a failed write cannot leave partial state.
-- PSG (`0xC00011` and above), Z80 (`0xA00000`) and the rest of the controller
-  (`0xA10000..0xA1001F`) window are deliberately unmapped and return explicit errors; they
-  are not open bus. Only byte reads of the two controller data registers are mapped, for
-  execution only; all controller writes and debugger reads remain typed errors.
+- The 68000-side PSG window (`0xC00011` and above) and the rest of the controller
+  window (`0xA10000..0xA1001F`, except the two data registers) remain deliberately
+  unmapped and return explicit errors; they are not open bus. Only byte reads of the
+  two controller data registers are mapped, for execution only; all controller
+  writes and debugger reads remain typed errors. The 68000 YM2612 and Z80 windows
+  are decoded as listed above; the Z80-side map (8 KiB RAM mirrored through
+  `0x3FFF`, YM2612 at `0x4000`, bank write at `0x6000`, PSG at
+  `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked ROM window at `0x8000`) is reached
+  through the Z80 bus view, and a PSG read returns the documented open value
+  `0xFF`.
 - VDP mirrors beyond `0xC0000F` and the physical byte-swapped/interleaved VRAM
   layout are not modelled.
 - Bus reads take `&mut self` because a VDP port read can advance the VDP address.
@@ -165,8 +181,12 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 - Media: `MegadriveBackend` implements `MediaSource` and emits one deterministic
   `VideoFrame` per completed VDP frame (`256x224`/`320x224` in NTSC and `256x240`/
   `320x240` in PAL), converting palette indices through 9-bit CRAM RGB to RGBA8 with
-  opaque alpha. A one-frame queue returns `None` on a second take before a new frame;
-  audio remains absent.
+  opaque alpha. A one-frame queue returns `None` on a second take before a new frame.
+  The same seam emits signed 16-bit stereo `AudioChunk`s at exactly 48 000 frames per
+  emulated second: the integer YM2612/PSG mixer/resampler runs off elapsed master
+  cycles, the backend holds one bounded 64-frame chunk (about 1.3 ms) per take, and a
+  one-second mixer queue drops the oldest frames deterministically if a consumer falls
+  behind. See [audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md).
 - Evidence: the pinned Exodus VDP state differential is recorded in
   [vdp-state-differential-evidence.md](../research/vdp-state-differential-evidence.md);
   the backend tests `vdp_ports`, `vdp_timing`, `vdp_planes`, `vdp_sprites`,
@@ -200,17 +220,21 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF5`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF6`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K5`, payload version **5**, followed by the
+- Snapshot payload magic is `CFMD68K6`, payload version **6**, followed by the
   68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
   `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP002`
-  VDP snapshot (including the frame index), the cartridge state and the complete
-  master-cycle scheduler snapshot. Versions 1-4 are rejected with a typed error
+  VDP snapshot (including the frame index), the cartridge state, the complete
+  master-cycle scheduler snapshot and the phase-8.4 block (the Z80 register snapshot
+  and 8 KiB RAM, the Z80 bank register and master-cycle carry, both arbitration
+  latches, the complete YM2612 and PSG state and the mixer frame phase plus its three
+  resampler phases/histories). Versions 1-5 are rejected with a typed error
   rather than reinterpreted.
-- The state hash (`CFMDSTATE5`) covers the extended 68000 state, tick, RAM, VDP
-  snapshot and scheduler snapshot, so pending interrupts, stack-pointer mirrors,
+- The state hash (`CFMDSTATE6`) covers the extended 68000 state, tick, RAM, VDP
+  snapshot, scheduler snapshot and the phase-8.4 Z80/arbitration/YM2612/PSG/mixer
+  block, so pending interrupts, stack-pointer mirrors,
   VRAM/CRAM/VSRAM and the frame index are part of checkpoint identity.
 - Restore validates backend identity, backend version, envelope version, config
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
@@ -236,15 +260,90 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   `vdp_auto_increment`, `vdp_address`, `irq_mask`, `irq_pending_level`,
   `irq_deliverable`, `irq_vector`, `scheduler_frame` and `scheduler_line` as
   pseudo-registers. `irq_deliverable` is 1 when the highest-priority pending
-  request is admitted by the current SR mask and 0 while it is masked. The schema
-  has no dedicated device-inspection section yet; this keeps the generic backend
-  API unchanged.
+  request is admitted by the current SR mask and 0 while it is masked. Phase 8.4
+  extends the same open map with `z80.af/bc/de/hl/ix/iy/sp/pc/i/r/im/iff1/iff2/
+  halted/ei_delay/credit/bank`, `arbitration.requested/reset_asserted/z80_runs`,
+  `ym.status/lfo_phase/address_latch0/address_latch1`, `psg.latch/tone0-2/
+  attenuation0-3/noise_control/noise_lfsr` and `audio.pending_frames/
+  dropped_frames/frame_accumulator`. The schema has no dedicated device-inspection
+  section; this keeps the generic backend API unchanged.
 - Capabilities truthfully report `breakpoints = false` and `tracing = false`: host
   breakpoints are a debugger feature and the bounded trace is a concrete-type debug
   facility, not the generic `Backend` `tracing` capability. Since M4 the slice reports
   `watchpoints = true` and `debug_events = true` for its optional observation layer; since
-  phase 8.3 it reports `rendering = true` (deterministic headless frames) and keeps
-  `audio = false`.
+  phase 8.3 it reports `rendering = true` (deterministic headless frames) and since phase
+  8.4 `audio = true` (48 kHz stereo capture through `MediaSource`).
+
+### Z80, bus arbitration and audio (phase 8.4)
+
+- **Z80 core:** the documented instruction set (main table, `CB`, `ED`, `DD`/`FD`
+  prefixes), IM 0/1/2 and NMI acceptance, the one-instruction `EI` delay, HALT wake
+  and a versioned 43-byte register snapshot. One Z80 T-state is
+  `MASTER_CYCLES_PER_Z80_T_STATE = 15` master cycles. Documented limits: `IXH`/
+  `IXL`/`IYH`/`IYL` and `WZ`/`MEMPTR` are not modelled; undocumented `ED` opcodes
+  are `NOP`s; block-operation undocumented X/Y flags stay clear; repeated `DD`/`FD`
+  prefixes cost one bounded step.
+- **Z80 memory map:** 8 KiB RAM mirrored through `0x3FFF`, YM2612 at
+  `0x4000..=0x4003`, bank-register write at `0x6000`, PSG at
+  `0x7F00..=0x7F03`/`0x7F11` (read returns `0xFF`) and a 32 KiB banked raw-ROM
+  window at `0x8000..=0xFFFF`. The 68000 sees the 8 KiB Z80 RAM at
+  `0xA00000..=0xA01FFF`, the nine-bit bank register at `0xA06000` and the
+  request/reset latches at `0xA11100`/`0xA11200`.
+- **Arbitration:** `0xA11100` carries the Z80 bus request with the hardware `ZBR`
+  polarity: setting write bit 8 **asserts** the request, which stops the Z80 and gives
+  the 68000 the Z80 window, and clearing it returns the bus to the Z80. Read bit 8
+  reports ownership — one while the Z80 still has the bus, zero once it has yielded — so
+  a guest poll loop on `0xA11100` terminates as on hardware. `0xA11200` asserts/releases
+  the active-low reset. The model
+  is functional, not microcycle-exact: the yield happens on the request write rather than
+  at the Z80 instruction boundary, and while the Z80 owns the bus a 68000 access to
+  the Z80 RAM window is stalled by a fixed 60 master cycles per byte lane. The
+  Z80 runs while no request is asserted and the reset is released. `Backend::step` runs
+  the Z80 inside each 68000
+  instruction's master-cycle window while arbitration allows it and carries the last
+  instruction's overshoot in canonical `z80_credit`; `advance_z80` remains available
+  for explicit single-instruction control.
+- **YM2612:** six four-operator FM channels, eight algorithms, feedback, envelope
+  generators, LFO AM/PM, detune/multiple, timer A/B counters/status and the
+  channel-6 DAC, reachable through two register port pairs on both the Z80 and the
+  68000 window. Timer overflows latch the chip IRQ line and status flags; delivery
+  to the Z80 is phase 8.5. `SSG-EG`, channel-3 special mode, CSM and the `0x21`/
+  `0x2B` test bits are stored but not applied; the status busy bit is absent; the
+  envelope/amplitude curves and LFO are deterministic integer approximations.
+- **PSG:** three square-wave tone channels with ten-bit dividers, a 15-bit maximal
+  white-noise LFSR (period 32767 from the `0x4000` reset value) with periodic mode, the
+  documented noise shift periods — the chip-clock divisions `N/512`, `N/1024` and
+  `N/2048` and the full tone-2 period, i.e. 32/64/128 internal sample ticks, so the
+  fastest shifts at `53 693 175 / (32 × 240)` ≈ 6991 Hz at the NTSC master clock —
+  sixteen attenuation levels
+  and the latch/data write protocol. The attenuation table is a monotonic integer
+  approximation of the documented 2 dB steps; the PSG is write-only and a read
+  returns the open value `0xFF`.
+- **Mixer and resampler:** the YM2612 and PSG sample clocks (one sample per 1008 and
+  240 master cycles) are advanced by elapsed master cycles, linearly interpolated
+  with an integer rational phase and mixed with a saturating `i16` add into stereo
+  frames. Output frames are emitted when `master_cycles * 48_000` reaches the
+  configured master clock (NTSC by default, PAL through `for_video_standard`), so one
+  emulated second is exactly 48 000 frames; the result is independent of how the
+  caller chunks `advance_master`. PSG is panned centre; YM2612 left/right follow its
+  documented stereo enable bits. Each device's interpolated output lags its newest
+  sample by at most one device period (≤1008 master cycles), which is documented
+  model latency, not host latency. A restore starts the media queues empty, like the
+  video frame queue; canonical mixer phase and both device clocks round-trip.
+- **Snapshot:** payload v6 (`CFMD68K6`/`CFMDSTATE6`/`CFMDCONF6`, `PAYLOAD_VERSION = 6`)
+  embeds the Z80 register snapshot and 8 KiB RAM, the Z80 bank register and
+  master-cycle carry, both arbitration latches, the complete YM2612 (856 B) and PSG
+  (34 B) state and the mixer frame phase plus its three resampler phases/histories
+  (56 B) in both the payload and the state hash. v1–v5 payloads are rejected with
+  typed errors and a rejected restore leaves the machine byte-identical.
+- **Evidence:** the pinned-oracle device-state differential
+  ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md))
+  compares 25 Z80/PSG/YM2612-status fields at a shared Z80 HALT boundary and records
+  the YM2612-reflection limit; the arbitration-polarity divergence that run documents is
+  superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity (the
+  evidence page carries the attributed supersession note). `z80_*`, `psg`,
+  `audio_mix`, `ym2612*`, `arbitration` and `audio_snapshot` tests cover the same
+  surface internally. No cross-emulator **sample** equality is claimed.
 
 ### Bounded instruction trace (debug only)
 
@@ -314,7 +413,11 @@ masked-ROM pass shows that no handler executes while the SR mask is 7 and that t
 plain instruction stream and selected final state agree; it does not compare
 delivery order, acknowledge semantics, latency, vector fetch or handler execution
 against the oracle. It also does not compare timing, prefetch, bus cycles, rendering,
-audio, Z80 or DMA, and it does not establish general 68000 or game compatibility.
+DMA or audio samples, and it does not establish general 68000 or game
+compatibility. The separate phase-8.4 device-state differential compares Z80, PSG
+and YM2612 status state at a shared Z80 HALT boundary; it is not a sample
+comparison; the arbitration-polarity divergence its recorded run documents is
+superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity.
 
 ### Known limitations of the integration
 
@@ -327,7 +430,8 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 - **Only VBlank (level 6) and HBlank (level 4) sources are modelled.** The "level 7
   is always deliverable" branch is a tested predicate rule in the shared
   68000/scheduler API, not a wired level-7 interrupt source. Other exception groups
-  (timers, Z80, bus-error recovery and trace) are absent. Unmapped and
+  (timer sources, timer IRQ delivery to the Z80, bus-error recovery and trace) are
+  absent. Unmapped and
   write-protected guest data accesses take the guest address-error exception
   (vector 3) with the documented 14-byte frame and function code; odd/misaligned EA
   accesses, unrecognised/reserved encodings and the implemented
@@ -374,7 +478,18 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 - ROM/RAM big-endian access, alignment, unmapped and atomic-write errors;
 - VDP port mapping through the bus, register/VRAM round-trips, byte-lane behavior,
   side-effect-free debugger reads, mapped byte reads of the two controller data
-  registers and explicit PSG/Z80 and other-controller-access errors;
+  registers and explicit other-controller-access errors (the YM2612 window is wired
+  and the PSG window returns its documented open value);
+- Z80 instruction groups, interrupts, memory map and bank window, arbitration
+  latches and the 60-master-cycle stall, including a synthetic Z80 program that
+  progresses through ordinary `Backend::step` calls;
+- YM2612 registers, timers/status, DAC, envelopes, algorithms and LFO, and PSG
+  latch/data protocol, tone/noise channels, attenuation and open-value reads;
+- the integer mixer and rational resampler: exactly 48 000 stereo frames per
+  emulated second with tolerance 0, chunking independence, saturating mix,
+  centre-panned PSG and bounded media queues;
+- payload v6 round-trip and byte-identical restore of the Z80, arbitration, YM2612,
+  PSG and mixer phase, typed rejection of v1–v5 and the inspection pseudo-registers;
 - VDP snapshot round-trip and malformed-input rejection; VDP VINT-pending driven by
   the owning machine, status reads never clearing it, and the derived latch being
   excluded from the VDP snapshot;
@@ -474,15 +589,20 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State (current, after phase 8.3).** Payload v5 (`CFMD68K5`), state hash v5
-  (`CFMDSTATE5`) and configuration hash v5 (`CFMDCONF5`). Phase 8.1 used v3 and phase 8.2
-  v4; phase 8.3 adds the `CFVDP002` VDP snapshot with its frame index. The snapshot adds
-  the seven mapper banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch,
-  the extended 68000/scheduler state and the complete VDP state; v1-v4 payloads are
-  rejected, a payload carrying another TMSS model is rejected even when its hash was
-  recomputed, and a rejected restore leaves the machine untouched. The configuration hash
-  covers the ROM SHA-256, video standard, TMSS model and a mapper/SRAM feature tag; SRAM
-  bytes are state and never configuration.
+- **State (current, after phase 8.4).** Payload v6 (`CFMD68K6`, `PAYLOAD_VERSION = 6`),
+  state hash v6 (`CFMDSTATE6`) and configuration hash v6 (`CFMDCONF6`). Phase 8.1 used
+  v3 and phase 8.2 v4, phase 8.3 v5. The v6 body keeps the seven mapper banks, the SRAM
+  control byte, 64 KiB SRAM, the TMSS model/lock latch, the extended 68000/scheduler
+  state and the complete VDP state, and adds the Z80 register snapshot and 8 KiB Z80
+  RAM, the nine-bit Z80 bank register, the Z80 master-cycle carry, both arbitration
+  latches, the complete YM2612 and PSG state and the mixer frame phase plus its three
+  resampler phases/histories. The state hash is derived from the same body; v1-v5
+  payloads are rejected with typed errors, a payload carrying another TMSS model is
+  rejected even when its hash was recomputed, and a rejected restore leaves the machine
+  untouched. Queued video frames and audio chunks are derived output: a restore starts
+  both media queues empty. The configuration hash covers the ROM SHA-256, video
+  standard, TMSS model and a mapper/SRAM feature tag; SRAM bytes are state and never
+  configuration.
 - **Inspection.** `CartridgeView` plus bounded `cartridge.*`, `mapper.bank0..6`, `sram.*`
   and `tmss.locked` pseudo-registers.
 - **CLI.** `chronofork megadrive cartridge --rom <FILE> [--sram-in <FILE>]
@@ -501,10 +621,18 @@ window to it.
   line-mode vertical scrolling, column-scroll details, dot-exact H/V counters and
   VSRAM data-port reads. VDP rendering, planes, window, sprites, scrolling, CRAM/VSRAM
   addressing, DMA, FIFO/CPU wait cycles and line timing are implemented (phase 8.3).
-- YM2612, PSG or audio.
-- Z80, bus arbitration, timer/other interrupt sources and controller-port interrupt
-  acknowledge. Guest bus-error (vector 2) and trace (vector 9) exception delivery are
-  not implemented; privileges are enforced for the implemented system instructions.
+- YM2612 register/channel state equality against another emulator: the pinned
+  oracle publishes no YM2612 register page, so only the readable status byte is
+  compared; the device models are functional, not hardware-exact (see the phase 8.4
+  section and the [audio state differential](../research/audio-state-differential-evidence.md)).
+- Audio sample capture to a file or device (WAV/streaming) belongs to phase 8.7;
+  phase 8.4 captures boundedly into `MediaSource` only, with no host audio device.
+- Z80 timer IRQ delivery, microcycle-exact bus arbitration (the model yields on the
+  request write rather than at the Z80 instruction boundary; see the **Arbitration**
+  bullet in the phase-8.4 section above), timer/other interrupt
+  sources and controller-port interrupt acknowledge.
+  Guest bus-error (vector 2) and trace (vector 9) exception delivery are not
+  implemented; privileges are enforced for the implemented system instructions.
 - Controller input beyond the TH-high 3-button subset: A and Start, the TH latch/direction
   register and TH-low phase, 6-button pad (X/Y/Z/Mode), controller timing/interrupts, port 3,
   and analog/keyboard hardware. The implemented data-register reads are described above and
@@ -531,8 +659,8 @@ window to it.
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
 - Differential evidence beyond the eleven synthetic ROMs, positive differential
-  comparison of interrupt delivery/timing, and any differential claim about audio,
-  Z80, DMA content, full-hardware timing or game compatibility. The 11-ROM run matches
+  comparison of interrupt delivery/timing, and any differential claim about DMA
+  content, full-hardware timing or game compatibility. The 11-ROM run matches
   instruction addresses, per-instruction cycle costs and selected final state; the
   masked-ROM run is negative gating evidence only. The phase-8.3 VDP differential
   compares the oracle-visible status/counter readbacks at synchronized boundaries and
@@ -540,6 +668,11 @@ window to it.
   cannot expose VDP memory content, and the absolute status/counter phase is recorded
   as a scoped divergence in
   [vdp-state-differential-evidence.md](../research/vdp-state-differential-evidence.md).
+  The phase-8.4 audio/Z80 differential compares 25 device-state fields at a shared
+  Z80 HALT boundary, records the YM2612-reflection limit (the arbitration-polarity
+  divergence its recorded run documents is superseded by the phase-8.4 repair), and
+  claims no cross-emulator sample equality
+  ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md)).
 
 Unrecognised and reserved opcodes raise the guest illegal-instruction exception;
 unmapped port accesses return typed errors. Neither is silently skipped.
@@ -620,7 +753,8 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    an oracle model of those semantics; the current masked-ROM pass is negative
    gating evidence only.
 4. Additional interrupt sources (a wired level-7 source, timers, VDP
-   interrupt-enable registers) if the slice grows to model them.
+   interrupt-enable registers) and timer IRQ delivery to the Z80 (phase 8.5) if the slice
+   grows to model them.
 5. Deeper controller protocol (TH latch/TH-low phase, A/Start, 6-button pad, port 3) only
    if the slice grows to model it; the TH-high 3-button reads and `--rom` hardware TAS are
    implemented and verified under [ADR-0009](../adr/0009-real-hardware-input-tas.md).

@@ -20,6 +20,14 @@ use crate::interrupts::VideoStandard;
 /// backend advances corresponds to seven master cycles.
 pub const MASTER_CYCLES_PER_68000_CYCLE: u64 = 7;
 
+/// Master-clock cycles in one Z80 T-state.
+///
+/// The Z80 clock is the master clock divided by fifteen, so one Z80 T-state is
+/// fifteen master cycles. [`crate::z80::Z80Outcome::master_cycles`] converts an
+/// instruction's documented T-state count with this ratio; the Z80 core itself
+/// counts T-states only.
+pub const MASTER_CYCLES_PER_Z80_T_STATE: u64 = 15;
+
 /// Master-clock cycles in one scanline.
 ///
 /// Sega's documentation gives 3420 master cycles per active or blanking
@@ -121,8 +129,9 @@ mod tests {
 
     use super::{
         MASTER_CLOCK_HZ_NTSC, MASTER_CLOCK_HZ_PAL, MASTER_CYCLES_PER_68000_CYCLE,
-        MASTER_CYCLES_PER_LINE, NTSC_ACTIVE_LINES, NTSC_LINES_PER_FRAME, PAL_ACTIVE_LINES,
-        PAL_LINES_PER_FRAME, active_lines, frame_rate_millihertz, lines_per_frame,
+        MASTER_CYCLES_PER_LINE, MASTER_CYCLES_PER_Z80_T_STATE, NTSC_ACTIVE_LINES,
+        NTSC_LINES_PER_FRAME, PAL_ACTIVE_LINES, PAL_LINES_PER_FRAME, active_lines,
+        frame_rate_millihertz, lines_per_frame,
     };
 
     #[test]
@@ -136,6 +145,7 @@ mod tests {
     #[test]
     fn master_cycle_constants_match_the_documented_ratios() {
         assert_eq!(MASTER_CYCLES_PER_68000_CYCLE, 7);
+        assert_eq!(MASTER_CYCLES_PER_Z80_T_STATE, 15);
         assert_eq!(MASTER_CYCLES_PER_LINE, 3420);
         assert_eq!(NTSC_LINES_PER_FRAME, 262);
         assert_eq!(PAL_LINES_PER_FRAME, 313);

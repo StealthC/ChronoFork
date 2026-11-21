@@ -4,12 +4,14 @@
 //! master-cycle interrupt scheduler, **not** a complete Mega Drive.
 //! The cartridge device models the header, region, Sega mapper, 64 KiB battery
 //! SRAM and TMSS lockout (see [`crate::cartridge`]); payload and hash formats are
-//! v5. The VDP implements CRAM/VSRAM addressing, plane/window/sprite composition,
+//! v6. The VDP implements CRAM/VSRAM addressing, plane/window/sprite composition,
 //! DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
-//! interrupt pending/acknowledge. Audio, Z80, TH-latched/6-button controller
-//! protocols, VSRAM data-port reads, interlace, the byte-swapped physical VRAM
-//! layout, dot-exact H/V counters and cycle-accurate timing are not
-//! implemented. Controller port
+//! interrupt pending/acknowledge. The YM2612 and PSG models feed the integer
+//! 48 kHz mixer exposed through the media seam, and the Z80 runs inside each
+//! 68000 instruction's master-cycle window while arbitration allows it.
+//! TH-latched/6-button controller protocols, YM timer IRQ delivery to the Z80,
+//! VSRAM data-port reads, interlace, the byte-swapped physical VRAM layout,
+//! dot-exact H/V counters and cycle-accurate timing are not implemented. Controller port
 //! reads are limited to the TH-high 3-button subset of the two data registers
 //! (see [`controller_rom`] and the controller model below). The backend
 //! advertises only what it actually provides and uses an independently authored
@@ -129,7 +131,14 @@ use chronofork_backend_api::{
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
-use crate::bus::{BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END};
+use crate::audio::mixer::SNAPSHOT_LEN as MIXER_SNAPSHOT_LEN;
+use crate::audio::psg::SNAPSHOT_LEN as PSG_SNAPSHOT_LEN;
+use crate::audio::ym2612::SNAPSHOT_LEN as YM_SNAPSHOT_LEN;
+use crate::audio::{AudioMixer, YmBank};
+use crate::bus::{
+    BusArbitration, BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END,
+    Z80_RAM_SIZE,
+};
 use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
 use crate::cpu::{CpuError, M68000, interrupt_level_deliverable};
 use crate::cycles::MASTER_CYCLES_PER_68000_CYCLE;
@@ -140,28 +149,54 @@ use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{
     AUTO_INCREMENT_REGISTER, SNAPSHOT_LEN as VDP_SNAPSHOT_LEN, Vdp, VdpInterruptSource,
 };
+use crate::z80::{SNAPSHOT_LEN as Z80_SNAPSHOT_LEN, Z80, Z80Error, Z80Outcome};
 
 /// Stable backend identifier.
 pub const BACKEND_ID: &str = "chronofork.megadrive.m68000";
+
+/// Stereo frames in one audio chunk handed to a capture consumer.
+///
+/// 64 frames are about 1.3 ms at 48 kHz: small enough that a consumer polling
+/// after every step sees fresh audio, and the mixer's bounded queue absorbs the
+/// gaps when it polls less often. The backend holds at most one chunk, so a
+/// second take before new audio has accumulated returns `None`.
+pub const AUDIO_CHUNK_FRAMES: usize = 64;
 /// Payload format version.
 ///
 /// Version 3 added the cartridge state (seven mapper banks, SRAM control byte,
 /// 64 KiB battery SRAM, TMSS model/lock latch); version 5 adds the rendered
-/// frame counter through the embedded VDP snapshot and is the only accepted
-/// version. Payloads v1-v4 are rejected with a typed error instead of being
-/// reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 5;
+/// frame counter through the embedded VDP snapshot; version 6 adds the Z80
+/// register file and 8 KiB Z80 RAM, the 68000/Z80 arbitration latches, the Z80
+/// master-cycle carry, the nine-bit Z80 bank register, the complete YM2612 and
+/// PSG state and the 48 kHz mixer frame phase and device resamplers. Version 6
+/// is the only accepted version; payloads v1-v5 are rejected with a typed error
+/// instead of being reinterpreted.
+pub const PAYLOAD_VERSION: u16 = 6;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 5.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K5";
-/// State-hash magic for state hash version 5.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE5";
-/// Configuration-hash magic for configuration hash version 5.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF5";
+/// Snapshot payload magic for payload version 6.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K6";
+/// State-hash magic for state hash version 6.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE6";
+/// Configuration-hash magic for configuration hash version 6.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF6";
+
+/// Fixed byte length of the Z80, arbitration and audio state tail.
+///
+/// It follows the variable-length interrupt-scheduler snapshot, so the payload
+/// parser splits the scheduler by subtracting this length from the remaining
+/// bytes. Every component is fixed-length by construction.
+const AUDIO_STATE_TAIL_LEN: usize = Z80_SNAPSHOT_LEN
+    + Z80_RAM_SIZE
+    + 8
+    + 2
+    + 2
+    + YM_SNAPSHOT_LEN
+    + PSG_SNAPSHOT_LEN
+    + MIXER_SNAPSHOT_LEN;
 
 /// Cartridge capability tag folded into the configuration hash.
 ///
@@ -252,14 +287,16 @@ impl MegadriveFactory {
             state_cloning: true,
             deterministic_replay: true,
             // Frame production is implemented and covered by `vdp_frame`;
-            // audio remains unimplemented for this slice.
+            // 48 kHz stereo chunks are produced by the tested mixer and exposed
+            // through the media seam.
             rendering: true,
+            audio: true,
             ..Capabilities::none()
         };
         Ok(Self {
             descriptor: BackendDescriptor::new(
                 BackendId::new(BACKEND_ID),
-                "ChronoFork Mega Drive 68000 (VDP port, interrupts, deterministic video frames; no audio)",
+                "ChronoFork Mega Drive 68000 + Z80 (VDP, interrupts, video frames and 48 kHz audio)",
                 env!("CARGO_PKG_VERSION"),
                 capabilities,
                 false,
@@ -303,6 +340,8 @@ impl MegadriveFactory {
         let mut bus = MegadriveBus::with_video_standard(self.cartridge.clone(), self.video);
         let mut cpu = M68000::new();
         cpu.reset(&mut bus).map_err(map_cpu)?;
+        let mut z80 = Z80::new();
+        z80.reset(&mut bus);
         Ok(MegadriveBackend {
             descriptor: self.descriptor.clone(),
             config_hash: self.config_hash,
@@ -310,6 +349,10 @@ impl MegadriveFactory {
             cpu,
             scheduler: InterruptScheduler::new(self.scheduler_config),
             tick: Tick::ZERO,
+            z80,
+            z80_credit: 0,
+            mixer: AudioMixer::for_video_standard(self.video),
+            pending_audio: None,
             pending_frame: None,
         })
     }
@@ -334,6 +377,27 @@ pub struct MegadriveBackend {
     cpu: M68000,
     scheduler: InterruptScheduler,
     tick: Tick,
+    /// The Z80 core.
+    ///
+    /// It is canonical state and payload v6 serializes the register file.
+    /// The core runs inside [`Backend::step`] whenever the 68000 has requested
+    /// the bus and released the reset; [`MegadriveBackend::advance_z80`] remains
+    /// available for explicit single-instruction control.
+    z80: Z80,
+    /// Z80 master cycles already executed ahead of the 68000 step timeline.
+    ///
+    /// The Z80 runs at instruction granularity, so the last instruction of a
+    /// step can overshoot the step's master-cycle window. The overshoot is
+    /// subtracted from the next step's budget and is canonical state: payload v6
+    /// serializes it so a restored machine keeps the same Z80 cadence.
+    z80_credit: u64,
+    /// Integer YM2612/PSG mixer and 48 kHz output clock.
+    ///
+    /// Its phase and device sample clocks are canonical state from payload v6;
+    /// the queued frames are derived output and are never serialized.
+    mixer: AudioMixer,
+    /// Bounded one-chunk audio queue; derived output, never serialized.
+    pending_audio: Option<chronofork_backend_api::AudioChunk>,
     /// Bounded one-frame media queue; derived output, never serialized.
     pending_frame: Option<VideoFrame>,
 }
@@ -349,6 +413,30 @@ impl MegadriveBackend {
     #[must_use]
     pub const fn master_cycles(&self) -> u64 {
         self.tick.raw()
+    }
+
+    /// Returns the Z80 core.
+    #[must_use]
+    pub const fn z80(&self) -> &Z80 {
+        &self.z80
+    }
+
+    /// Returns the YM2612 FM synthesiser.
+    #[must_use]
+    pub const fn ym2612(&self) -> &crate::audio::Ym2612 {
+        self.bus.ym()
+    }
+
+    /// Returns the SN76489-compatible PSG.
+    #[must_use]
+    pub const fn psg(&self) -> &crate::audio::Psg {
+        self.bus.psg()
+    }
+
+    /// Returns the audio mixer.
+    #[must_use]
+    pub const fn audio_mixer(&self) -> &AudioMixer {
+        &self.mixer
     }
 
     /// Returns the current 68000.
@@ -456,6 +544,10 @@ impl MegadriveBackend {
         let (usp, ssp, stopped, cycles) = self.cpu.extended_state();
         let vdp = self.bus.vdp().snapshot_bytes();
         let scheduler = self.scheduler.snapshot_bytes();
+        let z80 = self.z80.snapshot_bytes();
+        let ym = self.bus.ym().snapshot_bytes();
+        let psg = self.bus.psg().snapshot_bytes();
+        let mixer = self.mixer.snapshot_bytes();
         state_body(&StateView {
             d: &d,
             a: &a,
@@ -475,6 +567,14 @@ impl MegadriveBackend {
             tmss_model: self.bus.tmss().model(),
             tmss_locked: self.bus.tmss().locked(),
             scheduler: &scheduler,
+            z80: &z80,
+            z80_ram: self.bus.z80_ram(),
+            z80_credit: self.z80_credit,
+            arbitration: self.bus.arbitration(),
+            z80_bank: self.bus.z80_bank(),
+            ym: &ym,
+            psg: &psg,
+            mixer: &mixer,
         })
     }
 
@@ -490,6 +590,10 @@ impl MegadriveBackend {
         let (usp, ssp, stopped, cycles) = self.cpu.extended_state();
         let vdp = self.bus.vdp().snapshot_bytes();
         let scheduler = self.scheduler.snapshot_bytes();
+        let z80 = self.z80.snapshot_bytes();
+        let ym = self.bus.ym().snapshot_bytes();
+        let psg = self.bus.psg().snapshot_bytes();
+        let mixer = self.mixer.snapshot_bytes();
         state_hash_for(&StateView {
             d: &d,
             a: &a,
@@ -509,6 +613,14 @@ impl MegadriveBackend {
             tmss_model: self.bus.tmss().model(),
             tmss_locked: self.bus.tmss().locked(),
             scheduler: &scheduler,
+            z80: &z80,
+            z80_ram: self.bus.z80_ram(),
+            z80_credit: self.z80_credit,
+            arbitration: self.bus.arbitration(),
+            z80_bank: self.bus.z80_bank(),
+            ym: &ym,
+            psg: &psg,
+            mixer: &mixer,
         })
     }
 
@@ -650,8 +762,14 @@ impl MegadriveBackend {
         let wait_cycles = u64::from(fifo_wait)
             .checked_mul(MASTER_CYCLES_PER_68000_CYCLE)
             .ok_or(BackendError::TickOverflow)?;
+        // A 68000 access to the Z80 window while the Z80 owns the bus is stalled
+        // by a fixed, documented number of master cycles (one Z80 M1 fetch per
+        // byte lane). Folding it into this instruction's cost puts the stall on
+        // the canonical tick and therefore in the state hash.
+        let z80_stall_cycles = self.bus.take_z80_stall_cycles();
         let master_cycles = instruction_cycles
             .checked_add(wait_cycles)
+            .and_then(|cycles| cycles.checked_add(z80_stall_cycles))
             .ok_or(BackendError::TickOverflow)?;
         let next_tick = self
             .tick
@@ -677,6 +795,13 @@ impl MegadriveBackend {
         }
         self.observe_scheduler_requests();
         self.sync_vdp_status();
+        // The Z80 runs inside the 68000 instruction's master-cycle window: its
+        // instruction time is budgeted from the window (with the carry from the
+        // previous step) instead of extending the tick a second time. The audio
+        // devices then advance by the whole window, so audio remains a pure
+        // function of the canonical tick.
+        self.run_z80(master_cycles)?;
+        self.advance_audio(master_cycles);
         Ok(StepOutcome {
             tick: self.tick,
             state_hash: self.state_hash(),
@@ -715,6 +840,98 @@ fn rgba_from_indices(indices: &[u8], cram: &[u16; CRAM_WORDS]) -> Vec<u8> {
 }
 
 impl MegadriveBackend {
+    /// Executes one Z80 instruction when bus arbitration allows it.
+    ///
+    /// Returns `Z80Outcome { t_states: 0 }` while the 68000 owns the bus or the
+    /// Z80 is held in reset, so a caller can poll without changing any state.
+    /// When the Z80 executes, its documented T-states convert to master cycles
+    /// with [`Z80Outcome::master_cycles`] and advance the canonical tick, the
+    /// interrupt scheduler and the VDP exactly as a 68000 instruction does.
+    ///
+    /// [`Backend::step`] also runs the Z80 inside the 68000 instruction's
+    /// master-cycle window whenever arbitration allows it; this method remains
+    /// the explicit single-instruction control for tests and debuggers, and it
+    /// advances the tick, the scheduler, the VDP and the audio clock by the
+    /// instruction's documented master cycles. The arbitration model is
+    /// functional, not microcycle-exact: the 68000 is not frozen while the Z80
+    /// owns the bus, but every 68000 access to the Z80 RAM window is stalled by
+    /// [`Z80_STALL_MASTER_CYCLES`](crate::bus::Z80_STALL_MASTER_CYCLES). This
+    /// explicit path does not consume the step carry: it advances the tick by the
+    /// instruction cost and leaves the next step's budget untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::TickOverflow`] on master-cycle overflow, or a
+    /// mapped Z80/bus failure.
+    pub fn advance_z80(&mut self) -> Result<Z80Outcome, BackendError> {
+        if !self.bus.arbitration().z80_runs() {
+            return Ok(Z80Outcome { t_states: 0 });
+        }
+        let outcome = self.z80.step(&mut self.bus).map_err(map_z80)?;
+        let master_cycles = outcome.master_cycles();
+        let next_tick = self
+            .tick
+            .raw()
+            .checked_add(master_cycles)
+            .ok_or(BackendError::TickOverflow)?;
+        self.scheduler
+            .advance_master(master_cycles)
+            .map_err(map_scheduler)?;
+        let standard = self.scheduler.config().standard();
+        let vdp_tick = self.bus.vdp_mut().advance_master(master_cycles, standard);
+        self.bus.vdp_mut().drain_fifo();
+        self.bus.vdp_mut().take_dma_cycles();
+        self.tick = Tick::from_raw(next_tick);
+        if vdp_tick.frame_started {
+            self.capture_frame()?;
+        }
+        self.sync_vdp_status();
+        self.advance_audio(master_cycles);
+        Ok(outcome)
+    }
+
+    /// Runs Z80 instructions inside a 68000 step's master-cycle window.
+    ///
+    /// The window plus the carry from the previous step is the Z80's budget.
+    /// Instructions execute until the budget is spent; the overshoot of the last
+    /// instruction becomes the next step's carry, so the Z80 never gains or
+    /// loses emulated time and the cadence is a pure function of canonical
+    /// state. While arbitration keeps the Z80 stopped its carry is discarded,
+    /// because the 68000 timeline has moved on without it.
+    fn run_z80(&mut self, window: u64) -> Result<(), BackendError> {
+        if !self.bus.arbitration().z80_runs() {
+            self.z80_credit = 0;
+            return Ok(());
+        }
+        let budget = self.z80_credit.saturating_add(window);
+        let mut consumed = 0_u64;
+        while consumed < budget {
+            let outcome = self.z80.step(&mut self.bus).map_err(map_z80)?;
+            let master_cycles = outcome.master_cycles();
+            if master_cycles == 0 {
+                break;
+            }
+            consumed = consumed.saturating_add(master_cycles);
+        }
+        self.z80_credit = consumed.saturating_sub(budget);
+        Ok(())
+    }
+
+    /// Advances the audio devices and the 48 kHz mixer by `master_cycles`.
+    ///
+    /// YM2612 timers follow the same master-cycle timeline; the mixer samples
+    /// both devices at their canonical rates. When no chunk is pending and the
+    /// mixer has at least [`AUDIO_CHUNK_FRAMES`] frames, one bounded chunk moves
+    /// to the media queue.
+    fn advance_audio(&mut self, master_cycles: u64) {
+        let (ym, psg) = self.bus.audio_mut();
+        ym.timers_elapsed(master_cycles);
+        self.mixer.advance_master(master_cycles, ym, psg);
+        if self.pending_audio.is_none() && self.mixer.pending_frames() >= AUDIO_CHUNK_FRAMES {
+            self.pending_audio = self.mixer.take_chunk(AUDIO_CHUNK_FRAMES);
+        }
+    }
+
     /// Renders the completed frame from a clone of canonical VDP state.
     ///
     /// Rendering on a clone keeps sprite/status latches canonical and makes the
@@ -737,7 +954,7 @@ impl MediaSource for MegadriveBackend {
     }
 
     fn take_audio_chunk(&mut self) -> Option<chronofork_backend_api::AudioChunk> {
-        None
+        self.pending_audio.take()
     }
 }
 
@@ -759,6 +976,9 @@ impl Backend for MegadriveBackend {
         self.bus.set_step_input([ports[0], ports[1]]);
         let outcome = self.step_with_current_input();
         self.bus.clear_step_input();
+        // A failed step never advanced the tick, so a stall it accumulated is
+        // discarded instead of being charged to a later instruction.
+        self.bus.clear_z80_stall_cycles();
         outcome
     }
 
@@ -806,6 +1026,14 @@ impl Backend for MegadriveBackend {
             tmss_model: parsed.tmss_model,
             tmss_locked: parsed.tmss_locked,
             scheduler: parsed.scheduler,
+            z80: parsed.z80,
+            z80_ram: parsed.z80_ram,
+            z80_credit: parsed.z80_credit,
+            arbitration: parsed.arbitration,
+            z80_bank: parsed.z80_bank,
+            ym: parsed.ym,
+            psg: parsed.psg,
+            mixer: parsed.mixer,
         });
         if actual != snapshot.state_hash() {
             return Err(BackendError::InvalidSnapshot(format!(
@@ -848,12 +1076,36 @@ impl Backend for MegadriveBackend {
             .map_err(|error| {
                 BackendError::InvalidSnapshot(format!("invalid cartridge state: {error}"))
             })?;
+        bus.restore_z80_ram(parsed.z80_ram.to_vec())
+            .map_err(|error| BackendError::InvalidSnapshot(error.to_string()))?;
+        bus.restore_arbitration(parsed.arbitration);
+        bus.restore_z80_bank(parsed.z80_bank);
         let mut scheduler = self.scheduler.clone();
         scheduler.restore_bytes(parsed.scheduler).map_err(|error| {
             BackendError::InvalidSnapshot(format!("invalid interrupt state: {error}"))
         })?;
+        let mut z80 = self.z80.clone();
+        z80.restore_bytes(parsed.z80).map_err(|error| {
+            BackendError::InvalidSnapshot(format!("invalid Z80 state: {error}"))
+        })?;
+        let mut ym = self.bus.ym().clone();
+        ym.restore_bytes(parsed.ym).map_err(|error| {
+            BackendError::InvalidSnapshot(format!("invalid YM2612 state: {error}"))
+        })?;
+        let mut psg = self.bus.psg().clone();
+        psg.restore_bytes(parsed.psg).map_err(|error| {
+            BackendError::InvalidSnapshot(format!("invalid PSG state: {error}"))
+        })?;
+        let mut mixer = AudioMixer::for_video_standard(self.scheduler.config().standard());
+        mixer.restore_bytes(parsed.mixer).map_err(|error| {
+            BackendError::InvalidSnapshot(format!("invalid audio mixer state: {error}"))
+        })?;
+        bus.replace_audio_devices(ym, psg);
         self.bus = bus;
         self.scheduler = scheduler;
+        self.z80 = z80;
+        self.z80_credit = parsed.z80_credit;
+        self.mixer = mixer;
         self.cpu
             .restore_state(parsed.d, parsed.a, parsed.pc, parsed.sr, parsed.halted);
         self.cpu
@@ -875,8 +1127,9 @@ impl Backend for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
-        // A frame queued before a restore belongs to the replaced state.
+        // Media queued before a restore belongs to the replaced state.
         self.pending_frame = None;
+        self.pending_audio = None;
         Ok(())
     }
 
@@ -913,6 +1166,90 @@ impl Backend for MegadriveBackend {
         registers.insert("usp".to_owned(), u64::from(self.cpu.usp()));
         registers.insert("ssp".to_owned(), u64::from(self.cpu.ssp()));
         registers.insert("stopped".to_owned(), u64::from(self.cpu.stopped()));
+        // Z80, arbitration and audio pseudo-registers. The register map is an
+        // open `BTreeMap`, so these extend the schema without breaking it; every
+        // value is a canonical-range `u64`.
+        let z80 = &self.z80;
+        for (name, value) in [
+            ("z80.af", u64::from(z80.af())),
+            ("z80.bc", u64::from(z80.bc())),
+            ("z80.de", u64::from(z80.de())),
+            ("z80.hl", u64::from(z80.hl())),
+            ("z80.ix", u64::from(z80.ix())),
+            ("z80.iy", u64::from(z80.iy())),
+            ("z80.sp", u64::from(z80.sp())),
+            ("z80.pc", u64::from(z80.pc())),
+            ("z80.i", u64::from(z80.i())),
+            ("z80.r", u64::from(z80.r())),
+            ("z80.im", u64::from(z80.im())),
+            ("z80.iff1", u64::from(z80.iff1())),
+            ("z80.iff2", u64::from(z80.iff2())),
+            ("z80.halted", u64::from(z80.halted())),
+            ("z80.ei_delay", u64::from(z80.ei_delay_pending())),
+            ("z80.credit", self.z80_credit),
+            ("z80.bank", u64::from(self.bus.z80_bank())),
+        ] {
+            registers.insert(name.to_owned(), value);
+        }
+        let arbitration = self.bus.arbitration();
+        registers.insert(
+            "arbitration.requested".to_owned(),
+            u64::from(arbitration.requested()),
+        );
+        registers.insert(
+            "arbitration.reset_asserted".to_owned(),
+            u64::from(arbitration.reset_asserted()),
+        );
+        registers.insert(
+            "arbitration.z80_runs".to_owned(),
+            u64::from(arbitration.z80_runs()),
+        );
+        registers.insert("ym.status".to_owned(), u64::from(self.bus.ym().status()));
+        registers.insert(
+            "ym.lfo_phase".to_owned(),
+            u64::from(self.bus.ym().lfo_phase()),
+        );
+        registers.insert(
+            "ym.address_latch0".to_owned(),
+            u64::from(self.bus.ym().address_latch(YmBank::One)),
+        );
+        registers.insert(
+            "ym.address_latch1".to_owned(),
+            u64::from(self.bus.ym().address_latch(YmBank::Two)),
+        );
+        let psg = self.bus.psg();
+        registers.insert("psg.latch".to_owned(), u64::from(psg.latched_register()));
+        for channel in 0..3 {
+            registers.insert(
+                format!("psg.tone{channel}"),
+                u64::from(psg.tone_divider(channel).unwrap_or(0)),
+            );
+            registers.insert(
+                format!("psg.attenuation{channel}"),
+                u64::from(psg.attenuation(channel).unwrap_or(0)),
+            );
+        }
+        registers.insert(
+            "psg.noise_control".to_owned(),
+            u64::from(psg.noise_control()),
+        );
+        registers.insert("psg.noise_lfsr".to_owned(), u64::from(psg.noise_lfsr()));
+        registers.insert(
+            "psg.attenuation3".to_owned(),
+            u64::from(psg.attenuation(3).unwrap_or(0)),
+        );
+        registers.insert(
+            "audio.pending_frames".to_owned(),
+            self.mixer.pending_frames() as u64,
+        );
+        registers.insert(
+            "audio.dropped_frames".to_owned(),
+            self.mixer.dropped_frames(),
+        );
+        registers.insert(
+            "audio.frame_accumulator".to_owned(),
+            self.mixer.frame_phase().0,
+        );
         registers.insert("scheduler_frame".to_owned(), self.scheduler.frame());
         registers.insert(
             "scheduler_line".to_owned(),
@@ -1013,8 +1350,9 @@ impl DebugAccess for MegadriveBackend {
         self.bus
             .debug_observer_mut()
             .sync_scheduler(issued, coalesced);
-        // A frame queued before a restore belongs to the replaced state.
+        // Media queued before a restore belongs to the replaced state.
         self.pending_frame = None;
+        self.pending_audio = None;
         Ok(())
     }
 
@@ -1122,6 +1460,15 @@ fn vector_address(level: InterruptLevel) -> u32 {
 /// failure: [`BackendError::OutOfBounds`] describes debugger-supplied memory
 /// ranges, not faults inside the emulated program, so classifying those as
 /// bounds errors would misreport the cause.
+/// Maps a Z80/bus failure into the backend error contract.
+///
+/// The backend API has no Z80-specific variant, so a Z80 failure is classified
+/// as [`BackendError::Execution`] with the typed Z80 message preserved; direct
+/// users of the core still receive the typed [`Z80Error`].
+fn map_z80(error: Z80Error) -> BackendError {
+    BackendError::Execution(format!("Z80: {error}"))
+}
+
 fn map_cpu(error: CpuError) -> BackendError {
     match error {
         CpuError::Halted => BackendError::Halted,
@@ -1185,6 +1532,14 @@ struct StateView<'a> {
     tmss_model: TmssModel,
     tmss_locked: bool,
     scheduler: &'a [u8],
+    z80: &'a [u8],
+    z80_ram: &'a [u8],
+    z80_credit: u64,
+    arbitration: BusArbitration,
+    z80_bank: u16,
+    ym: &'a [u8],
+    psg: &'a [u8],
+    mixer: &'a [u8],
 }
 
 /// Serializes the canonical mutable state body shared by the snapshot payload
@@ -1194,10 +1549,12 @@ struct StateView<'a> {
 /// big-endian `u32`s, `PC` as a big-endian `u32`, `SR` as a big-endian `u16`,
 /// one halted byte, the tick as a big-endian `u64`, 64 KiB of work RAM, the VDP
 /// snapshot, the seven big-endian mapper bank registers, the SRAM control byte,
-/// the 64 KiB battery SRAM, the TMSS model and lock bytes, and finally the
-/// variable-length interrupt-scheduler snapshot. The payload prefixes
-/// [`PAYLOAD_MAGIC`] and [`PAYLOAD_VERSION`]; the state hash prefixes
-/// [`STATE_MAGIC`]. Both must consume these exact bytes.
+/// the 64 KiB battery SRAM, the TMSS model and lock bytes, the variable-length
+/// interrupt-scheduler snapshot, the 43-byte Z80 register snapshot, the 8 KiB Z80
+/// RAM, the Z80 master-cycle carry, the two arbitration latch bytes, the
+/// nine-bit Z80 bank register, the fixed-length YM2612, PSG and mixer
+/// snapshots. The payload prefixes [`PAYLOAD_MAGIC`] and [`PAYLOAD_VERSION`]; the
+/// state hash prefixes [`STATE_MAGIC`]. Both must consume these exact bytes.
 fn state_body(state: &StateView<'_>) -> Vec<u8> {
     let mut body = Writer::with_capacity(
         32 + 32
@@ -1215,7 +1572,8 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
             + 1
             + state.sram.len()
             + 2
-            + state.scheduler.len(),
+            + state.scheduler.len()
+            + AUDIO_STATE_TAIL_LEN,
     );
     for value in state.d {
         body.write_u32_be(*value);
@@ -1241,6 +1599,15 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
     body.write_u8(tmss_model_code(state.tmss_model));
     body.write_u8(u8::from(state.tmss_locked));
     body.write_bytes(state.scheduler);
+    body.write_bytes(state.z80);
+    body.write_bytes(state.z80_ram);
+    body.write_u64_be(state.z80_credit);
+    body.write_u8(u8::from(state.arbitration.requested()));
+    body.write_u8(u8::from(state.arbitration.reset_asserted()));
+    body.write_u16_be(state.z80_bank);
+    body.write_bytes(state.ym);
+    body.write_bytes(state.psg);
+    body.write_bytes(state.mixer);
     body.into_bytes()
 }
 
@@ -1283,6 +1650,14 @@ struct ParsedState<'a> {
     tmss_model: TmssModel,
     tmss_locked: bool,
     scheduler: &'a [u8],
+    z80: &'a [u8],
+    z80_ram: &'a [u8],
+    z80_credit: u64,
+    arbitration: BusArbitration,
+    z80_bank: u16,
+    ym: &'a [u8],
+    psg: &'a [u8],
+    mixer: &'a [u8],
 }
 
 fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
@@ -1342,7 +1717,45 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
         }
     };
     let remaining = reader.remaining();
-    let scheduler = reader.read_exact(remaining).map_err(payload_error)?;
+    if remaining < AUDIO_STATE_TAIL_LEN {
+        return Err(BackendError::InvalidSnapshot(
+            "Mega Drive payload is truncated before the Z80/audio state".to_owned(),
+        ));
+    }
+    let scheduler_len = remaining - AUDIO_STATE_TAIL_LEN;
+    let scheduler = reader.read_exact(scheduler_len).map_err(payload_error)?;
+    let z80 = reader.read_exact(Z80_SNAPSHOT_LEN).map_err(payload_error)?;
+    let z80_ram = reader.read_exact(Z80_RAM_SIZE).map_err(payload_error)?;
+    let z80_credit = reader.read_u64_be().map_err(payload_error)?;
+    let requested = match reader.read_u8().map_err(payload_error)? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(BackendError::InvalidSnapshot(
+                "invalid bus-request latch tag".to_owned(),
+            ));
+        }
+    };
+    let reset_asserted = match reader.read_u8().map_err(payload_error)? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(BackendError::InvalidSnapshot(
+                "invalid Z80 reset latch tag".to_owned(),
+            ));
+        }
+    };
+    let z80_bank = reader.read_u16_be().map_err(payload_error)?;
+    if z80_bank > 0x01FF {
+        return Err(BackendError::InvalidSnapshot(
+            "Z80 bank register is wider than nine bits".to_owned(),
+        ));
+    }
+    let ym = reader.read_exact(YM_SNAPSHOT_LEN).map_err(payload_error)?;
+    let psg = reader.read_exact(PSG_SNAPSHOT_LEN).map_err(payload_error)?;
+    let mixer = reader
+        .read_exact(MIXER_SNAPSHOT_LEN)
+        .map_err(payload_error)?;
     Ok(ParsedState {
         d,
         a,
@@ -1362,6 +1775,14 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
         tmss_model,
         tmss_locked,
         scheduler,
+        z80,
+        z80_ram,
+        z80_credit,
+        arbitration: BusArbitration::from_parts(requested, reset_asserted),
+        z80_bank,
+        ym,
+        psg,
+        mixer,
     })
 }
 
@@ -2607,7 +3028,14 @@ mod tests {
                 .windows(vdp_bytes.len())
                 .any(|window| window == vdp_bytes.as_slice())
         );
-        assert!(snapshot.payload().ends_with(&scheduler_bytes));
+        // The scheduler snapshot is followed by the fixed Z80/arbitration/audio
+        // tail, so it is embedded rather than at the end of the payload.
+        assert!(
+            snapshot
+                .payload()
+                .windows(scheduler_bytes.len())
+                .any(|window| window == scheduler_bytes.as_slice())
+        );
         // The demo ROM never lowers the reset mask 7, so the HBlank request raised
         // at tick 64 is retained and unacknowledged.
         assert!(machine.interrupts().is_pending(InterruptLevel::HBlank));
@@ -2659,7 +3087,8 @@ mod tests {
         assert!(
             snapshot
                 .payload()
-                .ends_with(&machine.interrupts().snapshot_bytes())
+                .windows(machine.interrupts().snapshot_bytes().len())
+                .any(|window| window == machine.interrupts().snapshot_bytes().as_slice())
         );
 
         // A masked step keeps the request and never runs a handler.
@@ -3405,31 +3834,38 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v5 / state hash v5 / configuration hash v5
+        // Golden values for payload v6 / state hash v6 / configuration hash v6
         // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
-        // moved the outer identity from v4 to v5 and the body now embeds the
-        // CFVDP002 VDP snapshot (registers, CRAM, VSRAM, FIFO, DMA, frame index,
-        // line/dot and VRAM). The VDP also advances on the master-cycle
-        // timeline, so the six-step state includes a non-zero line/dot
-        // position. The length and both hashes below are the current v5 golden;
-        // v1-v4 payloads are rejected before any body byte is reinterpreted.
+        // moved the outer identity from v4 to v5; phase 8.4 task 14 moved it to
+        // v6 and the body now also embeds the Z80 register snapshot and 8 KiB Z80
+        // RAM, the arbitration latches and Z80 master-cycle carry, and the fixed
+        // YM2612, PSG and 48 kHz mixer snapshots. The VDP advances on the
+        // master-cycle timeline, so the six-step state includes a non-zero
+        // line/dot position. The length and both hashes below are the current v6
+        // golden; v1-v5 payloads are rejected before any body byte is
+        // reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 197_058);
+        assert_eq!(snapshot.payload().len(), 206_251);
+        // Re-pinned by the 8.4 repair round (R1-F2/R1-F3): the PSG noise periods
+        // moved from 512/1024/2048 to 32/64/128 internal ticks, which changes the
+        // canonical noise counter over time, and the 0xA11100 bus request now
+        // follows the hardware ZBR polarity. The payload length and the
+        // configuration hash are unchanged, so only canonical *state* bytes moved.
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "8171b3576cac95f3d34652fc89cfccebd681e8d154a9436927b36beaf24c87a2"
+            "fa87fe3f519c9f940194f1e7bf0e1db091dbbe43ec39de5cfb859979ae6311e1"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "0b783b181af81e902c39b49840c91a4af435d0e6c93cc80b0abc7084b40901fa"
+            "2e2db861007ad5ab9eee89ae3c5eea87ea05b28505b1b343da42b5788b91998b"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "1a0b6125b29dc677ba6860065b5a59f8982cbf3cda11503facd988a520654602"
+            "695ab251aa18ec298e9461b77d46faccc7e302d5b12c87156d5fc714a3af7268"
         );
     }
 

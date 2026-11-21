@@ -25,19 +25,19 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "dfccb99a066506a94d8e155a54d5388bd7afea4705608dd97a3ea1d0dc7a80be";
+const RESET_STATE_HASH: &str = "776a3fda850451c88397e31a6597f183df7d518deaa6c6590163d42e70464243";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "fa0be27b911efc7169bdc3a6e6d171bfd50860e5e5b8da140c2e5f74c55c1436";
+    "bca01cfc154197ab24f29a993a6c003f5b96dd086634da9d468e48e2056bc789";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "ebe230e260fe7f82daf6a42344b1d5eb3ff2a585f50e2355ca998de41d29debf";
+    "66c9e91609588f15be900cdb061cd128303370c84b19945e184b606c956104d9";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "8e3503a1bd2d316c33752923171953039a53255b356a73dbaa48dc4ce8acc9d2";
+    "51907e3f389f6f9c9b1f4c5e61d398649a5bd6d8ed7cab73ecbeb8afd442f1a6";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "6d8e70bca206641e3819ac0b4785697471933eac99b2a40ae95b4f8e9c0c3240";
+    "74d0d9c9aae5adfb3f2543934784681fd9b3b57b42ae2e81724a92c73535d4a3";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -246,7 +246,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=fa0be27b911efc7169bdc3a6e6d171bfd50860e5e5b8da140c2e5f74c55c1436\n\
+state_hash=bca01cfc154197ab24f29a993a6c003f5b96dd086634da9d468e48e2056bc789\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -566,7 +566,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "3444"),
         (
             "state_hash",
-            "e820a506b89a5684265fe379a860609100ca5e890985d7dc391227fa112e2096",
+            "797fe7b2d2261a47f72abfc151e645b7b1167dc2558e3657696de7fce452aed7",
         ),
         ("video", "ntsc"),
         ("lines_per_frame", "262"),

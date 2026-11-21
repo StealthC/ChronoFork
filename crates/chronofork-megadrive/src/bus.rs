@@ -10,7 +10,17 @@
 //! 3-button subset derived from the current step's `InputFrame`. Every other
 //! controller/IO-window access, every controller write, and every debugger read of
 //! the window is an explicit typed error rather than silent open-bus behavior.
-//! PSG and Z80 windows remain deliberately absent from this slice.
+//!
+//! The phase-8.4 Z80 subsystem is visible from both sides. The 68000 sees the
+//! 8 KiB Z80 RAM at `0xA00000..=0xA01FFF`, the nine-bit bank register at
+//! `0xA06000`, and the bus-request/reset registers at `0xA11100`/`0xA11200`.
+//! The Z80 sees its RAM mirrored through `0x3FFF`, the YM2612 window at
+//! `0x4000..=0x4003`, the bank-register write at `0x6000`, the PSG window at
+//! `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked raw-ROM window at
+//! `0x8000..=0xFFFF`. The YM2612 window is wired on both sides (the 68000 side
+//! at `0xA04000..=0xA04003`) and the Z80 PSG window writes the PSG latch/data
+//! protocol; a PSG read returns the chip's documented open value. The 68000-side
+//! PSG window is not mapped.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
@@ -35,13 +45,16 @@ use std::fmt;
 use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
 use chronofork_core::Tick;
 
+use crate::audio::{Psg, Ym2612, YmBank, YmPort};
 use crate::cartridge::{
     Cartridge, CartridgeError, MAPPER_REGISTER_BASE, MAPPER_REGISTER_END, TMSS_REGISTER_BASE,
     TMSS_REGISTER_END, Tmss, VERSION_REGISTER,
 };
+use crate::cycles::MASTER_CYCLES_PER_Z80_T_STATE;
 use crate::debug::DebugObserver;
 use crate::interrupts::VideoStandard;
 use crate::vdp::{Vdp, VdpError};
+use crate::z80::{Z80Bus, Z80Error};
 
 /// First address of the cartridge ROM window.
 pub const ROM_BASE: u32 = 0x0000_0000;
@@ -72,6 +85,102 @@ pub const CONTROLLER_PORT_2: u32 = 0x00A1_0005;
 /// Bit 6 is the TH-high level and bit 7 is the slice's constant zero; the six
 /// active-low button bits are all released.
 pub const CONTROLLER_NEUTRAL: u8 = 0x7F;
+/// First 68000 address of the YM2612 window.
+pub const YM2612_BASE: u32 = 0x00A0_4000;
+/// Size of the 68000-visible YM2612 window in bytes.
+pub const YM2612_WINDOW_SIZE: u32 = 4;
+/// Exclusive end of the 68000-visible YM2612 window.
+pub const YM2612_END: u32 = YM2612_BASE + YM2612_WINDOW_SIZE;
+/// First 68000 address of the Z80 RAM window.
+pub const Z80_RAM_BASE: u32 = 0x00A0_0000;
+/// Size of Z80 RAM in bytes.
+pub const Z80_RAM_SIZE: usize = 0x2000;
+/// Exclusive end of the Z80 RAM window on the 68000 bus.
+pub const Z80_RAM_END: u32 = Z80_RAM_BASE + Z80_RAM_SIZE as u32;
+/// 68000-side Z80 bank register.
+pub const Z80_BANK_REGISTER: u32 = 0x00A0_6000;
+/// 68000-side Z80 bus-request register.
+pub const Z80_BUS_REQUEST: u32 = 0x00A1_1100;
+/// 68000-side Z80 reset register (active-low bit 8).
+pub const Z80_RESET: u32 = 0x00A1_1200;
+/// Mask selecting one byte inside the 8 KiB Z80 RAM mirror.
+const Z80_RAM_MASK: u16 = 0x1FFF;
+/// First Z80 address of the banked cartridge ROM window.
+pub const Z80_ROM_WINDOW_BASE: u16 = 0x8000;
+/// Z80-side bank-register write address.
+pub const Z80_BANK_REGISTER_ADDRESS: u16 = 0x6000;
+/// First Z80 address of the YM2612 window.
+pub const YM2612_Z80_BASE: u16 = 0x4000;
+/// Last Z80 address of the YM2612 window.
+pub const YM2612_Z80_END: u16 = 0x4003;
+/// First Z80 address of the PSG window.
+pub const PSG_Z80_BASE: u16 = 0x7F00;
+/// Last Z80 address of the PSG window.
+pub const PSG_Z80_END: u16 = 0x7F03;
+/// Common Z80 alias for the PSG data port.
+pub const PSG_Z80_ALIAS: u16 = 0x7F11;
+/// Master cycles a 68000 access to the Z80 RAM window costs while the Z80 owns
+/// the bus.
+///
+/// The 68000 is stalled until the Z80 reaches an instruction boundary; the
+/// shortest Z80 instruction is four T-states, so one M1 fetch
+/// (4 * 15 = 60 master cycles) is the documented granularity. The charge is per
+/// transferred byte (a word access charges two lanes), is added to the
+/// instruction's master-cycle cost by the backend, and therefore enters the
+/// canonical tick and state hash.
+pub const Z80_STALL_MASTER_CYCLES: u64 = MASTER_CYCLES_PER_Z80_T_STATE * 4;
+/// 68000/Z80 bus ownership and reset latches.
+///
+/// The polarity follows the hardware `ZBR` line. `requested` records that the
+/// 68000 **asserted** the Z80 bus request through `0xA11100` bit 8: the Z80 stops
+/// at its next instruction boundary and the 68000 owns the Z80 window. With the
+/// request negated the Z80 owns the bus and executes. `reset_asserted` records
+/// that the 68000 holds the Z80 in reset through the active-low `0xA11200` bit.
+/// Both are canonical machine state; payload v6 serializes both latches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BusArbitration {
+    requested: bool,
+    reset_asserted: bool,
+}
+
+impl BusArbitration {
+    /// Returns whether the 68000 asserted the Z80 bus request.
+    #[must_use]
+    pub const fn requested(&self) -> bool {
+        self.requested
+    }
+
+    /// Returns whether the Z80 reset line is asserted.
+    #[must_use]
+    pub const fn reset_asserted(&self) -> bool {
+        self.reset_asserted
+    }
+
+    /// Returns whether the Z80 may execute: no bus request and out of reset.
+    ///
+    /// The model yields the bus functionally on the request write rather than
+    /// waiting for the Z80 instruction boundary, so a `0xA11100` poll observes
+    /// the yield immediately. See [`BusArbitration::z80_owns_bus`].
+    #[must_use]
+    pub const fn z80_runs(&self) -> bool {
+        !self.requested && !self.reset_asserted
+    }
+
+    /// Returns whether the Z80 owns the bus, which is what `0xA11100` bit 8
+    /// reports: one while the Z80 has it, zero once it has yielded to the 68000.
+    #[must_use]
+    pub const fn z80_owns_bus(&self) -> bool {
+        !self.requested
+    }
+
+    /// Rebuilds the latches from a validated snapshot payload.
+    pub(crate) const fn from_parts(requested: bool, reset_asserted: bool) -> Self {
+        Self {
+            requested,
+            reset_asserted,
+        }
+    }
+}
 
 /// A bus access that the current slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -165,6 +274,26 @@ pub struct MegadriveBus {
     video: VideoStandard,
     ram: Vec<u8>,
     vdp: Vdp,
+    /// YM2612 FM synthesiser.
+    ///
+    /// Canonical device state; payload v6 serializes the complete chip state.
+    ym: Ym2612,
+    /// SN76489-compatible PSG.
+    ///
+    /// Canonical device state; like the YM2612, payload v6 serializes it.
+    psg: Psg,
+    /// 8 KiB Z80 RAM, canonical machine state.
+    ///
+    /// Payload v6 serializes this RAM and the state hash covers it.
+    z80_ram: Vec<u8>,
+    /// Nine-bit Z80 bank register selecting the 32 KiB ROM window at `0x8000`.
+    z80_bank: u16,
+    /// 68000/Z80 bus ownership and reset latches.
+    arbitration: BusArbitration,
+    /// Master cycles accumulated by 68000 accesses to the Z80 window while the
+    /// Z80 owns the bus; consumed once per 68000 step. Transient by
+    /// construction: the backend folds it into the tick before the step ends.
+    z80_stall_cycles: u64,
     /// Data-register bytes for controller ports 1 and 2 during the instruction
     /// currently executing.
     ///
@@ -205,6 +334,16 @@ impl MegadriveBus {
             video,
             ram: vec![0; RAM_SIZE],
             vdp: Vdp::new(),
+            ym: Ym2612::new(),
+            psg: Psg::new(),
+            z80_ram: vec![0; Z80_RAM_SIZE],
+            z80_bank: 0,
+            // Power-on: the 68000 owns the bus and holds the Z80 in reset.
+            arbitration: BusArbitration {
+                requested: false,
+                reset_asserted: true,
+            },
+            z80_stall_cycles: 0,
             controller_ports: [CONTROLLER_NEUTRAL; 2],
             debug: DebugObserver::default(),
         }
@@ -330,6 +469,84 @@ impl MegadriveBus {
         &self.ram
     }
 
+    /// Returns the YM2612 synthesiser.
+    #[must_use]
+    pub const fn ym(&self) -> &Ym2612 {
+        &self.ym
+    }
+
+    /// Returns the YM2612 for timer/sample advancement.
+    pub fn ym_mut(&mut self) -> &mut Ym2612 {
+        &mut self.ym
+    }
+
+    /// Returns the PSG.
+    #[must_use]
+    pub const fn psg(&self) -> &Psg {
+        &self.psg
+    }
+
+    /// Returns the PSG for sample advancement by the audio mixer.
+    pub fn psg_mut(&mut self) -> &mut Psg {
+        &mut self.psg
+    }
+
+    /// Returns both audio devices for one mixer advance.
+    ///
+    /// The two mutable borrows are disjoint fields, so the mixer can advance the
+    /// YM2612 and the PSG in one call without cloning either device.
+    pub fn audio_mut(&mut self) -> (&mut Ym2612, &mut Psg) {
+        (&mut self.ym, &mut self.psg)
+    }
+
+    /// Replaces both audio devices during a validated snapshot restore.
+    pub(crate) fn replace_audio_devices(&mut self, ym: Ym2612, psg: Psg) {
+        self.ym = ym;
+        self.psg = psg;
+    }
+
+    /// Returns the canonical 8 KiB Z80 RAM.
+    #[must_use]
+    pub fn z80_ram(&self) -> &[u8] {
+        &self.z80_ram
+    }
+
+    /// Returns the nine-bit Z80 bank register.
+    #[must_use]
+    pub const fn z80_bank(&self) -> u16 {
+        self.z80_bank
+    }
+
+    /// Returns the 68000/Z80 bus ownership and reset latches.
+    #[must_use]
+    pub const fn arbitration(&self) -> BusArbitration {
+        self.arbitration
+    }
+
+    /// Sets the bus-request and reset latches.
+    ///
+    /// `requested` is the asserted Z80 bus request (the 68000 owns the window and
+    /// the Z80 is stopped) and `reset` is the active-low reset state (`true`
+    /// asserts reset). The call is idempotent: repeating the same pair leaves the
+    /// latches unchanged.
+    pub fn set_arbitration(&mut self, requested: bool, reset: bool) {
+        self.arbitration = BusArbitration {
+            requested,
+            reset_asserted: reset,
+        };
+    }
+
+    /// Takes the master cycles the 68000 lost to Z80-window stalls since the
+    /// previous call.
+    pub fn take_z80_stall_cycles(&mut self) -> u64 {
+        std::mem::take(&mut self.z80_stall_cycles)
+    }
+
+    /// Discards a stall accumulated by a step that failed before advancing time.
+    pub(crate) fn clear_z80_stall_cycles(&mut self) {
+        self.z80_stall_cycles = 0;
+    }
+
     /// Returns the VDP state.
     #[must_use]
     pub const fn vdp(&self) -> &Vdp {
@@ -366,6 +583,19 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
             return Ok(value);
         }
+        if let Some(value) = self.read_ym_window(address) {
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
+            return Ok(value);
+        }
+        if let Some(value) = self.read_z80_window(address) {
+            if is_z80_ram_window(address) {
+                self.stall_z80_window_access(address);
+            }
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
+            return Ok(value);
+        }
         let value = self.peek8(address)?;
         self.debug
             .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
@@ -385,6 +615,12 @@ impl MegadriveBus {
         }
         if controller_port(address).is_some() {
             return Err(BusError::UnmappedRead { address });
+        }
+        if let Some(value) = self.read_ym_window(address) {
+            return Ok(value);
+        }
+        if let Some(value) = self.read_z80_window(address) {
+            return Ok(value);
         }
         if address == VERSION_REGISTER {
             return Ok(self.cartridge.version_register(self.video));
@@ -496,6 +732,25 @@ impl MegadriveBus {
             self.observe_vdp_access(offset, address, u32::from(value), 1, true);
             return Ok(());
         }
+        if let Some((bank, port)) = ym_port(address) {
+            self.ym.write_bank(bank, port, value);
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
+        if self.write_z80_window(address, value) {
+            if is_z80_ram_window(address) {
+                self.observe_ram_write(address, value);
+            } else {
+                self.debug.observe_watchpoints(
+                    WatchpointAccess::Write,
+                    address,
+                    u32::from(value),
+                    1,
+                );
+            }
+            return Ok(());
+        }
         if is_cartridge_address(address) {
             self.cartridge
                 .write8(address, value)
@@ -546,6 +801,24 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 2);
             return Ok(());
         }
+        if ym_window_covers(address, 2) {
+            let bytes = value.to_be_bytes();
+            self.write8(address, bytes[0])?;
+            let second = address
+                .checked_add(1)
+                .ok_or(BusError::AddressOverflow { address, length: 2 })?;
+            self.write8(second, bytes[1])?;
+            return Ok(());
+        }
+        if z80_window_covers(address, 2) {
+            let bytes = value.to_be_bytes();
+            self.write8(address, bytes[0])?;
+            let second = address
+                .checked_add(1)
+                .ok_or(BusError::AddressOverflow { address, length: 2 })?;
+            self.write8(second, bytes[1])?;
+            return Ok(());
+        }
         self.ensure_ram_write_range(address, 2)?;
         let bytes = value.to_be_bytes();
         self.write8(address, bytes[0])?;
@@ -589,6 +862,30 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, value, 4);
             return Ok(());
         }
+        if ym_window_covers(address, 4) {
+            let bytes = value.to_be_bytes();
+            for (offset, byte) in bytes.iter().enumerate() {
+                let offset =
+                    u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
+                let target = address
+                    .checked_add(offset)
+                    .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+                self.write8(target, *byte)?;
+            }
+            return Ok(());
+        }
+        if z80_window_covers(address, 4) {
+            let bytes = value.to_be_bytes();
+            for (offset, byte) in bytes.iter().enumerate() {
+                let offset =
+                    u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
+                let target = address
+                    .checked_add(offset)
+                    .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+                self.write8(target, *byte)?;
+            }
+            return Ok(());
+        }
         self.ensure_ram_write_range(address, 4)?;
         let bytes = value.to_be_bytes();
         for (offset, byte) in bytes.iter().enumerate() {
@@ -601,11 +898,109 @@ impl MegadriveBus {
         Ok(())
     }
 
+    /// Reads the YM2612 status byte for an address in its 68000 window.
+    ///
+    /// Both hardware register read ports return the status byte; the call is
+    /// side-effect free, so debugger views may use it too.
+    fn read_ym_window(&self, address: u32) -> Option<u8> {
+        ym_port(address).map(|_| self.ym.status())
+    }
+
+    /// Reads one byte from a 68000-visible Z80 window or control register.
+    fn read_z80_window(&self, address: u32) -> Option<u8> {
+        if is_z80_ram_window(address) {
+            let offset = usize::from((address - Z80_RAM_BASE) as u16);
+            return Some(self.z80_ram[offset]);
+        }
+        match address {
+            // Bit 8 reports whether the Z80 still owns the bus: one until it has
+            // yielded to the 68000's request, zero afterwards.
+            Z80_BUS_REQUEST => Some(u8::from(self.arbitration.z80_owns_bus())),
+            address if address == Z80_BUS_REQUEST + 1 => Some(0),
+            Z80_RESET => Some(u8::from(!self.arbitration.reset_asserted)),
+            address if address == Z80_RESET + 1 => Some(0),
+            Z80_BANK_REGISTER => Some((self.z80_bank >> 8) as u8),
+            address if address == Z80_BANK_REGISTER + 1 => Some(self.z80_bank as u8),
+            _ => None,
+        }
+    }
+
+    /// Writes one byte to a 68000-visible Z80 window or control register.
+    ///
+    /// Returns `false` when `address` is not one of those windows, so the caller
+    /// keeps decoding the rest of the map. The bank register is nine bits wide;
+    /// the 68000 high byte carries bit 8 and the low byte carries bits 0-7. The
+    /// register is write-only on hardware, but reads return the latched value so
+    /// the model can be inspected.
+    fn write_z80_window(&mut self, address: u32, value: u8) -> bool {
+        if is_z80_ram_window(address) {
+            let offset = usize::from((address - Z80_RAM_BASE) as u16);
+            self.z80_ram[offset] = value;
+            self.stall_z80_window_access(address);
+            return true;
+        }
+        match address {
+            // Hardware polarity: setting bit 8 asserts the bus request, which
+            // stops the Z80 and gives the 68000 the Z80 window; clearing it
+            // returns the bus to the Z80.
+            Z80_BUS_REQUEST => {
+                self.arbitration.requested = value & 0x01 != 0;
+                true
+            }
+            address if address == Z80_BUS_REQUEST + 1 => true,
+            Z80_RESET => {
+                // Active low: a clear bit asserts reset.
+                self.arbitration.reset_asserted = value & 0x01 == 0;
+                true
+            }
+            address if address == Z80_RESET + 1 => true,
+            Z80_BANK_REGISTER => {
+                self.z80_bank = (self.z80_bank & 0x00FF) | ((u16::from(value) & 0x01) << 8);
+                true
+            }
+            address if address == Z80_BANK_REGISTER + 1 => {
+                self.z80_bank = (self.z80_bank & 0x0100) | u16::from(value);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Charges one Z80-window stall to the current 68000 instruction.
+    ///
+    /// Only while the Z80 owns the bus (`0xA11100` request negated, reset
+    /// released); the charge is one Z80 M1 fetch per transferred byte. See
+    /// [`Z80_STALL_MASTER_CYCLES`].
+    fn stall_z80_window_access(&mut self, address: u32) {
+        if is_z80_ram_window(address) && self.arbitration.z80_runs() {
+            self.z80_stall_cycles = self
+                .z80_stall_cycles
+                .saturating_add(Z80_STALL_MASTER_CYCLES);
+        }
+    }
+
+    /// Reads one byte from the banked 32 KiB cartridge ROM window.
+    ///
+    /// The Z80 window bypasses the 68000 Sega mapper and reads the raw image at
+    /// `(bank << 15) | (address & 0x7FFF)`, which is the documented hardware
+    /// mapping. A selected bank beyond the image reports a typed memory error
+    /// rather than aliasing another device.
+    fn read_z80_banked_rom(&self, address: u16) -> Result<u8, Z80Error> {
+        let offset = (u32::from(self.z80_bank) << 15) | u32::from(address & 0x7FFF);
+        let index = usize::try_from(offset).map_err(|_| Z80Error::Memory { address })?;
+        self.cartridge
+            .rom()
+            .get(index)
+            .copied()
+            .ok_or(Z80Error::Memory { address })
+    }
+
     /// Returns the side-effect-free window that contains `start`, together with
     /// the window's first bus address.
     ///
-    /// Debugger reads may target the cartridge image or work RAM. The VDP port
-    /// window is excluded because reading it changes device state.
+    /// Debugger reads may target the cartridge image, work RAM or the Z80 RAM
+    /// window. The VDP port window is excluded because reading it changes
+    /// device state.
     fn debugger_window(&self, start: u32) -> Option<(&[u8], u32)> {
         // Only the first `ROM_END` bytes of the image are addressable on the
         // 68000 bus; a larger image never reaches the bus through this window.
@@ -616,6 +1011,9 @@ impl MegadriveBus {
         }
         if (RAM_BASE..RAM_END).contains(&start) {
             return Some((self.ram.as_slice(), RAM_BASE));
+        }
+        if (Z80_RAM_BASE..Z80_RAM_END).contains(&start) {
+            return Some((self.z80_ram.as_slice(), Z80_RAM_BASE));
         }
         None
     }
@@ -710,6 +1108,90 @@ impl MegadriveBus {
         self.ram = ram;
         Ok(())
     }
+
+    /// Replaces the complete 8 KiB Z80 RAM during a snapshot restore.
+    pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
+        if ram.len() != Z80_RAM_SIZE {
+            return Err(BusError::UnmappedWrite {
+                address: Z80_RAM_BASE,
+            });
+        }
+        self.z80_ram = ram;
+        Ok(())
+    }
+
+    /// Replaces the 68000/Z80 bus arbitration latches during a restore.
+    pub(crate) fn restore_arbitration(&mut self, arbitration: BusArbitration) {
+        self.arbitration = arbitration;
+    }
+
+    /// Replaces the nine-bit Z80 bank register during a validated restore.
+    pub(crate) fn restore_z80_bank(&mut self, bank: u16) {
+        debug_assert!(bank <= 0x01FF, "the Z80 bank register is nine bits wide");
+        self.z80_bank = bank;
+    }
+}
+
+/// Returns the YM2612 bank and latch addressed by a 68000 window byte.
+fn ym_port(address: u32) -> Option<(YmBank, YmPort)> {
+    match address.checked_sub(YM2612_BASE)? {
+        0 => Some((YmBank::One, YmPort::Address)),
+        1 => Some((YmBank::One, YmPort::Data)),
+        2 => Some((YmBank::Two, YmPort::Address)),
+        3 => Some((YmBank::Two, YmPort::Data)),
+        _ => None,
+    }
+}
+
+/// Returns whether every byte of `address..address + length` is a YM2612 byte.
+fn ym_window_covers(address: u32, length: u32) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        if ym_port(address.saturating_add(offset)).is_none() {
+            return false;
+        }
+        offset += 1;
+    }
+    true
+}
+
+/// Maps a Z80 YM2612 window byte to its bank and latch.
+const fn z80_ym_port(address: u16) -> (YmBank, YmPort) {
+    match address & 0x0003 {
+        0 => (YmBank::One, YmPort::Address),
+        1 => (YmBank::One, YmPort::Data),
+        2 => (YmBank::Two, YmPort::Address),
+        _ => (YmBank::Two, YmPort::Data),
+    }
+}
+
+/// Returns whether `address` is inside the 68000-visible Z80 RAM window.
+fn is_z80_ram_window(address: u32) -> bool {
+    (Z80_RAM_BASE..Z80_RAM_END).contains(&address)
+}
+
+/// Returns whether `address` is one of the mapped Z80 control/register bytes.
+fn is_z80_control_address(address: u32) -> bool {
+    (Z80_BUS_REQUEST..=Z80_BUS_REQUEST + 1).contains(&address)
+        || (Z80_RESET..=Z80_RESET + 1).contains(&address)
+        || (Z80_BANK_REGISTER..=Z80_BANK_REGISTER + 1).contains(&address)
+}
+
+/// Returns whether `address` is any mapped 68000-visible Z80 byte.
+fn is_z80_window_address(address: u32) -> bool {
+    is_z80_ram_window(address) || is_z80_control_address(address)
+}
+
+/// Returns whether every byte of `address..address + length` is Z80-mapped.
+fn z80_window_covers(address: u32, length: u32) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        if !is_z80_window_address(address.saturating_add(offset)) {
+            return false;
+        }
+        offset += 1;
+    }
+    true
 }
 
 /// Returns whether `address` belongs to a cartridge-owned window.
@@ -778,6 +1260,61 @@ fn controller_data_byte(port: u32) -> u8 {
     0x40 | (!pressed & 0x3F)
 }
 
+impl Z80Bus for MegadriveBus {
+    fn read8(&mut self, address: u16) -> Result<u8, Z80Error> {
+        match address {
+            // 8 KiB of RAM mirrored through the first 16 KiB of the Z80 map.
+            0x0000..=0x3FFF => Ok(self.z80_ram[usize::from(address & Z80_RAM_MASK)]),
+            YM2612_Z80_BASE..=YM2612_Z80_END => {
+                let (bank, port) = z80_ym_port(address);
+                Ok(self.ym.read_bank(bank, port))
+            }
+            Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
+            // The PSG is write-only; the decoded window returns the chip's
+            // documented open value.
+            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => Ok(self.psg.read()),
+            Z80_ROM_WINDOW_BASE..=0xFFFF => self.read_z80_banked_rom(address),
+            _ => Err(Z80Error::Memory { address }),
+        }
+    }
+
+    fn write8(&mut self, address: u16, value: u8) -> Result<(), Z80Error> {
+        match address {
+            0x0000..=0x3FFF => {
+                self.z80_ram[usize::from(address & Z80_RAM_MASK)] = value;
+                Ok(())
+            }
+            Z80_BANK_REGISTER_ADDRESS => {
+                // The Z80 side is one byte wide; it selects bank bits 0-7 and
+                // clears bit 8. The 68000-side word write covers all nine bits.
+                self.z80_bank = u16::from(value);
+                Ok(())
+            }
+            YM2612_Z80_BASE..=YM2612_Z80_END => {
+                let (bank, port) = z80_ym_port(address);
+                self.ym.write_bank(bank, port, value);
+                Ok(())
+            }
+            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => {
+                self.psg.write(value);
+                Ok(())
+            }
+            Z80_ROM_WINDOW_BASE..=0xFFFF => Err(Z80Error::Memory { address }),
+            _ => Err(Z80Error::Memory { address }),
+        }
+    }
+
+    fn input(&mut self, port: u16) -> Result<u8, Z80Error> {
+        // Every Mega Drive Z80 device is memory-mapped; the Z80 I/O space is
+        // not wired to anything.
+        Err(Z80Error::Io { port })
+    }
+
+    fn output(&mut self, port: u16, _value: u8) -> Result<(), Z80Error> {
+        Err(Z80Error::Io { port })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cartridge::Cartridge;
@@ -829,8 +1366,13 @@ mod tests {
             bus.read8(0x00C0_0010),
             Err(BusError::UnmappedRead { .. })
         ));
+        assert_eq!(bus.read8(0x00A0_0000).expect("z80 ram"), 0x00);
         assert!(matches!(
-            bus.read8(0x00A0_0000),
+            bus.read8(0x00E0_0000),
+            Err(BusError::UnmappedRead { .. })
+        ));
+        assert!(matches!(
+            bus.read8(0x00A0_2000),
             Err(BusError::UnmappedRead { .. })
         ));
         assert!(bus.read8(0x00FF_FFFF).is_ok());
