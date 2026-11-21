@@ -5,7 +5,13 @@
 //! about a status, a header-bearing error body or a JSON document. See architecture §4.
 
 use chronofork_service::json::JsonValue;
-use chronofork_service::{ErrorCode, ServiceError, ServiceLimits};
+use chronofork_service::{ApiVersion, ErrorCode, ServiceError, ServiceLimits};
+
+/// The request header carrying the API wire version (ADR-0016 §Compatibility).
+///
+/// HTTP is stateless, so the version travels on **every** request. An absent header is
+/// v1, which is what makes an old client keep working unchanged.
+pub(crate) const API_VERSION_HEADER: &str = "x-chronofork-api";
 
 /// The media type carried by every response (architecture §4).
 pub(crate) const RESPONSE_MEDIA_TYPE: &str = "application/json; charset=utf-8";
@@ -81,6 +87,18 @@ pub(crate) fn transport_failure(code: WireCode, message: &'static str) -> Respon
     Response::new(code.status(), error_envelope(code.as_str(), message))
 }
 
+/// Serializes a service failure for one wire version.
+pub(crate) fn service_error_versioned(
+    error: &ServiceError,
+    limits: &ServiceLimits,
+    version: ApiVersion,
+) -> Response {
+    let body = error
+        .to_canonical_bytes_versioned(limits, version)
+        .unwrap_or_default();
+    Response::new(status_for(error.code()), body)
+}
+
 /// Builds the typed envelope for a service code used at the transport boundary.
 ///
 /// `not_found`, `unauthorized`, `forbidden` and `invalid_request` are raised by the wire
@@ -105,6 +123,13 @@ pub(crate) const fn status_for(code: ErrorCode) -> u16 {
         ErrorCode::Forbidden => 403,
         ErrorCode::NotFound => 404,
         ErrorCode::Conflict | ErrorCode::Closed | ErrorCode::Halted => 409,
+        // The v2 control codes (ADR-0016 §2/§6) are request-scoped refusals, not a
+        // route or a server fault: the request could not be completed **in this
+        // attempt** and the caller decides whether to retry.
+        ErrorCode::Cancelled | ErrorCode::Deadline | ErrorCode::UnknownOutcome => 409,
+        // The request names a version this server does not implement: the refusal is a
+        // client-side compatibility problem, and it happens before dispatch.
+        ErrorCode::UnsupportedVersion => 400,
         ErrorCode::NotConfigured => 503,
         ErrorCode::Backend | ErrorCode::Storage | ErrorCode::Internal => 500,
     }

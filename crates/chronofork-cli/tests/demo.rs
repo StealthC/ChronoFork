@@ -130,19 +130,114 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
     }
 }
 
+/// Complete stdout of `chronofork megadrive demo`: 1833 bytes with this SHA-256.
+///
+/// The golden is a single pinned digest rather than a run-vs-run comparison.
+/// The demo's stdout is profile-independent (the debug print path and the release
+/// path emit the same bytes) and host-independent, so one run against the golden
+/// detects any drift, and a run under the other Cargo profile detects a
+/// profile-dependent one. Pinning the digest is what makes the check affordable:
+/// measured on the reference host, one debug run costs ~82 s and one release run
+/// ~7 s, while the previous two-debug-run comparison cost ~166 s.
+const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
+    "fe254e5d193de273bc0d0db1b9b426ef6b069f4f96685486cb7303662d56a420";
+
+/// Bytes of the pinned `chronofork megadrive demo` stdout.
+const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1833;
+
+/// Enables the "release build must exist" half of the check:
+/// `$CHRONOFORK_CROSS_PROFILE_GOLDEN=1`.
+///
+/// The golden path already runs the release binary whenever that build exists,
+/// because release emits the same bytes and costs ~7 s against ~82 s for debug.
+/// Setting this variable removes the silent fallback: a run that claims
+/// cross-profile parity must have the release build, so a debug-only checkout
+/// fails instead of quietly verifying the golden against debug. The release CI
+/// job builds both profiles, so it verifies the golden and the debug/release
+/// parity in the same run.
+const CROSS_PROFILE_ENV: &str = "CHRONOFORK_CROSS_PROFILE_GOLDEN";
+
+/// Runs the built CLI binary at an explicit path.
+fn run_binary(binary: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(binary)
+        .args(args)
+        .output()
+        .expect("chronofork runs")
+}
+
+/// Returns the release build of `chronofork`, when this tree has one.
+///
+/// `CARGO_BIN_EXE_chronofork` is the binary of the profile this test was built
+/// for, so swapping the profile directory finds the sibling build. Returns the
+/// current binary when the test is already built for release.
+fn release_binary() -> Option<std::path::PathBuf> {
+    let current = std::path::PathBuf::from(env!("CARGO_BIN_EXE_chronofork"));
+    if !cfg!(debug_assertions) {
+        return current.is_file().then_some(current);
+    }
+    let candidate = current
+        .components()
+        .map(|component| {
+            if component.as_os_str() == std::ffi::OsStr::new("debug") {
+                std::path::PathBuf::from("release")
+            } else {
+                std::path::PathBuf::from(component.as_os_str())
+            }
+        })
+        .collect::<std::path::PathBuf>();
+    candidate.is_file().then_some(candidate)
+}
+
 #[test]
 fn megadrive_demo_output_is_deterministic() {
-    let first = run(&["megadrive", "demo"]);
-    let second = run(&["megadrive", "demo"]);
-    assert!(first.status.success(), "first run failed");
-    assert!(second.status.success(), "second run failed");
-    assert!(first.stderr.is_empty(), "first run wrote to stderr");
-    assert!(second.stderr.is_empty(), "second run wrote to stderr");
-    assert_eq!(
-        first.stdout, second.stdout,
-        "megadrive demo output must be byte-identical across runs"
+    // One release run against the pinned golden is the whole check. This is the
+    // cross-profile comparison in the only direction worth paying for: release
+    // and debug must emit the same bytes, and release is the fast side, so the
+    // previous two-debug-run comparison (~166 s) becomes one ~7 s run.
+    let cross_profile = matches!(
+        std::env::var(CROSS_PROFILE_ENV).as_deref(),
+        Ok("1") | Ok("true")
     );
-    assert_eq!(first.stderr, second.stderr);
+    let binary = release_binary().unwrap_or_else(|| {
+        assert!(
+            !cross_profile,
+            "${CROSS_PROFILE_ENV} is set, so the release `chronofork` build must exist to verify \
+             cross-profile parity; only the debug build is present"
+        );
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_chronofork"))
+    });
+
+    let first = run_binary(&binary, &["megadrive", "demo"]);
+    assert!(first.status.success(), "megadrive demo failed");
+    assert!(
+        first.stderr.is_empty(),
+        "megadrive demo wrote to stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        first.stdout.len(),
+        MEGADRIVE_DEMO_STDOUT_LEN,
+        "the megadrive demo byte count must not drift"
+    );
+    assert_eq!(
+        chronofork_core::hash_bytes(&first.stdout).to_hex(),
+        MEGADRIVE_DEMO_STDOUT_SHA256,
+        "the megadrive demo stdout must stay byte-identical to the pinned golden"
+    );
+
+    // A debug build compares its own output with the release golden, so one
+    // debug run still proves parity instead of only asserting the pin twice.
+    if cfg!(debug_assertions) {
+        let debug = std::path::Path::new(env!("CARGO_BIN_EXE_chronofork"));
+        if debug != binary.as_path() {
+            let second = run_binary(debug, &["megadrive", "demo"]);
+            assert!(second.status.success(), "the debug build failed to run");
+            assert_eq!(
+                first.stdout, second.stdout,
+                "megadrive demo output must be byte-identical across Cargo profiles"
+            );
+        }
+    }
 }
 
 #[test]

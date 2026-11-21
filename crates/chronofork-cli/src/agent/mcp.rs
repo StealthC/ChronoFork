@@ -6,8 +6,8 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use chronofork_service::ServiceLimits;
 use chronofork_service::json::{JsonValue, to_canonical_bytes};
+use chronofork_service::{ApiVersion, ServiceLimits};
 use chronofork_transport::McpClient;
 
 use super::{
@@ -85,7 +85,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     })?;
     let table = read_token_table(&token_file, ServiceLimits::default().max_request_bytes)?;
     let token = select_token(&table, options.principal.as_deref(), &token_file)?;
-    let client = McpClient::new(url, token);
+    // The MCP path is a v2 consumer too: the version travels in the per-call metadata
+    // after the same read-only probe (ADR-0016 §Compatibility).
+    let client = McpClient::new(url, token).with_version(ApiVersion::V2);
     let limits = ServiceLimits::default();
 
     match kind {

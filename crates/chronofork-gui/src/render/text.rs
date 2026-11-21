@@ -578,6 +578,7 @@ mod tests {
                     ("depth", JsonValue::int(0)),
                 ]),
             ),
+            ("revision", JsonValue::int(0)),
             (
                 "backend",
                 JsonValue::object([

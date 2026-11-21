@@ -76,7 +76,7 @@ fn publish_session(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, name)
+        .save_snapshot(session.session_key, &snapshot, name)
         .expect("publish snapshot");
     (runtime, session.session_key, entry)
 }
@@ -123,7 +123,7 @@ fn second_writer_is_rejected_with_typed_contention() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let error = second
-        .save_snapshot(session_key, snapshot, Some("contended"))
+        .save_snapshot(session_key, &snapshot, Some("contended"))
         .expect_err("a contended save must not wait or steal");
     assert!(
         matches!(
@@ -491,7 +491,7 @@ fn distinct_sessions_write_concurrently_without_a_global_lock() {
         .snapshot_record(second_runtime, snapshot_id)
         .expect("checkpoint record");
     let published = repository
-        .save_snapshot(second_key, snapshot, Some("concurrent"))
+        .save_snapshot(second_key, &snapshot, Some("concurrent"))
         .expect("publish to the other session while the first writer holds its lock");
     assert!(published.snapshot_key > 1);
 
@@ -589,7 +589,7 @@ fn with_writer_lock_makes_read_modify_publish_linearizable() {
             step(&mut manager, runtime, 1);
             let snapshot_id = manager.snapshot(runtime)?;
             let record = manager.snapshot_record(runtime, snapshot_id)?;
-            repository.save_snapshot_with_lock(lock, record, Some("continued"))
+            repository.save_snapshot_with_lock(lock, &record, Some("continued"))
         })
         .expect("read-modify-publish workflow");
     assert_eq!(entry.creation_sequence, 2);
@@ -620,7 +620,7 @@ fn save_snapshot_with_lock_rejects_released_and_foreign_handles() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let published = repository
-        .save_snapshot_with_lock(&lock, snapshot, Some("locked"))
+        .save_snapshot_with_lock(&lock, &snapshot, Some("locked"))
         .expect("publish through the held lock");
     assert_eq!(published.creation_sequence, 2);
     repository.release_writer_lock(&lock).expect("release");
@@ -630,7 +630,7 @@ fn save_snapshot_with_lock_rejects_released_and_foreign_handles() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let stale = repository
-        .save_snapshot_with_lock(&lock, snapshot, None)
+        .save_snapshot_with_lock(&lock, &snapshot, None)
         .expect_err("a released handle must not publish");
     assert!(
         matches!(stale, SessionError::NotLockOwner { session: Some(found), .. } if found == session_key),
@@ -646,7 +646,7 @@ fn save_snapshot_with_lock_rejects_released_and_foreign_handles() {
         .acquire_writer_lock(other_session.session_key)
         .expect("other lock");
     let foreign = repository
-        .save_snapshot_with_lock(&other_lock, snapshot, None)
+        .save_snapshot_with_lock(&other_lock, &snapshot, None)
         .expect_err("a handle from another root must not publish");
     assert!(
         matches!(foreign, SessionError::NotLockOwner { session: Some(found), .. } if found == session_key),

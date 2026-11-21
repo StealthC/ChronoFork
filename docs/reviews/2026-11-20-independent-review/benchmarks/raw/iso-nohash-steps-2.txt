@@ -1,0 +1,22 @@
+review-perf v1
+mode=steps
+program=interrupt_rom(3)
+video=ntsc
+hash_enabled=0
+debug_assertions=0
+rss_start_kib=2224
+machine_footprint_bytes=132424
+state_body_bytes_len=197048
+minflt_delta_steps=243
+step_trial_1_seconds=0.002020270
+step_trial_2_seconds=0.001936672
+step_trial_3_seconds=0.009932953
+step_trial_4_seconds=0.001901694
+step_trial_5_seconds=0.005906127
+step_min_seconds=0.001901694
+step_median_seconds=0.002020270
+step_max_seconds=0.009932953
+step_per_second=230.439
+instructions_per_second=2304390
+final_tick=4550812
+rss_end_kib=3236

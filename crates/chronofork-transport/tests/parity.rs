@@ -151,11 +151,13 @@ impl Surface for DirectSurface {
         let request = to_canonical_bytes(&request, &limits()).expect("request document");
         match self.service.dispatch(&self.principal, &request) {
             Ok(bytes) => Outcome {
-                bytes,
+                bytes: operational_normalized(&bytes),
                 is_error: false,
             },
             Err(error) => Outcome {
-                bytes: error.to_canonical_bytes(&limits()).expect("error envelope"),
+                bytes: operational_normalized(
+                    &error.to_canonical_bytes(&limits()).expect("error envelope"),
+                ),
                 is_error: true,
             },
         }
@@ -170,11 +172,11 @@ impl Surface for HttpSurface {
     fn invoke(&self, op: &str, input: &JsonValue) -> Outcome {
         match self.client.call(op, input) {
             Ok(bytes) => Outcome {
-                bytes,
+                bytes: operational_normalized(&bytes),
                 is_error: false,
             },
             Err(TransportError::Http { body, .. }) => Outcome {
-                bytes: body,
+                bytes: operational_normalized(&body),
                 is_error: true,
             },
             Err(error) => unreachable!("HTTP transport failure on a live server: {error:?}"),
@@ -190,7 +192,7 @@ impl Surface for McpSurface {
     fn invoke(&self, op: &str, input: &JsonValue) -> Outcome {
         match self.client.call_tool(op, input) {
             Ok(result) => Outcome {
-                bytes: result.text.into_bytes(),
+                bytes: operational_normalized(result.text.as_bytes()),
                 is_error: result.is_error,
             },
             Err(error) => unreachable!("MCP transport failure on a live server: {error:?}"),
@@ -252,6 +254,10 @@ impl Run<'_> {
 
     fn call(&mut self, label: &str, op: &str, input: JsonValue) -> Outcome {
         let outcome = self.surface.invoke(op, &input);
+        // Parity is asserted modulo the operational fields (ADR-0016 §Compatibility/§2):
+        // `wire_version` is the per-request version marker and `process_epoch` is the
+        // process identity. Neither is part of the result document's meaning, and the
+        // three surfaces legitimately answer with different version markers.
         self.steps.push(Step {
             label: label.to_owned(),
             bytes: outcome.bytes.clone(),
@@ -270,6 +276,28 @@ impl Run<'_> {
         assert!(outcome.is_error, "{label} must fail");
         parse(&outcome.bytes, &limits()).expect("error envelope")
     }
+}
+
+/// Removes the operational-only fields that legitimately differ between surfaces.
+///
+/// `wire_version` records which API version answered the request and `process_epoch`
+/// identifies the process that owns the journal; both are metadata, not result data
+/// (ADR-0016 §2/§Compatibility), so byte parity is asserted on everything else.
+fn operational_normalized(bytes: &[u8]) -> Vec<u8> {
+    let limits = limits();
+    let Ok(document) = parse(bytes, &limits) else {
+        return bytes.to_vec();
+    };
+    let JsonValue::Object(mut root) = document else {
+        return bytes.to_vec();
+    };
+    root.remove("wire_version");
+    if let Some(JsonValue::Object(result)) = root.get_mut("result") {
+        if result.contains_key("process_epoch") {
+            result.insert("process_epoch".to_owned(), JsonValue::int(0));
+        }
+    }
+    to_canonical_bytes(&JsonValue::Object(root), &limits).unwrap_or_else(|_| bytes.to_vec())
 }
 
 fn scenario(surface: &dyn Surface) -> Vec<Step> {

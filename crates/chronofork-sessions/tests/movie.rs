@@ -337,7 +337,7 @@ fn restart_reopen_complement_records_from_a_durable_checkpoint() -> TestResult {
     manager.attach_storage_session(runtime, session.session_key)?;
     let snapshot_id = manager.snapshot(runtime)?;
     let record = manager.snapshot_record(runtime, snapshot_id)?;
-    let entry = repository.save_snapshot(session.session_key, record, Some("checkpoint"))?;
+    let entry = repository.save_snapshot(session.session_key, &record, Some("checkpoint"))?;
     let checkpoint_path = root.join(format!(
         "v1/sessions/session-{}/snapshots/snapshot-{}/checkpoint.cfsnap",
         session.session_key, entry.snapshot_key

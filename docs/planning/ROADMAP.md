@@ -105,6 +105,32 @@ and with emulated cycle time separated from host pacing.
 **Design:** [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md)
 **Definition of Done:** [see MILESTONE.md](MILESTONE.md#definition-of-done) (authoritative;
 the GitHub milestone description is projected from it).
+**Consolidation track (owner decision 2026-11-20, O-2):** a review/correction and hardening
+track runs **inside the open M8** before phases 8.7/8.8 — ADR-0014/0015/0016 corrections, the
+W1–W5 execution plan and the W4 evidence work. It is a track, not a milestone: M8 stays
+`active`, the Definition of Done above is **not amended**, 8.7/8.8 stay pending, and the track
+does **not** close M8. Track status and handoff: [STATE.md](STATE.md); scope and status of the
+milestone: [milestones.md](../roadmap/milestones.md).
+
+### Consolidation: product consolidation and agent API [status: in progress]
+
+**Goal:** Turn the approved review direction into verifiable phases W1–W5 (boot/bus
+hardening, execution/verification contract, service/concurrency and agent API, reproducible
+evidence, backend roadmap) while preserving the phase 8.4 work on `agent/8.4-z80-audio`.
+**Surface:** Mixed
+**HelpWanted:** no
+**Plan:** [consolidation and agent API plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md)
+**Contracts:** ADR-0014 (v1 scope), ADR-0015 (execution/verification), ADR-0016 (service/agent
+API) — all **`Accepted`** after independent reviews V4 (ADR-0014/0015) and V5 (ADR-0016) passed; acceptance is the decision, not implementation verification.
+**Owner decisions recorded (2026-11-20):** O-1 non-loopback bind refuses to start; O-2 M8
+stays open with consolidation as a separate track and the DoD unamended; O-3 complete the
+project's own YM2612/PSG/mixer (no `ymfm` adoption now); O-4 deterministic open bus plus a
+typed error where the hardware faults, mapping `0xA10008–0xA1000F` first.
+**Adiado (continua adiado):** 8.7, 8.8, M9, TLS/multi-user, async/Tokio, incremental hash,
+COW/dedup.
+**Note:** this section is not a phase of the M8 hardware sequence; it is tracked here for
+execution visibility, while capability status and integration state stay in the
+[canonical milestone page](../roadmap/milestones.md).
 
 ### Phase 8.1: Cartridge, region, TMSS and boot [status: complete]
 
@@ -137,7 +163,7 @@ frame-level differential evidence.
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.3-vdp.md)
 **Completed:** 2026-11-19
 
-### Phase 8.4: Z80, bus arbitration and audio [status: pending]
+### Phase 8.4: Z80, bus arbitration and audio [status: in progress]
 
 **Goal:** Implement the Z80 core and memory map, 68000/Z80/VDP bus arbitration, YM2612
 six-channel FM and PSG, with deterministic mixing/resampling and audio differential evidence.
@@ -145,6 +171,11 @@ six-channel FM and PSG, with deterministic mixing/resampling and audio different
 **HelpWanted:** no
 **Issue:** #17
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
+**Integration state:** not merged — implementation lives on `agent/8.4-z80-audio` (tip
+`408cfd7`, 15 commits over `main`, plus uncommitted T4 work). Preserve it; the handoff
+(commit, owner, authorization and gates) is defined in the consolidation plan §5 before any
+task touches `bus.rs`/`backend.rs`. Audio direction: complete the project's own YM2612/PSG/
+mixer (owner decision O-3).
 
 ### Phase 8.5: Timers, controllers and interrupts [status: pending]
 

@@ -70,6 +70,7 @@ fn capabilities_result() -> JsonValue {
     }
     JsonValue::object([
         ("schema", JsonValue::string("chronofork.capabilities.v1")),
+        ("api_version", JsonValue::int(2)),
         ("service_version", JsonValue::string("0.1.0")),
         (
             "backend",
@@ -93,6 +94,14 @@ fn capabilities_result() -> JsonValue {
                 ("max_store_entries", int(256)),
                 ("max_checkpoints", int(32)),
                 ("json_max_depth", int(32)),
+                ("max_run_wall_ms", int(30_000)),
+                ("max_operation_journal", int(1_024)),
+                ("operation_ttl", int(600)),
+                ("max_closed_retained", int(64)),
+                ("closed_retention_ttl", int(300)),
+                ("max_snapshots_per_session", JsonValue::int(64)),
+                ("max_bytes_per_session", JsonValue::int(67_108_864)),
+                ("max_store_bytes", JsonValue::int(1_073_741_824)),
             ]),
         ),
         (
@@ -103,6 +112,7 @@ fn capabilities_result() -> JsonValue {
             "artifacts",
             JsonValue::object([("configured", JsonValue::from_bool(false))]),
         ),
+        ("process_epoch", JsonValue::int(7)),
     ])
 }
 
@@ -139,6 +149,7 @@ fn inspect_result(session: u64, tick: u64) -> JsonValue {
         ("session", int(session)),
         ("state", JsonValue::string("ready")),
         ("lineage", lineage()),
+        ("revision", JsonValue::int(0)),
         (
             "backend",
             JsonValue::object([
@@ -214,6 +225,7 @@ impl OperationChannel for CountingChannel {
                     ("tick", int(0)),
                     ("state_hash", JsonValue::string(HASH)),
                     ("lineage", lineage()),
+                    ("process_epoch", int(7)),
                 ]),
             )),
             "session.inspect" => {
@@ -243,9 +255,14 @@ impl OperationChannel for CountingChannel {
                     JsonValue::object([
                         ("session", int(session)),
                         ("steps", int(steps)),
+                        ("performed", int(steps)),
+                        ("stop_reason", JsonValue::string("completed")),
+                        ("revision", int(1)),
+                        ("max_wall_ms", int(30_000)),
                         ("tick", int(*tick)),
                         ("state_hash", JsonValue::string(HASH)),
                         ("halted", JsonValue::from_bool(false)),
+                        ("process_epoch", int(7)),
                     ]),
                 ))
             }

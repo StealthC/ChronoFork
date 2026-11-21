@@ -145,4 +145,40 @@ pub mod test_support {
         }
         candidates.into_iter().find(|path| path.is_file())
     }
+
+    /// Resolves a local-only ROM fixture, or reports why it cannot be read.
+    ///
+    /// A commercial ROM cannot be committed, so a clean clone legitimately has
+    /// none of these fixtures and a fixture test cannot run. This helper keeps
+    /// that absence from becoming a silent pass: the `Err` carries a reason that
+    /// names the fixture and every directory that was searched, and the caller
+    /// must decide between the declared skip and a hard failure.
+    ///
+    /// [`required_rom_fixtures`] reports the caller's declaration: a run that
+    /// sets `$CHRONOFORK_REQUIRE_ROM_FIXTURES` claims the fixtures exist, so such
+    /// a caller must fail instead of skipping.
+    ///
+    /// This shapes a fixture lookup before a machine is constructed and never
+    /// touches canonical state.
+    pub fn required_rom_path(name: &str) -> Result<PathBuf, String> {
+        rom_path(name).ok_or_else(|| {
+            format!(
+                "ROM fixture `{name}` is absent: not in $CHRONOFORK_ROM_DIR, \
+                 $HOME/projects/ChronoFork/.research/roms/ or <repo>/.research/roms/"
+            )
+        })
+    }
+
+    /// Whether this run declares that the commercial-ROM fixtures must exist.
+    ///
+    /// True only for `$CHRONOFORK_REQUIRE_ROM_FIXTURES=1` or `=true`; any other
+    /// value (including empty) leaves the declared-skip path available. A job
+    /// that claims to run the fixture tests sets it, so a fixture test can never
+    /// pass because the fixtures are missing.
+    pub fn required_rom_fixtures() -> bool {
+        matches!(
+            std::env::var("CHRONOFORK_REQUIRE_ROM_FIXTURES").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    }
 }

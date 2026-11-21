@@ -1,5 +1,12 @@
 # M3 Partial Replay, Seek and Branch Comparison — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** Fase A design accepted (the project owner approved the staged plan on
   2026-11-15); the increment is **implemented and independently verified** for the
   deterministic synthetic backend (t5 PASS, 2026-11-15). Every acceptance row below is

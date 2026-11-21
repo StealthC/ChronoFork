@@ -10,6 +10,8 @@ license.workspace = true
 chronofork-service.workspace = true
 
 [dev-dependencies]
+chronofork-core.workspace = true
+chronofork-backend-api.workspace = true
 chronofork-test-backend.workspace = true
 
 [lints]

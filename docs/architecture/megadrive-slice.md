@@ -3,8 +3,9 @@
 - **Status:** Partial real-hardware slice implemented (68000 + ROM/RAM + VDP port
   window + VBlank/HBlank scheduler with SR-mask gating, `RTE` and VDP
   VINT-pending/acknowledge + bounded debug instruction trace, on the master-cycle
-  timeline, with eleven-ROM oracle differential evidence: address projections,
-  per-instruction cycle costs and selected final states all match 11/11); not a
+  timeline, with twelve-ROM oracle differential evidence: address projections 12/12,
+  per-instruction cycle costs and selected final states 11/12 (the scoped
+  `rom_exception` divergences noted below); not a
   complete emulator. Controller-port data-register reads for real-hardware
   input TAS are implemented and independently verified for the TH-high 3-button subset on
   ports 1–2 ([ADR-0009](../adr/0009-real-hardware-input-tas.md); t5 PASS, 2026-11-16), with
@@ -23,7 +24,8 @@
   not claimed here.
 - **Current milestone:** [M8 — Functional Mega Drive](../roadmap/milestones.md#m8--functional-mega-drive)
   is **in progress**. Phase 8.2 (the documented MC68000 set and master-cycle timeline,
-  with 11/11 address, per-instruction cycle and final-state differential evidence) is
+  with 12/12 address and 11/12 per-instruction cycle and final-state differential
+  evidence, the two `rom_exception` divergences being named scoped exceptions) is
   implemented, verified (round 12), independently reviewed (round 11) and merged to `main`
   through the phase-8.2 PR (issue #15). Phase 8.3 (the complete VDP) is implemented,
   verified (rounds 1–3) and independently reviewed (rounds 2–3), and merged to `main`
@@ -272,7 +274,7 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 ### Oracle differential method and limits
 
 The reproducible harness `scripts/oracle-diff.py` compares the minimal core against
-a pinned Exodus headless oracle for eleven independently authored synthetic ROMs; the
+a pinned Exodus headless oracle for twelve independently authored synthetic ROMs; the
 full numbers, commands and limitations are in the
 [68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
@@ -295,15 +297,27 @@ full numbers, commands and limitations are in the
   field (`InstructionOutcome.cycles`, emitted by `--cycles`). Absolute cycle bases
   and the oracle `time` column are not compared. M3's per-ROM instruction quantum
   and masked-boundary control are superseded.
-- The eleven synthetic ROMs are the three historical ones plus EA, shift, BCD,
-  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX, system/status-register and bit/DBcc
-  fixtures under `scripts/fixtures/`. The regenerated repair run passes: address projections
-  11/11, per-instruction cycle comparisons 11/11, selected final states 11/11, and
-  address/cycle/final-state negative controls 11/11; the harness exits 0. No
-  divergence remains in the compared observables and no expectation was edited to
-  obtain the pass. Full numbers, commands and the pinned
+- The twelve synthetic ROMs are the three historical ones plus EA, shift, BCD,
+  MOVEM/MOVEP, mul/div, EXG/TAS/ADDX/SUBX, system/status-register, bit/DBcc and
+  exception-entry (`rom_exception`) fixtures under `scripts/fixtures/`. All twelve are
+  committed, including the three historical ones (`rom_alu`, `rom_mem_vdp`,
+  `rom_masked`), so a clean clone can run the
+  corpus; `crates/chronofork-megadrive/tests/fixture_integrity.rs` re-runs the generator
+  offline (`scripts/oracle-diff.py --dump-roms`) and fails if a committed fixture, its
+  documented digest or a documented marker diverges. `rom_exception` is compared as a
+  **scoped** member: its address projection, A7, return PC and handler view of the
+  exception frame match the oracle, while the oracle's saved-SR frame word carries
+  reserved bit 14 and its `TRAP` cycle cost is 38 against ChronoFork's documented 34;
+  both are recorded as findings, not normalised away. The regenerated repair run
+  passes address projections 12/12, per-instruction cycle comparisons 11/12,
+  selected final states 11/12 and the address/cycle/final-state negative controls
+  12/12, and the harness reports the scoped `rom_exception` divergence as findings
+  (summary `DIVERGENCE`, exit 1) rather than hiding it or editing an expectation.
+  Full numbers, commands and the pinned
   oracle revision `ec005615…` are in the
-  [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
+  [cycle differential evidence](../research/cpu-cycle-differential-evidence.md),
+  which records the `rom_exception` scoping; there is no tracked page for the
+  worktree-local W4.2/W4.3 review note.
 - History: the pre-repair address divergence at `0x00027A` (absolute-long decode)
   remains recorded in the historical
   [oracle differential evidence](../research/oracle-differential-evidence.md); the
@@ -318,6 +332,17 @@ audio, Z80 or DMA, and it does not establish general 68000 or game compatibility
 
 ### Known limitations of the integration
 
+- **No declared checkpoint payload bound (temporary, tracked).** The service layer decides
+  `max_bytes_per_session` before it captures a checkpoint and needs a payload size it can
+  bound; after `run`/trace/debug write that bound must come from
+  `Backend::snapshot_payload_bound()`, which this backend does not declare yet. Under a
+  **finite** byte quota a post-run `session.snapshot`/`session.fork` over the service is
+  therefore refused with `limit_exceeded` **before allocating** (the unbounded in-process
+  movie/player/rewind paths are unaffected). This is **not** intended behavior: owner
+  decision O-5 defers the fix to W1.8 in the
+  [consolidation plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md),
+  which declares the bound here (validated against every supported payload) and adds the
+  service+Mega Drive regression.
 - **Privilege is enforced for the implemented system instructions.** `MOVE` to
   `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
   the exception framework provides vectors 3-8/24-31/32+n, short frames and the
@@ -530,7 +555,7 @@ window to it.
 - General structured/timestamped tracing or bus/device traces, historical trace
   queries, and a reusable in-product trace-comparison API. Only the narrow debug TSV
   and the external oracle harness exist.
-- Differential evidence beyond the eleven synthetic ROMs, positive differential
+- Differential evidence beyond the twelve synthetic ROMs, positive differential
   comparison of interrupt delivery/timing, and any differential claim about audio,
   Z80, DMA content, full-hardware timing or game compatibility. The 11-ROM run matches
   instruction addresses, per-instruction cycle costs and selected final state; the
@@ -572,7 +597,7 @@ line remains 3472.
 ```sh
 cargo run -p chronofork-cli -- megadrive trace \
   --rom <rom-path> --state-out <state-path> \
-  --instructions 10000 --stop-pc 0x352 --cycles \
+  --instructions 10000 --stop-pc 0x354 --cycles \
   --ram-bytes 64 --trace-out <trace-path>
 ```
 
@@ -614,7 +639,7 @@ ring is fixed at 256 entries with a 4,096 compile-time bound.
    SRAM and TMSS landed in phase 8.1.
 2. Guest bus-error and trace exception delivery (vectors 2 and 9) and the
    remaining exception-edge behaviour, driven by differential tests.
-3. Broaden the differential corpus beyond the eleven synthetic ROMs while keeping
+3. Broaden the differential corpus beyond the twelve synthetic ROMs while keeping
    instruction-address/cycle/state comparison distinct from hardware timing
    equivalence. A positive comparison of interrupt delivery or latency would need
    an oracle model of those semantics; the current masked-ROM pass is negative

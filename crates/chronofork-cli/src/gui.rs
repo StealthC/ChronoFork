@@ -45,7 +45,7 @@ use chronofork_gui::{
 };
 use chronofork_megadrive::{MegadriveFactory, ROM_END};
 use chronofork_service::{
-    AppService, Principal, ServiceConfig, ServiceLimits, TokenTable, parse_token_file,
+    ApiVersion, AppService, Principal, ServiceConfig, ServiceLimits, TokenTable, parse_token_file,
 };
 use chronofork_sessions::{MAX_MOVIE_BYTES, Movie};
 use chronofork_test_backend::SyntheticBackendFactory;
@@ -310,7 +310,10 @@ fn build_channel(options: &GuiOptions) -> Result<Arc<dyn OperationChannel>, GuiE
                 .ok_or_else(|| {
                     GuiError::bad_value("--token-file", "the token file has no principal")
                 })?;
-            let client = HttpClient::new(url, token);
+            // The GUI is a v2 consumer: the typed client probes the daemon's
+            // capabilities before its first v2 call and refuses locally when the daemon
+            // does not advertise it (ADR-0016 §Compatibility).
+            let client = HttpClient::new(url, token).with_version(ApiVersion::V2);
             Ok(Arc::new(RemoteChannel { client }))
         }
         (Some(_), None) => Err(GuiError::bad_value(
@@ -347,11 +350,16 @@ struct LocalChannel {
 
 impl OperationChannel for LocalChannel {
     fn call(&self, request: &[u8]) -> Result<Vec<u8>, ChannelFault> {
-        match self.service.dispatch(&self.principal, request) {
+        // The GUI decodes the v2 shapes (it is the agent-API surface), so the local
+        // channel declares v2 explicitly instead of relying on the v1 default.
+        match self
+            .service
+            .dispatch_versioned(&self.principal, request, ApiVersion::V2)
+        {
             Ok(envelope) => Ok(envelope),
             Err(error) => {
                 let limits = ServiceLimits::default();
-                match error.to_canonical_bytes(&limits) {
+                match error.to_canonical_bytes_versioned(&limits, ApiVersion::V2) {
                     Ok(body) => Err(ChannelFault::with_envelope(&error.to_string(), body)),
                     Err(_) => Err(ChannelFault::new(
                         "the service failure could not be encoded canonically",
@@ -397,24 +405,32 @@ impl OperationChannel for RemoteChannel {
 /// Returns the peer body when it is exactly the canonical `chronofork.error.v1` envelope.
 ///
 /// The body is accepted only when the service codec parses it, it carries the documented
-/// shape (`schema` plus `error` with `code`, `message` and `retryable`), and re-encoding the
-/// parsed document reproduces the same bytes. Re-encoding is the canonicality test: any
-/// extra field, reordered key, stray whitespace or trailing byte makes the round trip
-/// differ, so a body that merely *looks* like JSON cannot reach stderr verbatim.
+/// shape (`schema`, the declared `wire_version` and `error` with `code`, `message` and
+/// `retryable`), and re-encoding the parsed document reproduces the same bytes. Re-encoding
+/// is the canonicality test: any extra field, reordered key, stray whitespace or trailing
+/// byte makes the round trip differ, so a body that merely *looks* like JSON cannot reach
+/// stderr verbatim. Both accepted `error` field counts are the service's: three for a
+/// plain envelope, four when a reconciliation result carries its `operation_id`.
 fn canonical_envelope(body: &[u8]) -> Option<Vec<u8>> {
     let limits = ServiceLimits::default();
     let document = chronofork_service::json::parse(body, &limits).ok()?;
     let root = document.as_object()?;
-    if root.len() != 2 || root.get("schema")?.as_str()? != "chronofork.error.v1" {
+    if root.len() != 3 || root.get("schema")?.as_str()? != chronofork_service::ERROR_SCHEMA {
+        return None;
+    }
+    if root.get("wire_version")?.as_u64()? == 0 {
         return None;
     }
     let error = root.get("error")?.as_object()?;
-    if error.len() != 3 {
+    if error.len() != 3 && error.len() != 4 {
         return None;
     }
     error.get("code")?.as_str()?;
     error.get("message")?.as_str()?;
     error.get("retryable")?.as_bool()?;
+    if let Some(operation) = error.get("operation_id") {
+        operation.as_u64()?;
+    }
     let canonical = chronofork_service::json::to_canonical_bytes(&document, &limits).ok()?;
     (canonical == body).then_some(canonical)
 }

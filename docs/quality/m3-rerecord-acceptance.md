@@ -1,5 +1,12 @@
 # M3 Rerecord and Branch Editing — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed; every row M3-A35–M3-A44 is `executed - passed`** (independent
   t10 repair-round-2 PASS, 2026-11-16). Round-1 FAIL findings F1/F2/F3/F5 and gaps F6
   were repaired and re-verified. The increment is complete for the deterministic synthetic

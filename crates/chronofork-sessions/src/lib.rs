@@ -20,7 +20,7 @@ pub mod storage;
 pub use edit::{AnchorPolicy, EditError, EditMeta, EditOutcome, EditReport, MovieEdit, edit_movie};
 pub use error::SessionError;
 pub use lineage::Lineage;
-pub use manager::{SessionComparison, SessionManager, SessionSummary};
+pub use manager::{SessionComparison, SessionHandle, SessionManager, SessionSummary};
 pub use movie::{
     ANCHOR_RECORD_OVERHEAD, MAX_ANCHOR_BYTES, MAX_ANCHOR_SNAPSHOT_BYTES, MAX_ANCHORS,
     MAX_EMBEDDED_SNAPSHOT_BYTES, MAX_MOVIE_BYTES, MAX_STEPS, MAX_V2_STEPS, MOVIE_FORMAT_VERSION,
@@ -33,7 +33,7 @@ pub use player::{
     PlayerState, STATE_CACHE_ENTRY_OVERHEAD, SeekProgress, SeekReport, StartKind,
 };
 pub use replay::{ComparisonReport, ComparisonVerdict, ReplayOutcome, ReplayRange, compare_movies};
-pub use session::{Session, SessionInspection, SessionState};
+pub use session::{Session, SessionInspection, SessionQuota, SessionState};
 pub use snapshot::{SNAPSHOT_FORMAT_VERSION, Snapshot};
 pub use storage::{
     DurableLineage, LoadedSnapshot, LockIdentity, MAX_LOCK_BYTES, MAX_NAME_BYTES,

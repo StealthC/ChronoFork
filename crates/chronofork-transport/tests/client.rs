@@ -110,7 +110,7 @@ fn the_client_reaches_every_route_of_a_live_server() {
             .get("tools")
             .and_then(JsonValue::as_array)
             .map(<[JsonValue]>::len),
-        Some(16)
+        Some(20)
     );
 
     let direct = service()
@@ -319,7 +319,7 @@ fn the_mcp_client_initializes_lists_tools_and_calls_one() {
         .get("tools")
         .and_then(JsonValue::as_array)
         .expect("tools");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 20);
     assert_eq!(
         tools
             .first()

@@ -11,7 +11,9 @@
 mod catalog;
 mod durable;
 mod experiment;
+mod runtime;
 mod values;
+pub mod version;
 
 pub mod auth;
 pub mod error;
@@ -21,8 +23,9 @@ pub mod service;
 pub mod tool;
 
 pub use auth::{Principal, Scope, TokenTable, parse_token_file};
-pub use error::{ErrorCode, ServiceError};
+pub use error::{ERROR_SCHEMA, ErrorCode, ServiceError, WIRE_VERSION};
 pub use json::JsonValue;
 pub use limits::ServiceLimits;
 pub use service::{AppService, ServiceConfig};
 pub use tool::ToolSpec;
+pub use version::ApiVersion;

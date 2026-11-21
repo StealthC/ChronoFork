@@ -31,6 +31,29 @@ const MIN_HEADER_LEN: usize = MAGIC.len()
     + 8 // payload length
     + CHECKSUM_LEN;
 
+/// Serialized envelope bytes of one checkpoint record, excluding the backend payload.
+///
+/// The variable part beyond the payload is the backend id and version, each written
+/// with a `u16` length prefix that `MIN_HEADER_LEN` already counts. A quota preflight
+/// uses this to estimate a record's size **before** capturing anything; a unit test
+/// pins the estimate to `Snapshot::to_bytes` so it cannot drift silently.
+#[must_use]
+pub const fn snapshot_envelope_bytes(backend_id: usize, backend_version: usize) -> usize {
+    MIN_HEADER_LEN
+        .saturating_add(backend_id)
+        .saturating_add(backend_version)
+}
+
+/// Returns the serialized size of a checkpoint record for one backend family.
+#[must_use]
+pub const fn snapshot_record_bytes(
+    backend_id: usize,
+    backend_version: usize,
+    payload: usize,
+) -> usize {
+    snapshot_envelope_bytes(backend_id, backend_version).saturating_add(payload)
+}
+
 /// A persisted checkpoint produced by a session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snapshot {
@@ -228,7 +251,7 @@ mod tests {
     use chronofork_backend_api::{BackendId, BackendSnapshot};
     use chronofork_core::{SessionId, SnapshotId, StateHash, Tick};
 
-    use super::{SNAPSHOT_FORMAT_VERSION, Snapshot};
+    use super::{SNAPSHOT_FORMAT_VERSION, Snapshot, snapshot_record_bytes};
 
     fn sample_snapshot() -> Snapshot {
         let backend = BackendSnapshot::new(
@@ -241,6 +264,19 @@ mod tests {
             vec![1, 2, 3, 4],
         );
         Snapshot::new(SnapshotId::from_raw(7), SessionId::from_raw(3), backend)
+    }
+
+    #[test]
+    fn the_quota_estimate_matches_the_serialized_record() {
+        // The quota preflight predicts a record's size from the backend id/version and
+        // the payload; this pins the prediction to the real serializer so the estimate
+        // cannot drift away from `to_bytes`.
+        let snapshot = sample_snapshot();
+        let payload = snapshot.backend().payload().len();
+        let id = snapshot.backend().backend_id().as_str().len();
+        let version = snapshot.backend().backend_version().len();
+        let bytes = snapshot.to_bytes().expect("serialize");
+        assert_eq!(bytes.len(), snapshot_record_bytes(id, version, payload));
     }
 
     #[test]

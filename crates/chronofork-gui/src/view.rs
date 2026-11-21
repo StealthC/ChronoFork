@@ -99,7 +99,11 @@ capability_table! {
 }
 
 /// The service limit fields of a `capabilities` result, in published order.
-const LIMIT_FIELDS: [&str; 8] = [
+///
+/// The reader is strict, so every published limit is listed here once: the eight
+/// pre-ADR-0016 bounds plus the control-path bounds W3.2 adds. A field the service
+/// publishes without an entry here would make the GUI refuse a valid response.
+const LIMIT_FIELDS: [&str; 16] = [
     "max_request_bytes",
     "max_response_bytes",
     "max_steps_per_request",
@@ -108,6 +112,14 @@ const LIMIT_FIELDS: [&str; 8] = [
     "max_store_entries",
     "max_checkpoints",
     "json_max_depth",
+    "max_run_wall_ms",
+    "max_operation_journal",
+    "operation_ttl",
+    "max_closed_retained",
+    "closed_retention_ttl",
+    "max_snapshots_per_session",
+    "max_bytes_per_session",
+    "max_store_bytes",
 ];
 
 /// The lifecycle state a session reports.
@@ -306,9 +318,35 @@ pub struct LimitsView {
     max_store_entries: u64,
     max_checkpoints: u64,
     json_max_depth: u64,
+    max_run_wall_ms: u64,
+    max_operation_journal: u64,
+    operation_ttl: u64,
+    max_closed_retained: u64,
+    closed_retention_ttl: u64,
+    max_snapshots_per_session: u64,
+    max_bytes_per_session: u64,
+    max_store_bytes: u64,
 }
 
 impl LimitsView {
+    /// Returns the per-session checkpoint count bound.
+    #[must_use]
+    pub const fn max_snapshots_per_session(&self) -> u64 {
+        self.max_snapshots_per_session
+    }
+
+    /// Returns the per-session checkpoint byte bound.
+    #[must_use]
+    pub const fn max_bytes_per_session(&self) -> u64 {
+        self.max_bytes_per_session
+    }
+
+    /// Returns the best-effort global store bound.
+    #[must_use]
+    pub const fn max_store_bytes(&self) -> u64 {
+        self.max_store_bytes
+    }
+
     /// Returns the maximum encoded request size in bytes.
     #[must_use]
     pub const fn max_request_bytes(&self) -> u64 {
@@ -356,6 +394,36 @@ impl LimitsView {
     pub const fn json_max_depth(&self) -> u64 {
         self.json_max_depth
     }
+
+    /// Returns the host wall-clock budget of one `session.run`, in milliseconds.
+    #[must_use]
+    pub const fn max_run_wall_ms(&self) -> u64 {
+        self.max_run_wall_ms
+    }
+
+    /// Returns the maximum number of retained operation journal entries.
+    #[must_use]
+    pub const fn max_operation_journal(&self) -> u64 {
+        self.max_operation_journal
+    }
+
+    /// Returns the seconds a finished operation stays reconcilable.
+    #[must_use]
+    pub const fn operation_ttl(&self) -> u64 {
+        self.operation_ttl
+    }
+
+    /// Returns the maximum number of retained closed session entries.
+    #[must_use]
+    pub const fn max_closed_retained(&self) -> u64 {
+        self.max_closed_retained
+    }
+
+    /// Returns the seconds a closed session entry may be retained.
+    #[must_use]
+    pub const fn closed_retention_ttl(&self) -> u64 {
+        self.closed_retention_ttl
+    }
 }
 
 /// The service-level capabilities view fetched once at startup.
@@ -364,9 +432,19 @@ pub struct CapabilityView {
     service_version: String,
     backend: BackendView,
     limits: LimitsView,
+    process_epoch: u64,
 }
 
 impl CapabilityView {
+    /// Returns the process epoch the daemon reported.
+    ///
+    /// It is operational metadata, not emulated state: a reconciliation result is only
+    /// trusted while the epoch matches the one the client reconciled against.
+    #[must_use]
+    pub const fn process_epoch(&self) -> u64 {
+        self.process_epoch
+    }
+
     /// Returns the service crate version.
     #[must_use]
     pub fn service_version(&self) -> &str {
@@ -387,6 +465,11 @@ impl CapabilityView {
 }
 
 /// One row of `session.list`.
+///
+/// The row carries committed metadata plus the `running` marker the service adds
+/// when a session's execution owner is held by a run (ADR-0016 §1): that entry's
+/// fields are as of the session's last completed operation, which is why the
+/// marker exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionSummary {
     session: u64,
@@ -394,6 +477,7 @@ pub struct SessionSummary {
     tick: u64,
     state_hash: StateHash,
     lineage: Lineage,
+    running: bool,
 }
 
 impl SessionSummary {
@@ -425,6 +509,15 @@ impl SessionSummary {
     #[must_use]
     pub const fn lineage(&self) -> Lineage {
         self.lineage
+    }
+
+    /// Returns whether a run holds this session's execution owner.
+    ///
+    /// `true` means the row's state, tick and digest are as of the last completed
+    /// operation on that session.
+    #[must_use]
+    pub const fn running(&self) -> bool {
+        self.running
     }
 }
 
@@ -509,6 +602,7 @@ pub struct SessionView {
     session: u64,
     state: SessionState,
     lineage: Lineage,
+    revision: u64,
     backend: BackendView,
     machine: MachineView,
 }
@@ -530,6 +624,15 @@ impl SessionView {
     #[must_use]
     pub const fn lineage(&self) -> Lineage {
         self.lineage
+    }
+
+    /// Returns the monotonic session revision (ADR-0016 §2).
+    ///
+    /// A tick is not a revision (`restore` moves it backwards and two writes can
+    /// share one), so this is the value a caller pins to detect that state moved on.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Returns the per-session backend descriptor.
@@ -1018,11 +1121,13 @@ pub fn decode_capabilities(bytes: &[u8]) -> Result<CapabilityView, GuiError> {
         &[
             "schema",
             "service_version",
+            "api_version",
             "backend",
             "ops",
             "limits",
             "store",
             "artifacts",
+            "process_epoch",
         ],
         "capabilities result",
     )?;
@@ -1037,10 +1142,14 @@ pub fn decode_capabilities(bytes: &[u8]) -> Result<CapabilityView, GuiError> {
     decode_catalog(view.array("ops")?)?;
     decode_configured(view.raw("store")?, "capabilities store")?;
     decode_configured(view.raw("artifacts")?, "capabilities artifacts")?;
+    // Operational metadata, not emulated state: the epoch identifies the process whose
+    // journal a reconciliation result belongs to (ADR-0016 §2, V3-3).
+    let process_epoch = view.unsigned("process_epoch")?;
     Ok(CapabilityView {
         service_version: view.text("service_version")?.to_owned(),
         backend,
         limits,
+        process_epoch,
     })
 }
 
@@ -1078,13 +1187,16 @@ pub fn decode_session_view(bytes: &[u8]) -> Result<SessionView, GuiError> {
     let result = result_for(&document, "session.inspect")?;
     let view = ObjectView::exact(
         result,
-        &["session", "state", "lineage", "backend", "machine"],
+        &[
+            "session", "state", "lineage", "revision", "backend", "machine",
+        ],
         "session.inspect result",
     )?;
     Ok(SessionView {
         session: view.unsigned("session")?,
         state: SessionState::from_wire(view.text("state")?)?,
         lineage: decode_lineage(view.raw("lineage")?)?,
+        revision: view.unsigned("revision")?,
         backend: decode_backend(view.raw("backend")?)?,
         machine: decode_machine(view.raw("machine")?)?,
     })
@@ -1147,6 +1259,9 @@ pub fn decode_create(bytes: &[u8]) -> Result<CreateView, GuiError> {
             "state_hash",
             "lineage",
             "backend_id",
+            // Operational metadata a v2 mutation result carries: the process epoch the
+            // result's reconciliation belongs to. No panel renders it.
+            "process_epoch",
         ],
         "session.create result",
     )?;
@@ -1169,14 +1284,45 @@ pub fn decode_create(bytes: &[u8]) -> Result<CreateView, GuiError> {
 pub fn decode_run(bytes: &[u8]) -> Result<RunView, GuiError> {
     let document = parse_response(bytes)?;
     let result = result_for(&document, "session.run")?;
+    // The v2 run result adds the ADR-0016 §2 fields. A GUI pane advances by the
+    // authoritative `performed` count, and refuses a run that stopped for a reason
+    // other than completion or a halt instead of silently continuing.
     let view = ObjectView::exact(
         result,
-        &["session", "steps", "tick", "state_hash", "halted"],
+        &[
+            "session",
+            "steps",
+            "performed",
+            "tick",
+            "state_hash",
+            "halted",
+            "stop_reason",
+            "revision",
+            "max_wall_ms",
+            // The v2 mutation result also names the process epoch (ADR-0016 §2, F2);
+            // the pane advances on `performed` and does not retain it.
+            "process_epoch",
+        ],
         "session.run result",
     )?;
+    let performed = view.unsigned("performed")?;
+    let steps = view.unsigned("steps")?;
+    if performed > steps {
+        return Err(GuiError::protocol(
+            "session.run reports more performed steps than requested",
+        ));
+    }
+    match view.text("stop_reason")? {
+        "completed" | "halted" => {}
+        other => {
+            return Err(GuiError::protocol(&format!(
+                "session.run stopped with `{other}`; the pane state is partial"
+            )));
+        }
+    }
     Ok(RunView {
         session: view.unsigned("session")?,
-        steps: view.unsigned("steps")?,
+        steps: performed,
         tick: view.unsigned("tick")?,
         state_hash: parse_state_hash(view.text("state_hash")?, "session.run state_hash")?,
         halted: view.boolean("halted")?,
@@ -1224,6 +1370,16 @@ fn decode_limits(value: &JsonValue) -> Result<LimitsView, GuiError> {
         max_store_entries: view.unsigned("max_store_entries")?,
         max_checkpoints: view.unsigned("max_checkpoints")?,
         json_max_depth: view.unsigned("json_max_depth")?,
+        // The control-path bounds are validated but not retained: no panel renders
+        // them, and the GUI's own runs use the daemon cap.
+        max_run_wall_ms: view.unsigned("max_run_wall_ms")?,
+        max_operation_journal: view.unsigned("max_operation_journal")?,
+        operation_ttl: view.unsigned("operation_ttl")?,
+        max_closed_retained: view.unsigned("max_closed_retained")?,
+        closed_retention_ttl: view.unsigned("closed_retention_ttl")?,
+        max_snapshots_per_session: view.unsigned("max_snapshots_per_session")?,
+        max_bytes_per_session: view.unsigned("max_bytes_per_session")?,
+        max_store_bytes: view.unsigned("max_store_bytes")?,
     })
 }
 
@@ -1250,7 +1406,14 @@ fn decode_configured(value: &JsonValue, what: &'static str) -> Result<(), GuiErr
 fn decode_summary(value: &JsonValue) -> Result<SessionSummary, GuiError> {
     let view = ObjectView::exact(
         value,
-        &["session", "state", "tick", "state_hash", "lineage"],
+        &[
+            "session",
+            "state",
+            "tick",
+            "state_hash",
+            "lineage",
+            "running",
+        ],
         "session.list entry",
     )?;
     Ok(SessionSummary {
@@ -1259,6 +1422,7 @@ fn decode_summary(value: &JsonValue) -> Result<SessionSummary, GuiError> {
         tick: view.unsigned("tick")?,
         state_hash: parse_state_hash(view.text("state_hash")?, "session.list state_hash")?,
         lineage: decode_lineage(view.raw("lineage")?)?,
+        running: view.boolean("running")?,
     })
 }
 
@@ -1424,6 +1588,7 @@ mod tests {
             JsonValue::string("chronofork.capabilities.v1"),
         );
         fields.insert("service_version".to_owned(), JsonValue::string("0.1.0"));
+        fields.insert("api_version".to_owned(), JsonValue::int(2));
         fields.insert("backend".to_owned(), backend(flag_config));
         fields.insert(
             "ops".to_owned(),
@@ -1443,6 +1608,14 @@ mod tests {
                 ("max_store_entries", JsonValue::int(256)),
                 ("max_checkpoints", JsonValue::int(32)),
                 ("json_max_depth", JsonValue::int(32)),
+                ("max_run_wall_ms", JsonValue::int(30_000)),
+                ("max_operation_journal", JsonValue::int(1_024)),
+                ("operation_ttl", JsonValue::int(600)),
+                ("max_closed_retained", JsonValue::int(64)),
+                ("closed_retention_ttl", JsonValue::int(300)),
+                ("max_snapshots_per_session", JsonValue::int(64)),
+                ("max_bytes_per_session", JsonValue::int(67_108_864)),
+                ("max_store_bytes", JsonValue::int(1_073_741_824)),
             ]),
         );
         fields.insert(
@@ -1453,6 +1626,7 @@ mod tests {
             "artifacts".to_owned(),
             JsonValue::object([("configured", JsonValue::from_bool(false))]),
         );
+        fields.insert("process_epoch".to_owned(), JsonValue::int(7));
         top(&mut fields);
         envelope("capabilities", JsonValue::Object(fields))
     }
@@ -1488,6 +1662,7 @@ mod tests {
         fields.insert("session".to_owned(), JsonValue::int(1));
         fields.insert("state".to_owned(), JsonValue::string("ready"));
         fields.insert("lineage".to_owned(), lineage());
+        fields.insert("revision".to_owned(), JsonValue::int(0));
         fields.insert("backend".to_owned(), backend(|_| ()));
         fields.insert("machine".to_owned(), machine_document(machine));
         top(&mut fields);
@@ -1519,6 +1694,7 @@ mod tests {
                     ("tick", JsonValue::int(3)),
                     ("state_hash", JsonValue::string(HASH)),
                     ("lineage", lineage()),
+                    ("running", JsonValue::from_bool(false)),
                 ])]),
             ),
             ("truncated", JsonValue::from_bool(true)),
@@ -1533,6 +1709,8 @@ mod tests {
         fields.insert("tick".to_owned(), JsonValue::int(0));
         fields.insert("state_hash".to_owned(), JsonValue::string(HASH));
         fields.insert("lineage".to_owned(), lineage());
+        // The v2 mutation result names the process epoch (ADR-0016 §2).
+        fields.insert("process_epoch".to_owned(), JsonValue::int(7));
         if let Some((name, value)) = extra {
             fields.insert(name.to_owned(), value);
         }
@@ -1543,9 +1721,15 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("session".to_owned(), JsonValue::int(1));
         fields.insert("steps".to_owned(), JsonValue::int(3));
+        fields.insert("performed".to_owned(), JsonValue::int(3));
         fields.insert("tick".to_owned(), JsonValue::int(3));
         fields.insert("state_hash".to_owned(), JsonValue::string(HASH));
         fields.insert("halted".to_owned(), JsonValue::from_bool(true));
+        fields.insert("stop_reason".to_owned(), JsonValue::string("halted"));
+        fields.insert("revision".to_owned(), JsonValue::int(1));
+        fields.insert("max_wall_ms".to_owned(), JsonValue::int(30_000));
+        // The v2 mutation result names the process epoch (ADR-0016 §2).
+        fields.insert("process_epoch".to_owned(), JsonValue::int(7));
         if let Some((name, value)) = extra {
             fields.insert(name.to_owned(), value);
         }
@@ -1735,6 +1919,46 @@ mod tests {
         assert_eq!(summary.lineage().depth(), 0);
         assert_eq!(summary.lineage().parent_session(), None);
         assert_eq!(summary.lineage().origin_snapshot(), None);
+        assert!(
+            !summary.running(),
+            "a committed row is not marked as running"
+        );
+    }
+
+    #[test]
+    fn session_list_decodes_a_running_row_and_requires_the_marker() {
+        let mut document = summary_document("ready");
+        let Some(JsonValue::Array(sessions)) = document.get("sessions").cloned() else {
+            unreachable!("fixture has a sessions array")
+        };
+        let mut row = sessions[0].as_object().expect("row object").clone();
+        row.insert("running".to_owned(), JsonValue::from_bool(true));
+        document = JsonValue::object([
+            ("sessions", JsonValue::array([JsonValue::Object(row)])),
+            ("truncated", JsonValue::from_bool(false)),
+        ]);
+        let list = decode_session_list(&envelope("session.list", document)).expect("running row");
+        assert!(list.sessions()[0].running());
+
+        // The marker is required: a service that omits it is a protocol error, not a
+        // silently stale row.
+        let missing = decode_session_list(&envelope("session.list", summary_document("ready")));
+        assert!(missing.is_ok(), "the fixture carries the marker");
+        let without = {
+            let mut document = summary_document("ready");
+            if let Some(JsonValue::Array(sessions)) = document.get("sessions").cloned() {
+                let mut row = sessions[0].as_object().expect("row object").clone();
+                row.remove("running");
+                document = JsonValue::object([
+                    ("sessions", JsonValue::array([JsonValue::Object(row)])),
+                    ("truncated", JsonValue::from_bool(false)),
+                ]);
+            }
+            document
+        };
+        let error =
+            decode_session_list(&envelope("session.list", without)).expect_err("missing marker");
+        assert_eq!(error.code(), GuiErrorCode::Channel);
     }
 
     #[test]

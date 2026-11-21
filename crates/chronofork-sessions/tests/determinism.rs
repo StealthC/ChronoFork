@@ -59,7 +59,7 @@ fn setup(name: &str) -> (PathBuf, u64, SnapshotEntry) {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, Some("checkpoint"))
+        .save_snapshot(session.session_key, &snapshot, Some("checkpoint"))
         .expect("publish snapshot");
     (root, session.session_key, entry)
 }

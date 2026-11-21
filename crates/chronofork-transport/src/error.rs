@@ -22,6 +22,12 @@ pub enum TransportError {
     },
     /// A service operation failed locally (in-process client paths).
     Service(ServiceError),
+    /// The daemon does not implement the API wire version this client requires.
+    ///
+    /// The client refuses a v2 call locally after its read-only probe
+    /// (ADR-0016 §Compatibility/F10): a legacy daemon would ignore the version header
+    /// and dispatch the call as v1, so sending it would be a silent downgrade.
+    UnsupportedVersion(String),
 }
 
 impl fmt::Display for TransportError {
@@ -32,6 +38,12 @@ impl fmt::Display for TransportError {
             Self::Protocol(message) => write!(formatter, "transport protocol error: {message}"),
             Self::Http { status, .. } => write!(formatter, "peer returned HTTP status {status}"),
             Self::Service(error) => write!(formatter, "service error: {error}"),
+            Self::UnsupportedVersion(detail) => {
+                write!(
+                    formatter,
+                    "server does not support the required API version: {detail}"
+                )
+            }
         }
     }
 }
@@ -41,7 +53,10 @@ impl std::error::Error for TransportError {
         match self {
             Self::Io(error) => Some(error),
             Self::Service(error) => Some(error),
-            Self::InvalidUrl(_) | Self::Protocol(_) | Self::Http { .. } => None,
+            Self::InvalidUrl(_)
+            | Self::Protocol(_)
+            | Self::Http { .. }
+            | Self::UnsupportedVersion(_) => None,
         }
     }
 }

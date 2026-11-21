@@ -962,9 +962,15 @@ mod tests {
                 JsonValue::int(i64::try_from(session).expect("session")),
             ),
             ("steps", JsonValue::int(4)),
+            ("performed", JsonValue::int(4)),
             ("tick", JsonValue::int(i64::try_from(tick).expect("tick"))),
             ("state_hash", JsonValue::string(HASH)),
             ("halted", JsonValue::from_bool(false)),
+            ("stop_reason", JsonValue::string("completed")),
+            ("revision", JsonValue::int(1)),
+            ("max_wall_ms", JsonValue::int(30_000)),
+            // Operational metadata the v2 run result carries (ADR-0016 §2).
+            ("process_epoch", JsonValue::int(7)),
         ]);
         let envelope =
             JsonValue::object([("op", JsonValue::string("session.run")), ("result", result)]);

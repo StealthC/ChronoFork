@@ -1,5 +1,12 @@
 # M7 GUI — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed and independently verified.** Every row M7-A1–M7-A30 is
   `executed - passed`. The promotion basis is the **final independent verification
   PASS4** (2026-11-17 13:50–13:54 America/Fortaleza) on the stable, fully repaired

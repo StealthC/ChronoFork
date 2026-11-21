@@ -12,6 +12,24 @@ use chronofork_sessions::{SessionError, StorageAnomalyKind};
 use crate::json::JsonValue;
 use crate::limits::ServiceLimits;
 
+/// Schema name of the canonical error envelope.
+///
+/// The envelope schema string is unchanged: the v2 additions are **additive codes
+/// in the same envelope** (`cancelled`, `deadline`, `unknown_outcome`), and the
+/// wire version that declares them is carried as `wire_version` beside the schema
+/// and advertised by `capabilities` as `api_version`. A consumer that treats an
+/// unknown code as an opaque string keeps working; one that must branch on the code
+/// reads the declared version instead of guessing.
+pub const ERROR_SCHEMA: &str = "chronofork.error.v1";
+
+/// Wire version of the API this build speaks (ADR-0016 §Compatibility).
+///
+/// Version 2 adds the control operations (`session.cancel`, `session.progress`,
+/// `session.operation`), the reconciliation fields, the `performed`/`stop_reason`
+/// run result and the `cancelled`/`deadline`/`unknown_outcome` codes; version 1 is
+/// the pre-ADR-0016 surface.
+pub const WIRE_VERSION: u64 = 2;
+
 /// Stable machine-readable error codes shared by every transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorCode {
@@ -35,10 +53,35 @@ pub enum ErrorCode {
     Closed,
     /// The machine has halted and cannot advance.
     Halted,
+    /// The operation was cancelled by an explicit `session.cancel` request.
+    ///
+    /// Wire addition of API version 2 (ADR-0016 §2). A `session.run` truncated by a
+    /// cancellation returns its partial result with `stop_reason: "cancelled"`; this
+    /// code is what a request that could not start, or a control read that names a
+    /// cancelled operation, reports.
+    Cancelled,
+    /// The operation exceeded its host wall-clock deadline.
+    ///
+    /// Wire addition of API version 2 (ADR-0016 §2). A `session.run` truncated by its
+    /// deadline returns `performed`/`tick` with `stop_reason: "deadline"`; the code is
+    /// used where a deadline prevents an operation from being admitted at all.
+    Deadline,
+    /// The result of a request key is no longer retained in this process epoch.
+    ///
+    /// Wire addition of API version 2 (ADR-0016 §2, §6): the reconciliation horizon
+    /// is bounded by `operation_ttl` (counted from completion) and by the process
+    /// epoch. Beyond it the server reports the outcome as unknown and **does not
+    /// re-execute** the operation.
+    UnknownOutcome,
     /// A backend rejected the operation.
     Backend,
     /// The durable storage layer rejected the operation.
     Storage,
+    /// The request declares an API wire version this server does not implement.
+    ///
+    /// Wire addition of API version 2 (ADR-0016 §Compatibility/F10): the refusal happens
+    /// **before dispatch**, so an incompatible call never applies a partial mutation.
+    UnsupportedVersion,
     /// A defect in the service itself; never a normal client outcome.
     Internal,
 }
@@ -58,10 +101,43 @@ impl ErrorCode {
             Self::LimitExceeded => "limit_exceeded",
             Self::Closed => "closed",
             Self::Halted => "halted",
+            Self::Cancelled => "cancelled",
+            Self::Deadline => "deadline",
+            Self::UnknownOutcome => "unknown_outcome",
             Self::Backend => "backend_error",
             Self::Storage => "storage_error",
+            Self::UnsupportedVersion => "unsupported_version",
             Self::Internal => "internal_error",
         }
+    }
+
+    /// Parses the stable wire string back into a code.
+    ///
+    /// This is the inverse of [`ErrorCode::as_str`] and exists so a stored canonical
+    /// error envelope can be returned as the same typed error it was built from.
+    /// An unknown string is `None`: a consumer never invents a code.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "invalid_request" => Self::InvalidRequest,
+            "unknown_op" => Self::UnknownOp,
+            "unauthorized" => Self::Unauthorized,
+            "forbidden" => Self::Forbidden,
+            "not_found" => Self::NotFound,
+            "conflict" => Self::Conflict,
+            "not_configured" => Self::NotConfigured,
+            "limit_exceeded" => Self::LimitExceeded,
+            "closed" => Self::Closed,
+            "halted" => Self::Halted,
+            "cancelled" => Self::Cancelled,
+            "deadline" => Self::Deadline,
+            "unknown_outcome" => Self::UnknownOutcome,
+            "backend_error" => Self::Backend,
+            "storage_error" => Self::Storage,
+            "unsupported_version" => Self::UnsupportedVersion,
+            "internal_error" => Self::Internal,
+            _ => return None,
+        })
     }
 }
 
@@ -130,6 +206,14 @@ impl ServiceError {
     /// Builds the canonical `chronofork.error.v1` JSON value.
     #[must_use]
     pub fn to_json(&self) -> JsonValue {
+        self.to_json_versioned(crate::version::ApiVersion::V2)
+    }
+
+    /// Builds the error envelope for one API wire version.
+    ///
+    /// The v2 envelope declares `wire_version: 2`; the v1 envelope is the original
+    /// `chronofork.error.v1` document without it (ADR-0016 §Compatibility).
+    pub fn to_json_versioned(&self, version: crate::version::ApiVersion) -> JsonValue {
         let mut error = BTreeMap::new();
         error.insert(
             "code".to_owned(),
@@ -143,15 +227,31 @@ impl ServiceError {
         let mut root = BTreeMap::new();
         root.insert(
             "schema".to_owned(),
-            JsonValue::String("chronofork.error.v1".to_owned()),
+            JsonValue::String(ERROR_SCHEMA.to_owned()),
+        );
+        root.insert(
+            "wire_version".to_owned(),
+            JsonValue::Int(WIRE_VERSION as i64),
         );
         root.insert("error".to_owned(), JsonValue::Object(error));
+        if !version.is_v2() {
+            root.remove("wire_version");
+        }
         JsonValue::Object(root)
     }
 
     /// Builds the canonical error envelope bytes.
     pub fn to_canonical_bytes(&self, limits: &ServiceLimits) -> Result<Vec<u8>, ServiceError> {
         crate::json::to_canonical_bytes(&self.to_json(), limits)
+    }
+
+    /// Builds the canonical error envelope bytes for one API wire version.
+    pub fn to_canonical_bytes_versioned(
+        &self,
+        limits: &ServiceLimits,
+        version: crate::version::ApiVersion,
+    ) -> Result<Vec<u8>, ServiceError> {
+        crate::json::to_canonical_bytes(&self.to_json_versioned(version), limits)
     }
 }
 
@@ -184,6 +284,15 @@ impl From<SessionError> for ServiceError {
             SessionError::Closed(_) => reused(ErrorCode::Closed, &error),
             SessionError::NotRunning { .. } => reused(ErrorCode::Conflict, &error),
             SessionError::Halted(_) => reused(ErrorCode::Halted, &error),
+            // A per-session quota rejection names the quota, its limit and the value
+            // the operation would have reached; none of them is client-controlled.
+            SessionError::LimitExceeded { .. } => reused(ErrorCode::LimitExceeded, &error),
+            // A missing backend declaration is reported under the byte quota: the capture
+            // could not be preflighted, so nothing was allocated.
+            SessionError::UnboundedSnapshot { .. } => reused(ErrorCode::LimitExceeded, &error),
+            // A poisoned per-session owner is a service defect, never a normal client
+            // outcome; the text carries only the session identifier.
+            SessionError::Poisoned(_) => reused(ErrorCode::Internal, &error),
             SessionError::IdSpaceExhausted => reused(ErrorCode::LimitExceeded, &error),
             SessionError::InvalidSnapshot(_) => reused(ErrorCode::Storage, &error),
             SessionError::IncompatibleSnapshot(_) => reused(ErrorCode::Storage, &error),
@@ -301,6 +410,9 @@ fn storage_label(error: &SessionError) -> &'static str {
         SessionError::Closed(_) => "session is closed",
         SessionError::NotRunning { .. } => "session is not running",
         SessionError::Halted(_) => "machine is halted",
+        SessionError::LimitExceeded { .. } => "session quota exceeded",
+        SessionError::UnboundedSnapshot { .. } => "snapshot payload bound not declared",
+        SessionError::Poisoned(_) => "session owner poisoned",
         SessionError::IdSpaceExhausted => "identifier space exhausted",
         SessionError::InvalidSnapshot(_) => "invalid snapshot",
         SessionError::IncompatibleSnapshot(_) => "incompatible snapshot",

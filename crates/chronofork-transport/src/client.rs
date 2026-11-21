@@ -8,10 +8,11 @@
 use std::fmt;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use chronofork_service::ServiceLimits;
 use chronofork_service::json::{JsonValue, parse, to_canonical_bytes};
+use chronofork_service::{ApiVersion, ServiceLimits};
 
 use crate::error::TransportError;
 use crate::mcp::{PROTOCOL_VERSION, ToolCallResult};
@@ -19,7 +20,27 @@ use crate::mcp::{PROTOCOL_VERSION, ToolCallResult};
 /// Connect timeout for one client request.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Read and write timeout for one client request.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// This is the **v1 long-operation contract** of ADR-0016 §1 (V3-1): the server's
+/// own deadline for a long operation is `ServiceLimits::max_run_wall_ms` (30 s), so
+/// the client must wait strictly longer or it would report a network timeout while
+/// the daemon still applies state — the unknown-outcome case. The `5 s` this
+/// replaced made every long run a client-side failure by construction.
+///
+/// `MAX_WALL_MS` plus `FINAL_RESPONSE_MARGIN`: the margin covers the final
+/// inspection, the canonical encode and the response write, so a run that ends at
+/// the deadline still returns its result. Poll/asynchronous delivery stays out of
+/// scope for v1, as the ADR decides.
+const SERVER_DEADLINE_MS: u64 = 30_000;
+/// Compile-time guard that the client's assumption matches the service's own cap.
+const _: () = assert!(SERVER_DEADLINE_MS == 30_000);
+/// Extra time granted for the final response after the server deadline.
+const FINAL_RESPONSE_MARGIN: Duration = Duration::from_secs(15);
+/// Read and write timeout for one client request.
+const IO_TIMEOUT: Duration =
+    Duration::from_millis(SERVER_DEADLINE_MS + FINAL_RESPONSE_MARGIN.as_millis() as u64);
+/// Connect timeout for one client request (unchanged; connecting is not the long path).
+const _CONNECT_UNCHANGED: () = ();
 /// Maximum accepted response head size in bytes.
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// Read chunk size used while assembling a response.
@@ -32,6 +53,14 @@ const CHUNK_BYTES: usize = 4096;
 pub struct HttpClient {
     base: String,
     token: String,
+    version: ApiVersion,
+    /// Whether the read-only v2 probe of this client already succeeded.
+    ///
+    /// A successful probe is remembered, so it costs one discovery round trip per client
+    /// instead of one per mutation. A **failed** probe is not cached: a transient peer
+    /// failure must surface as its own error (the peer's canonical envelope), not as a
+    /// sticky version refusal.
+    probed: Arc<OnceLock<()>>,
 }
 
 impl fmt::Debug for HttpClient {
@@ -39,6 +68,7 @@ impl fmt::Debug for HttpClient {
         formatter
             .debug_struct("HttpClient")
             .field("base", &self.base)
+            .field("version", &self.version)
             .field("token", &"<redacted>")
             .finish()
     }
@@ -52,6 +82,65 @@ impl HttpClient {
         Self {
             base: base.trim_end_matches('/').to_owned(),
             token: token.into(),
+            // The unversioned client speaks v1, which is what an existing caller
+            // expects and what a legacy daemon serves.
+            version: ApiVersion::V1,
+            probed: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Returns a client that asks for one API wire version on every request.
+    ///
+    /// A v2 client performs the read-only capabilities probe before its first v2
+    /// **mutation** and refuses locally when the daemon does not advertise v2
+    /// (ADR-0016 §Compatibility): a legacy daemon ignores the header, so sending the
+    /// mutation would be a silent downgrade instead of a negotiation.
+    #[must_use]
+    pub fn with_version(mut self, version: ApiVersion) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Returns the API wire version this client asks for.
+    #[must_use]
+    pub const fn version(&self) -> ApiVersion {
+        self.version
+    }
+
+    /// Performs the read-only version probe and returns the server's `capabilities`.
+    ///
+    /// This never mutates: it is exactly the discovery call of ADR-0016
+    /// §Compatibility, so detection cannot apply anything on a daemon that ignores the
+    /// version header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::tools`], plus [`TransportError::UnsupportedVersion`] when the daemon
+    /// does not advertise the version this client requires.
+    pub fn probe_version(&self) -> Result<Vec<u8>, TransportError> {
+        // The probe declares the version the client wants: a v2 daemon answers with
+        // `api_version`, and a legacy daemon ignores the header and answers the v1 shape,
+        // which is exactly how the client tells them apart. The call is read-only, so
+        // detection can never apply a mutation (ADR-0016 §Compatibility).
+        let document = JsonValue::object([
+            ("op", JsonValue::string("capabilities")),
+            ("input", JsonValue::Object(Default::default())),
+        ]);
+        let body = to_canonical_bytes(&document, &ServiceLimits::default())?;
+        // Deliberately bypasses `ensure_version`: this *is* the probe.
+        let capabilities = self.request("POST", "/v1/ops", Some(&body), true)?;
+        let document =
+            parse(&capabilities, &ServiceLimits::default()).map_err(TransportError::Service)?;
+        let advertised = document
+            .get("result")
+            .and_then(|result| result.get("api_version"))
+            .and_then(JsonValue::as_u64);
+        match advertised {
+            Some(version) if version >= self.version.number() => Ok(capabilities),
+            _ => Err(TransportError::UnsupportedVersion(format!(
+                "the daemon does not advertise API version {}",
+                self.version.number()
+            ))),
         }
     }
 
@@ -106,9 +195,29 @@ impl HttpClient {
     ///
     /// # Errors
     ///
-    /// As [`Self::tools`].
+    /// As [`Self::tools`], plus [`TransportError::UnsupportedVersion`] when this client
+    /// asks for a version the daemon does not advertise.
     pub fn call_raw(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+        self.ensure_version()?;
         self.request("POST", "/v1/ops", Some(body), true)
+    }
+
+    /// Runs the read-only version probe once per client and refuses a downgrade.
+    ///
+    /// A v1 client never probes (v1 is the baseline every daemon serves). A v2 client
+    /// probes before its first call and, when the daemon does not advertise v2, returns
+    /// [`TransportError::UnsupportedVersion`] **without sending the call** — which is
+    /// what keeps a legacy daemon that ignores the header from silently dispatching a
+    /// v2 request as v1.
+    fn ensure_version(&self) -> Result<(), TransportError> {
+        if !self.version.is_v2() || self.probed.get().is_some() {
+            return Ok(());
+        }
+        // Any probe failure — a peer error or a missing v2 advertisement — is returned
+        // as itself; only a successful probe is remembered.
+        self.probe_version()?;
+        let _ = self.probed.set(());
+        Ok(())
     }
 
     fn request(
@@ -134,6 +243,11 @@ impl HttpClient {
             request.push_str(&self.token);
             request.push_str("\r\n");
         }
+        // The version travels on every request: HTTP is stateless, so a per-session
+        // flag would not select the shape of this call (ADR-0016 §Compatibility).
+        request.push_str("X-ChronoFork-API: ");
+        request.push_str(self.version.as_str());
+        request.push_str("\r\n");
         request.push_str("Connection: close\r\n\r\n");
         let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -192,6 +306,17 @@ impl McpClient {
         }
     }
 
+    /// Returns an MCP client that asks for one API wire version on every tool call.
+    ///
+    /// The version travels in the per-call `_meta` metadata (the MCP endpoint has no
+    /// per-request header) and is probed with the same read-only capabilities call as
+    /// [`HttpClient::with_version`].
+    #[must_use]
+    pub fn with_version(mut self, version: ApiVersion) -> Self {
+        self.http = self.http.with_version(version);
+        self
+    }
+
     /// Returns the underlying HTTP client.
     #[must_use]
     pub const fn http(&self) -> &HttpClient {
@@ -240,10 +365,21 @@ impl McpClient {
         name: &str,
         arguments: &JsonValue,
     ) -> Result<ToolCallResult, TransportError> {
-        let params = JsonValue::object([
+        self.http.ensure_version()?;
+        let mut members = vec![
             ("name", JsonValue::string(name)),
             ("arguments", arguments.clone()),
-        ]);
+        ];
+        // The per-call metadata carries the API wire version (ADR-0016 §Compatibility):
+        // the MCP endpoint has no per-request header, and a version chosen once at
+        // `initialize` would not select the shape of this call.
+        if self.http.version().is_v2() {
+            members.push((
+                "_meta",
+                JsonValue::object([("chronofork/api", JsonValue::string("2"))]),
+            ));
+        }
+        let params = JsonValue::object(members);
         let result = self.rpc("tools/call", Some(params))?;
         let content = result
             .get("content")

@@ -13,11 +13,14 @@ agents use the same services, not three different worlds.
 
 > **Project status:** the foundation is complete; milestones M0–M7 are complete and
 > merged to `main` (M4 merged at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
-> `cb05836` via PR #6). M6 (agent-native interfaces) and M7 (human-facing GUI) were
-> independently verified on `agent/m6-agent-interfaces` and `agent/m7-gui` at base
-> `93d47ed` and are on `main`. ChronoFork is **not a finished Mega Drive emulator** and
-> does not run commercial games. See [what works today](#what-works-today) and
-> [what comes next](#what-comes-next) for the honest picture.
+> `cb05836` via PR #6). **M8 (functional Mega Drive emulator) is in progress**: phases
+> 8.1 (cartridge/region/TMSS), 8.2 (complete 68000 and the cycle model) and 8.3
+> (complete VDP, including rendering and DMA) are complete and merged; phases 8.4–8.8
+> are pending, and M9 multi-backend is planned after M8. ChronoFork is **not a finished
+> Mega Drive emulator** and does not run commercial games. See
+> [what works today](#what-works-today) and [what comes next](#what-comes-next) for the
+> honest picture; milestone status and integration state live once in the
+> [milestone status table](docs/roadmap/milestones.md).
 
 ## Why ChronoFork exists
 
@@ -80,7 +83,7 @@ is in [milestones](docs/roadmap/milestones.md).
 | M5 — Tracing and scripting | Structured traces, comparison and sandboxed scripts | Complete; merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 — Agent interfaces | HTTP and MCP over the same services | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 — GUI | Presentation that never owns canonical state | Complete; merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 — Functional Mega Drive | Complete 68000/Z80/VDP/audio and cartridge; playable commercial ROMs, headless capture and a native window | In progress (phase 8.2) |
+| M8 — Functional Mega Drive | Complete 68000/Z80/VDP/audio and cartridge; playable commercial ROMs, headless capture and a native window | In progress (phases 8.1–8.3 complete; next: 8.4) |
 | M9 — More systems | A second backend behind the same contract | Planned |
 
 M0–M7 are merged to `main`; M4 was merged at `4c595a2` after being verified on
@@ -195,19 +198,21 @@ HTTP/MCP transport. `chronofork gui run` is a stdin-driven, deterministic proces
 timeline, the eight documented panels, single/mosaic layouts, a built-in 60 fps pacer whose
 host-time loop is testable through an injected clock, and a cooperative human/agent
 controller lease. Attach/detach is proven non-perturbative, and every block, frame and
-document is byte-identical across runs. Video and audio stay honestly `unavailable` in v1:
-the pipeline is capability-gated and the backends still report `rendering=false` and
-`audio=false`.
+document is byte-identical across runs. Video and audio stay honestly `unavailable` in
+v1: the pipeline is capability-gated and has no real video or audio source/sink (the
+Mega Drive backend reports `rendering=true` since phase 8.3 for deterministic headless
+frames and `audio=false`).
 
 **Quality gates.** `./scripts/check.sh` runs formatting, compilation, Clippy, the
 workspace tests and rustdoc as one local gate, and CI runs on every push and pull
 request.
 
-**Honest limits.** The Mega Drive slice is deliberately narrow. Rendering, DMA,
-audio (YM2612/PSG), the Z80, timer interrupts, ROM header/region detection and
-cartridge mapping, and several 68000 exception groups (guest bus error and trace,
-among others) are still missing; the documented MC68000 instruction set and
-privilege enforcement for the implemented system instructions are present. Controller input covers only the TH-high
+**Honest limits.** The Mega Drive slice is deliberately narrow. Audio (YM2612/PSG),
+the Z80, timer interrupts, ROM header/region detection and cartridge mapping, and
+several 68000 exception groups (guest bus error and trace, among others) are still
+missing; rendering, DMA, the documented MC68000 instruction set and
+privilege enforcement for the implemented system instructions are present (VDP
+rendering/DMA since phase 8.3). Controller input covers only the TH-high
 3-button subset on ports 1–2: A and Start, the TH/6-button multiplexing, controller
 timing, port 3 and analog or keyboard hardware are absent. Canonical time is the
 master-cycle timeline (each instruction adds its 68000-cycle cost times seven),
@@ -254,27 +259,32 @@ Linux/WSL-only and makes no performance or cross-platform claim.
 ## What comes next
 
 M0–M7 are merged to `main` (M4 at `4c595a2`, M5 at `0c4e9f0` via PR #4, M6 and M7 at
-`cb05836` via PR #6). **M8 is the functional Mega Drive emulator** and is in progress
-(phase 8.2, the complete 68000/cycle model); it deliberately sequences the
-hardware-depth tracks to completion instead of waiting for them in parallel:
+`cb05836` via PR #6). **M8 is the functional Mega Drive emulator** and is in progress:
+phases 8.1–8.3 are complete and merged, and phases 8.4–8.8 remain. M8 deliberately
+sequences the hardware-depth tracks to completion instead of waiting for them in
+parallel:
 
-- **Complete the Mega Drive model (M8, decomposed by H1–H5).** The full 68000 and Z80,
-  rendering/VDP/DMA with timing, YM2612/PSG audio, ROM header/TMSS/mapper/SRAM, complete
-  controller and timer behaviour, cycle-based time with unpaced/paced execution modes, and
-  deterministic headless capture of frames and audio. A curated commercial-ROM set is the
-  playability proof; the native window is the last phase.
+- **Complete the Mega Drive model (M8, decomposed by H1–H5).** The full Z80,
+  YM2612/PSG audio, ROM/cartridge work beyond the phase-8.1 header/TMSS/Sega mapper
+  (mapper variants and SRAM banking), complete controller and timer behaviour,
+  cycle-based time with unpaced/paced execution modes, and deterministic headless
+  capture of frames and audio. The complete 68000 (phase 8.2) and the complete VDP with
+  rendering/DMA/timing (phase 8.3) are already delivered. A curated commercial-ROM set
+  is the playability proof; the native window is the last phase and still needs an
+  ADR that supersedes ADR-0013's no-toolkit constraint.
 - **Close the replay follow-ups.** Import/export adapters (for example BK2),
   checkpoint-reference movies and in-place/timeline editing are documented
   follow-ups, not delivered features; 6-button and analog controller hardware
   belongs to H4.
-- **Integrate and extend the agent interfaces (M6).** Land the verified work, then the
-  recorded follow-ups: debug/trace/script/TAS over transport, durable per-principal
-  ownership and restart-persistent live sessions, TLS with token rotation/expiry and an
-  audit log, and SSE/streaming with the wider MCP surface.
-- **Integrate and extend the GUI (M7).** Land the verified presentation crate, then the
-  recorded follow-ups: a native toolkit frontend after H2/H3, real video/audio sources and
-  sinks, live host-time playback, GUI input editing/settings and the inspector/trace panel
-  content once M6-FU1 exposes those operations over transport.
+- **Land the actionable M6/M7 follow-ups.** Both are merged; the remaining recorded
+  follow-ups are the agent operations over transport (M6-FU1, where
+  [ADR-0016](docs/adr/0016-session-service-and-agent-api.md) records the owner's selected
+  direction and is still `Proposed`), durable per-principal ownership and
+  restart-persistent live sessions, TLS with token rotation/expiry and an audit log, and
+  SSE/streaming with the wider MCP surface; and on the GUI side a native toolkit frontend
+  after H2/H3, real video/audio sources and sinks, live host-time playback, GUI input
+  editing/settings and the inspector/trace panel content. Do not implement a `Proposed`
+  ADR as accepted.
 - **Grow beyond one system (M9).** After M8, a second backend behind the same contract,
   with capability differences reported honestly.
 

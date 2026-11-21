@@ -317,7 +317,7 @@ fn tools_list_publishes_the_catalog_with_mcp_field_names() {
         .get("tools")
         .and_then(JsonValue::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 20);
     assert_eq!(
         tools
             .first()

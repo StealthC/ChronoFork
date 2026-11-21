@@ -7,8 +7,8 @@ use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use chronofork_service::ServiceLimits;
 use chronofork_service::json::{JsonValue, to_canonical_bytes};
+use chronofork_service::{ApiVersion, ServiceLimits};
 use chronofork_transport::HttpClient;
 
 use super::{
@@ -112,7 +112,10 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     })?;
     let table = read_token_table(&token_file, ServiceLimits::default().max_request_bytes)?;
     let token = select_token(&table, options.principal.as_deref(), &token_file)?;
-    let client = HttpClient::new(url, token);
+    // This build's CLI is a v2 consumer: the typed client probes the daemon's
+    // capabilities first and refuses locally against a legacy daemon instead of
+    // silently downgrading the call (ADR-0016 §Compatibility).
+    let client = HttpClient::new(url, token).with_version(ApiVersion::V2);
 
     let body = match kind {
         ApiKind::Health => client.health(),

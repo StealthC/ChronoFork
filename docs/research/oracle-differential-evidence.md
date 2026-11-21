@@ -5,9 +5,12 @@
 > per-ROM quantum/masked-boundary control described on this page are superseded by
 > the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 > The address-projection and final-state results below remain historical evidence;
-> they are not a cycle-timing claim. The current Phase 8.2 differential runs eleven
-> synthetic ROMs and passes 11/11 address projections, 11/11 per-instruction cycle
-> comparisons, 11/11 selected final states and 11/11 negative controls; see the
+> they are not a cycle-timing claim. The current Phase 8.2 differential runs twelve
+> synthetic ROMs and passes 12/12 address projections, 11/12 per-instruction cycle
+> comparisons, 11/12 selected final states and 12/12 negative controls; the one
+> scoped exception is ``rom_exception`` (see the W4.2/W4.3 review note in
+> ``.research/consolidation-2026-11-20/reviews/w4-oracle.md`` for the oracle's saved-SR
+> reserved bit and its 38-vs-34 ``TRAP`` cost). The twelve-ROM result is in the
 > [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 
 - **Status:** Historical 3-ROM evidence **PASS 3/3** against the pinned Exodus
@@ -17,7 +20,7 @@
   `--instructions-per-line`, ran at the then-default quantum of 64, crossed two
   HBlank boundaries while the 68000 SR interrupt mask stayed 7, and entered no
   interrupt handler. This page is preserved history; the current harness and
-  result are the eleven-ROM master-cycle differential in the
+  result are the twelve-ROM master-cycle differential in the
   [68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The
   earlier pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect)
   is preserved below as history and was fixed under
@@ -131,6 +134,35 @@ The recorded binary digests identify the exact artifacts used. Rebuilding the sa
 commit with the same toolchain is expected to reproduce behaviour, not necessarily
 a bit-identical executable.
 
+### Empty clone: the oracle is not provisioned, and that is an explicit failure
+
+The checkout, both binaries and the module all live under the ignored `.research/`
+tree, so a clean clone cannot run the differential. The harness makes that a
+first-class outcome instead of a generic setup error:
+
+| Outcome | Exit | Meaning |
+|---|---|---|
+| pass | 0 | every compared ROM matched |
+| divergence | 1 | a trace, cycle or final-state comparison differs (reported as a finding) |
+| setup error | 2 | the harness itself cannot proceed (malformed trace, missing Python, unbuildable CLI) |
+| **oracle unavailable** | **3** | the pinned oracle is `absent` or `unpinned`; results are unavailable, never passing |
+
+```sh
+python3 scripts/oracle-diff.py --oracle-status     # report only: 0 provisioned, 3 not
+python3 scripts/oracle-diff.py --require-oracle    # 3 instead of running when mandatory
+python3 scripts/oracle-diff.py --dump-roms         # the offline half: no oracle needed
+CHRONOFORK_ORACLE_ROOT=/path/to/exodus-headless \
+CHRONOFORK_ORACLE_BIN_DIR=/path/to/build python3 scripts/oracle-diff.py ...
+```
+
+`--oracle-status` prints the provenance record (`status`, pinned commit, branch,
+module, both binary SHA-256 values and the MIT license note). The contract is
+locked by `crates/chronofork-megadrive/tests/oracle_harness.rs`, which needs no
+oracle: a missing default location must report `absent` and exit 3, while an
+explicitly requested path that does not exist is reported with the flag to check.
+`--require-oracle` exists so CI cannot silently omit the differential and still
+report success (review Q-01/Q-05).
+
 A separate build-validation run executed a 1024-byte synthetic smoke ROM and
 produced **2367** trace records starting at reset PC `0x200`, with two runs
 byte-identical at SHA-256
@@ -148,11 +180,19 @@ reset vectors, and end in a marker self-loop. None uses absolute-word loads,
 PC-relative addressing, or any instruction outside the documented ChronoFork
 subset.
 
+The marker addresses and SHA-256 digests below are the ones the generator produces
+after 927792f cleared the architecturally undefined reset `X` in the shared
+register setup with a two-byte `ADD.B D0,D0`; every marker moved by `+2`
+(`rom_alu` `0x000352`→`0x000354`, `rom_mem_vdp` `0x0002E0`→`0x0002E2`,
+`rom_masked` `0x0002EE`→`0x0002F0`) and the earlier digests are superseded. The
+`--stop-pc` transcripts, the command examples and the review tables all quote those
+corrected addresses.
+
 | ROM | SHA-256 | Size | Marker PC | Purpose |
 |---|---|---|---|---|
-| `rom_alu` | `f80bf48a29a428b6f3399d013103a7c41c7de13a058dfc7ae1bd67901aee563f` | 4096 | `0x000352` | ALU, shifts, flags and branch conditions; no absolute-long loads |
-| `rom_mem_vdp` | `9b43d7e9ebf8fa4182f5cf306489fa55a2b728267916fde71c54648f7e9d93ce` | 4096 | `0x0002E0` | Byte/word/long memory forms, absolute-long loads, VDP control/data writes |
-| `rom_masked` | `6c44450627402550df6c698960cb79c4b62adafd960b39ab644d3df6043e3c70` | 4096 | `0x0002EE` | Ten-iteration self-checking arithmetic recurrence, SR mask never written, 155 executed instructions at the default quantum |
+| `rom_alu` | `aaa4b3d3dd866bb9dfb3c96de4dec903bd1b346dce24891bc20a874162c8996a` | 4096 | `0x000354` | ALU, shifts, flags and branch conditions; no absolute-long loads |
+| `rom_mem_vdp` | `21a6e4a611e4026cf2c70e2e66bb4694a2ddce16d80c4f65319a84e5e2f2fe25` | 4096 | `0x0002E2` | Byte/word/long memory forms, absolute-long loads, VDP control/data writes |
+| `rom_masked` | `f8cb96dc8455d96fe92fcd4870c75baffec958dba9d24a6613025bba8fc6ad44` | 4096 | `0x0002F0` | Ten-iteration self-checking arithmetic recurrence, SR mask never written, 155 executed instructions at the default quantum |
 
 `rom_masked` is the E2-15 masked-ROM control. It contains **no** SR-writing opcode
 (no `MOVE` to SR, `ORI`/`ANDI`/`EORI` to SR, `STOP` or `RTE`), so it stays at the
@@ -488,7 +528,7 @@ All of this is ignored by Git and is not distributed with ChronoFork:
 
 ## Evidence commands
 
-Harness (the current script generates the eleven-ROM corpus, runs both tools twice
+Harness (the current script generates the twelve-ROM corpus, runs both tools twice
 per ROM, compares address streams, per-instruction cycles and final state, runs
 negative controls and writes the evidence files). The commands below are
 historical: they now run the current corpus, not the 3-ROM result on this page.
@@ -529,8 +569,8 @@ working directory is the pinned oracle checkout, so the module path resolves):
   "Data/Modules/Sega Mega Drive 1600.xml"
 ```
 
-Per-ROM ChronoFork trace (run 1; markers: `0x352` `rom_alu`, `0x2E0`
-`rom_mem_vdp`, `0x2EE` `rom_masked`). `rom_alu` and `rom_mem_vdp` pass the explicit
+Per-ROM ChronoFork trace (run 1; markers: `0x354` `rom_alu`, `0x2E2`
+`rom_mem_vdp`, `0x2F0` `rom_masked`). `rom_alu` and `rom_mem_vdp` pass the explicit
 1,000,000 quantum; `rom_masked` **omits** `--instructions-per-line` so the CLI
 default of 64 applies and the state file records it:
 
@@ -546,7 +586,7 @@ target/debug/chronofork megadrive trace \
 # rom_masked: no --instructions-per-line (CLI default 64)
 target/debug/chronofork megadrive trace \
   --rom .research/evidence/artifacts/roms/rom_masked.bin \
-  --instructions 10000 --stop-pc 0x2EE --ram-bytes 64 \
+  --instructions 10000 --stop-pc 0x2F0 --ram-bytes 64 \
   --trace-out .research/evidence/artifacts/rom_masked/chronofork.run1.trace \
   --state-out .research/evidence/artifacts/rom_masked/chronofork.run1.state
 ```
@@ -663,17 +703,20 @@ cp build/exodus-probe build/exodus-mcpd ../../oracle/build/
 cd ../../..
 cargo build -p chronofork-cli
 
-# 4. Run the current eleven-ROM differential harness with its own evidence directory.
+# 4. Run the current twelve-ROM differential harness with its own evidence directory.
 python3 scripts/oracle-diff.py --out-dir .research/evidence
 
 # 5. Inspect the recorded result and per-ROM artifacts.
 sha256sum .research/evidence/oracle-diff.json .research/evidence/oracle-diff.md
 ```
 
-Expected exit code: **0** — the command above runs the **current eleven-ROM
-master-cycle** harness, not the 3-ROM result documented on this page. The current
-run passes 11/11 address projections, per-instruction cycle comparisons, final
-states and address/cycle/final-state negative controls; see the
+Expected exit code: **1** — the command above runs the **current twelve-ROM
+master-cycle** harness, not the 3-ROM result documented on this page. Address
+projections pass 12/12 and the address/cycle/final-state negative controls pass
+12/12, but ``rom_exception`` reports two scoped oracle-side divergences (the
+oracle's saved-SR reserved bit and its 38-vs-34 ``TRAP`` cost), so the summary is
+``DIVERGENCE`` and the harness exits 1 until that comparison is adjudicated; see the
+W4.2/W4.3 review note and the
 [68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The 3/3
 and quantum-64 material on this page is retained historical evidence and is **not**
 reproduced by this command. To reproduce the historical pre-repair FAIL, check out

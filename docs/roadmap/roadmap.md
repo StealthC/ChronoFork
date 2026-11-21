@@ -102,9 +102,10 @@ scope, exit criteria, dependencies and non-goals.
   gating (level 7 always admitted, other levels only when strictly above the mask), `RTE`
   handler return and CPU-side VDP VINT pending/acknowledge.
 - Bounded debug-only instruction trace and the `megadrive trace` CLI.
-- Pinned-oracle differential evidence for eleven synthetic ROMs on the master-cycle
+- Pinned-oracle differential evidence for twelve synthetic ROMs on the master-cycle
   timeline, with address, per-instruction cycle, final-state and negative-control
-  comparisons; the historical masked-ROM default-quantum control is preserved.
+  comparisons; one ROM (`rom_exception`) carries two named scoped oracle-side
+  divergences, and the historical masked-ROM default-quantum control is preserved.
 
 ### Exit criteria
 
@@ -443,6 +444,21 @@ scope, exit criteria, dependencies and non-goals.
 - Optional native windowed frontend (video, audio, input, pause/step/save-state) behind a
   new ADR that supersedes ADR-0013's no-toolkit constraint.
 
+### Product-consolidation track (inside the open M8)
+
+Owner decision 2026-11-20 (O-2): a **consolidation track** runs inside the open M8 before
+8.7/8.8. It covers the review/correction of
+[ADR-0014](../adr/0014-v1-scope-single-user-loopback.md)/[0015](../adr/0015-verification-contract.md)/[0016](../adr/0016-session-service-and-agent-api.md)
+and their implementation phases W1–W5 (boot/bus hardening, the execution/verification
+contract, the service/concurrency work and the reproducible-evidence work). It is a track,
+**not** a milestone: M8 stays `In progress`, the Definition of Done is **not** amended, and
+completing the track does not claim M8 completion. It also records the other owner decisions
+of 2026-11-20: non-loopback bind refuses to start (O-1); the project's own YM2612/PSG/mixer is
+completed instead of adopting `ymfm` (O-3); unmapped I/O uses deterministic open bus plus a
+typed error where the hardware faults, with `0xA10008–0xA1000F` mapped first (O-4). The
+canonical status of the track lives in [Milestones](milestones.md#current-milestone) and the
+[planning lifecycle](../planning/ROADMAP.md).
+
 ### Exit criteria
 
 - Every criterion in [M8 — Definition of Done](milestones.md#m8--functional-mega-drive) is
@@ -460,8 +476,10 @@ scope, exit criteria, dependencies and non-goals.
 - Dynamic recompilation, run-ahead, skip-frames and savestate-rewind shortcuts are not
   required; each would need its own ADR and determinism analysis.
 - Port 3, analog and keyboard hardware are H4 residual limits unless the curated set requires
-  them.
-- Additional systems remain [Stage 9](#stage-9--multi-backend-expansion).
+  them (port 3/EXT control is a stub, port 3/EXT data is a typed error — owner decision O-4).
+- Additional systems remain [Stage 9](#stage-9--multi-backend-expansion), after M8.
+- TLS/multi-user deployment, async/Tokio, incremental hashing and COW/dedup remain deferred
+  (owner decision 2026-11-20, O-2); none is required to close Stage 8.
 
 ## Stage 9 — Multi-backend expansion
 
@@ -639,7 +657,7 @@ carrying an unchecked hardware box.
 
 #### Scope and deliverables
 
-- A broader differential corpus beyond the current eleven synthetic ROMs.
+- A broader differential corpus beyond the current twelve synthetic ROMs.
 - Positive differential comparison of interrupt delivery and timing, which needs an oracle
   model of those semantics.
 - Cycle accuracy, including prefetch and bus timing, at a documented level.

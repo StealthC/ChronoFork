@@ -1072,30 +1072,66 @@ passed without a command and an exit code recorded there or in your own run.
 
 ## CI (GitHub Actions)
 
-`.github/workflows/ci.yml` runs on every pushed commit (all branches) and on pull
-requests. It mirrors the local gates and adds:
+`.github/workflows/ci.yml` runs on pull requests, on pushes to `main`, on a weekday
+schedule (`17 3 * * 1-5`) and on manual `workflow_dispatch`. It is layered so no commit is
+tested twice:
+
+**Fast layer — pull request and `main` push (what a PR must pass).**
 
 - `fmt`: `cargo fmt --all -- --check`.
-- `check-clippy`: `cargo check --workspace` and Clippy with `-D warnings`.
-- `test`: `cargo test --workspace --locked --no-fail-fast`, then the determinism
-  suite single-threaded; the test log is uploaded as an artifact.
-- `docs`: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
-- `demos`: both CLI demos run three times; stderr must be empty and stdout must be
-  byte-identical across runs; outputs are uploaded as artifacts.
-- `release`: release build and release-mode tests.
-- `msrv`: `cargo check --workspace --all-targets --locked` with the declared MSRV
+- `check-clippy`: `cargo check --workspace --locked` and Clippy with `-D warnings`.
+- `test-fast`: the `core` (core/backend-api/test-backend), `cpu` (megadrive) and
+  `cli-demo` (CLI) groups with `--locked --no-fail-fast`, plus the release CLI build the
+  cross-profile demo golden needs. Logs are uploaded as artifacts.
+
+**Nightly layer — schedule, or `workflow_dispatch` with `nightly=true`.**
+
+- `test-nightly`: the full `core`/`cpu`/`host`/`apps` matrix in debug, the release CLI
+  build, and the `chronofork-sessions` determinism suite single-threaded.
+- `docs-nightly`: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked`.
+- `msrv-nightly`: `cargo check --workspace --all-targets --locked` with the declared MSRV
   1.85.0.
-- `portability`: `cargo check --workspace --all-targets --locked` on Windows and
-  macOS. These are build checks only; runtime tests and filesystem durability on
-  those platforms remain unverified.
+- `portability-nightly`: `cargo check --workspace --all-targets --locked` on Windows and
+  macOS. Build checks only; runtime tests and filesystem durability on those platforms
+  remain unverified.
+- `demos`: both CLI demos run three times each from the release binary; stdout must be
+  byte-identical across runs, stderr must be empty and the documented PASS marker must be
+  present. This is the repeat-run identity evidence, which the pinned demo golden does not
+  provide on its own.
+- `fixtures` and `differential`: only on a self-hosted runner labelled
+  `chronofork-nightly` and only when the non-secret repository variable
+  `CHRONOFORK_CI_INFRA` is `provisioned`. `fixtures` runs the commercial-ROM cartridge
+  tests and `fixture_integrity`; `differential` runs the pinned Exodus differential over
+  the whole ROM corpus (`scripts/oracle-diff.py --require-oracle`, exit 1 divergence /
+  exit 3 unprovisioned are both failures) and the provisioned branch of
+  `oracle_harness`. `nightly-gate` fails the run if either job did not succeed.
 
-Actions are pinned to commit SHAs, the workflow requests only `contents: read`, and
-it sets no concurrency cancellation, so every pushed commit runs the full workflow.
+**Nightly evidence contract.** `CHRONOFORK_REQUIRE_ROM_FIXTURES=1` (in `fixtures`)
+turns a missing ROM image into a hard failure, and `CHRONOFORK_CROSS_PROFILE_GOLDEN=1`
+(in `test-fast`, `test-nightly`, `fixtures` and `release`) turns a missing release
+build into a hard failure. A job that claims coverage therefore cannot pass by absence.
 
-Not yet wired: JUnit XML reporting, `cargo deny`, fixture-manifest checks and
-runtime tests on Windows/macOS. The recommended follow-ups remain a license/
-provenance check when a dependency or incorporated file changes, and nightly
-extended runs.
+**Release layer — `workflow_dispatch` with `release=true` only.**
+
+- `release`: workspace release build, workspace debug build (for the debug half of the
+  cross-profile golden) and `cargo test --workspace --release --locked --no-fail-fast`.
+
+Actions are pinned to commit SHAs, the workflow requests only `contents: read` and uses no
+secret; concurrency cancellation applies to pull requests only, so every commit pushed to
+`main` gets its own validated run.
+
+Known gap, stated rather than hidden: the commercial-ROM fixture tests and the pinned
+Exodus differential cannot run on GitHub-hosted runners (the images are local-only and the
+oracle is a pinned external checkout plus a built probe). When `CHRONOFORK_CI_INFRA` is not
+`provisioned`, `nightly-gate` emits an explicit warning naming that gap, so the nightly is
+known to cover everything except those two areas. Until a pinned runner exists, the
+differential runs only from a provisioned checkout or the disposable local container recipe
+in `.research/consolidation-2026-11-20/reviews/w4-ci.md`.
+
+Not yet wired: JUnit XML reporting, `cargo deny`, fixture-manifest checks and runtime
+tests on Windows/macOS. The recommended follow-ups remain a license/provenance check when
+a dependency or incorporated file changes, and pinning the oracle binaries on the
+`chronofork-nightly` runner so the differential does not rebuild them per run.
 
 ## Release gate (future)
 

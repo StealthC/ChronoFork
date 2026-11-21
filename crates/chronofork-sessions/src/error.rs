@@ -9,7 +9,7 @@ use chronofork_backend_api::BackendError;
 use chronofork_core::{SessionId, SnapshotId};
 use chronofork_trace::TraceError;
 
-use crate::session::SessionState;
+use crate::session::{SessionQuota, SessionState};
 use crate::storage::LockIdentity;
 
 /// A failure in session lifecycle, checkpointing, snapshot handling or durable
@@ -36,8 +36,40 @@ pub enum SessionError {
     },
     /// The backend halted and cannot execute another step.
     Halted(SessionId),
+    /// A previous holder panicked while owning the session's execution lock.
+    ///
+    /// The session object itself is intact; the owner is poisoned by the
+    /// [`std::sync::Mutex`] rule, so the service reports a typed internal failure
+    /// instead of panicking the calling thread.
+    Poisoned(SessionId),
     /// The session or snapshot identifier space is exhausted.
     IdSpaceExhausted,
+    /// A per-session quota would be exceeded by the requested allocation.
+    ///
+    /// The rejection happens before the allocation (ADR-0016 §3): the session's
+    /// state and its stored checkpoints are unchanged, and the caller sees the
+    /// quota, its limit and the value the operation would have reached.
+    LimitExceeded {
+        /// Which per-session quota was exceeded.
+        quota: SessionQuota,
+        /// Configured limit of that quota.
+        limit: usize,
+        /// Value the operation would have reached.
+        current: usize,
+    },
+    /// A byte quota cannot be preflighted because the backend declares no payload bound.
+    ///
+    /// The capture was **refused before allocating**: the state changed since the last
+    /// observation, so the previous payload size is not a bound, and the backend's
+    /// `snapshot_payload_bound` returned `None`. It is reported under the byte quota, but it
+    /// is a *missing declaration* rather than an exceeded limit (see the Mega Drive W1.8
+    /// follow-up).
+    UnboundedSnapshot {
+        /// Configured limit of the byte quota that could not be preflighted.
+        limit: usize,
+        /// Bytes already retained by this session's checkpoints.
+        retained: usize,
+    },
     /// A serialized snapshot is malformed or fails its checksum.
     InvalidSnapshot(String),
     /// A serialized snapshot uses an unsupported format version.
@@ -183,7 +215,29 @@ impl fmt::Display for SessionError {
                 write!(f, "session {session} is not running (state: {state})")
             }
             Self::Halted(session) => write!(f, "session {session} halted"),
+            Self::Poisoned(session) => {
+                write!(
+                    f,
+                    "session {session} owner was poisoned by a panicking holder"
+                )
+            }
             Self::IdSpaceExhausted => f.write_str("session or snapshot identifier space exhausted"),
+            Self::LimitExceeded {
+                quota,
+                limit,
+                current,
+            } => write!(
+                f,
+                "{} would reach {current}, above the limit of {limit}",
+                quota.as_str()
+            ),
+            Self::UnboundedSnapshot { limit, retained } => write!(
+                f,
+                "the backend declares no snapshot payload bound, so {} (limit {limit}, \
+                 {retained} bytes retained) cannot be preflighted; the capture was refused \
+                 before allocating",
+                SessionQuota::Bytes.as_str()
+            ),
             Self::InvalidSnapshot(message) => write!(f, "invalid snapshot: {message}"),
             Self::IncompatibleSnapshot(message) => {
                 write!(f, "incompatible snapshot: {message}")

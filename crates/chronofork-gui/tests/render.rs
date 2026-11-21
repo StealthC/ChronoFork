@@ -164,6 +164,7 @@ fn inspect_result_with_descriptor(
             ),
             ("state", JsonValue::string("ready")),
             ("lineage", lineage()),
+            ("revision", JsonValue::int(0)),
             ("backend", backend),
             (
                 "machine",

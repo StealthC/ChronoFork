@@ -18,11 +18,15 @@
 //! the default limits.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use chronofork_service::json::JsonValue;
 use chronofork_service::service::SERVICE_VERSION;
-use chronofork_service::{AppService, Principal, ServiceError, ServiceLimits};
+use chronofork_service::{
+    ApiVersion, AppService, ErrorCode, Principal, ServiceError, ServiceLimits,
+};
 
+use crate::admission::{AdmissionGate, is_long_operation};
 use crate::wire::{self, Response};
 
 /// MCP protocol version implemented by this endpoint.
@@ -71,6 +75,7 @@ pub(crate) fn respond(
     principal: &Principal,
     service: &AppService,
     limits: &ServiceLimits,
+    admission: &Arc<AdmissionGate>,
 ) -> Response {
     let document = match chronofork_service::json::parse(body, limits) {
         Ok(document) => document,
@@ -125,7 +130,7 @@ pub(crate) fn respond(
         "initialize" => initialize(params),
         "ping" => ping(params),
         "tools/list" => list_tools(params, service),
-        "tools/call" => call_tool(params, principal, service, limits),
+        "tools/call" => call_tool(params, principal, service, limits, admission),
         _ => Err(RpcError::new(METHOD_NOT_FOUND, "method not found")),
     };
     match outcome {
@@ -190,15 +195,42 @@ fn call_tool(
     principal: &Principal,
     service: &AppService,
     limits: &ServiceLimits,
+    admission: &Arc<AdmissionGate>,
 ) -> Result<JsonValue, RpcError> {
     let Some(JsonValue::Object(params)) = params else {
         return Err(invalid_params("`params` must be an object"));
     };
     for key in params.keys() {
-        if key != "name" && key != "arguments" {
+        // `_meta` is the MCP per-call metadata slot; the API wire version travels there
+        // (ADR-0016 §Compatibility: the version is sent on every request, not once per
+        // session).
+        if key != "name" && key != "arguments" && key != "_meta" {
             return Err(invalid_params("unknown field in `params`"));
         }
     }
+    let version = match params.get("_meta") {
+        None | Some(JsonValue::Null) => Some(ApiVersion::V1),
+        Some(JsonValue::Object(meta)) => match meta.get("chronofork/api") {
+            None => Some(ApiVersion::V1),
+            Some(JsonValue::String(value)) => ApiVersion::parse(value),
+            Some(JsonValue::Int(value)) => u64::try_from(*value)
+                .ok()
+                .and_then(|value| ApiVersion::parse(&value.to_string())),
+            Some(_) => None,
+        },
+        Some(_) => return Err(invalid_params("`_meta` must be an object")),
+    };
+    let Some(version) = version else {
+        // An incompatible version is refused before dispatch, so no tool call applies.
+        let error = ServiceError::new(
+            ErrorCode::UnsupportedVersion,
+            "this server does not implement the requested API wire version",
+        );
+        let bytes = error
+            .to_canonical_bytes_versioned(limits, ApiVersion::V1)
+            .unwrap_or_default();
+        return Ok(text_result(as_text(&bytes), true));
+    };
     let Some(name) = params.get("name").and_then(JsonValue::as_str) else {
         return Err(invalid_params("`name` is required"));
     };
@@ -210,14 +242,40 @@ fn call_tool(
     if !service.tools().iter().any(|tool| tool.name == name) {
         return Err(invalid_params("unknown tool"));
     }
+    // The same long-run reservation the op route applies (ADR-0016 §1, F4/K10): an MCP
+    // tool call that would occupy a worker past the bound is refused before it runs.
+    let _admission = if is_long_operation(name) {
+        match AdmissionGate::acquire(admission, principal.name()) {
+            Some(guard) => Some(guard),
+            None => {
+                let error = ServiceError::new(
+                    ErrorCode::LimitExceeded,
+                    "the long-run admission bound is reached; retry when a long run finishes",
+                );
+                let bytes = error
+                    .to_canonical_bytes_versioned(limits, ApiVersion::V1)
+                    .unwrap_or_default();
+                return Ok(text_result(as_text(&bytes), true));
+            }
+        }
+    } else {
+        None
+    };
     let request = JsonValue::object([("op", JsonValue::string(name)), ("input", arguments)]);
     let envelope = match chronofork_service::json::to_canonical_bytes(&request, limits) {
         Ok(bytes) => bytes,
         Err(error) => return Ok(text_result(envelope_text(&error, limits), true)),
     };
-    match service.dispatch(principal, &envelope) {
+    match service.dispatch_versioned(principal, &envelope, version) {
         Ok(envelope) => Ok(text_result(as_text(&envelope), false)),
-        Err(error) => Ok(text_result(envelope_text(&error, limits), true)),
+        Err(error) => Ok(text_result(
+            as_text(
+                &error
+                    .to_canonical_bytes_versioned(limits, version)
+                    .unwrap_or_default(),
+            ),
+            true,
+        )),
     }
 }
 

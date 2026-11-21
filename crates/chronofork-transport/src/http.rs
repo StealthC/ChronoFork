@@ -22,9 +22,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use chronofork_service::ApiVersion;
 use chronofork_service::json::JsonValue;
-use chronofork_service::{AppService, ErrorCode, Principal, Scope, ServiceLimits, TokenTable};
+use chronofork_service::{
+    AppService, ErrorCode, Principal, Scope, ServiceError, ServiceLimits, TokenTable,
+};
 
+use crate::admission::{AdmissionGate, AdmissionGuard, AdmissionLimits, is_long_operation};
 use crate::error::TransportError;
 use crate::mcp;
 use crate::wire::{self, Response, WireCode};
@@ -78,6 +82,30 @@ pub struct ServerConfig {
     /// An empty table authenticates nobody, so every authenticated route answers `401`;
     /// the CLI refuses to start without a validated token file.
     pub tokens: TokenTable,
+    /// Maximum long runs admitted at once across all principals.
+    ///
+    /// Defaults to `workers - 1`, which is what reserves at least one worker for the
+    /// control path (`cancel`/`progress`/`list`/`capabilities`) while `N - 1` long runs
+    /// are in flight (ADR-0016 §1, F4/K10). A request above the bound is rejected with a
+    /// typed `limit_exceeded` **before** its long work starts.
+    pub max_long_runs_global: Option<usize>,
+    /// Maximum long runs admitted at once for one principal.
+    ///
+    /// Defaults to 1, so a single client cannot consume the reserved control capacity.
+    pub max_long_runs_per_principal: Option<usize>,
+}
+
+impl ServerConfig {
+    /// Returns the effective global long-run bound (`workers - 1` by default).
+    fn long_run_limit(&self) -> usize {
+        self.max_long_runs_global
+            .unwrap_or_else(|| self.workers.saturating_sub(1))
+    }
+
+    /// Returns the effective per-principal long-run bound.
+    fn per_principal_limit(&self) -> usize {
+        self.max_long_runs_per_principal.unwrap_or(1)
+    }
 }
 
 impl fmt::Debug for ServerConfig {
@@ -89,6 +117,11 @@ impl fmt::Debug for ServerConfig {
             .field("max_requests", &self.max_requests)
             .field("io_timeout", &self.io_timeout)
             .field("max_request_bytes", &self.max_request_bytes)
+            .field("max_long_runs_global", &self.max_long_runs_global)
+            .field(
+                "max_long_runs_per_principal",
+                &self.max_long_runs_per_principal,
+            )
             .field("tokens", &"<redacted>")
             .finish()
     }
@@ -100,9 +133,15 @@ impl Default for ServerConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 0)),
             workers: 4,
             max_requests: None,
-            io_timeout: Duration::from_secs(5),
+            // The server must tolerate a request whose handler runs to the service's
+            // own deadline (ADR-0016 §1, V3-1): a 5 s socket timeout would kill a long
+            // run mid-flight and turn a bounded operation into a dropped connection.
+            // The service deadline, not this socket timeout, bounds the operation.
+            io_timeout: Duration::from_secs(45),
             max_request_bytes: 1024 * 1024,
             tokens: TokenTable::default(),
+            max_long_runs_global: None,
+            max_long_runs_per_principal: None,
         }
     }
 }
@@ -180,6 +219,8 @@ struct State {
     served: AtomicU64,
     queue: Mutex<Queue>,
     ready: Condvar,
+    /// In-flight long-run admission (ADR-0016 §1, F4/K10).
+    admission: Arc<AdmissionGate>,
 }
 
 impl fmt::Debug for State {
@@ -282,16 +323,26 @@ pub fn serve(
     config: ServerConfig,
     service: Arc<AppService>,
 ) -> Result<ServerHandle, TransportError> {
-    if config.workers == 0 {
-        return Err(TransportError::Protocol(
-            "worker count must be at least one".to_owned(),
-        ));
+    // ADR-0016 §1/F4: the bounded pool reserves at least one worker for the control
+    // path, so a single-worker configuration cannot keep `cancel`/`list`/`progress`
+    // executable while a long run is in flight. It is refused unless the operator
+    // selects a separate control path, which this build does not implement.
+    if config.workers < 2 {
+        return Err(TransportError::Protocol(format!(
+            "the HTTP server requires at least two workers (workers = {}), so one stays \
+             reserved for the control path",
+            config.workers
+        )));
     }
     let listener = TcpListener::bind(config.bind)?;
     listener.set_nonblocking(true)?;
     let local_addr = listener.local_addr()?;
     let limits = *service.limits();
     let tokens = config.tokens.clone();
+    let admission = AdmissionGate::new(AdmissionLimits {
+        global: config.long_run_limit(),
+        per_principal: config.per_principal_limit(),
+    });
     let state = Arc::new(State {
         config,
         service,
@@ -301,6 +352,7 @@ pub fn serve(
         served: AtomicU64::new(0),
         queue: Mutex::new(Queue::default()),
         ready: Condvar::new(),
+        admission: Arc::new(admission),
     });
 
     let mut workers = Vec::with_capacity(state.config.workers);
@@ -613,13 +665,26 @@ fn respond(stream: &mut TcpStream, state: &Arc<State>, head: &Head) -> Response 
             tools_response(state)
         }
         Route::Ops => {
+            // The version is decided before anything runs: an incompatible request must
+            // never reach dispatch (ADR-0016 §Compatibility/F10).
+            let version = match requested_version(head, &state.limits) {
+                Ok(version) => version,
+                Err(response) => return response,
+            };
             let (principal, body) = match authorized_body(stream, state, head) {
                 Ok(parts) => parts,
                 Err(response) => return response,
             };
-            match state.service.dispatch(&principal, &body) {
+            // Long-run admission happens **before** the work: a request above the global
+            // or per-principal bound is answered with a typed limit instead of occupying
+            // a worker (ADR-0016 §1, F4/K10).
+            let _admission = match admit(state, &principal, &body) {
+                Ok(guard) => guard,
+                Err(response) => return response,
+            };
+            match state.service.dispatch_versioned(&principal, &body, version) {
                 Ok(envelope) => Response::new(200, envelope),
-                Err(error) => wire::service_error(&error, &state.limits),
+                Err(error) => wire::service_error_versioned(&error, &state.limits, version),
             }
         }
         Route::Mcp => {
@@ -627,7 +692,70 @@ fn respond(stream: &mut TcpStream, state: &Arc<State>, head: &Head) -> Response 
                 Ok(parts) => parts,
                 Err(response) => return response,
             };
-            mcp::respond(&body, &principal, &state.service, &state.limits)
+            mcp::respond(
+                &body,
+                &principal,
+                &state.service,
+                &state.limits,
+                &state.admission,
+            )
+        }
+    }
+}
+
+/// Reads the API wire version of one request.
+///
+/// An absent header is v1 (the compatibility rule); an unimplementable value is refused
+/// with the typed `unsupported_version` envelope **before** the body is read or any work
+/// starts.
+fn requested_version(head: &Head, limits: &ServiceLimits) -> Result<ApiVersion, Response> {
+    let Some(raw) = head.header(wire::API_VERSION_HEADER) else {
+        return Ok(ApiVersion::V1);
+    };
+    ApiVersion::parse(raw).ok_or_else(|| {
+        let error = ServiceError::new(
+            ErrorCode::UnsupportedVersion,
+            "this server does not implement the requested API wire version",
+        );
+        wire::service_error_versioned(&error, limits, ApiVersion::V1)
+    })
+}
+
+/// Admits one request's long work, when it has any.
+///
+/// The operation is read from the canonical request document (never from a client
+/// header), so the predicate cannot be dodged by a request that looks small. A request
+/// that needs no admission, or whose document does not parse, returns `Ok(None)` and is
+/// answered by dispatch with its own typed error.
+fn admit(
+    state: &Arc<State>,
+    principal: &Principal,
+    body: &[u8],
+) -> Result<Option<AdmissionGuard>, Response> {
+    let Ok(document) = chronofork_service::json::parse(body, &state.limits) else {
+        return Ok(None);
+    };
+    let Some(op) = document.get("op").and_then(JsonValue::as_str) else {
+        return Ok(None);
+    };
+    if !is_long_operation(op) {
+        return Ok(None);
+    }
+    // SAFETY-free lifetime juggling: the guard borrows the gate out of the `Arc<State>`
+    // that lives for this request, so the borrow is tied to the same allocation. The gate
+    // is held in an `Arc` of its own to make that explicit.
+    match AdmissionGate::acquire(&state.admission, principal.name()) {
+        Some(guard) => Ok(Some(guard)),
+        None => {
+            let error = ServiceError::new(
+                ErrorCode::LimitExceeded,
+                "the long-run admission bound is reached; retry when a long run finishes",
+            );
+            Err(wire::service_error_versioned(
+                &error,
+                &state.limits,
+                ApiVersion::V1,
+            ))
         }
     }
 }

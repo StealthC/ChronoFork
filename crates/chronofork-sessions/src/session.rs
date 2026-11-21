@@ -11,7 +11,27 @@ use chronofork_trace::{Trace, TraceConfig, capture};
 
 use crate::error::SessionError;
 use crate::lineage::Lineage;
-use crate::snapshot::Snapshot;
+use crate::snapshot::{Snapshot, snapshot_record_bytes};
+
+/// Which per-session quota a rejection exceeded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionQuota {
+    /// `max_snapshots_per_session`
+    Snapshots,
+    /// `max_bytes_per_session`
+    Bytes,
+}
+
+impl SessionQuota {
+    /// Returns the stable label of this quota.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Snapshots => "max_snapshots_per_session",
+            Self::Bytes => "max_bytes_per_session",
+        }
+    }
+}
 
 /// Lifecycle state of a session.
 ///
@@ -62,30 +82,110 @@ pub struct Session {
     initial_state: BackendSnapshot,
     snapshots: BTreeMap<SnapshotId, Snapshot>,
     next_snapshot_id: u64,
+    /// Payload bytes of the most recent state this session observed.
+    ///
+    /// It is the prediction input of the byte-quota preflight: the quota is checked
+    /// **before** a checkpoint is captured, so the session needs a size estimate that
+    /// costs nothing to obtain. It starts at the creation state and is refreshed by
+    /// every capture, restore and reset.
+    state_bytes: usize,
+    /// Whether `state_bytes` still describes the current backend state.
+    ///
+    /// A `step`, a debugger write or a trace can change the payload size, so they clear
+    /// this flag. The byte preflight then uses the bound the backend **declares**
+    /// ([`Backend::snapshot_payload_bound`]) instead of the stale size, and when the
+    /// backend declares none it refuses a quota-checked capture instead of allocating it
+    /// (ADR-0016 §3).
+    state_observed: bool,
+    /// Serialized size of every stored checkpoint, captured when it was stored.
+    ///
+    /// The byte quota is decided from this cache: re-serializing the retained records for
+    /// every preflight would allocate and walk them just to count bytes, which is the
+    /// accounting the quota is supposed to bound.
+    record_bytes: BTreeMap<SnapshotId, usize>,
+    /// Exact serialized size of the last checkpoint this session stored.
+    last_record_bytes: Option<usize>,
+    /// Payload bytes of that last stored checkpoint.
+    last_record_payload: usize,
 }
 
 impl Session {
+    /// Builds a session with a placeholder identifier.
+    ///
+    /// The registrar assigns the real identifier before the session is exposed
+    /// (see [`crate::SessionHandle::assign_id`]), so identifier allocation lives in
+    /// exactly one place instead of at each construction site.
     pub(crate) fn new(
-        id: SessionId,
         backend: Box<dyn Backend>,
         lineage: Lineage,
         initial_state: BackendSnapshot,
     ) -> Self {
+        let state_bytes = initial_state.payload().len();
         Self {
-            id,
+            id: SessionId::from_raw(0),
             backend,
             state: SessionState::Ready,
             lineage,
             initial_state,
             snapshots: BTreeMap::new(),
             next_snapshot_id: 1,
+            state_bytes,
+            state_observed: true,
+            record_bytes: BTreeMap::new(),
+            last_record_bytes: None,
+            last_record_payload: 0,
         }
+    }
+
+    /// Returns the payload bound the byte-quota preflight may assume, when it can.
+    ///
+    /// The exact observed size is a bound only while that observation still describes the
+    /// current state. Once a `step`, a trace or a debug write changed the state, the
+    /// previous size says nothing about the new one: the bound must then come from the
+    /// backend's declaration ([`Backend::snapshot_payload_bound`]). `None` means the
+    /// layer cannot bound the capture and must refuse it rather than allocate it.
+    fn payload_bound(&self) -> Option<usize> {
+        if self.state_observed {
+            Some(self.state_bytes)
+        } else {
+            self.backend
+                .snapshot_payload_bound()
+                .map(|declared| declared.max(self.state_bytes))
+        }
+    }
+
+    /// Returns the serialized record size of one checkpoint with `payload` payload bytes.
+    ///
+    /// The envelope around the payload is derived from the last stored record when one
+    /// exists (its envelope minus its own payload), and otherwise from the format's
+    /// envelope accounting. It is therefore exact for the common case and an estimate
+    /// only for the very first capture of a session.
+    fn record_bytes_for(&self, payload: usize) -> usize {
+        let backend_id = self.backend.descriptor().id().as_str().len();
+        let backend_version = self.backend.descriptor().version().len();
+        match self.last_record_bytes {
+            Some(total) if total >= self.last_record_payload => {
+                total - self.last_record_payload + payload
+            }
+            _ => snapshot_record_bytes(backend_id, backend_version, payload),
+        }
+    }
+
+    /// Stores one checkpoint and its exact serialized size in the two accounting maps.
+    fn store_snapshot(&mut self, id: SnapshotId, snapshot: Snapshot, record_bytes: usize) {
+        self.snapshots.insert(id, snapshot);
+        self.record_bytes.insert(id, record_bytes);
     }
 
     /// Returns the session identifier.
     #[must_use]
     pub const fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// Assigns the session identifier during registration.
+    pub(crate) fn set_id(&mut self, id: SessionId) {
+        self.id = id;
     }
 
     /// Returns the current lifecycle state.
@@ -140,6 +240,9 @@ impl Session {
                 state: self.state,
             });
         }
+        // A step can change the payload size, so the previous observation is no longer a
+        // bound: the byte preflight must fall back to the documented capture bound.
+        self.state_observed = false;
         match self.backend.step(input) {
             Ok(outcome) => Ok(outcome),
             Err(BackendError::Halted) => Err(SessionError::Halted(self.id)),
@@ -148,13 +251,149 @@ impl Session {
     }
 
     /// Captures a checkpoint and stores it in this session.
+    ///
+    /// No quota is applied: this is the session layer's own primitive, used by the
+    /// player, the movie writer and the session-level tests. A service that owns
+    /// user-facing quotas calls [`Self::snapshot_within`], which checks the quota
+    /// **before** the checkpoint is stored.
     pub fn snapshot(&mut self) -> Result<SnapshotId, SessionError> {
+        self.snapshot_within(usize::MAX, usize::MAX)
+    }
+
+    /// Captures a checkpoint when it fits the caller's per-session quota.
+    ///
+    /// The quota is checked before the checkpoint is stored (ADR-0016 §3, race class
+    /// "never partially applies"): the count is compared before any allocation, and
+    /// the retained size of the captured record is compared before it is inserted.
+    /// A rejection therefore leaves this session's state and its stored checkpoints
+    /// exactly as they were — the identifier counter is not even advanced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::LimitExceeded`] when this session already holds
+    /// `max_snapshots` checkpoints or the checkpoint would push its retained
+    /// checkpoint bytes above `max_bytes`, and otherwise the lifecycle and backend
+    /// errors of [`Self::snapshot`].
+    pub fn snapshot_within(
+        &mut self,
+        max_snapshots: usize,
+        max_bytes: usize,
+    ) -> Result<SnapshotId, SessionError> {
         self.ensure_open()?;
+        let count = self.snapshots.len();
+        let retained = self.snapshot_bytes_retained();
+        if count >= max_snapshots {
+            return Err(SessionError::LimitExceeded {
+                quota: SessionQuota::Snapshots,
+                limit: max_snapshots,
+                current: count,
+            });
+        }
+        // **Preflight before allocation.** The bound costs nothing: the exact observed
+        // size while the state is unchanged, otherwise the bound the backend declares.
+        // A record that cannot fit — or a capture that cannot be bounded at all while a
+        // finite quota applies — is refused here, before any state is captured or
+        // serialized (ADR-0016 §3, C4).
+        match self.payload_bound() {
+            Some(payload_bound) => {
+                let predicted = self.record_bytes_for(payload_bound);
+                if retained.saturating_add(predicted) > max_bytes {
+                    return Err(SessionError::LimitExceeded {
+                        quota: SessionQuota::Bytes,
+                        limit: max_bytes,
+                        current: retained.saturating_add(predicted),
+                    });
+                }
+            }
+            // No quota is in force, so an unbounded capture cannot exceed it: the
+            // unbounded path (movie, player, rewind) keeps working for every backend.
+            None if max_bytes == usize::MAX => {}
+            None => {
+                // The state changed and the backend declares no payload bound: the quota
+                // cannot be preflighted, so the capture is refused instead of attempted
+                // (fail-closed). The error names the missing declaration, not an exceeded
+                // limit: reporting "would reach N, above the limit of M" here was
+                // misleading because N is below M.
+                return Err(SessionError::UnboundedSnapshot {
+                    limit: max_bytes,
+                    retained,
+                });
+            }
+        }
         let backend = self.backend.snapshot()?;
+        let payload = backend.payload().len();
         let id = self.allocate_snapshot_id()?;
         let snapshot = Snapshot::new(id, self.id, backend);
-        self.snapshots.insert(id, snapshot);
+        let record = snapshot.to_bytes()?.len();
+        let used = retained.saturating_add(record);
+        if used > max_bytes {
+            // The payload exceeded even the declared bound. Nothing is inserted, the
+            // session state is untouched, and only the identifier counter moved (which
+            // allocates no memory), so an over-budget checkpoint is never retained.
+            self.next_snapshot_id = id.raw();
+            return Err(SessionError::LimitExceeded {
+                quota: SessionQuota::Bytes,
+                limit: max_bytes,
+                current: used,
+            });
+        }
+        self.store_snapshot(id, snapshot, record);
+        self.state_bytes = payload;
+        self.state_observed = true;
+        self.last_record_bytes = Some(record);
+        self.last_record_payload = payload;
         Ok(id)
+    }
+
+    /// Returns the number of checkpoints this session currently stores.
+    #[must_use]
+    pub fn snapshot_count(&self) -> usize {
+        self.snapshots.len()
+    }
+
+    /// Returns the serialized size of one stored checkpoint.
+    ///
+    /// This is the accounting unit of `max_bytes_per_session`: the bytes a checkpoint
+    /// actually retains, which is also exactly what `session.snapshot` reports as
+    /// `bytes_length`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::UnknownSnapshot`] for a checkpoint this session does
+    /// not store.
+    pub fn snapshot_record_bytes(&self, id: SnapshotId) -> Result<usize, SessionError> {
+        self.record_bytes
+            .get(&id)
+            .copied()
+            .ok_or(SessionError::UnknownSnapshot {
+                session: self.id,
+                snapshot: id,
+            })
+    }
+
+    /// Returns the total serialized size of every stored checkpoint.
+    ///
+    /// The sizes are the ones recorded when each checkpoint was stored, so deciding the
+    /// quota never re-serializes the retained records.
+    #[must_use]
+    pub fn snapshot_bytes_retained(&self) -> usize {
+        self.record_bytes
+            .values()
+            .fold(0, |total, bytes| total.saturating_add(*bytes))
+    }
+
+    /// Drops every stored checkpoint and reports the bytes released.
+    ///
+    /// This is what makes `close` literal (ADR-0016 §3, K9/V3-2): closing a session
+    /// releases its checkpoint memory immediately instead of holding it until the
+    /// entry is reaped, so a `create -> close` loop cannot accumulate closed state.
+    /// The session object itself stays alive through any `Arc` a reader already
+    /// holds, and its lifecycle state is unchanged.
+    pub fn release_snapshot_records(&mut self) -> usize {
+        let released = self.snapshot_bytes_retained();
+        self.snapshots.clear();
+        self.record_bytes.clear();
+        released
     }
 
     /// Serializes a stored checkpoint.
@@ -184,6 +423,10 @@ impl Session {
         self.backend
             .restore(snapshot.backend())
             .map_err(map_backend_compatibility)?;
+        // The restored state is exactly this checkpoint's payload, so the byte-quota
+        // prediction is exact again after a restore.
+        self.state_bytes = snapshot.backend().payload().len();
+        self.state_observed = true;
         Ok(())
     }
 
@@ -191,6 +434,8 @@ impl Session {
     pub fn reset(&mut self) -> Result<(), SessionError> {
         self.ensure_open()?;
         self.backend.restore(&self.initial_state)?;
+        self.state_bytes = self.initial_state.payload().len();
+        self.state_observed = true;
         Ok(())
     }
 
@@ -222,7 +467,11 @@ impl Session {
                 state: self.state,
             });
         }
-        capture(self.backend.as_mut(), config, steps).map_err(SessionError::Trace)
+        let trace = capture(self.backend.as_mut(), config, steps).map_err(SessionError::Trace)?;
+        // The trace advanced the machine, so the previous payload observation is no
+        // longer a bound for the byte preflight.
+        self.state_observed = false;
+        Ok(trace)
     }
 
     /// Captures the canonical backend state without creating a checkpoint.
@@ -245,7 +494,10 @@ impl Session {
         self.ensure_open()?;
         self.backend
             .restore(state)
-            .map_err(map_backend_compatibility)
+            .map_err(map_backend_compatibility)?;
+        self.state_bytes = state.payload().len();
+        self.state_observed = true;
+        Ok(())
     }
 
     /// Drops stored checkpoint records while retaining the creation state.
@@ -257,6 +509,7 @@ impl Session {
     /// [`Self::initial_state`].
     pub(crate) fn discard_snapshot_records(&mut self) {
         self.snapshots.clear();
+        self.record_bytes.clear();
     }
 
     /// Returns the number of stored checkpoint records and the next allocator.
@@ -297,7 +550,11 @@ impl Session {
     /// debugger workflows commonly modify memory before resuming.
     pub fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), SessionError> {
         self.ensure_open()?;
-        Ok(self.backend.write_memory(address, data)?)
+        self.backend.write_memory(address, data)?;
+        // A debug write changes canonical state, so the payload-size observation is no
+        // longer a bound for the next capture.
+        self.state_observed = false;
+        Ok(())
     }
 
     pub(crate) fn adopt_snapshot(&mut self, snapshot: Snapshot) -> Result<(), SessionError> {
@@ -307,7 +564,9 @@ impl Session {
             .checked_add(1)
             .ok_or(SessionError::IdSpaceExhausted)?;
         self.next_snapshot_id = self.next_snapshot_id.max(next);
-        self.snapshots.insert(snapshot.id(), snapshot);
+        let id = snapshot.id();
+        let record = snapshot.to_bytes()?.len();
+        self.store_snapshot(id, snapshot, record);
         Ok(())
     }
 
@@ -359,11 +618,11 @@ impl fmt::Debug for Session {
 
 #[cfg(test)]
 mod tests {
-    use chronofork_backend_api::{BackendFactory, BackendId, BackendSnapshot};
-    use chronofork_core::{SessionId, SnapshotId, StateHash};
+    use chronofork_backend_api::{Backend, BackendFactory, BackendId, BackendSnapshot};
+    use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash};
     use chronofork_test_backend::SyntheticBackendFactory;
 
-    use super::Session;
+    use super::{Session, SessionQuota};
     use crate::error::SessionError;
     use crate::lineage::Lineage;
     use crate::snapshot::Snapshot;
@@ -372,7 +631,7 @@ mod tests {
         let factory = SyntheticBackendFactory::default();
         let backend = factory.create().expect("backend");
         let initial = backend.snapshot().expect("initial snapshot");
-        Session::new(SessionId::from_raw(1), backend, Lineage::root(), initial)
+        Session::new(backend, Lineage::root(), initial)
     }
 
     fn snapshot_with(
@@ -406,6 +665,170 @@ mod tests {
             matches!(&error, SessionError::IncompatibleSnapshot(message) if message.contains("backend_id")),
             "expected a session-level incompatibility error, got {error}"
         );
+    }
+
+    #[test]
+    fn a_capture_after_a_state_change_uses_the_backend_declared_bound() {
+        let mut session = session();
+        session
+            .snapshot_within(usize::MAX, usize::MAX)
+            .expect("first capture");
+        let retained = session.snapshot_bytes_retained();
+        assert!(retained > 0, "the first checkpoint retains bytes");
+
+        // A step can change the payload size, so the exact size is no longer a bound: the
+        // preflight uses the bound the synthetic backend declares (its payload size is
+        // fixed by its format) and refuses a budget that cannot hold it *before* the
+        // capture, instead of capturing first and rejecting afterwards.
+        let _ = session.step(InputFrame::NEUTRAL).expect("step");
+        let error = session
+            .snapshot_within(usize::MAX, retained.saturating_add(1))
+            .expect_err("the changed state is not bounded by the old size");
+        assert!(
+            matches!(
+                error,
+                SessionError::LimitExceeded {
+                    quota: SessionQuota::Bytes,
+                    ..
+                }
+            ),
+            "expected a byte-quota rejection, got {error}"
+        );
+        assert_eq!(session.snapshot_count(), 1, "nothing was added");
+
+        // A budget that holds the declared bound admits the capture.
+        let id = session
+            .snapshot_within(usize::MAX, retained.saturating_mul(2).saturating_add(4096))
+            .expect("the bounded capture fits");
+        assert_eq!(session.snapshot_count(), 2);
+        let _ = id;
+    }
+
+    #[test]
+    fn the_retained_byte_accounting_comes_from_the_stored_record_sizes() {
+        let mut session = session();
+        let first = session
+            .snapshot_within(usize::MAX, usize::MAX)
+            .expect("first capture");
+        let second = session
+            .snapshot_within(usize::MAX, usize::MAX)
+            .expect("second capture");
+        // The cached sizes are exactly the serialized record sizes, and the retained
+        // total is their sum — deciding a quota never re-serializes them.
+        let mut total = 0;
+        for id in [first, second] {
+            let cached = session.snapshot_record_bytes(id).expect("cached size");
+            let serialized = session.snapshot_bytes(id).expect("serialized");
+            assert_eq!(cached, serialized.len());
+            total += cached;
+        }
+        assert_eq!(session.snapshot_bytes_retained(), total);
+    }
+
+    /// A backend whose payload grows after a step and which declares **no** bound.
+    ///
+    /// This is the shape the R1c review found: the session layer must not assume a bound
+    /// the backend does not guarantee (C4).
+    struct UnboundedBackend {
+        inner: Box<dyn chronofork_backend_api::Backend>,
+        steps: usize,
+    }
+
+    impl chronofork_backend_api::Backend for UnboundedBackend {
+        fn descriptor(&self) -> &chronofork_backend_api::BackendDescriptor {
+            self.inner.descriptor()
+        }
+        fn step(
+            &mut self,
+            input: InputFrame,
+        ) -> Result<chronofork_backend_api::StepOutcome, chronofork_backend_api::BackendError>
+        {
+            self.steps += 1;
+            self.inner.step(input)
+        }
+        fn snapshot(&self) -> Result<BackendSnapshot, chronofork_backend_api::BackendError> {
+            let snapshot = self.inner.snapshot()?;
+            if self.steps == 0 {
+                return Ok(snapshot);
+            }
+            let mut payload = snapshot.payload().to_vec();
+            payload.resize(payload.len() + 4096, 0);
+            Ok(BackendSnapshot::new(
+                snapshot.backend_id().clone(),
+                snapshot.backend_version(),
+                snapshot.format_version(),
+                snapshot.tick(),
+                snapshot.config_hash(),
+                snapshot.state_hash(),
+                payload,
+            ))
+        }
+        fn restore(
+            &mut self,
+            snapshot: &BackendSnapshot,
+        ) -> Result<(), chronofork_backend_api::BackendError> {
+            self.inner.restore(snapshot)
+        }
+        fn inspect(
+            &self,
+        ) -> Result<chronofork_backend_api::MachineInspection, chronofork_backend_api::BackendError>
+        {
+            self.inner.inspect()
+        }
+        fn read_memory(
+            &self,
+            address: u64,
+            length: usize,
+        ) -> Result<Vec<u8>, chronofork_backend_api::BackendError> {
+            self.inner.read_memory(address, length)
+        }
+        fn write_memory(
+            &mut self,
+            address: u64,
+            data: &[u8],
+        ) -> Result<(), chronofork_backend_api::BackendError> {
+            self.inner.write_memory(address, data)
+        }
+    }
+
+    #[test]
+    fn an_unbounded_backend_cannot_be_preflighted_and_is_refused() {
+        let factory = SyntheticBackendFactory::default();
+        let backend = UnboundedBackend {
+            inner: factory.create().expect("backend"),
+            steps: 0,
+        };
+        let initial = backend.snapshot().expect("initial snapshot");
+        let mut session = Session::new(Box::new(backend), Lineage::root(), initial);
+        let _ = session.step(InputFrame::NEUTRAL).expect("step");
+        // A finite quota applies and the backend declares no bound: the capture is
+        // refused before it is attempted instead of relying on an assumed constant.
+        let error = session
+            .snapshot_within(usize::MAX, 64 * 1024)
+            .expect_err("the changed state has no bound");
+        assert!(
+            matches!(
+                error,
+                SessionError::UnboundedSnapshot {
+                    limit: 65_536,
+                    retained: 0
+                }
+            ),
+            "the rejection names the missing declaration, not an exceeded limit: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("declares no snapshot payload bound"),
+            "the message must say why the capture was refused: {error}"
+        );
+        assert_eq!(session.snapshot_count(), 0);
+        // With no quota in force nothing can be exceeded, so the unbounded path (movie,
+        // player, rewind) keeps working for every backend.
+        session
+            .snapshot_within(usize::MAX, usize::MAX)
+            .expect("the unbounded path is not refused");
+        assert_eq!(session.snapshot_count(), 1);
     }
 
     #[test]

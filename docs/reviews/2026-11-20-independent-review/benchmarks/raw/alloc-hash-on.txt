@@ -1,0 +1,12 @@
+alloc-probe v1 hash_enabled=1
+per_step_allocs=4.00
+per_step_alloc_bytes=459970
+per_step_deallocs=4.00
+per_backend_snapshot_allocs=7.00
+per_backend_snapshot_alloc_bytes=657059
+per_inspect_allocs=60.00
+per_inspect_alloc_bytes=528688
+per_state_hash_allocs=4.00
+per_state_hash_alloc_bytes=459969
+per_state_body_allocs=3.00
+per_state_body_alloc_bytes=262911

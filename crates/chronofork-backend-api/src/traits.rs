@@ -80,6 +80,24 @@ pub trait Backend: Send {
     fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
         None
     }
+
+    /// Declares an upper bound, in bytes, for the payload of any `snapshot()`.
+    ///
+    /// A session layer enforces a byte quota **before** it captures a checkpoint, and it
+    /// can only do that when the payload size is bounded: when the state has not changed
+    /// since the last capture the previous observation is exact, but a state that a
+    /// `step`, a trace or a debug write changed has no known size. A backend whose
+    /// payload size can change while it executes **must** declare a bound here that its
+    /// `snapshot()` guarantees; the layer then refuses a capture that cannot fit the
+    /// quota without allocating it.
+    ///
+    /// The default is `None`: the backend does not commit to a bound, and a
+    /// quota-checked capture of a changed state is then refused (`limit_exceeded`)
+    /// instead of attempted. A backend with a fixed-size payload (the common case)
+    /// simply returns that size.
+    fn snapshot_payload_bound(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Creates fresh, independent backend instances.

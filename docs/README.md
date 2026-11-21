@@ -9,212 +9,23 @@ committed in [`planning/`](planning/ROADMAP.md), and design specs/plans live und
 
 ## Status
 
-Bootstrap foundation and milestones M0–M5 are complete and merged to `main` (M4 merged
-at `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`; M5 merged at
-`0c4e9f0`, PR #4, verified on `agent/m5-tracing-scripting` at base `84f1476`). The repository
-builds and tests a
-deterministic synthetic backend, the generic session layer, and a minimal 68000 +
-ROM/RAM Mega Drive backend with a complete VDP (CRAM/VSRAM, plane/window/sprite
-composition, DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank
-requests) and a master-cycle deterministic interrupt
-scheduler, including 68000 SR-mask interrupt gating (level 7 always admitted; other
-levels only when strictly above the mask), `RTE` handler return and VDP VINT
-pending/acknowledge. It implements the documented MC68000 instruction set with
-privilege enforcement for the implemented system instructions. A bounded debug-only
-instruction trace and final oracle differential evidence now exist: eleven synthetic
-ROMs match the pinned Exodus oracle's projected address streams, per-instruction
-68000 cycle costs and selected final state, and all eleven negative controls pass.
-The pre-repair `rom_mem_vdp` divergence and its E2-13 repair remain recorded, and the
-earlier two-ROM run is preserved as pre-E2-15 controlled-condition history. Remaining
-limits: only HBlank level 4 / VBlank level 6 sources are modelled, with level 7 a
-predicate rule only; guest bus-error (2) and trace (9) delivery are absent; no
-interrupt-timing equivalence is claimed; and VDP interrupt-enable/acknowledge logic
-is implemented (phase 8.3, with the residual limits recorded in the slice page).
-Audio and Z80 are not implemented; rendering and DMA are implemented (phase 8.3), and
-controller input covers only the
-TH-high 3-button subset. The final M3 increment — real-hardware input TAS on the minimal
-Mega Drive slice — is implemented and independently verified
-([ADR-0009](adr/0009-real-hardware-input-tas.md); **Accepted**, owner-approved
-2026-11-15T23:38:06-03:00; t5 PASS 2026-11-16), with the [M3 hardware acceptance
-plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 `executed - passed`. **M3 is
-complete for the documented deterministic minimal-slice scope**; ADR-0002 is accepted.
-Claims below distinguish implemented facts from proposals and upstream research claims.
+**Repository-level summary.** Status, integration state, evidence and follow-ups live
+once in [Milestones](roadmap/milestones.md); phase execution in the
+[planning lifecycle](planning/ROADMAP.md); machine-level Implemented / Not implemented
+lists on the [Mega Drive slice](architecture/megadrive-slice.md#implemented) page. Link
+those pages; do not copy their facts here.
 
-**M4 (debugging depth) is complete and independently verified for the documented
-deterministic minimal-slice scope on Linux; it was verified on
-`agent/m4-debugging-depth` at `6d30243` and is merged to `main` at `4c595a2`.** The contract
-[ADR-0010](adr/0010-debugging-depth.md) is implemented: optional bounded non-canonical
-debug observation (`DebugAccess` event log and byte-granular watchpoints), the
-`chronofork-debug` host layer (PC/range/conditional breakpoints, read/write watchpoints,
-event breakpoints and logpoints), register/memory/disassembly views and Mega Drive
-CPU/VDP/interrupt/bus inspectors, exposed by `chronofork debug
-run|inspect|memory|disasm|vdp|interrupts|bus`. Every M4-A1–A17 row in the [M4 acceptance
-plan](quality/m4-debugging-depth-acceptance.md) is `executed - passed` (independent t5
-PASS, 2026-11-16); the post-PASS capability-report/wording fix at `6b2a567` was re-gated
-and audited. Stops are instruction-granular; no mid-instruction/cycle-exact stop, reverse
-execution, persistent debugger state, UI/HTTP/MCP, DMA/Z80/audio/rendering inspection,
-complete 68000 disassembly or cross-platform runtime evidence is claimed.
+- **M0–M7:** complete and merged to `main`.
+- **M8 (functional Mega Drive):** in progress — phases 8.1–8.3 complete and merged
+  (cartridge/TMSS, complete 68000/cycle model, complete VDP with rendering and DMA);
+  phases 8.4–8.8 pending.
+- **M9:** planned after M8.
+- **Known gaps:** audio, Z80, timers, the full controller protocol, commercial
+  compatibility and native-window/capture surfaces; import the lists from the two
+  canonical pages rather than restating them.
 
-**M5 (tracing and scripting) is complete, independently verified and merged to `main` at
-`0c4e9f0` (PR #4) for the documented deterministic minimal-slice scope on Linux; it was
-verified on branch `agent/m5-tracing-scripting` at base `84f1476` before the merge.** The contract
-[ADR-0011](adr/0011-tracing-and-scripting.md) is implemented: a host-provided `CFTRACE1`
-v1 trace format for instructions, bus writes, VDP-port accesses, controller reads and
-interrupt phases with emulated ticks, triggered capture, circular retention, typed
-reject-only import, historical queries, first-divergence comparison and one-way TSV
-export, exposed by `chronofork trace capture/info/query/compare/export`; and a purpose-built
-deterministic script DSL with explicit source/operation/loop/variable/memory/report/step/
-trace/snapshot/wall-time limits, typed errors, a canonicalized capability sandbox and a
-byte-deterministic report, exposed by `chronofork script run`. All M5-A1–A39 rows in the
-[M5 acceptance plan](quality/m5-tracing-and-scripting-acceptance.md) are `executed -
-passed` (final T12 PASS, 2026-11-16, after the T7 `needs_revision` round and the T11 repair
-of F1–F10; T10 integrated review PASS). `Capabilities::tracing` stays `false` because the
-surface is host-provided; no canonical snapshot, state, configuration or movie byte
-changed. Limits: no DMA/audio/Z80 trace sources, no generic bus-read record,
-instruction-boundary stops, canonical v1 only, no TSV import or trace migration; no
-Rhai/Luau/Lua/WASM/Python embedding; the sandbox is a deterministic capability boundary,
-not process/OS isolation; TSV output is bounded by record count, not `MAX_TRACE_BYTES`;
-wall-time checks occur at statement and every-256-operation boundaries.
-
-**M6 (agent-native interfaces) is implemented, independently verified and merged to `main`
-at `cb05836` (PR #6). It was verified on `agent/m6-agent-interfaces` based on
-`origin/main` `93d47ed` before the merge.** The contract [ADR-0012](adr/0012-agent-native-interfaces.md) and the
-[agent interfaces architecture](architecture/agent-interfaces.md) are implemented: a
-transport-agnostic `chronofork-service` (one curated 16-operation catalog, a canonical
-strict-JSON codec, token-file authentication with `read`/`write`/`admin` scopes,
-per-principal session ownership and a manager lock plus per-session writer lease),
-`chronofork-transport` (a hand-rolled bounded HTTP/1.1 server, a stateless MCP JSON-RPC
-endpoint at protocol `2025-03-26` and a typed client — no new third-party dependency), the
-daemon and client shapes `chronofork serve`, `chronofork api health/tools/call`,
-`chronofork mcp tools/call` and `chronofork experiment run`, canonical
-`chronofork.experiment.v1` artifacts with a content-derived `artifact_id`, and byte-level
-direct/HTTP/MCP parity over all 16 operations. `chronofork session save/load/list/delete`
-were refactored onto the shared service and gained `--json` envelopes. All M6-A1–M6-A32 rows
-in the [M6 acceptance plan](quality/m6-agent-interfaces-acceptance.md) are
-`executed - passed` (independent pass-2 PASS, 2026-11-17, after the round-1
-`needs_revision` findings M6-R1–R10 and the repair; round-2 review pass). Behavior
-changes are pinned by tests rather than silent: `max_sessions` counts registered sessions
-including closed ones, the human `session list` adds an exact stderr truncation notice when
-the service reports `truncated:true` (stdout shape unchanged, `--json` keeps the field), and
-local/human failures
-use the base `chronofork: <message>` prefix with typed codes only in canonical envelopes;
-the invalid `--name` wording now comes from the service catalog.
-Limits: HTTP/1.1 only with no TLS, keep-alive, chunked bodies or SSE; stateless MCP with no
-`Mcp-Session-Id`, resources/prompts/logging or server-initiated messages; coarse static
-tokens with no rotation, expiry or audit log; ownership is process-local and lost on restart
-while durable objects have no per-principal owner; closed sessions are retained for the
-process lifetime and keep counting toward `max_sessions`; debug/trace/script/TAS operations
-stay CLI-local; one backend configuration per daemon; `io_timeout` is verified at process
-level only; no performance claim. Tracked as M6-FU1–M6-FU4.
-
-**M7 (human-facing GUI) is implemented, independently verified and merged to `main` at
-`cb05836` (PR #6). It was verified on `agent/m7-gui` based on `origin/main` `93d47ed`
-(with the verified M6 snapshot) before the merge.** The contract [ADR-0013](adr/0013-human-facing-gui.md) and the [GUI
-architecture](architecture/gui.md) are implemented: a presentation-only
-`chronofork-gui` crate (strict view decoders, window/pane/mosaic model, eight-panel
-availability matrix, deterministic fixed-size plain/ANSI and self-contained HTML
-renderers, `HostClock`/`ManualClock` pacing with a host-time run loop and pause gate,
-capability-gated video/audio pipelines and a cooperative human/agent controller lease),
-and the `chronofork gui run` stdin-driven process surface in local and remote modes
-(blocks, exit codes, `--html`, read-only `--movie` timeline and the deterministic
-`pulse`). Attach/detach is proven non-perturbative and the handoff is observable and
-deterministic. All M7-A1–M7-A30 rows in the [M7 acceptance
-plan](quality/m7-gui-acceptance.md) are `executed - passed` (final independent PASS4 and
-review REVIEW5 PASS, 2026-11-17, after the F1–F4/FAIL3 rounds and repairs); the dated gate
-record is the 2026-11-17 M7 block in [quality gates](quality/quality-gates.md) — the block
-carries the target/passed counts against the M6 baseline, and both demos are 3/3
-byte-identical with the frozen M6 crates unchanged. Limits: v1 presents text and a
-static HTML document only — **no native toolkit window, no picture and no sound**, no
-browser/JS frontend, no streaming transport, no live audio output, no GUI input
-injection, no GUI state persistence and no VDP/bus/disassembly/trace panel content
-(M6-FU1). Real video/audio sources and sinks remain H2/H3, so the GUI pipeline honestly
-reports `rendering=unavailable`/`audio=unavailable` in every v1 process configuration (the
-backend capability is `rendering=true` since phase 8.3; the pipeline still has no video
-source/sink), and
-no v1 CLI process builds the host clock (playback is the deterministic `pulse`). The
-controller lease is cooperative, not a lock; no performance or cross-platform claim is
-made. **M7 is merged; M8 (functional Mega Drive emulator) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it.**
-
-**M2 durable sessions are complete and independently verified (round 2, after the F1
-repair).** Fase B persists canonical checkpoints under an explicit versioned root
-and provides named metadata, deterministic listing, explicit non-cascading delete with
-no automatic GC, a cooperative per-session writer lock/lease, storage-backed
-rehydration and the `chronofork session save/load/list/delete` CLI. The M2-A1–A11
-acceptance criteria and the full gate passed in two independent verification rounds;
-round 1 found one medium CLI lock-scope finding (F1), which was repaired and
-re-verified closed in round 2. See the executed [M2 acceptance
-plan](quality/m2-durable-sessions-acceptance.md) and the dated [quality
-gates](quality/quality-gates.md) result. Residual limits: durability is verified only
-on local Linux filesystems (Windows/network filesystems unverified); the writer lock is
-cooperative metadata, not authentication; a concurrent publish/read or delete/read
-interleaving is not separately tested (`NFR-CONC-003` is Partial); holding the lock
-across a long in-memory `--steps` advance lengthens contention; a crashed holder needs explicit
-owner-checked recovery; retention is manual; there is no encryption, authentication or
-format migration; and the public convenience `save_snapshot` remains publish-only for
-third-party callers while the CLI uses the lock-aware workflow.
-
-**M3's first through sixth increments (TAS, deterministic replay, partial replay/seek,
-branch comparison, movie format v2 anchors and multi-device input, the in-process rewind
-state cache with interactive stepping, rerecord/branch editing, and real-hardware input TAS
-with `--rom` backend selection) are implemented and independently verified (M3-T4, M3-T5,
-the t7 format-v2 verification PASS, the t5 rewind verification PASS, the t10
-repair-round-2 PASS and the t5 hardware-TAS/M3 completion audit PASS,
-2026-11-15/2026-11-16).** The first increment adds the canonical single-file v1 `.cfmovie`
-format, record/playback of a per-tick input sequence on the deterministic synthetic
-backend, exact first-divergence reporting, restart and M2-seeded replay from the embedded
-checkpoint, and the `chronofork tas record/play/verify` CLI. The second increment adds
-ranged replay/seek over an exact `(from, until]` window with typed range bounds, forward
-single-tick advance and rewind by deterministic linear re-simulation from the embedded
-checkpoint, and branch comparison of recorded `(tick, state hash)` records with
-first-divergence, length and embedded-checkpoint identity reporting (no re-simulation).
-The third increment adds the `CFMOVIE2` container with a canonical embedded checkpoint, an
-ordered table of canonical checkpoint anchors bound to recorded steps, nearest-anchor
-seek in the single ranged replay path, and schema-2 multi-device input (four digital
-ports, four analog axes and a keyboard bitmap) recorded/replayed with deterministic
-synthetic-backend consumption. Anchored ranged replay reports `anchored=1`,
-`anchor_step`, `anchor_tick` and `prefix_verified=0`: it deliberately does not re-execute
-the pre-anchor prefix, while full-range `verify` remains complete. The evidence is the
-executed [M3 acceptance plan](quality/m3-tas-replay-acceptance.md), the [increment-2
-acceptance plan](quality/m3-partial-replay-acceptance.md), the [format-v2 acceptance
-plan](quality/m3-format-v2-acceptance.md),
-[ADR-0004](adr/0004-tas-movie-format.md),
-[ADR-0005](adr/0005-partial-replay-and-branch-comparison.md),
-[ADR-0006](adr/0006-movie-format-v2-anchors-and-multi-device-input.md) and the dated
-[quality gates](quality/quality-gates.md) results. A fourth increment — a bounded in-process
-rewind state cache, deterministic rewind by restoring the nearest verified state and
-replaying recorded inputs, and the interactive `chronofork tas studio` stepping surface —
-is implemented and independently verified for the deterministic synthetic backend
-([ADR-0007](adr/0007-in-process-rewind-and-interactive-stepping.md), M3-A28–A34, t5 PASS
-2026-11-15; [M3 rewind acceptance plan](quality/m3-rewind-acceptance.md)). A fifth
-increment — input editing, deterministic suffix re-simulation, branch artifacts and
-anchor handling on edit — is implemented and independently verified for the deterministic
-synthetic backend ([ADR-0008](adr/0008-rerecord-and-branch-editing.md); [M3 rerecord
-acceptance plan](quality/m3-rerecord-acceptance.md) rows M3-A35–A44 `executed - passed`,
-t10 repair-round-2 PASS 2026-11-16). It adds `chronofork tas edit`, verified-prefix plus
-suffix re-simulation into a new branch artifact with `parent_movie_id` set to the source
-id, `keep-prefix`/`drop`/`rebuild` anchor handling, and v1→v1 / v2→v2 preservation without
-a new format version or stored rerecord counter. A sixth increment adds real-hardware input
-TAS: stateless per-step Mega Drive controller data-register reads for ports 1–2 (TH-high
-3-button subset; A/Start, TH/6-button multiplexing, timing, analog/keyboard hardware and
-commercial ROMs deferred), no canonical snapshot/state-hash/demo/M1 change, and `--rom`
-backend selection on `tas record/play/verify/studio/edit` (`compare` stays
-backend-agnostic), verified end to end with the synthetic `controller_rom()`. The
-[M3 hardware acceptance plan](quality/m3-hardware-acceptance.md) rows M3-A45–A53 are
-`executed - passed` (t5 PASS 2026-11-16), and the M3 completion audit passed. **M3 is
-complete for the documented deterministic minimal-slice scope** (t6 promotion; the t7
-promotion audit PASSed on 2026-11-16, recorded in the ignored
-`.research/m3-hardware/final-verification/` evidence). Import/export adapters remain
-documented-only, and checkpoint-reference movie support remains deferred;
-none of the in-place/timeline/persisted-counter/mixed-anchor/O(1)-seek capabilities or
-TH/6-button/analog/keyboard/cycle-accuracy claims is made. The hardware claim is the
-synthetic 68000 controller-reading ROM and 3-button subset, not commercial ROMs or
-controller timing. M0–M7 are complete and merged to `main` (M4 at `4c595a2`; M5 at
-`0c4e9f0`, PR #4; M6 and M7 at `cb05836`, PR #6); M8 (functional Mega Drive) is in progress (phases 8.2 and 8.3 complete; next: 8.4), with M9 multi-backend after it. The
-parallel hardware-depth tracks H1–H5
-(CPU/instructions; video/VDP/DMA; audio/Z80; cartridge/controllers/timers;
-accuracy/evidence) remain partial or planned. The
-[milestone status table](roadmap/milestones.md) is the canonical record of milestone
-status and integration state.
+Dated acceptance plans and evidence records are **historical snapshots**: they record what
+was verified on their date and are not current status claims.
 
 ## Start here
 

@@ -45,7 +45,7 @@ fn save_snapshot(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("publish snapshot")
 }
 
@@ -169,7 +169,7 @@ fn oversized_metadata_is_rejected_at_publish_without_consuming_a_key() {
         .expect("checkpoint record");
     assert!(matches!(
         limited
-            .save_snapshot(session.session_key, snapshot, None)
+            .save_snapshot(session.session_key, &snapshot, None)
             .expect_err("oversized snapshot metadata"),
         SessionError::FileTooLarge { .. }
     ));
@@ -317,7 +317,7 @@ fn name_length_and_control_characters_are_rejected() {
         .expect("checkpoint record");
     assert!(matches!(
         repository
-            .save_snapshot(session.session_key, snapshot, Some(&long_name))
+            .save_snapshot(session.session_key, &snapshot, Some(&long_name))
             .expect_err("over-long snapshot name"),
         SessionError::InvalidName(_)
     ));
@@ -394,7 +394,7 @@ fn oversized_checkpoint_is_rejected_at_save_without_consuming_a_key() {
         .expect("checkpoint record");
     assert!(matches!(
         repository
-            .save_snapshot(session.session_key, snapshot, None)
+            .save_snapshot(session.session_key, &snapshot, None)
             .expect_err("oversized checkpoint"),
         SessionError::FileTooLarge { limit: 16, .. }
     ));

@@ -1,5 +1,12 @@
 # M3 Real-Hardware Input TAS — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 
 > **Phase 8.2 supersession.** The instruction-quantum scheduler, configurable
 > instructions-per-line flag, tick semantics, quantum rows and masked-boundary

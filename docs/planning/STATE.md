@@ -1,69 +1,38 @@
-# Session State — 2026-11-19
+# Session State — 2026-11-20 (paused)
 
-**Date:** 2026-11-19
+**Paused:** 2026-11-21T00:12-03:00 (America/Fortaleza).
+**Worktree:** `.agents/worktrees/consolidation-adrs-2026-11-20`; branch
+`agent/consolidation-adrs-2026-11-20` at `b8d63a1` (uncommitted; **not** merged).
+**Main:** `dc5b319` (PR #31 merge of 8.4), clean. This local `STATE.md` is the pause handoff and
+must be reconciled with main's 8.4-complete `STATE.md` when the branch is merged.
 
-## Current Position
+## Position
 
-- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.3 now complete).
-- **Phase 8.3 — Complete VDP: complete and integrated.** Implemented on
-  `agent/8.3-vdp` (24 implementation commits, HEAD `e1433ed`), independently verified
-  (rounds 1–3 PASS) and independently reviewed (rounds 2–3 PASS). The integration commit
-  closes the phase in `docs/planning/ROADMAP.md`/`MILESTONE.md`, pushes the branch and opens
-  the phase-8.3 PR linked to issue #16; the PR is the integration record for the merge into
-  `main`. If a fresh session reads this before the merge lands, check the PR/issue #16 state
-  first.
-- **Delivered:** the complete VDP — CRAM (64 words) and VSRAM (40 words) with word/byte
-  addressing and auto-increment, plane A/B and window nametables with full/column/line
-  scrolling, 80 link-ordered sprites with flips/duplication/collision/overflow latches,
-  six-level priority, shadow/highlight, the H40 border, DMA (memory→VRAM/CRAM/VSRAM, fill,
-  copy) with pre-validation and busy windows, the bounded 4-word FIFO with 68000 wait slots
-  surfaced through the bus and applied as `wait*7` master cycles, VDP-owned VBlank/HBlank
-  pending/acknowledge gated by register `0x00`, H/V counters and line/dot timing, and
-  deterministic 256/320×224/240 RGBA frames through the backend-neutral `MediaSource` seam
-  (one frame per VDP frame, second take `None`). Payload v5
-  (`CFMD68K5`/`CFMDSTATE5`/`CFMDCONF5`) embeds the `CFVDP002` VDP state and frame index, and
-  v1–v4 are rejected with typed errors; `rendering = true`, `audio = false`. Evidence: the
-  pinned-oracle VDP state differential ([VDP state differential](../research/vdp-state-differential-evidence.md))
-  plus the workspace gate and the H32/H40 frame fixtures.
-- **Honest residual limits:** interlace, dot-exact H/V counters, the physical byte-swapped
-  VRAM layout, exact H32 window geometry, line-mode vertical scrolling and column-scroll
-  details are not modelled; DMA's source is a VRAM address (no 68000-memory view) and
-  transfers are eager; VSRAM data-port reads are undecoded; the headless oracle exposes no
-  VDP memory content, so pixels are pinned internally (no cross-emulator pixel comparison);
-  the latched command CD5 is not cleared after an eager DMA, so a later data-port write with
-  no new command could re-trigger a transfer (untested edge, hardware clears CD5 on
-  completion); the `megadrive demo` renders a frame on every `inspect` and takes ~65–70 s.
-  Z80, YM2612/PSG audio, timer interrupts, the full controller protocol, cartridge mapper
-  variants/SRAM banking and headless PNG/WAV capture remain later M8 phases.
-- **Next task:** phase 8.4 — Z80, bus arbitration and audio. Its plan is already
-  groomed at [2026-11-17-8.4-z80-audio.md](../superpowers/plans/2026-11-17-8.4-z80-audio.md)
-  (issue #17), so a fresh session routes `resume-work` → `start-next-phase` →
-  `executing-plans`.
-- **CI runtime follow-up (issue #28): complete and merged** (PR #30). The workflow now
-  triggers only on `main` pushes and PRs (the duplicate branch-push run is gone), cancels
-  superseded PR runs, runs the deterministic demos from the release binary (output
-  byte-identical to debug) and splits the workspace tests into four parallel crate groups.
-  Measured on the PR run: total workflow ~29.5 → **14m34s**; `Test` critical path 28m21s →
-  **14m31s** (`cpu`), with `apps` 5m56s, `host` 1m13s and `core` 35s; demos 3m16s → **1m39s**.
-  Non-blocking follow-ups recorded in the PR: a `cargo metadata` vs group-union guard when a
-  crate is added, an optional per-group cache-key suffix, and listing all four `Test (…)`
-  checks if branch protection is ever enabled.
+- **M8 open; phase 8.4 COMPLETE and merged** to `main` at `dc5b319` (PR #31, issue #17 closed).
+  Step-0 gate on main: **1454 passed / 0 failed / 0 ignored (122 targets)**; fmt/check/clippy/
+  test/rustdoc green (`.research/implementation-2026-11-20/step0-main-gate.log`).
+- **Consolidation track in progress:** ADRs 0014 (v1 scope), 0015 (execution/verification) and
+  0016 (service/agent API) are **Accepted** (V4/V5); O-1..O-4 recorded.
+- **Implementation (branch, uncommitted):** W3.1 per-session owner, W3.2 cancel/deadline/journal,
+  W3.3 quotas/reap. R1 found six probes + seven findings; **W3d repair was interrupted** (no
+  `w3d-repair.md`; partial edits may exist). **R1b and G2 pending.**
+- **W2:** spec/scaffolding accepted (R2d PASS, 48/48 harness). **W1:** plan revalidated against
+  `main dc5b319` and accepted (R2e PASS); step 0 green. **H-2 pending:** durable boot blocker
+  (TST.L `$00A10008`/`0xA1000C` → exception; 14-byte frame aborting the host) must be recorded in
+  `STATE.md` before the first W1 patch (text in `w1c-main.md`/`w1-plan.md`).
+- **W4/CI/G1:** evidence, fixtures, CI layers and the final gate done; fixtures staged; `.gitignore`
+  updated.
 
-## Open Decisions
+## Pending owner authorization
 
-- **None blocking.** The VDP limits above are documented, reviewed and deliberately
-  deferred; they do not block closing 8.3 or starting 8.4.
-- Audio differential tolerance (phase 8.4), port 3/analog/keyboard as H4 residual limits,
-  native frontend dependencies (`winit`/`softbuffer`/`cpal` + ADR superseding ADR-0013,
-  required before 8.8) and the M9 second system remain open as before.
-- The curated commercial ROM set (Kid Chameleon and Chakan) remains phase 8.6 evidence.
+1. Commit/PR of this branch (W3/W2, uncommitted, behind `main`); reconcile this local `STATE.md`
+   with main's 8.4 closure.
+2. Create the **W1 worktree/team from `main`**; first task H-2 + step-0 evidence, then W1.1–W1.7.
 
-## Blockers
+## Next action
 
-- None. Phase 8.3 is complete; the branch is pushed and the PR is the merge record.
+Retry **W3d** (six probes/seven findings), then **R1b**, then **G2**; after G2, commit/PR the
+consolidation branch and reconcile with `main`; then create the W1 worktree from `main`.
 
-## Recommended Next Step
-
-Resume with `resume-work` → `start-next-phase`: phase 8.4 (Z80, bus arbitration and audio)
-already has an approved design and groomed plan and branches from the current `main`, which
-now includes phases 8.1–8.3 and the CI runtime follow-up.
+**Handoff:** `.research/implementation-2026-11-20/SESSION-HANDOFF-2026-11-21.md`.
+**Team:** archived on pause; no agents running. No commit/push/merge was performed.

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chronofork_backend_api::{BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
@@ -12,6 +12,153 @@ use crate::error::SessionError;
 use crate::lineage::Lineage;
 use crate::session::{Session, SessionInspection, SessionState, map_backend_compatibility};
 use crate::snapshot::Snapshot;
+
+/// A shared handle to one registered session.
+///
+/// The handle is the **per-session execution owner**: everything that mutates a
+/// session's canonical state holds the session's mutex, and holding one session's
+/// mutex never blocks a different session. [`SessionManager`] owns exactly one
+/// handle per registered session and [`SessionManager::session_handle`] hands out
+/// clones, so an adapter (for example `chronofork-service`) can run long synchronous
+/// work on one session without holding a manager-wide lock.
+///
+/// Synchronous only: [`SessionHandle::lock`] blocks the calling thread and never
+/// spawns a background executor. An adapter that holds several locks documents its
+/// own acquisition order; this type only provides the owner.
+#[derive(Clone, Debug)]
+pub struct SessionHandle {
+    id: SessionId,
+    owner: Arc<Mutex<Session>>,
+}
+
+impl SessionHandle {
+    /// Wraps one session into an execution owner.
+    ///
+    /// A session built outside a [`SessionManager`] (for example by
+    /// [`SessionHandle::fork_from_snapshot`]) is wrapped here so the owner type
+    /// stays the only way to reach a session.
+    #[must_use]
+    pub fn new(session: Session) -> Self {
+        let id = session.id();
+        Self {
+            id,
+            owner: Arc::new(Mutex::new(session)),
+        }
+    }
+
+    /// Locks this session's owner and returns the guard.
+    ///
+    /// The guard is the exclusive execution owner: while it is held, no other
+    /// thread can step, snapshot or inspect this session, and a different session
+    /// stays unaffected. A poisoned owner (a panicking holder) is reported as a
+    /// typed [`SessionError::Poisoned`] instead of panicking the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Poisoned`] when a previous holder panicked while
+    /// holding this session's owner.
+    pub fn lock(&self) -> Result<MutexGuard<'_, Session>, SessionError> {
+        self.owner
+            .lock()
+            .map_err(|_| SessionError::Poisoned(self.id))
+    }
+
+    /// Tries to lock this session's owner without waiting.
+    ///
+    /// This is the cheap-read path of a status/listing operation (ADR-0016 §1,
+    /// K1/K8): a caller that must not wait for a run can distinguish "the owner is
+    /// held" from "the owner is free" and report the session as running instead of
+    /// blocking. `None` means the owner is held by another thread or poisoned;
+    /// neither is an error for a non-committal read.
+    #[must_use]
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, Session>> {
+        self.owner.try_lock().ok()
+    }
+
+    /// Returns this session's identifier without locking the owner.
+    #[must_use]
+    pub const fn id(&self) -> SessionId {
+        self.id
+    }
+
+    /// Assigns this handle its final identifier.
+    ///
+    /// Only a caller that registers the session allocates from the shared counter
+    /// and assigns the result; the holder of a handle never reassigns an
+    /// identifier, so the value is write-once in practice. The session object is
+    /// updated under its own owner, so the identifier a session reports through
+    /// [`Session::id`] and the identifier arithmetic use agree.
+    pub fn assign_id(&mut self, id: SessionId) {
+        self.id = id;
+        if let Ok(mut owner) = self.owner.lock() {
+            owner.set_id(id);
+        }
+    }
+
+    /// Forks this session from one of its stored checkpoints into a new handle.
+    ///
+    /// This is the hand-off form of a fork: the source is addressed by its own
+    /// handle, so a session that a caller already owns (and that is no longer
+    /// registered with the [`SessionManager`] that created it) can still be
+    /// forked. The child is a fresh session with the source as its lineage parent;
+    /// it is **not** registered with any manager, so the caller pairs it with
+    /// `factory` ownership itself.
+    ///
+    /// The source owner is held only while the checkpoint is copied. The returned
+    /// handle is independent, so the caller may release the source lock first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the compatibility, snapshot and backend errors of the existing
+    /// fork path. The child carries the placeholder identifier the internal
+    /// constructor assigns; a caller that registers it assigns the real identifier
+    /// itself (see [`SessionHandle::assign_id`]).
+    pub fn fork_from_snapshot(
+        &self,
+        snapshot_id: SnapshotId,
+        factory: &Arc<dyn BackendFactory>,
+    ) -> Result<Self, SessionError> {
+        let (snapshot, parent_depth, parent_id) = {
+            let source = self.lock()?;
+            let snapshot = source
+                .snapshot_record(snapshot_id)
+                .ok_or(SessionError::UnknownSnapshot {
+                    session: source.id(),
+                    snapshot: snapshot_id,
+                })?
+                .clone();
+            (snapshot, source.lineage().depth(), source.id())
+        };
+        let mut backend = factory.create()?;
+        backend
+            .restore(snapshot.backend())
+            .map_err(map_backend_compatibility)?;
+        let initial_state = backend.snapshot()?;
+        let lineage = Lineage::child(parent_id, snapshot_id, parent_depth);
+        let mut child = Session::new(backend, lineage, initial_state);
+        child.adopt_snapshot(snapshot)?;
+        Ok(Self::new(child))
+    }
+
+    /// Returns one of this session's stored checkpoint records.
+    ///
+    /// The record is returned by value so the caller never holds the session owner
+    /// while it serializes or publishes the checkpoint. One clone of the record is
+    /// the cost of not letting a guard escape this type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::Poisoned`] for a panicked holder and
+    /// [`SessionError::UnknownSnapshot`] for a checkpoint this session does not
+    /// store.
+    pub fn snapshot_record(&self, snapshot: SnapshotId) -> Result<Snapshot, SessionError> {
+        let record = self.lock()?.snapshot_record(snapshot).cloned();
+        record.ok_or(SessionError::UnknownSnapshot {
+            session: self.id,
+            snapshot,
+        })
+    }
+}
 
 /// A compact view of one session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,10 +199,12 @@ pub struct SessionComparison {
 /// Mutations require `&mut self`. ChronoFork intentionally does not hide a
 /// global lock or a background executor inside this type; transport adapters
 /// that need shared access must add an explicit synchronization boundary and
-/// document it.
+/// document it. Each session is stored behind its own mutex, and
+/// [`SessionManager::session_handle`] exposes that per-session owner so an
+/// adapter can run one session without serializing on a manager-wide lock.
 pub struct SessionManager {
     factory: Arc<dyn BackendFactory>,
-    sessions: BTreeMap<SessionId, Session>,
+    sessions: BTreeMap<SessionId, SessionHandle>,
     durable_session_keys: BTreeMap<SessionId, u64>,
     next_session_id: u64,
 }
@@ -78,14 +227,66 @@ impl SessionManager {
         self.factory.descriptor()
     }
 
+    /// Registers one freshly built session and returns its identifier.
+    ///
+    /// The identifier is allocated here, so every registration site (create,
+    /// import, stored checkpoint, fork, detach-then-build) shares one monotonic
+    /// counter and no session object is ever built against a hand-picked id.
+    fn register(&mut self, mut session: Session) -> Result<SessionId, SessionError> {
+        let id = self.allocate_session_id()?;
+        session.set_id(id);
+        self.sessions.insert(id, SessionHandle::new(session));
+        Ok(id)
+    }
+
     /// Creates a fresh session from the factory's initial state.
     pub fn create_session(&mut self) -> Result<SessionId, SessionError> {
         let backend = self.factory.create()?;
         let initial_state = backend.snapshot()?;
-        let id = self.allocate_session_id()?;
-        let session = Session::new(id, backend, Lineage::root(), initial_state);
-        self.sessions.insert(id, session);
-        Ok(id)
+        let session = Session::new(backend, Lineage::root(), initial_state);
+        self.register(session)
+    }
+
+    /// Returns a shared handle to one registered session.
+    ///
+    /// The handle is the per-session execution owner (see [`SessionHandle`]): a
+    /// caller locks it to run or observe that session and never holds a
+    /// manager-wide lock while doing so. The manager keeps its own handle, so the
+    /// session stays registered; the clone only shares ownership of the same
+    /// session object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::UnknownSession`] for an unregistered identifier.
+    pub fn session_handle(&self, session: SessionId) -> Result<SessionHandle, SessionError> {
+        self.sessions
+            .get(&session)
+            .cloned()
+            .ok_or(SessionError::UnknownSession(session))
+    }
+
+    /// Removes a session from this manager and returns its owner handle.
+    ///
+    /// This is the hand-off used by an adapter that becomes the session's
+    /// **single execution owner** (for example `chronofork-service`, which keeps
+    /// its own registry of handles). After the hand-off the manager can no longer
+    /// observe or mutate that session, so no path can wait on or alias a session
+    /// owner the adapter holds. The durable session key, if any, is removed with
+    /// it; the session object itself stays alive through the returned handle.
+    ///
+    /// A manager that never calls this method keeps full ownership of every
+    /// session it created.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::UnknownSession`] for an unregistered identifier.
+    pub fn detach(&mut self, session: SessionId) -> Result<SessionHandle, SessionError> {
+        let handle = self
+            .sessions
+            .remove(&session)
+            .ok_or(SessionError::UnknownSession(session))?;
+        self.durable_session_keys.remove(&session);
+        Ok(handle)
     }
 
     /// Creates a session by importing serialized snapshot bytes.
@@ -102,12 +303,9 @@ impl SessionManager {
             .restore(snapshot.backend())
             .map_err(map_backend_compatibility)?;
         let initial_state = backend.snapshot()?;
-        let id = self.allocate_session_id()?;
-        let mut session =
-            Session::new(id, backend, Lineage::imported(snapshot.id()), initial_state);
+        let mut session = Session::new(backend, Lineage::imported(snapshot.id()), initial_state);
         session.adopt_snapshot(snapshot)?;
-        self.sessions.insert(id, session);
-        Ok(id)
+        self.register(session)
     }
 
     /// Creates a session by rehydrating a checkpoint already validated by the
@@ -129,13 +327,12 @@ impl SessionManager {
             .restore(snapshot.backend())
             .map_err(map_backend_compatibility)?;
         let initial_state = backend.snapshot()?;
-        let id = self.allocate_session_id()?;
-        let mut session =
-            Session::new(id, backend, Lineage::imported(snapshot.id()), initial_state);
+        let mut session = Session::new(backend, Lineage::imported(snapshot.id()), initial_state);
         session.adopt_snapshot(snapshot)?;
-        self.sessions.insert(id, session);
-        self.durable_session_keys.insert(id, storage_session_key);
-        Ok(id)
+        let session = self.register(session)?;
+        self.durable_session_keys
+            .insert(session, storage_session_key);
+        Ok(session)
     }
 
     /// Records the durable session key for a runtime session.
@@ -170,14 +367,23 @@ impl SessionManager {
     }
 
     /// Returns one stored checkpoint record.
+    ///
+    /// The record is returned by value: a session is owned by an `Arc<Mutex<...>>`
+    /// handle, so a borrowed record could not outlive the guard that owns it. The
+    /// clone keeps the lock protocol free of escaping guards and is bounded by the
+    /// checkpoint size the caller is about to serialize anyway.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::UnknownSession`] for an unregistered identifier,
+    /// [`SessionError::UnknownSnapshot`] for a checkpoint the session does not
+    /// store and [`SessionError::Poisoned`] for a panicked holder.
     pub fn snapshot_record(
         &self,
         session: SessionId,
         snapshot: SnapshotId,
-    ) -> Result<&Snapshot, SessionError> {
-        self.session(session)?
-            .snapshot_record(snapshot)
-            .ok_or(SessionError::UnknownSnapshot { session, snapshot })
+    ) -> Result<Snapshot, SessionError> {
+        self.session(session)?.snapshot_record(snapshot)
     }
 
     /// Forks a session from one of its stored checkpoints.
@@ -186,11 +392,11 @@ impl SessionManager {
         source_session: SessionId,
         snapshot_id: SnapshotId,
     ) -> Result<SessionId, SessionError> {
+        // Phase 1: read the source under its own owner and copy the checkpoint, so
+        // the source owner is not held while the child backend is built.
         let (snapshot, parent_depth) = {
-            let source = self
-                .sessions
-                .get(&source_session)
-                .ok_or(SessionError::UnknownSession(source_session))?;
+            let handle = self.session(source_session)?;
+            let source = handle.lock()?;
             let snapshot = source
                 .snapshot_record(snapshot_id)
                 .ok_or(SessionError::UnknownSnapshot {
@@ -200,17 +406,17 @@ impl SessionManager {
                 .clone();
             (snapshot, source.lineage().depth())
         };
+        // Phase 2: build the child with no session owner and no manager-wide state
+        // held, then register it.
         let mut backend = self.factory.create()?;
         backend
             .restore(snapshot.backend())
             .map_err(map_backend_compatibility)?;
         let initial_state = backend.snapshot()?;
-        let id = self.allocate_session_id()?;
         let lineage = Lineage::child(source_session, snapshot_id, parent_depth);
-        let mut session = Session::new(id, backend, lineage, initial_state);
+        let mut session = Session::new(backend, lineage, initial_state);
         session.adopt_snapshot(snapshot)?;
-        self.sessions.insert(id, session);
-        Ok(id)
+        self.register(session)
     }
 
     /// Captures the current state of a session and immediately forks it.
@@ -221,7 +427,7 @@ impl SessionManager {
 
     /// Captures a checkpoint for a session.
     pub fn snapshot(&mut self, session: SessionId) -> Result<SnapshotId, SessionError> {
-        self.session_mut(session)?.snapshot()
+        self.session(session)?.lock()?.snapshot()
     }
 
     /// Serializes a checkpoint.
@@ -230,7 +436,7 @@ impl SessionManager {
         session: SessionId,
         snapshot: SnapshotId,
     ) -> Result<Vec<u8>, SessionError> {
-        self.session(session)?.snapshot_bytes(snapshot)
+        self.session(session)?.lock()?.snapshot_bytes(snapshot)
     }
 
     /// Restores a checkpoint in place.
@@ -239,12 +445,12 @@ impl SessionManager {
         session: SessionId,
         snapshot: SnapshotId,
     ) -> Result<(), SessionError> {
-        self.session_mut(session)?.restore(snapshot)
+        self.session(session)?.lock()?.restore(snapshot)
     }
 
     /// Restores a session's creation state.
     pub fn reset(&mut self, session: SessionId) -> Result<(), SessionError> {
-        self.session_mut(session)?.reset()
+        self.session(session)?.lock()?.reset()
     }
 
     /// Captures a bounded structured trace from one session's backend.
@@ -265,7 +471,7 @@ impl SessionManager {
         config: &TraceConfig,
         steps: u64,
     ) -> Result<Trace, SessionError> {
-        self.session_mut(session)?.capture_trace(config, steps)
+        self.session(session)?.lock()?.capture_trace(config, steps)
     }
 
     /// Captures a session's canonical backend state without creating a checkpoint.
@@ -279,7 +485,7 @@ impl SessionManager {
         &mut self,
         session: SessionId,
     ) -> Result<BackendSnapshot, SessionError> {
-        self.session_mut(session)?.capture_state()
+        self.session(session)?.lock()?.capture_state()
     }
 
     /// Restores a canonical state captured by [`Self::capture_session_state`].
@@ -292,7 +498,7 @@ impl SessionManager {
         session: SessionId,
         state: &BackendSnapshot,
     ) -> Result<(), SessionError> {
-        self.session_mut(session)?.restore_state(state)
+        self.session(session)?.lock()?.restore_state(state)
     }
 
     /// Drops a session's stored checkpoint records while retaining its creation
@@ -306,7 +512,7 @@ impl SessionManager {
         &mut self,
         session: SessionId,
     ) -> Result<(), SessionError> {
-        self.session_mut(session)?.discard_snapshot_records();
+        self.session(session)?.lock()?.discard_snapshot_records();
         Ok(())
     }
 
@@ -316,7 +522,8 @@ impl SessionManager {
         &self,
         session: SessionId,
     ) -> Result<(usize, u64), SessionError> {
-        self.session(session).map(Session::snapshot_identity)
+        let identity = self.session(session)?.lock()?.snapshot_identity();
+        Ok(identity)
     }
 
     /// Advances a session by one backend-defined quantum.
@@ -325,22 +532,22 @@ impl SessionManager {
         session: SessionId,
         input: InputFrame,
     ) -> Result<StepOutcome, SessionError> {
-        self.session_mut(session)?.step(input)
+        self.session(session)?.lock()?.step(input)
     }
 
     /// Pauses a session.
     pub fn pause(&mut self, session: SessionId) -> Result<(), SessionError> {
-        self.session_mut(session)?.pause()
+        self.session(session)?.lock()?.pause()
     }
 
     /// Resumes a session.
     pub fn resume(&mut self, session: SessionId) -> Result<(), SessionError> {
-        self.session_mut(session)?.resume()
+        self.session(session)?.lock()?.resume()
     }
 
     /// Closes a session.
     pub fn close(&mut self, session: SessionId) -> Result<(), SessionError> {
-        self.session_mut(session)?.close()
+        self.session(session)?.lock()?.close()
     }
 
     /// Reads emulated memory through the debugger path.
@@ -350,7 +557,7 @@ impl SessionManager {
         address: u64,
         length: usize,
     ) -> Result<Vec<u8>, SessionError> {
-        self.session(session)?.read_memory(address, length)
+        self.session(session)?.lock()?.read_memory(address, length)
     }
 
     /// Writes emulated memory through the debugger path.
@@ -360,12 +567,12 @@ impl SessionManager {
         address: u64,
         data: &[u8],
     ) -> Result<(), SessionError> {
-        self.session_mut(session)?.write_memory(address, data)
+        self.session(session)?.lock()?.write_memory(address, data)
     }
 
     /// Returns a read-only inspection of one session.
     pub fn inspect(&self, session: SessionId) -> Result<SessionInspection, SessionError> {
-        self.session(session)?.inspect()
+        self.session(session)?.lock()?.inspect()
     }
 
     /// Compares two sessions by tick and canonical state digest.
@@ -393,7 +600,8 @@ impl SessionManager {
     pub fn summaries(&self) -> Result<Vec<SessionSummary>, SessionError> {
         self.sessions
             .values()
-            .map(|session| {
+            .map(|handle| {
+                let session = handle.lock()?;
                 let machine = session.inspect()?.machine;
                 Ok(SessionSummary {
                     id: session.id(),
@@ -418,19 +626,29 @@ impl SessionManager {
         self.sessions.is_empty()
     }
 
-    fn session(&self, id: SessionId) -> Result<&Session, SessionError> {
+    /// Returns one session's owner handle.
+    ///
+    /// The clone is `O(1)` (an `Arc` refcount) and keeps the session registered
+    /// and lockable after the caller releases any manager-wide state.
+    fn session(&self, id: SessionId) -> Result<SessionHandle, SessionError> {
         self.sessions
             .get(&id)
+            .cloned()
             .ok_or(SessionError::UnknownSession(id))
     }
 
-    fn session_mut(&mut self, id: SessionId) -> Result<&mut Session, SessionError> {
-        self.sessions
-            .get_mut(&id)
-            .ok_or(SessionError::UnknownSession(id))
-    }
-
-    fn allocate_session_id(&mut self) -> Result<SessionId, SessionError> {
+    /// Allocates the next session identifier from this manager's monotonic counter.
+    ///
+    /// The counter is the only state `create`/`fork` share, so an adapter that owns
+    /// sessions itself (and builds them through [`SessionHandle::fork_from_snapshot`])
+    /// can mint identifiers from the same space without registering the session
+    /// with this manager. Allocation is never reused across a process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::IdSpaceExhausted`] when the `u64` identifier space
+    /// is exhausted.
+    pub fn allocate_session_id(&mut self) -> Result<SessionId, SessionError> {
         let id = self.next_session_id;
         self.next_session_id = id.checked_add(1).ok_or(SessionError::IdSpaceExhausted)?;
         Ok(SessionId::from_raw(id))

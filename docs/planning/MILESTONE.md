@@ -2,6 +2,12 @@
 
 **Status:** active
 **Started:** 2026-11-17
+**Consolidation track:** in progress inside the open M8 (owner decision 2026-11-20, O-2) —
+ADR-0014/0015/0016 corrections and the W1–W5 plan, tracked in
+[ROADMAP.md](ROADMAP.md#consolidation-product-consolidation-and-agent-api-status-in-progress).
+It is a track, **not** a milestone closure: **this Definition of Done is not amended**, M8 is
+not closed by the track, and phases 8.7 (execution modes/capture) and 8.8 (native window) are
+executed afterwards, still inside M8.
 
 ## Goal
 
@@ -54,11 +60,14 @@ normative design is the
 1. Phase 8.1 — Cartridge, region, TMSS and boot [complete]
 2. Phase 8.2 — Complete 68000 and the cycle time model [complete]
 3. Phase 8.3 — Complete VDP [complete]
-4. Phase 8.4 — Z80, bus arbitration and audio [pending]
+4. Phase 8.4 — Z80, bus arbitration and audio [in progress — `agent/8.4-z80-audio`, not merged]
 5. Phase 8.5 — Timers, controllers and interrupts [pending]
-6. Phase 8.6 — Commercial compatibility, accuracy evidence and performance [pending]
-7. Phase 8.7 — Execution modes, pacing and headless capture [pending]
-8. Phase 8.8 — Native windowed frontend [pending]
+6. Phase 8.6 — Commercial compatibility, accuracy evidence and performance [pending] (its 8.6c consolidation sub-phase is the separate consolidation track above)
+7. Phase 8.7 — Execution modes, pacing and headless capture [pending; kept in this milestone]
+8. Phase 8.8 — Native windowed frontend [pending; kept in this milestone]
+
+M9 (multi-backend) remains `Planned` after M8. The consolidation track above does not change
+this list: no phase is removed and no Definition-of-Done item is dropped.
 
 ## Audit History
 

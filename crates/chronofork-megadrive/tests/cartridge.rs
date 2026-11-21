@@ -3,16 +3,19 @@
 //! Cartridge header, region, mapper, SRAM and TMSS behaviour.
 //!
 //! Every image here is independently authored: the synthetic builder below
-//! writes a documented Mega Drive header over caller-provided bytes. The
-//! fixture tests read the local-only `.research/roms/` images and skip with an
-//! explicit reason when they are absent; no ROM bytes are checked into the
-//! repository or embedded in this file.
+//! writes a documented Mega Drive header over caller-provided bytes. The two
+//! fixture tests read the local-only `.research/roms/` images through
+//! `required_rom_path`, which makes an absent fixture a declared skip that
+//! prints its reason — and a hard failure when
+//! `$CHRONOFORK_REQUIRE_ROM_FIXTURES=1` claims the fixtures are available. No ROM
+//! bytes are checked into the repository or embedded in this file.
 
 use chronofork_megadrive::CartridgeView;
 use chronofork_megadrive::cartridge::{
     Cartridge, CartridgeError, CartridgeSystem, Region, Tmss, TmssModel,
 };
 use chronofork_megadrive::interrupts::VideoStandard;
+use chronofork_megadrive::test_support::required_rom_path;
 
 const IMAGE_LEN: usize = 0x4000;
 
@@ -148,12 +151,29 @@ fn sram_spec_is_absent_when_the_fields_are_padded_or_the_marker_is_not_ra() {
     assert_eq!(rom_only.header().sram, None);
 }
 
+/// Resolves a commercial-ROM fixture, or declares the absence of the fixtures.
+///
+/// Returns `None` only when the fixture is absent *and* the run does not claim
+/// the fixtures are available. With `$CHRONOFORK_REQUIRE_ROM_FIXTURES=1` the
+/// absence is a hard failure here, so a job that sets the variable can never
+/// report a green run without having exercised the fixture.
+fn fixture_or_declared_skip(name: &str) -> Option<std::path::PathBuf> {
+    match required_rom_path(name) {
+        Ok(path) => Some(path),
+        Err(reason) => {
+            assert!(
+                !chronofork_megadrive::test_support::required_rom_fixtures(),
+                "{reason}; $CHRONOFORK_REQUIRE_ROM_FIXTURES is set, so this run must not pass without it"
+            );
+            eprintln!("skipped: {reason}");
+            None
+        }
+    }
+}
+
 #[test]
 fn fixture_headers_parse_when_present() {
-    let Some(path) =
-        chronofork_megadrive::test_support::rom_path("Kid Chameleon (USA, Europe).bin")
-    else {
-        eprintln!("skipping: ROM fixture absent from .research/roms/");
+    let Some(path) = fixture_or_declared_skip("Kid Chameleon (USA, Europe).bin") else {
         return;
     };
     let cartridge = Cartridge::parse(std::fs::read(path).expect("read")).expect("parse");
@@ -171,9 +191,7 @@ fn fixture_headers_parse_when_present() {
 
 #[test]
 fn chakan_fixture_header_parses_when_present() {
-    let Some(path) = chronofork_megadrive::test_support::rom_path("Chakan (USA, Europe).bin")
-    else {
-        eprintln!("skipping: ROM fixture absent from .research/roms/");
+    let Some(path) = fixture_or_declared_skip("Chakan (USA, Europe).bin") else {
         return;
     };
     let cartridge = Cartridge::parse(std::fs::read(path).expect("read")).expect("parse");

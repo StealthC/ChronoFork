@@ -342,7 +342,7 @@ fn health_is_served_even_with_an_empty_token_table() {
 }
 
 #[test]
-fn tools_publish_the_sixteen_operation_catalog_in_order() {
+fn tools_publish_the_twenty_operation_catalog_in_order() {
     let server = start(service_with(
         SyntheticBackendFactory::default(),
         None,
@@ -362,7 +362,7 @@ fn tools_publish_the_sixteen_operation_catalog_in_order() {
         .get("tools")
         .and_then(JsonValue::as_array)
         .expect("tools array");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 20);
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool.get("name").and_then(JsonValue::as_str).expect("name"))
@@ -380,7 +380,11 @@ fn tools_publish_the_sixteen_operation_catalog_in_order() {
             "session.restore",
             "session.compare",
             "session.close",
+            "session.reap",
             "session.read_memory",
+            "session.cancel",
+            "session.progress",
+            "session.operation",
             "store.list",
             "store.load",
             "store.save",
@@ -1255,6 +1259,35 @@ fn a_zero_worker_configuration_is_rejected() {
 }
 
 #[test]
+fn a_single_worker_configuration_is_rejected() {
+    // ADR-0016 §1/F4: the pool must reserve at least one worker for the control path, so
+    // a single-worker daemon cannot keep `cancel`/`list`/`progress` executable while a
+    // long run is in flight. The refusal is a typed startup error.
+    let error = serve(
+        ServerConfig {
+            workers: 1,
+            tokens: tokens(),
+            ..ServerConfig::default()
+        },
+        Arc::new(service_with(
+            SyntheticBackendFactory::default(),
+            None,
+            limits(),
+        )),
+    )
+    .expect_err("a single worker cannot reserve the control path");
+    match error {
+        TransportError::Protocol(message) => {
+            assert!(
+                message.contains("two workers"),
+                "the refusal names the bound: {message}"
+            );
+        }
+        other => unreachable!("expected a typed startup error, got {other:?}"),
+    }
+}
+
+#[test]
 fn the_worker_pool_serves_concurrent_requests_within_max_requests() {
     let total = 16_u64;
     let server = start_with(
@@ -1283,14 +1316,15 @@ fn the_worker_pool_serves_concurrent_requests_within_max_requests() {
 }
 
 #[test]
-fn a_single_worker_queues_concurrent_clients_and_serves_each_one() {
+fn a_small_pool_queues_concurrent_clients_and_serves_each_one() {
     // More clients than workers must queue in the bounded accept queue instead of being
-    // dropped or served by an unbounded number of threads.
+    // dropped or served by an unbounded number of threads. Two is the smallest accepted
+    // pool: one worker is reserved for the control path (ADR-0016 §1).
     let total = 8_u64;
     let server = start_with(
         service_with(SyntheticBackendFactory::default(), None, limits()),
         ServerConfig {
-            workers: 1,
+            workers: 2,
             max_requests: Some(total),
             ..ServerConfig::default()
         },
