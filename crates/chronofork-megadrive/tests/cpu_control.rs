@@ -66,33 +66,83 @@ fn bsr_pushes_the_return_address_and_bra_does_not() -> Result<(), Box<dyn Error>
 
 #[test]
 fn word_branch_forms_use_the_16_bit_extension_displacement() -> Result<(), Box<dyn Error>> {
-    // BRA.W +4 from 0x200: the extension word is consumed, so the target is
-    // 0x204 + 4 = 0x208 and the instruction length is four bytes.
+    // A 68000 branch displacement is relative to the branch instruction's
+    // address plus two -- the address of the 16-bit displacement word itself in
+    // the word form. So BRA.W +4 from 0x200 targets 0x200 + 2 + 4 = 0x206, and
+    // the instruction length stays four bytes. (This test used to pin the target
+    // as 0x204 + 4 = 0x208, which is the two-bytes-too-far base the pinned
+    // oracle rejected for BRA.W at 0x200.)
     let (mut cpu, mut bus) = machine(&[0x60, 0x00, 0x00, 0x04], &[])?;
     let outcome = cpu.step(&mut bus)?;
-    assert_eq!(cpu.pc(), 0x208);
+    assert_eq!(cpu.pc(), 0x206);
     assert_eq!(outcome.cycles, 10);
 
-    // BNE.W taken with Z clear.
+    // BNE.W taken with Z clear: 0x200 + 2 + 8 = 0x20A.
     let (mut cpu, mut bus) = machine(&[0x66, 0x00, 0x00, 0x08], &[])?;
     cpu.set_sr(0x2700);
     let outcome = cpu.step(&mut bus)?;
-    assert_eq!(cpu.pc(), 0x20C);
+    assert_eq!(cpu.pc(), 0x20A);
     assert_eq!(outcome.cycles, 10);
 
-    // BNE.W not taken with Z set advances past both words and costs 12.
+    // BNE.W not taken with Z set advances past both words and costs 12; the
+    // displacement is irrelevant on the not-taken path.
     let (mut cpu, mut bus) = machine(&[0x66, 0x00, 0x00, 0x08], &[])?;
     cpu.set_sr(0x2704);
     let outcome = cpu.step(&mut bus)?;
     assert_eq!(cpu.pc(), 0x204);
     assert_eq!(outcome.cycles, 12);
 
-    // BSR.W pushes the address after the extension word.
+    // BSR.W targets 0x202 + 0x100 = 0x302 and pushes the address after the
+    // extension word, which is unaffected by the relative base.
     let (mut cpu, mut bus) = machine(&[0x61, 0x00, 0x01, 0x00], &[])?;
     let outcome = cpu.step(&mut bus)?;
-    assert_eq!(cpu.pc(), 0x304);
+    assert_eq!(cpu.pc(), 0x302);
     assert_eq!(bus.read32(STACK - 4)?, 0x204);
     assert_eq!(outcome.cycles, 18);
+
+    // A negative word displacement: BRA.W -2 from 0x200 targets 0x200 itself,
+    // the two-byte instruction-plus-two base canceling the displacement.
+    let (mut cpu, mut bus) = machine(&[0x60, 0x00, 0xFF, 0xFE], &[])?;
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x200);
+    Ok(())
+}
+
+#[test]
+fn taken_dbcc_with_a_nonzero_counter_branches_from_instruction_plus_two()
+-> Result<(), Box<dyn Error>> {
+    // The defect this covers: with the post-extension PC as the base, every
+    // taken DBcc landed two bytes past its target. DBRA D2,+4 at 0x200 targets
+    // 0x200 + 2 + 4 = 0x206 and decrements D2 from 2 to 1.
+    let (mut cpu, mut bus) = machine(&[0x51, 0xCA, 0x00, 0x04], &[])?;
+    cpu.set_d(2, 2);
+    let outcome = cpu.step(&mut bus)?;
+    assert_eq!(
+        cpu.pc(),
+        0x206,
+        "taken DBcc target is instruction + 2 + disp"
+    );
+    assert_eq!(cpu.data_register(2), Some(1), "counter decremented");
+    assert_eq!(outcome.cycles, 10);
+
+    // A negative displacement loops back onto the instruction itself: the
+    // self-loop idiom is disp -2, not -4.
+    let (mut cpu, mut bus) = machine(&[0x51, 0xCA, 0xFF, 0xFE], &[])?;
+    cpu.set_d(2, 3);
+    for _ in 0..2 {
+        cpu.step(&mut bus)?;
+        assert_eq!(cpu.pc(), 0x200, "self-loop stays on the DBRA opcode");
+    }
+    assert_eq!(cpu.data_register(2), Some(1));
+    // The third pass expires (1 -> 0 takes the branch, then 0 -> 0xFFFF falls
+    // through), so loop until the counter reaches 0xFFFF.
+    let mut guard = 0;
+    while cpu.data_register(2) != Some(0xFFFF) {
+        cpu.step(&mut bus)?;
+        guard += 1;
+        assert!(guard < 4, "DBRA did not expire");
+    }
+    assert_eq!(cpu.pc(), 0x204, "expiry falls through past both words");
     Ok(())
 }
 
@@ -114,8 +164,8 @@ fn byte_branch_forms_still_use_the_8_bit_displacement() -> Result<(), Box<dyn Er
 
 #[test]
 fn dbcc_skips_without_decrementing_when_the_condition_is_true() -> Result<(), Box<dyn Error>> {
-    // DBEQ D0,-4 with Z set: no decrement, no branch.
-    let (mut cpu, mut bus) = machine(&[0x57, 0xC8, 0xFF, 0xFC], &[])?;
+    // DBEQ D0,-2 with Z set: no decrement, no branch.
+    let (mut cpu, mut bus) = machine(&[0x57, 0xC8, 0xFF, 0xFE], &[])?;
     cpu.set_d(0, 3);
     cpu.set_sr(0x2704);
     cpu.step(&mut bus)?;
@@ -126,8 +176,8 @@ fn dbcc_skips_without_decrementing_when_the_condition_is_true() -> Result<(), Bo
 
 #[test]
 fn dbcc_decrements_the_low_word_and_branches_while_not_minus_one() -> Result<(), Box<dyn Error>> {
-    // DBRA D0,-4 from 1.
-    let (mut cpu, mut bus) = machine(&[0x51, 0xC8, 0xFF, 0xFC], &[])?;
+    // DBRA D0,-2 from 1: instruction address plus two, minus two, is itself.
+    let (mut cpu, mut bus) = machine(&[0x51, 0xC8, 0xFF, 0xFE], &[])?;
     cpu.set_d(0, 0x1234_0001);
     cpu.step(&mut bus)?;
     assert_eq!(cpu.data_register(0), Some(0x1234_0000));

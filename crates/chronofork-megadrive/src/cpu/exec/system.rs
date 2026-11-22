@@ -101,8 +101,10 @@ fn trapv(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
 
 fn rtr(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let frame = cpu.a7();
-    let pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
-    let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
+    // The frame is popped from an address register that wraps modulo 2^32; the
+    // bus decides whether the truncated addresses are mapped (W1K).
+    let pc_address = frame.wrapping_add(2);
+    let restored_a7 = frame.wrapping_add(6);
     let ccr = bus.read16(frame)?;
     let pc = bus.read32(pc_address)?;
     cpu.set_sr((cpu.sr() & 0xFF00) | (ccr & 0x00FF));
@@ -117,12 +119,9 @@ fn link(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cp
     let previous = cpu.read_an(register);
     cpu.push_long(bus, previous)?;
     cpu.write_an(register, cpu.a7());
-    let stack = i64::from(cpu.a7()) + i64::from(displacement);
-    if stack < 0 || stack > i64::from(u32::MAX) {
-        return Err(CpuError::AddressOverflow);
-    }
-    // Proven by the range check above.
-    cpu.set_a7(stack as u32);
+    // LINK's stack adjustment is address arithmetic mod 2^32 (W1S); the bus then
+    // truncates the wrapped address and decides whether it is mapped.
+    cpu.set_a7(cpu.a7().wrapping_add(displacement as u32));
     Ok(timing::instruction_cycles(opcode))
 }
 

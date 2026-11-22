@@ -172,8 +172,8 @@ fn the_offline_half_needs_no_oracle_and_keeps_the_whole_corpus() {
         .collect();
     assert_eq!(
         names.len(),
-        12,
-        "the differential corpus must keep all twelve ROMs, got {names:?}"
+        13,
+        "the differential corpus must keep all thirteen ROMs, got {names:?}"
     );
     assert!(
         names.contains(&"rom_exception".to_owned()),

@@ -71,14 +71,33 @@ pub const STATUS_MASK: u16 = 0x03FF;
 // Command-code bits. CD0/CD1 are latched from the first control word, CD2..CD5
 // from the second. CD4 marks the VRAM-copy command (and inhibits read targets
 // after a partial command); CD5 flags a DMA transfer request.
+//
+// The low nibble `CD3..CD0` selects the target *and* its direction on hardware:
+//
+//   0b0000 VRAM read     0b0001 VRAM write
+//   0b0011 CRAM write    0b0100 VSRAM read
+//   0b0101 VSRAM write   0b1000 CRAM read
+//
+// `CD1:CD0` come from the first control word (so `0b10` is the register-write
+// form) and `CD5:CD2` from the second. The VSRAM pair is therefore `0x04` read
+// and `0x05` write — not the other way round, which an earlier table had.
 pub(crate) const CODE_READ_INHIBIT: u8 = 0x10;
 pub(crate) const CODE_DMA: u8 = 0x20;
 pub(crate) const CODE_VRAM_READ: u8 = 0x00;
 pub(crate) const CODE_VRAM_WRITE: u8 = 0x01;
 pub(crate) const CODE_REGISTER_WRITE: u8 = 0x02;
 pub(crate) const CODE_CRAM_WRITE: u8 = 0x03;
-pub(crate) const CODE_VSRAM_WRITE: u8 = 0x04;
+/// VSRAM read (`0b000100`); the standard macro is `0x40000010`.
+pub(crate) const CODE_VSRAM_READ: u8 = 0x04;
+/// VSRAM write (`0b000101`); the standard macro is `0x40000010`.
+pub(crate) const CODE_VSRAM_WRITE: u8 = 0x05;
 pub(crate) const CODE_CRAM_READ: u8 = 0x08;
+/// `0b001100` 8-bit VRAM read.
+///
+/// A documented hardware operation this slice does **not** implement
+/// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`). It is tracked apart from
+/// an invalid target: a capability gap is not a hardware discard (W1X).
+pub(crate) const CODE_VRAM_READ_8BIT: u8 = 0x0C;
 
 /// A memory space the VDP data port can address.
 ///

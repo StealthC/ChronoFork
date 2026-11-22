@@ -142,14 +142,17 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
 /// measured on the reference host, one debug run costs ~82 s and one release run
 /// ~7 s, while the previous two-debug-run comparison cost ~166 s.
 const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
-    "e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609";
+    "64a95482e30f84a73175748f0de5c9baedf19da38877752747465b7d472e6f74";
 
 /// Bytes of the pinned `chronofork megadrive demo` stdout.
 ///
-/// Re-minted when phase 8.4 (Z80, bus arbitration and audio) was merged into this
-/// branch: the demo narration gained the Z80 and 48 kHz audio surface, so the
-/// previous 1833-byte pre-8.4 pin no longer described what the CLI emits. The
-/// narration itself is main's; the branch only contributed this pinned check.
+/// Re-minted twice while merging `main` into this branch. Phase 8.4 added the Z80
+/// and 48 kHz audio surface to the narration (1833 bytes before it); the W1 boot
+/// work then changed the canonical state the demo prints - the fork/source state
+/// hashes - while leaving the narration byte-identical, so only those hash values
+/// moved. Re-minting is the honest response to a state change: this check exists to
+/// catch drift. The values below were measured from the merged release build and
+/// confirmed byte-identical to the debug build.
 const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1994;
 
 /// Enables the "release build must exist" half of the check:

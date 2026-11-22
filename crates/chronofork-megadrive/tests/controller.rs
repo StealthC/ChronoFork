@@ -11,6 +11,7 @@ use std::error::Error;
 
 use chronofork_backend_api::{Backend, BackendError};
 use chronofork_core::{InputFrame, hash_bytes};
+use chronofork_megadrive::audio::psg::OPEN_BUS_VALUE;
 use chronofork_megadrive::{
     CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, Cartridge, MegadriveBus,
     MegadriveFactory, controller_rom,
@@ -52,12 +53,22 @@ fn idle_bus_reports_neutral_controller_bytes_and_rejects_debugger_access() -> Te
     assert_eq!(bus.read8(CONTROLLER_PORT_1)?, CONTROLLER_NEUTRAL);
     assert_eq!(bus.read8(CONTROLLER_PORT_2)?, CONTROLLER_NEUTRAL);
 
-    // Every controller-window access outside the two execution reads is typed,
-    // including the side-effect-free debugger path and the write path.
+    // The side-effect-free debugger path still refuses the step-scoped data
+    // registers: a per-step input value is not a machine register.
     assert!(bus.peek8(CONTROLLER_PORT_1).is_err());
     assert!(bus.read_memory(u64::from(CONTROLLER_PORT_1), 1).is_err());
-    assert!(bus.write8(CONTROLLER_PORT_1, CONTROLLER_NEUTRAL).is_err());
-    assert!(bus.write8(CONTROLLER_PORT_2, CONTROLLER_NEUTRAL).is_err());
+    // A write to a data register is acknowledged and discarded, as on hardware:
+    // the hardware has no latch there that can fail, so the value is unchanged.
+    bus.write8(CONTROLLER_PORT_1, 0x00)?;
+    bus.write8(CONTROLLER_PORT_2, 0x00)?;
+    assert_eq!(bus.read8(CONTROLLER_PORT_1)?, CONTROLLER_NEUTRAL);
+    assert_eq!(bus.read8(CONTROLLER_PORT_2)?, CONTROLLER_NEUTRAL);
+    // The port 1/2/3/EXT control file is a readable, writable stub and the
+    // undecoded rest of the window is open bus.
+    assert_eq!(bus.read8(0x00A1_0008)?, 0x00);
+    bus.write8(0x00A1_0008, 0x5A)?;
+    assert_eq!(bus.read8(0x00A1_0008)?, 0x5A);
+    assert_eq!(bus.read8(0x00A1_0000)?, OPEN_BUS_VALUE);
     Ok(())
 }
 

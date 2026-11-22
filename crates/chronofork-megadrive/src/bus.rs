@@ -2,25 +2,52 @@
 //!
 //! The cartridge windows (ROM, mapper registers, battery SRAM and TMSS), the
 //! 64 KiB work RAM window and the VDP port window at `0xC00000..=0xC0000F` are
-//! mapped and delegated to [`Cartridge`]. The version register
-//! at `0xA10001` reports the cartridge's header/region/video facts. The two
-//! controller data registers at
-//! `0xA10003` (port 1) and `0xA10005` (port 2) are mapped for **execution byte
-//! reads only**, and only while a step is executing: they return a TH-high
-//! 3-button subset derived from the current step's `InputFrame`. Every other
-//! controller/IO-window access, every controller write, and every debugger read of
-//! the window is an explicit typed error rather than silent open-bus behavior.
+//! mapped and delegated to [`Cartridge`]. The machine decodes only 24 address
+//! bits, so every entry point truncates a 32-bit register value to the 24-bit
+//! bus address with [`bus_address`] as its first action; the raw register value
+//! stays in the emulated CPU, which is what the hardware does too.
+//!
+//! Work RAM appears twice, as on hardware: the primary `0xFF0000..=0xFFFFFF`
+//! window and the `0xE00000..=0xFEFFFF` mirror, both decoded through address
+//! bits 15-0 (see [`is_work_ram`]).
+//!
+//! In the controller/IO window `0xA10000..=0xA1001F`, the version register at
+//! `0xA10001` reports the cartridge's header/region/video facts, the two
+//! controller data registers at `0xA10003` (port 1) and `0xA10005` (port 2) are
+//! mapped for **execution byte reads only** (while a step is executing: they
+//! return a TH-high 3-button subset derived from the current step's
+//! `InputFrame`; a write there is acknowledged and discarded), and the eight
+//! port 1/2/3/EXT control registers at `0xA10008..=0xA1000F` are mapped: the
+//! four port 1/2 bytes (`0xA10008..=0xA1000B`) are read/write latches whose
+//! bytes are canonical machine state, while the port 3/EXT **control** pairs
+//! (`0xA1000C..=0xA1000F`) are the ADR-0014 constant-zero **stub** — a read
+//! returns `0x00` and a write is acknowledged and discarded, so those four
+//! bytes never change. Port 3/EXT data
+//! (`0xA10006`/`0xA10007`) is a register this slice does not model: the access is
+//! accepted with no effect and counted in [`MegadriveBus::port3_unmodelled_accesses`],
+//! because faulting it turned a legal guest store into a guest address error that
+//! skipped the instruction in a commercial boot (W1X); every other
+//! address in the window reads [`OPEN_BUS_VALUE`] and discards writes, as the
+//! undecoded pins of the window do. Every debugger read of a step-scoped data
+//! register stays a typed error, because a per-step input value is not a
+//! machine register.
 //!
 //! The phase-8.4 Z80 subsystem is visible from both sides. The 68000 sees the
 //! 8 KiB Z80 RAM at `0xA00000..=0xA01FFF`, the nine-bit bank register at
 //! `0xA06000`, and the bus-request/reset registers at `0xA11100`/`0xA11200`.
-//! The Z80 sees its RAM mirrored through `0x3FFF`, the YM2612 window at
-//! `0x4000..=0x4003`, the bank-register write at `0x6000`, the PSG window at
-//! `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked raw-ROM window at
+//! The Z80 sees its RAM mirrored through `0x3FFF`, the `SOUND` region at
+//! `0x4000..=0x5FFF` (the YM2612's four ports repeated by an `0x0003` address
+//! mask), the bank-register write at `0x6000`, the VDP port window at
+//! `0x7F00..=0x7F03`, the PSG at `0x7F11` plus its mirror `0x7F10..=0x7F17`, and a
+//! 32 KiB banked window at
 //! `0x8000..=0xFFFF`. The YM2612 window is wired on both sides (the 68000 side
 //! at `0xA04000..=0xA04003`) and the Z80 PSG window writes the PSG latch/data
 //! protocol; a PSG read returns the chip's documented open value. The 68000-side
-//! PSG window is not mapped.
+//! PSG window `0xC00010..=0xC00017` drives that same instance, and the whole I/O
+//! window above `0xA1001F`
+//! (`0xA11100`/`0xA11200` excepted) stays a typed error rather than open bus:
+//! the deterministic open value is deliberately limited to the window this
+//! phase maps.
 //!
 //! VDP accesses are side-effecting (the data port advances the internal address),
 //! so the bus read methods take `&mut self`. Debugger-style reads use
@@ -45,6 +72,7 @@ use std::fmt;
 use chronofork_backend_api::{DebugConfig, DebugEventKind, DebugEventLog, WatchpointAccess};
 use chronofork_core::Tick;
 
+use crate::audio::psg::OPEN_BUS_VALUE;
 use crate::audio::{Psg, Ym2612, YmBank, YmPort};
 use crate::cartridge::{
     Cartridge, CartridgeError, MAPPER_REGISTER_BASE, MAPPER_REGISTER_END, TMSS_REGISTER_BASE,
@@ -60,10 +88,18 @@ use crate::z80::{Z80Bus, Z80Error};
 pub const ROM_BASE: u32 = 0x0000_0000;
 /// Exclusive end of the cartridge ROM window on the 68000 bus.
 pub const ROM_END: u32 = 0x0040_0000;
+/// Bits 31..24 of a 68000 address register are not decoded by the machine.
+pub const ADDRESS_MASK: u32 = 0x00FF_FFFF;
 /// First address of the 64 KiB work RAM window.
 pub const RAM_BASE: u32 = 0x00FF_0000;
-/// Exclusive end of the work RAM window.
+/// Exclusive end of the work RAM primary window.
 pub const RAM_END: u32 = 0x0100_0000;
+/// First address of the `0xE00000..=0xFFFFFF` work RAM mirror.
+///
+/// Every address from here to the end of the 24-bit bus decodes to work RAM
+/// through address bits 15-0, so the mirror covers `0xE00000..=0xFEFFFF` plus
+/// the primary `0xFF0000..=0xFFFFFF` window.
+pub const RAM_MIRROR_BASE: u32 = 0x00E0_0000;
 /// Size of work RAM in bytes.
 pub const RAM_SIZE: usize = 0x0001_0000;
 /// First address of the VDP port window.
@@ -72,6 +108,23 @@ pub const VDP_BASE: u32 = 0x00C0_0000;
 pub const VDP_WINDOW_SIZE: u32 = 0x0010;
 /// Exclusive end of the VDP port window.
 pub const VDP_END: u32 = VDP_BASE + VDP_WINDOW_SIZE;
+/// First 68000 address of the PSG window.
+///
+/// The pinned oracle reaches the PSG through the VDP: the VDP's `10*` port cases
+/// forward the access to the referenced SN76489 (`Devices/315-5313/S315-5313_Ports.cpp`
+/// `case 4: // 10* - SN76489 PSG` / `case 5`, around `:1639`), and the VDP device
+/// is selected for the whole `0xC00000..=0xC0001F` block by
+/// `Data/Modules/Sega Mega Drive 1600.xml:318`
+/// (`AddressLineFilter="110??000 ???????? 00000000"`, `MemoryMapSize="0x20"`,
+/// `AddressMask="0x00001F"`), with the PSG reference declared at `:319`. The
+/// eight bytes below therefore drive the *same* [`Psg`] instance the Z80 side
+/// writes at `0x7F11` (`MDBusArbiter.cpp:352`/`:516` OR the Z80 window offset into
+/// `0xC00000`), and the pin shows no odd-byte-only rule.
+pub const PSG_BASE: u32 = 0x00C0_0010;
+/// Size of the 68000-visible PSG window in bytes.
+pub const PSG_WINDOW_SIZE: u32 = 8;
+/// Exclusive end of the 68000-visible PSG window.
+pub const PSG_END: u32 = PSG_BASE + PSG_WINDOW_SIZE;
 /// First address of the Mega Drive controller/IO window.
 pub const CONTROLLER_WINDOW_BASE: u32 = 0x00A1_0000;
 /// Exclusive end of the controller/IO window.
@@ -80,6 +133,25 @@ pub const CONTROLLER_WINDOW_END: u32 = 0x00A1_0020;
 pub const CONTROLLER_PORT_1: u32 = 0x00A1_0003;
 /// Controller port 2 data register.
 pub const CONTROLLER_PORT_2: u32 = 0x00A1_0005;
+/// Port 3/EXT data register (the second half of the port 1/2 data word).
+pub const CONTROLLER_PORT_3_DATA: u32 = 0x00A1_0006;
+/// Port 3/EXT data register, low byte.
+pub const CONTROLLER_PORT_3_DATA_LOW: u32 = 0x00A1_0007;
+/// First address of the port 1/2/3/EXT control register file.
+///
+/// The file's first half (`0xA10008..=0xA1000B`) is the two latched port 1/2
+/// control register pairs; the second half is the constant-zero port 3/EXT
+/// stub documented on [`IO_CONTROL_STUB_BASE`].
+pub const IO_CONTROL_BASE: u32 = 0x00A1_0008;
+/// Number of bytes in the port 1/2/3/EXT control register file.
+pub const IO_CONTROL_LEN: usize = 8;
+/// First address of the port 3/EXT control **stub** half of the register file.
+///
+/// ADR-0014 pins the port 3/EXT control pairs (`0xA1000C..=0xA1000F`) to the
+/// constant zero: reads return `0x00` and writes are discarded, while the port
+/// 1/2 control pairs (`0xA10008..=0xA1000B`) latch. The eight bytes still share
+/// one canonical array and one snapshot home.
+pub const IO_CONTROL_STUB_BASE: u32 = 0x00A1_000C;
 /// Data-register byte read when no button is pressed and TH is high.
 ///
 /// Bit 6 is the TH-high level and bit 7 is the slice's constant zero; the six
@@ -111,14 +183,209 @@ pub const Z80_ROM_WINDOW_BASE: u16 = 0x8000;
 pub const Z80_BANK_REGISTER_ADDRESS: u16 = 0x6000;
 /// First Z80 address of the YM2612 window.
 pub const YM2612_Z80_BASE: u16 = 0x4000;
-/// Last Z80 address of the YM2612 window.
+/// Last Z80 address of the four-byte YM2612 window.
 pub const YM2612_Z80_END: u16 = 0x4003;
-/// First Z80 address of the PSG window.
-pub const PSG_Z80_BASE: u16 = 0x7F00;
-/// Last Z80 address of the PSG window.
-pub const PSG_Z80_END: u16 = 0x7F03;
+/// Last Z80 address of the whole `SOUND` region.
+///
+/// The pinned oracle asserts the sound chip-select for `0x4000..=0x5FFF`
+/// (`Devices/MD1600IO/MDBusArbiter.cpp:1048-1049`) and maps the YM2612 there with
+/// `AddressMask=0x0003` over a `0x2000` region (`Data/Modules/Sega Mega Drive
+/// 1600.xml:340`), applied by `System/BusInterface.cpp:2454`. So the four ports
+/// repeat across the whole region and `0x5F8B & 3 = 3` reaches the bank-2 data
+/// port, exactly like `0x4003`.
+pub const YM2612_Z80_SOUND_END: u16 = 0x5FFF;
+/// First Z80 address of the VDP port window.
+///
+/// The arbiter translates every byte of its `0x7F00` window into the 68000
+/// address `0xC00000 | offset` (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`), and
+/// the VDP's `000*` device locations are the data and control ports
+/// (`Devices/315-5313/S315-5313_Ports.cpp:944-949`). These four bytes are
+/// therefore the VDP, never the PSG (W1T/F5).
+pub const VDP_Z80_BASE: u16 = 0x7F00;
+/// Last Z80 address of the VDP port window.
+pub const VDP_Z80_END: u16 = 0x7F03;
 /// Common Z80 alias for the PSG data port.
 pub const PSG_Z80_ALIAS: u16 = 0x7F11;
+/// How a typed device error from a **Z80 guest access** is classified.
+///
+/// The Z80 core has no guest exception channel, so a rejected access is served with no
+/// effect; the *reason* must still be distinguishable and observable. The classification is
+/// exhaustive over the typed errors, so a new error variant breaks the build instead of
+/// silently landing in a generic bucket (W1Y, closing the W1U-F2 class). No `bool` flags and
+/// no wildcard arms: each variant is classified deliberately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuestAccessClass {
+    /// A documented operation this slice does not implement: the `0b1100` 8-bit VRAM
+    /// read. A capability gap is not a hardware discard.
+    MissingCapability,
+    /// The device refused a DMA transfer: a 68000-memory source, an unsupported DMA form,
+    /// or a copy-engine range/overlap rejection. Nothing was transferred.
+    DmaUnavailable,
+    /// The command code, offset or register is not a valid device operation.
+    InvalidTarget,
+    /// The target is decoded but read-only (cartridge ROM): the write does not latch.
+    ReadOnlyTarget,
+    /// The translated address has no owner.
+    UnmappedTarget,
+    /// A snapshot/codec fault. A port access cannot legitimately produce one; if it ever
+    /// does, the access must fail rather than be swallowed.
+    HostFault,
+}
+
+/// Classifies a [`VdpError`] raised by a Z80 guest access.
+///
+/// Exhaustive by construction: every variant is named, so adding one is a compile error here
+/// (W1Y).
+pub const fn classify_vdp_error(error: &VdpError) -> GuestAccessClass {
+    match error {
+        VdpError::UnsupportedBitRead { .. } => GuestAccessClass::MissingCapability,
+        VdpError::DmaUnsupported { .. }
+        | VdpError::DmaMemorySourceUnavailable { .. }
+        | VdpError::DmaSourceOutOfRange { .. }
+        | VdpError::DmaDestinationOutOfRange { .. }
+        | VdpError::DmaSourceDestinationOverlap { .. } => GuestAccessClass::DmaUnavailable,
+        VdpError::UnsupportedOffset { .. }
+        | VdpError::OddOffset { .. }
+        | VdpError::UnsupportedWrite { .. }
+        | VdpError::UnsupportedRegister { .. }
+        | VdpError::UnsupportedTarget { .. } => GuestAccessClass::InvalidTarget,
+        VdpError::SnapshotLengthMismatch { .. }
+        | VdpError::SnapshotMagicMismatch
+        | VdpError::SnapshotVersionUnsupported { .. }
+        | VdpError::SnapshotFlagsInvalid { .. }
+        | VdpError::SnapshotCodeInvalid { .. }
+        | VdpError::SnapshotFifoCountInvalid { .. }
+        | VdpError::SnapshotDmaModeInvalid { .. }
+        | VdpError::SnapshotBooleanInvalid { .. }
+        | VdpError::SnapshotLineOutOfRange { .. }
+        | VdpError::SnapshotDotOutOfRange { .. } => GuestAccessClass::HostFault,
+    }
+}
+
+/// Classifies a [`BusError`] reached through the Z80 banked window.
+///
+/// Exhaustive over `BusError`, for the same reason as [`classify_vdp_error`] (W1Y).
+pub fn classify_bus_error(error: &BusError) -> GuestAccessClass {
+    match error {
+        BusError::UnmappedRead { .. } | BusError::UnmappedWrite { .. } => {
+            GuestAccessClass::UnmappedTarget
+        }
+        BusError::WriteProtected { .. } => GuestAccessClass::ReadOnlyTarget,
+        BusError::Vdp(error) => classify_vdp_error(error),
+        // An odd address, an overflowing address, a side-effecting read or a cartridge
+        // failure reached through the translate-and-forward bridge is a target this slice
+        // refuses to serve, not a missing device and not a DMA refusal.
+        BusError::OddAddress { .. }
+        | BusError::AddressOverflow { .. }
+        | BusError::SideEffectingRead { .. }
+        | BusError::Cartridge(_) => GuestAccessClass::InvalidTarget,
+    }
+}
+
+impl MegadriveBus {
+    /// Applies the bookkeeping for a rejected Z80 access to the **VDP port window**.
+    ///
+    /// The invalid-target bucket there is the VDP's own discard counter (the documented model
+    /// choice); a capability gap or a refused DMA surfaces as the typed rejection for the
+    /// access and is counted in its own bucket. Exhaustive over
+    /// [`GuestAccessClass`] (W1Y).
+    fn record_z80_vdp_rejection(
+        &mut self,
+        class: GuestAccessClass,
+        address: u16,
+    ) -> Result<(), Z80Error> {
+        match class {
+            GuestAccessClass::InvalidTarget => {
+                self.vdp.count_discarded_data_port_access();
+                Ok(())
+            }
+            GuestAccessClass::MissingCapability => {
+                self.vdp.count_capability_gap();
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::DmaUnavailable => {
+                // A refused transfer is a capability gap (the operation the slice cannot
+                // perform) *and* is isolated in its own counter, so it can never be read as
+                // the invalid-target discard bucket (W1Y).
+                self.vdp.count_capability_gap();
+                self.z80_dma_unavailable_accesses =
+                    self.z80_dma_unavailable_accesses.saturating_add(1);
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::UnmappedTarget => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::ReadOnlyTarget => Ok(()),
+            GuestAccessClass::HostFault => Err(Z80Error::Memory { address }),
+        }
+    }
+
+    /// Applies the bookkeeping for a rejected Z80 access through the **banked window**.
+    ///
+    /// Exhaustive over [`GuestAccessClass`]; the invalid-target bucket here is the bus-side
+    /// counter, because no VDP data port is involved (W1Y).
+    fn record_z80_bus_rejection(
+        &mut self,
+        class: GuestAccessClass,
+        address: u16,
+    ) -> Result<(), Z80Error> {
+        match class {
+            GuestAccessClass::InvalidTarget => {
+                self.z80_invalid_target_accesses =
+                    self.z80_invalid_target_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::UnmappedTarget => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::ReadOnlyTarget => Ok(()),
+            GuestAccessClass::MissingCapability => {
+                self.vdp.count_capability_gap();
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::DmaUnavailable => {
+                // A refused transfer is a capability gap (the operation the slice cannot
+                // perform) *and* is isolated in its own counter, so it can never be read as
+                // the invalid-target discard bucket (W1Y).
+                self.vdp.count_capability_gap();
+                self.z80_dma_unavailable_accesses =
+                    self.z80_dma_unavailable_accesses.saturating_add(1);
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::HostFault => Err(Z80Error::Memory { address }),
+        }
+    }
+}
+
+/// Value a Z80 read of an undecoded address returns.
+///
+/// Executable reference (what the pinned oracle actually does): a Z80 byte read
+/// goes through `Devices/Z80/Z80.cpp:1455-1474` into a default-constructed
+/// `Z80Byte`, and `System/BusInterface.cpp:2438-2490` leaves that value untouched
+/// when no map entry resolves, so an unmatched read yields `0x00`; the write path
+/// (`:2491+`) performs nothing for an unmatched address, so the write is ignored.
+///
+/// Conflicting evidence, registered as **open**: arbiter comments state that
+/// undriven lines read as set for a Z80 read into the 68000 space
+/// (`Devices/MD1600IO/MDBusArbiter.cpp:366-370`) and that the Z80 likely drives
+/// all lines high before a read request (`:427-435`; the 68000-into-Z80 mirror
+/// forces undriven lines set at `:320-330`). If hardware evidence ever settles on
+/// `0xFF`, this constant is the single point to change.
+pub const Z80_UNDECODED_READ_VALUE: u8 = 0x00;
+
+/// First Z80 address of the PSG mirror window.
+///
+/// The arbiter turns every byte of its `0x7F00` window into the 68000 address
+/// `0xC00000 | offset` (`Devices/MD1600IO/MDBusArbiter.cpp:352` for reads,
+/// `:516` for writes), so the Z80 bytes that land in the PSG window are exactly
+/// `0x7F10..=0x7F17` — the mirror of `0xC00010..=0xC00017`. `0x7F64`, for
+/// example, maps to `0xC00064`, outside the VDP's `0xC00000..=0xC0001F` block,
+/// so it is *not* the PSG; its outcome belongs to the undecoded-access policy.
+pub const PSG_Z80_MIRROR_BASE: u16 = 0x7F10;
+/// Last Z80 address of the PSG mirror window.
+pub const PSG_Z80_MIRROR_END: u16 = 0x7F17;
 /// Master cycles a 68000 access to the Z80 RAM window costs while the Z80 owns
 /// the bus.
 ///
@@ -288,6 +555,35 @@ pub struct MegadriveBus {
     z80_ram: Vec<u8>,
     /// Nine-bit Z80 bank register selecting the 32 KiB ROM window at `0x8000`.
     z80_bank: u16,
+    /// Z80 guest accesses rejected because the device refused a DMA transfer.
+    ///
+    /// A memory-source DMA, an unsupported DMA form, or a copy-engine range/overlap
+    /// rejection is **not** an invalid target and not a missing capability: it is a real
+    /// operation this slice cannot perform for the guest. Kept in its own bucket so it can
+    /// never be mistaken for the other two (W1Y / W1U-F2).
+    z80_dma_unavailable_accesses: u64,
+    /// Z80 guest accesses rejected as an invalid target by the 68000 bus reached through the
+    /// banked window (odd address, overflowing address, side-effecting read, cartridge
+    /// failure). Distinct from a real hole and from a DMA refusal (W1Y).
+    z80_invalid_target_accesses: u64,
+    /// Port 3/EXT data accesses accepted with no effect.
+    ///
+    /// The two port 3 data bytes are real hardware registers this slice does not
+    /// model (ADR-0009). Faulting on them turned a legal guest store into a guest
+    /// address error (W1V), so the access is accepted with no effect and counted
+    /// here: a documented, observable divergence instead of a silent one (W1X).
+    port3_unmodelled_accesses: u64,
+    /// Z80 guest accesses served by the undecoded path.
+    ///
+    /// Diagnostic only, like the VDP's discarded-access counter: it is not part of
+    /// any serialized state, so two machines with different counts still produce
+    /// byte-identical snapshots.
+    unmapped_z80_accesses: u64,
+    /// Latched port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`.
+    ///
+    /// Read/write register state that affects later reads, so it is canonical
+    /// machine state: payload v7 serializes it and the state hash covers it.
+    io_control: [u8; IO_CONTROL_LEN],
     /// 68000/Z80 bus ownership and reset latches.
     arbitration: BusArbitration,
     /// Master cycles accumulated by 68000 accesses to the Z80 window while the
@@ -338,6 +634,11 @@ impl MegadriveBus {
             psg: Psg::new(),
             z80_ram: vec![0; Z80_RAM_SIZE],
             z80_bank: 0,
+            unmapped_z80_accesses: 0,
+            port3_unmodelled_accesses: 0,
+            z80_dma_unavailable_accesses: 0,
+            z80_invalid_target_accesses: 0,
+            io_control: [0; IO_CONTROL_LEN],
             // Power-on: the 68000 owns the bus and holds the Z80 in reset.
             arbitration: BusArbitration {
                 requested: false,
@@ -511,10 +812,50 @@ impl MegadriveBus {
         &self.z80_ram
     }
 
-    /// Returns the nine-bit Z80 bank register.
+    /// Number of Z80 guest accesses answered by the undecoded path.
+    ///
+    /// A Z80 access to an address that no device owns cannot stop the run: the
+    /// read returns [`Z80_UNDECODED_READ_VALUE`], the write is ignored, and the
+    /// access is counted here so the path is observable instead of silent.
     #[must_use]
+    pub const fn unmapped_z80_accesses(&self) -> u64 {
+        self.unmapped_z80_accesses
+    }
+
+    /// Number of Z80 guest accesses rejected as an invalid target by the banked window.
+    pub const fn z80_invalid_target_accesses(&self) -> u64 {
+        self.z80_invalid_target_accesses
+    }
+
+    /// Number of Z80 guest accesses rejected because a DMA transfer was unavailable.
+    pub const fn z80_dma_unavailable_accesses(&self) -> u64 {
+        self.z80_dma_unavailable_accesses
+    }
+
+    /// Number of port 3/EXT data accesses accepted with no effect.
+    ///
+    /// Diagnostic like the other counters: not serialized, reset by a valid
+    /// backend restore.
+    pub const fn port3_unmodelled_accesses(&self) -> u64 {
+        self.port3_unmodelled_accesses
+    }
+
     pub const fn z80_bank(&self) -> u16 {
         self.z80_bank
+    }
+
+    /// Returns the latched port 1/2/3/EXT control register bytes.
+    ///
+    /// The bytes are canonical machine state, indexed from [`IO_CONTROL_BASE`]
+    /// (`0xA10008`).
+    #[must_use]
+    pub const fn io_control(&self) -> &[u8; IO_CONTROL_LEN] {
+        &self.io_control
+    }
+
+    /// Replaces the control register file during a snapshot restore.
+    pub(crate) fn restore_io_control(&mut self, io_control: [u8; IO_CONTROL_LEN]) {
+        self.io_control = io_control;
     }
 
     /// Returns the 68000/Z80 bus ownership and reset latches.
@@ -570,9 +911,19 @@ impl MegadriveBus {
     /// Reads one byte through the bus, including side-effecting VDP ports and the
     /// step-scoped controller data registers.
     pub fn read8(&mut self, address: u32) -> Result<u8, BusError> {
+        let address = bus_address(address);
         if let Some(offset) = vdp_offset(address) {
             let value = self.vdp.read8(offset).map_err(BusError::Vdp)?;
             self.observe_vdp_access(offset, address, u32::from(value), 1, false);
+            return Ok(value);
+        }
+        if psg_window_offset(address).is_some() {
+            // The PSG is write-only: every byte of its window reads the same
+            // deterministic open value the Z80 side returns, so the two windows
+            // cannot disagree.
+            let value = self.psg.read();
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
             return Ok(value);
         }
         if let Some((slot, port)) = controller_port(address) {
@@ -582,6 +933,19 @@ impl MegadriveBus {
             self.debug
                 .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
             return Ok(value);
+        }
+        // Port 3/EXT data is a real register this slice does not model: a guest
+        // read gets the window's open value and the access is counted, so the
+        // divergence is documented and observable instead of a guest fault (W1X).
+        if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
+            self.port3_unmodelled_accesses = self.port3_unmodelled_accesses.saturating_add(1);
+            self.debug.observe_watchpoints(
+                WatchpointAccess::Read,
+                address,
+                u32::from(OPEN_BUS_VALUE),
+                1,
+            );
+            return Ok(OPEN_BUS_VALUE);
         }
         if let Some(value) = self.read_ym_window(address) {
             self.debug
@@ -610,11 +974,17 @@ impl MegadriveBus {
     /// registers, mapped SRAM and the version register) are side-effect free and
     /// never mutate mapper or SRAM state.
     pub fn peek8(&self, address: u32) -> Result<u8, BusError> {
+        let address = bus_address(address);
         if vdp_offset(address).is_some() {
             return Err(BusError::SideEffectingRead { address });
         }
         if controller_port(address).is_some() {
             return Err(BusError::UnmappedRead { address });
+        }
+        // Port 3/EXT data is unmodelled; the execution path serves the open value
+        // without side effects, so the debugger view matches it (W1X).
+        if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
+            return Ok(OPEN_BUS_VALUE);
         }
         if let Some(value) = self.read_ym_window(address) {
             return Ok(value);
@@ -622,27 +992,37 @@ impl MegadriveBus {
         if let Some(value) = self.read_z80_window(address) {
             return Ok(value);
         }
+        if is_io_control_stub(address) {
+            return Ok(0);
+        }
+        if let Some(offset) = io_control_offset(address) {
+            return Ok(self.io_control[offset]);
+        }
         if address == VERSION_REGISTER {
             return Ok(self.cartridge.version_register(self.video));
         }
         if is_cartridge_address(address) {
             return self.cartridge.read8(address).map_err(map_cartridge_read);
         }
-        if (RAM_BASE..RAM_END).contains(&address) {
-            // Masking to 16 bits proves the offset fits `usize` on every
-            // supported target, so the conversion is infallible.
-            let offset = usize::from((address & 0xFFFF) as u16);
+        if is_work_ram(address) {
             return self
                 .ram
-                .get(offset)
+                .get(ram_offset(address))
                 .copied()
                 .ok_or(BusError::UnmappedRead { address });
         }
+        if is_io_undecoded(address) {
+            return Ok(OPEN_BUS_VALUE);
+        }
         Err(BusError::UnmappedRead { address })
     }
-
     /// Reads a big-endian word through the bus.
+    ///
+    /// Each byte lane is decoded independently from its own truncated address,
+    /// so a word that starts at the last bus address reads its second lane from
+    /// `0x000000`, exactly as the hardware's absent address-bit-24 does.
     pub fn read16(&mut self, address: u32) -> Result<u16, BusError> {
+        let address = bus_address(address);
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
         }
@@ -651,24 +1031,28 @@ impl MegadriveBus {
             self.observe_vdp_access(offset, address, u32::from(value), 2, false);
             return Ok(value);
         }
+        // The port 3/EXT control stub is a constant zero, so a word that spans
+        // it reports zero on both lanes without consulting the canonical file.
+        if is_io_control_stub(address) {
+            return Ok(0);
+        }
         let high = self.read8(address)?;
-        let low = self.read8(
-            address
-                .checked_add(1)
-                .ok_or(BusError::AddressOverflow { address, length: 2 })?,
-        )?;
+        let low = self.read8(address.wrapping_add(1))?;
         Ok(u16::from_be_bytes([high, low]))
     }
 
     /// Reads a big-endian long word through the bus.
+    ///
+    /// As in [`MegadriveBus::read16`], every byte lane decodes its own truncated
+    /// address, so a long access that runs past the last bus address continues
+    /// at `0x000000`.
     pub fn read32(&mut self, address: u32) -> Result<u32, BusError> {
+        let address = bus_address(address);
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
         }
         if let Some(offset) = vdp_offset(address) {
-            let second_address = address
-                .checked_add(2)
-                .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+            let second_address = address.wrapping_add(2);
             let second_offset = vdp_offset(second_address).ok_or(BusError::UnmappedRead {
                 address: second_address,
             })?;
@@ -678,35 +1062,43 @@ impl MegadriveBus {
             self.observe_vdp_access(second_offset, second_address, u32::from(low), 2, false);
             return Ok((u32::from(high) << 16) | u32::from(low));
         }
+        // Compose the two big-endian words, each decoded by its own region: a
+        // long that spans a functional control register and the port 3/EXT
+        // control stub keeps both halves instead of zeroing the whole read, and
+        // the stub's zero (or the window's open bus) only clears its own lane.
         let high = u32::from(self.read16(address)?);
-        let low = u32::from(
-            self.read16(
-                address
-                    .checked_add(2)
-                    .ok_or(BusError::AddressOverflow { address, length: 4 })?,
-            )?,
-        );
+        let low = u32::from(self.read16(address.wrapping_add(2))?);
         Ok((high << 16) | low)
     }
 
     /// Validates that a write range lies entirely in work RAM.
     ///
     /// Validation happens before any byte is mutated so an invalid range cannot
-    /// leave a partially written machine state.
+    /// leave a partially written machine state. Both endpoints use the truncated
+    /// 24-bit bus address, and a range whose last byte wraps past the end of the
+    /// bus is decoded by its wrapped endpoint: the mirror is 64 KiB-contiguous,
+    /// so a frame at the top of `0xFFFFxxxx` stays inside one block instead of
+    /// being reported as a 32-bit overflow.
     fn ensure_ram_write_range(&self, address: u32, length: usize) -> Result<(), BusError> {
         if length == 0 {
             return Ok(());
         }
+        let address = bus_address(address);
         let span = u32::try_from(length.saturating_sub(1))
-            .map_err(|_| BusError::UnmappedWrite { address })?;
-        let end = address
-            .checked_add(span)
-            .ok_or(BusError::AddressOverflow { address, length })?;
-        if address < RAM_BASE || end >= RAM_END {
+            .map_err(|_| BusError::AddressOverflow { address, length })?;
+        let end = bus_address(address.wrapping_add(span));
+        let wraps = address.wrapping_add(span) > ADDRESS_MASK;
+        if wraps || !is_work_ram(address) || !is_work_ram(end) || end < address {
             if address < ROM_END {
                 return Err(BusError::WriteProtected { address });
             }
-            return Err(BusError::UnmappedWrite { address: end });
+            // Report the real exclusive end of work RAM: the wrapped endpoint is
+            // a raw 24-bit value that names no decodable boundary in the
+            // original request, so both the bus and the backend can explain the
+            // failure with the same address (`0x01000000`).
+            return Err(BusError::UnmappedWrite {
+                address: if wraps { RAM_END } else { end },
+            });
         }
         Ok(())
     }
@@ -724,12 +1116,21 @@ impl MegadriveBus {
     /// While the enabled TMSS lockout is active a VDP write is acknowledged and
     /// discarded: neither the VDP registers nor its address latch change.
     pub fn write8(&mut self, address: u32, value: u8) -> Result<(), BusError> {
+        let address = bus_address(address);
         if let Some(offset) = vdp_offset(address) {
             if !self.cartridge.tmss().vdp_writes_allowed() {
                 return Ok(());
             }
             self.vdp.write8(offset, value).map_err(BusError::Vdp)?;
             self.observe_vdp_access(offset, address, u32::from(value), 1, true);
+            return Ok(());
+        }
+        if psg_window_offset(address).is_some() {
+            // The whole eight-byte window drives the one PSG instance the Z80
+            // 0x7F11 also reaches; there is no second chip and no parallel latch.
+            self.psg.write(value);
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
         }
         if let Some((bank, port)) = ym_port(address) {
@@ -759,29 +1160,49 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
         }
-        self.write_ram_byte(address, value)?;
+        if is_io_control_stub(address) {
+            // The stub latches nothing; the write is acknowledged and dropped.
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
+        if let Some(offset) = io_control_offset(address) {
+            self.io_control[offset] = value;
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
+        // Port 3/EXT data is a real register this slice does not model. The
+        // hardware accepts the store, so faulting turned a legal guest write into
+        // a guest address error (W1V: Kid's `MOVE.B #0x7F,(0x00A10007).L` skipped
+        // by its exception handler). The access is accepted with no effect and
+        // counted, matching how the rest of the I/O window is handled (W1X).
+        if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
+            self.port3_unmodelled_accesses = self.port3_unmodelled_accesses.saturating_add(1);
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
+        // A controller/IO data register and the undecoded rest of the window
+        // accept the write and discard it: the hardware has no latch that can
+        // fail, and keeping the error would stop a boot at a legitimate store.
+        if is_io_window(address) {
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
+        }
+        self.ensure_ram_write_range(address, 1)?;
+        self.ram[ram_offset(address)] = value;
         self.observe_ram_write(address, value);
         Ok(())
     }
 
-    /// Writes one byte to work RAM without debug observation.
-    ///
-    /// Emulated execution reaches this through [`MegadriveBus::write8`], which
-    /// adds the debug events. Debugger writes use it directly so that
-    /// [`MegadriveBus::write_memory`] never produces an event.
-    fn write_ram_byte(&mut self, address: u32, value: u8) -> Result<(), BusError> {
-        self.ensure_ram_write_range(address, 1)?;
-        // As in `peek8`, the 16-bit mask makes the offset conversion total.
-        let offset = usize::from((address & 0xFFFF) as u16);
-        if let Some(slot) = self.ram.get_mut(offset) {
-            *slot = value;
-            return Ok(());
-        }
-        Err(BusError::UnmappedWrite { address })
-    }
-
     /// Writes a big-endian word to a mapped window.
+    ///
+    /// As in [`MegadriveBus::read16`], each byte lane decodes its own truncated
+    /// address.
     pub fn write16(&mut self, address: u32, value: u16) -> Result<(), BusError> {
+        let address = bus_address(address);
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
         }
@@ -801,35 +1222,38 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 2);
             return Ok(());
         }
-        if ym_window_covers(address, 2) {
-            let bytes = value.to_be_bytes();
-            self.write8(address, bytes[0])?;
-            let second = address
-                .checked_add(1)
-                .ok_or(BusError::AddressOverflow { address, length: 2 })?;
-            self.write8(second, bytes[1])?;
+        if psg_window_offset(address).is_some() {
+            // A 68000 word access to the PSG is ONE 16-bit transaction, not two
+            // byte writes (W1T/F2): the pinned model decides the latch selector
+            // from bit 15 and takes the channel/type/data fields from the low
+            // byte, which is the single byte below.
+            self.write_psg_transaction(value);
             return Ok(());
         }
-        if z80_window_covers(address, 2) {
+        if ym_window_covers(address, 2) || z80_window_covers(address, 2) {
             let bytes = value.to_be_bytes();
             self.write8(address, bytes[0])?;
-            let second = address
-                .checked_add(1)
-                .ok_or(BusError::AddressOverflow { address, length: 2 })?;
-            self.write8(second, bytes[1])?;
+            self.write8(address.wrapping_add(1), bytes[1])?;
+            return Ok(());
+        }
+        if io_window_covers(address, 2) {
+            let bytes = value.to_be_bytes();
+            self.write8(address, bytes[0])?;
+            self.write8(address.wrapping_add(1), bytes[1])?;
             return Ok(());
         }
         self.ensure_ram_write_range(address, 2)?;
         let bytes = value.to_be_bytes();
         self.write8(address, bytes[0])?;
-        let second = address
-            .checked_add(1)
-            .ok_or(BusError::AddressOverflow { address, length: 2 })?;
-        self.write8(second, bytes[1])
+        self.write8(address.wrapping_add(1), bytes[1])
     }
 
     /// Writes a big-endian long word to a mapped window.
+    ///
+    /// As in [`MegadriveBus::read32`], each byte lane decodes its own truncated
+    /// address.
     pub fn write32(&mut self, address: u32, value: u32) -> Result<(), BusError> {
+        let address = bus_address(address);
         if address & 1 != 0 {
             return Err(BusError::OddAddress { address });
         }
@@ -837,9 +1261,7 @@ impl MegadriveBus {
             if !self.cartridge.tmss().vdp_writes_allowed() {
                 return Ok(());
             }
-            let second_address = address
-                .checked_add(2)
-                .ok_or(BusError::AddressOverflow { address, length: 4 })?;
+            let second_address = address.wrapping_add(2);
             let second_offset = vdp_offset(second_address).ok_or(BusError::UnmappedWrite {
                 address: second_address,
             })?;
@@ -862,27 +1284,24 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, value, 4);
             return Ok(());
         }
-        if ym_window_covers(address, 4) {
+        if psg_window_covers(address, 4) {
+            // A long access is TWO 16-bit transactions, at `address` and
+            // `address + 2` (`Devices/M68000/M68000.cpp:2197-2204`), not four byte
+            // writes (W1T/F2).
             let bytes = value.to_be_bytes();
-            for (offset, byte) in bytes.iter().enumerate() {
-                let offset =
-                    u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
-                let target = address
-                    .checked_add(offset)
-                    .ok_or(BusError::AddressOverflow { address, length: 4 })?;
-                self.write8(target, *byte)?;
-            }
+            self.write_psg_transaction(u16::from_be_bytes([bytes[0], bytes[1]]));
+            self.write_psg_transaction(u16::from_be_bytes([bytes[2], bytes[3]]));
             return Ok(());
         }
-        if z80_window_covers(address, 4) {
+        if ym_window_covers(address, 4)
+            || z80_window_covers(address, 4)
+            || io_window_covers(address, 4)
+        {
             let bytes = value.to_be_bytes();
             for (offset, byte) in bytes.iter().enumerate() {
                 let offset =
                     u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
-                let target = address
-                    .checked_add(offset)
-                    .ok_or(BusError::AddressOverflow { address, length: 4 })?;
-                self.write8(target, *byte)?;
+                self.write8(address.wrapping_add(offset), *byte)?;
             }
             return Ok(());
         }
@@ -890,10 +1309,7 @@ impl MegadriveBus {
         let bytes = value.to_be_bytes();
         for (offset, byte) in bytes.iter().enumerate() {
             let offset = u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address })?;
-            let target = address
-                .checked_add(offset)
-                .ok_or(BusError::AddressOverflow { address, length: 4 })?;
-            self.write8(target, *byte)?;
+            self.write8(address.wrapping_add(offset), *byte)?;
         }
         Ok(())
     }
@@ -985,35 +1401,56 @@ impl MegadriveBus {
     /// `(bank << 15) | (address & 0x7FFF)`, which is the documented hardware
     /// mapping. A selected bank beyond the image reports a typed memory error
     /// rather than aliasing another device.
-    fn read_z80_banked_rom(&self, address: u16) -> Result<u8, Z80Error> {
+    fn read_z80_banked_rom(&mut self, address: u16) -> Result<u8, Z80Error> {
         let offset = (u32::from(self.z80_bank) << 15) | u32::from(address & 0x7FFF);
         let index = usize::try_from(offset).map_err(|_| Z80Error::Memory { address })?;
-        self.cartridge
-            .rom()
-            .get(index)
-            .copied()
-            .ok_or(Z80Error::Memory { address })
+        match self.cartridge.rom().get(index).copied() {
+            Some(byte) => Ok(byte),
+            // The bank is selected but the image is shorter than the window, so
+            // no device drives these lines. That is the same undecoded outcome as
+            // an unowned address: the guest reads the documented value and the run
+            // continues.
+            None => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(Z80_UNDECODED_READ_VALUE)
+            }
+        }
     }
 
     /// Returns the side-effect-free window that contains `start`, together with
     /// the window's first bus address.
     ///
-    /// Debugger reads may target the cartridge image, work RAM or the Z80 RAM
-    /// window. The VDP port window is excluded because reading it changes
-    /// device state.
+    /// Debugger reads may target the cartridge image, work RAM (primary or
+    /// mirror), the Z80 RAM window or the control register file. The VDP port
+    /// window is excluded because reading it changes device state. A mirror
+    /// window serves exactly one 64 KiB block, so a read that runs past the end
+    /// of the block reports the first unserved byte instead of silently aliasing
+    /// the block start.
     fn debugger_window(&self, start: u32) -> Option<(&[u8], u32)> {
         // Only the first `ROM_END` bytes of the image are addressable on the
         // 68000 bus; a larger image never reaches the bus through this window.
+        // The window is the slice itself, so its exclusive end is exactly
+        // `ROM_BASE + rom_len`: a cart image shorter than the 4 MiB window is
+        // bounded by its own length, not by the address-space hole after it.
         let rom = self.cartridge.rom();
         let rom_len = rom.len().min(ROM_END as usize);
         if (start as usize) < rom_len {
             return Some((&rom[..rom_len], ROM_BASE));
         }
-        if (RAM_BASE..RAM_END).contains(&start) {
-            return Some((self.ram.as_slice(), RAM_BASE));
-        }
         if (Z80_RAM_BASE..Z80_RAM_END).contains(&start) {
             return Some((self.z80_ram.as_slice(), Z80_RAM_BASE));
+        }
+        if is_work_ram(start) {
+            // The whole mirror is one window over the 64 KiB of work RAM,
+            // decoded through address bits 15-0, and the primary window is its
+            // last 64 KiB block. There is no mirror ambiguity: the
+            // `0xE00000..0xFFFFFF` stride is exactly 64 KiB, so byte n of the
+            // region is RAM offset `n mod 64 KiB` for both rules a debugger
+            // window could follow.
+            return Some((self.ram.as_slice(), RAM_BASE));
+        }
+        if is_io_control(start) {
+            return Some((&self.io_control, IO_CONTROL_BASE));
         }
         None
     }
@@ -1033,27 +1470,74 @@ impl MegadriveBus {
     /// change device state. This keeps inspection side-effect free.
     ///
     /// The complete range is validated against its mapped window before the
-    /// output buffer is allocated: the cartridge image or work RAM must contain
-    /// the whole request. A caller-controlled `length` that is enormous or that
-    /// overflows the address space therefore returns a typed error instead of
-    /// requesting an allocation that could abort the process.
+    /// output buffer is allocated: the cartridge image, work RAM, the Z80 RAM
+    /// window or the control register file must contain the whole request. A
+    /// caller-controlled `length` that is enormous or that overflows the
+    /// address space therefore returns a typed error instead of requesting an
+    /// allocation that could abort the process.
     pub fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BusError> {
         // The start address is validated before the zero-length shortcut: the
         // baseline rejected addresses above the 32-bit bus even for an empty
         // read, while any representable address with length zero is accepted
-        // without touching a window.
-        let start =
-            u32::try_from(address).map_err(|_| BusError::UnmappedRead { address: u32::MAX })?;
+        // without touching a window. A representable address is then truncated
+        // to the 24-bit bus, as every other bus entry point does.
+        let start = bus_address(
+            u32::try_from(address).map_err(|_| BusError::UnmappedRead { address: u32::MAX })?,
+        );
         if length == 0 {
             return Ok(Vec::new());
         }
+        // The range proof for every window is done before any reservation: a
+        // request that cannot be served in full never allocates. `try_reserve`
+        // is a capacity guard, not a range check, and a representable but
+        // out-of-window length must not reach the allocator at all.
+        let span = u32::try_from(length).map_err(|_| BusError::AddressOverflow {
+            address: start,
+            length,
+        })?;
+        // Exclusive end of the request. An overflow here means the request runs
+        // past the 32-bit address space, so nothing can serve it.
+        let end_exclusive = start.checked_add(span).ok_or(BusError::AddressOverflow {
+            address: start,
+            length,
+        })?;
+
+        if is_work_ram(start) {
+            // Work RAM is the whole `0xE00000..=0xFFFFFF` mirror, decoded
+            // through address bits 15-0, so a range may cross a 64 KiB
+            // mirror-block boundary and still land on consecutive RAM bytes.
+            // The upper bound is the end of the primary window: past
+            // `0xFFFFFF` the bus decodes other regions (the low lane is ROM),
+            // and a debugger read must not present those bytes as RAM.
+            if end_exclusive > RAM_END {
+                return Err(BusError::UnmappedRead { address: RAM_END });
+            }
+            let mut data = Vec::new();
+            if data.try_reserve_exact(length).is_err() {
+                return Err(BusError::AddressOverflow {
+                    address: start,
+                    length,
+                });
+            }
+            // The interval cannot wrap (the proof above bounds it by
+            // `0xFFFFFF`), so indexing by offset is the same walk.
+            for offset in 0..span {
+                data.push(self.ram[ram_offset(start + offset)]);
+            }
+            return Ok(data);
+        }
+
         let (window, base) = self
             .debugger_window(start)
             .ok_or_else(|| self.unmapped_debugger_access(start))?;
-        let offset = u64::from(start - base);
-        let end = offset
+        // The window's exclusive end is derived from the slice that serves the
+        // bytes, never from the address-space span around it: a cartridge image
+        // shorter than its 4 MiB window is bounded by the image length, so an
+        // overrun is proven here, before the reservation, instead of surfacing
+        // from a failed `window.get` after the buffer was allocated.
+        let window_end = base
             .checked_add(
-                u64::try_from(length).map_err(|_| BusError::AddressOverflow {
+                u32::try_from(window.len()).map_err(|_| BusError::AddressOverflow {
                     address: start,
                     length,
                 })?,
@@ -1062,40 +1546,92 @@ impl MegadriveBus {
                 address: start,
                 length,
             })?;
-        if end > window.len() as u64 {
-            // Report the first byte that the window cannot serve. A window end
-            // beyond the 32-bit bus is itself an address overflow.
-            let window_end = u64::from(base) + window.len() as u64;
-            return Err(match u32::try_from(window_end) {
-                Ok(address) => BusError::UnmappedRead { address },
-                Err(_) => BusError::AddressOverflow {
-                    address: u32::MAX,
-                    length,
-                },
+        if end_exclusive > window_end {
+            // Report the window's exclusive end: the first address the window
+            // cannot serve, consistent with the work RAM path above.
+            return Err(BusError::UnmappedRead {
+                address: window_end,
             });
         }
-        // The range proof above leaves both bounds inside `window`, whose
-        // length fits `usize`.
-        Ok(window[offset as usize..end as usize].to_vec())
+        // The range proof above leaves the whole request inside `window`, so
+        // its slice bounds are in range and the copy below cannot fail.
+        let mut data = Vec::new();
+        if data.try_reserve_exact(length).is_err() {
+            return Err(BusError::AddressOverflow {
+                address: start,
+                length,
+            });
+        }
+        let offset = start.wrapping_sub(base) as usize;
+        let end = offset + span as usize;
+        data.extend_from_slice(&window[offset..end]);
+        Ok(data)
     }
 
-    /// Writes a byte range to work RAM for debugger consumers.
+    /// Writes a byte range to work RAM or the control register file for
+    /// debugger consumers.
     ///
-    /// The whole range is validated before the first byte is written. This is
-    /// not an emulated bus write, so it never produces a debug event: it writes
-    /// work RAM directly instead of going through [`MegadriveBus::write8`].
+    /// The whole range is validated before the first byte is written, and each
+    /// byte is then written through the side-effect-free work RAM path. This is
+    /// not an emulated bus write, so it never produces a debug event, never
+    /// touches a device, never re-encodes a step-scoped value as a register and
+    /// never leaves a partial write behind: a rejected range leaves both the
+    /// control register file and the state hash untouched.
     pub fn write_memory(&mut self, address: u64, data: &[u8]) -> Result<(), BusError> {
-        let start =
-            u32::try_from(address).map_err(|_| BusError::UnmappedWrite { address: u32::MAX })?;
+        let start = bus_address(
+            u32::try_from(address).map_err(|_| BusError::UnmappedWrite { address: u32::MAX })?,
+        );
+        if data.is_empty() {
+            return Ok(());
+        }
+        let span = u32::try_from(data.len()).map_err(|_| BusError::AddressOverflow {
+            address: start,
+            length: data.len(),
+        })?;
+        // The interval is proven against the eight control bytes as a whole
+        // before a single byte is stored, so `write_memory(0xA1000F, &[0x55,
+        // 0x66])` fails atomically instead of storing `0x55` first.
+        if is_io_control(start) {
+            let end = start
+                .checked_add(span - 1)
+                .ok_or(BusError::AddressOverflow {
+                    address: start,
+                    length: data.len(),
+                })?;
+            if end >= IO_CONTROL_BASE + IO_CONTROL_LEN as u32 {
+                return Err(BusError::UnmappedWrite { address: end });
+            }
+            for (offset, byte) in data.iter().enumerate() {
+                let target = start
+                    + u32::try_from(offset).map_err(|_| BusError::AddressOverflow {
+                        address: start,
+                        length: data.len(),
+                    })?;
+                // The stub half discards the byte; the two functional port
+                // control register pairs latch it.
+                if let Some(index) = io_control_offset(target) {
+                    self.io_control[index] = *byte;
+                }
+            }
+            return Ok(());
+        }
+        // Work RAM: the interval is proven in full before the loop mutates
+        // anything, and the endpoint check mirrors `read_memory` (a range that
+        // runs past `0xFFFFFF` is not RAM any more).
         self.ensure_ram_write_range(start, data.len())?;
         for (offset, byte) in data.iter().enumerate() {
-            let offset =
-                u32::try_from(offset).map_err(|_| BusError::UnmappedWrite { address: start })?;
-            let target = start.checked_add(offset).ok_or(BusError::AddressOverflow {
-                address: start,
-                length: data.len(),
-            })?;
-            self.write_ram_byte(target, *byte)?;
+            let target = start
+                .checked_add(
+                    u32::try_from(offset).map_err(|_| BusError::AddressOverflow {
+                        address: start,
+                        length: data.len(),
+                    })?,
+                )
+                .ok_or(BusError::AddressOverflow {
+                    address: start,
+                    length: data.len(),
+                })?;
+            self.ram[ram_offset(target)] = *byte;
         }
         Ok(())
     }
@@ -1110,6 +1646,18 @@ impl MegadriveBus {
     }
 
     /// Replaces the complete 8 KiB Z80 RAM during a snapshot restore.
+    /// Resets every non-canonical diagnostic counter on the bus.
+    ///
+    /// A valid restore replaces the machine's state, and the counters describe
+    /// execution *since* that restore, so the replacement state starts at zero
+    /// (W1T/F4). Nothing here is serialized, so no payload byte moves.
+    pub(crate) fn reset_diagnostic_counters(&mut self) {
+        self.unmapped_z80_accesses = 0;
+        self.port3_unmodelled_accesses = 0;
+        self.z80_dma_unavailable_accesses = 0;
+        self.z80_invalid_target_accesses = 0;
+    }
+
     pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
         if ram.len() != Z80_RAM_SIZE {
             return Err(BusError::UnmappedWrite {
@@ -1130,6 +1678,101 @@ impl MegadriveBus {
         debug_assert!(bank <= 0x01FF, "the Z80 bank register is nine bits wide");
         self.z80_bank = bank;
     }
+}
+
+/// Truncates a 32-bit register value to the 24-bit address the machine decodes.
+///
+/// The 68000 has 24 address pins, so bits 31..24 are not decoded by any Mega
+/// Drive device and a register value like `0xFFFFF7FE` addresses `0x00FFF7FE`.
+/// Emulated CPU registers keep their full 32-bit value; only this bus decodes.
+#[must_use]
+pub const fn bus_address(address: u32) -> u32 {
+    address & ADDRESS_MASK
+}
+
+/// Returns whether `address` (already 24-bit) decodes to work RAM.
+///
+/// Both the primary `0xFF0000..=0xFFFFFF` window and the `0xE00000..=0xFEFFFF`
+/// mirror land on the same 64 KiB through address bits 15-0.
+#[must_use]
+pub const fn is_work_ram(address: u32) -> bool {
+    address >= RAM_MIRROR_BASE
+}
+
+/// Returns the work RAM byte offset decoded by a 24-bit address.
+#[must_use]
+const fn ram_offset(address: u32) -> usize {
+    (address & 0xFFFF) as usize
+}
+
+/// Returns whether `address` is inside the controller/IO window.
+#[must_use]
+const fn is_io_window(address: u32) -> bool {
+    address >= CONTROLLER_WINDOW_BASE && address < CONTROLLER_WINDOW_END
+}
+
+/// Returns whether `address` is an undecoded byte of the controller/IO window.
+///
+/// Those bytes have no modelled device, so a read returns [`OPEN_BUS_VALUE`] and
+/// a write is discarded. The two port 3/EXT data bytes and the mapped port 1/2
+/// control register pairs are excluded. The port 3/EXT **control** stub bytes
+/// (`0xA1000C..=0xA1000F`) are undecoded too, but the ADR-0014 contract pins
+/// them to a constant zero rather than to the floating value, so they are
+/// handled separately by [`is_io_control_stub`].
+#[must_use]
+const fn is_io_undecoded(address: u32) -> bool {
+    is_io_window(address) && io_control_offset(address).is_none() && !is_io_control_stub(address)
+}
+
+/// Returns whether `address` is one of the port 3/EXT control stub bytes.
+///
+/// ADR-0014 (`0xA10008`/`09`, `0A`/`0B`, `0C`/`0D`, `0E`/`0F`: "Port 3/EXT
+/// **control** is a stub (0)") pins the two stub pairs to the constant zero:
+/// a read returns `0x00` and a write is acknowledged and discarded. The bytes
+/// stay in the canonical control file so the snapshot layout has one home, but
+/// they never change, so the state hash never moves for them.
+#[must_use]
+pub const fn is_io_control_stub(address: u32) -> bool {
+    address >= IO_CONTROL_STUB_BASE && address < IO_CONTROL_BASE + IO_CONTROL_LEN as u32
+}
+
+/// Returns whether `address` is one of the eight port 1/2/3/EXT control bytes.
+#[must_use]
+pub const fn is_io_control(address: u32) -> bool {
+    address >= IO_CONTROL_BASE && address < IO_CONTROL_BASE + IO_CONTROL_LEN as u32
+}
+
+/// Returns the control register index addressed by `address`, if any.
+///
+/// Only the four latched port 1/2 control bytes are indexed; the port 3/EXT
+/// control stub is a constant zero and is deliberately not addressable in the
+/// canonical file, so a write through this mapping can never change it.
+#[must_use]
+pub const fn io_control_offset(address: u32) -> Option<usize> {
+    if address >= IO_CONTROL_BASE && address < IO_CONTROL_STUB_BASE {
+        Some((address - IO_CONTROL_BASE) as usize)
+    } else {
+        None
+    }
+}
+
+/// Returns whether every byte of `address..address + length` is an I/O window
+/// byte that the bus can write, so a multi-byte write can be split per lane.
+///
+/// The port 3/EXT data bytes are excluded because they stay a typed error.
+#[must_use]
+fn io_window_covers(address: u32, length: u32) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        let target = bus_address(address.wrapping_add(offset));
+        if !is_io_window(target)
+            || matches!(target, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW)
+        {
+            return false;
+        }
+        offset += 1;
+    }
+    true
 }
 
 /// Returns the YM2612 bank and latch addressed by a 68000 window byte.
@@ -1155,7 +1798,14 @@ fn ym_window_covers(address: u32, length: u32) -> bool {
     true
 }
 
-/// Maps a Z80 YM2612 window byte to its bank and latch.
+/// Maps a Z80 `SOUND` byte to its bank and latch.
+///
+/// The region is decoded by the low address bits (`AddressMask=0x0003`), so the
+/// port order repeats: `0` latches a bank-1 register, `1` writes bank-1 data, `2`
+/// latches a bank-2 register and `3` writes bank-2 data. The pinned oracle fixes
+/// that order in `Devices/YM2612/YM2612.cpp:2339-2350` (`location == 0` latches
+/// part 1, `location == 2` latches part 2, `location == 1 || location == 3`
+/// commits the currently latched register).
 const fn z80_ym_port(address: u16) -> (YmBank, YmPort) {
     match address & 0x0003 {
         0 => (YmBank::One, YmPort::Address),
@@ -1234,6 +1884,45 @@ fn vdp_offset(address: u32) -> Option<u8> {
     }
 }
 
+/// Returns the PSG window offset addressed by a 68000 byte address.
+fn psg_window_offset(address: u32) -> Option<u8> {
+    let offset = address.checked_sub(PSG_BASE)?;
+    if offset < PSG_WINDOW_SIZE {
+        u8::try_from(offset).ok()
+    } else {
+        None
+    }
+}
+
+/// Delivers one 16-bit 68000 transaction to the PSG.
+///
+/// Pinned model, matching the oracle's executable path (not physical proof): a
+/// word access is a single transaction (`Devices/M68000/M68000.cpp:2191-2194` one
+/// `M68000Word`, forwarded once by `Devices/315-5313/S315-5313_Ports.cpp:1639-1643`).
+/// The SN76489 decides latch versus data with `data.MSB()`
+/// (`Devices/SN76489/SN76489.cpp:723-748`, `ExodusSDK/DeviceInterface/Data.inl:560-562`)
+/// while extracting channel, type and data from the low segments, so the fields
+/// the chip consumes are `((word >> 8) & 0x80) | (word & 0x7F)`. This is a model
+/// choice matching the pin; it is not independent evidence of the real PSG lanes.
+impl MegadriveBus {
+    fn write_psg_transaction(&mut self, word: u16) {
+        let byte = (((word >> 8) as u8) & 0x80) | ((word as u8) & 0x7F);
+        self.psg.write(byte);
+    }
+}
+
+/// Returns whether every byte of `address..address + length` is a PSG byte.
+fn psg_window_covers(address: u32, length: u32) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        if psg_window_offset(address.saturating_add(offset)).is_none() {
+            return false;
+        }
+        offset += 1;
+    }
+    true
+}
+
 /// Returns the step-scoped input slot and Mega Drive port number addressed by
 /// `address`, if any.
 ///
@@ -1265,16 +1954,45 @@ impl Z80Bus for MegadriveBus {
         match address {
             // 8 KiB of RAM mirrored through the first 16 KiB of the Z80 map.
             0x0000..=0x3FFF => Ok(self.z80_ram[usize::from(address & Z80_RAM_MASK)]),
-            YM2612_Z80_BASE..=YM2612_Z80_END => {
+            YM2612_Z80_BASE..=YM2612_Z80_SOUND_END => {
                 let (bank, port) = z80_ym_port(address);
                 Ok(self.ym.read_bank(bank, port))
             }
             Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
-            // The PSG is write-only; the decoded window returns the chip's
-            // documented open value.
-            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => Ok(self.psg.read()),
+            // `0x7F00..=0x7F03` is the VDP's port window on the Z80 side, not the
+            // PSG (W1T/F5).
+            VDP_Z80_BASE..=VDP_Z80_END => {
+                let offset = (address - VDP_Z80_BASE) as u8;
+                match self.vdp.read8(offset) {
+                    Ok(value) => Ok(value),
+                    // A documented operation this slice does not implement is a
+                    // CAPABILITY gap, not an invalid target: it is counted apart
+                    // and never turned into a fake read. The Z80 core has no
+                    // exception channel, so the typed rejection surfaces as the
+                    // bus error for this access (W1X / W1U-F2).
+                    Err(VdpError::UnsupportedBitRead { .. }) => {
+                        self.vdp.count_capability_gap();
+                        Err(Z80Error::Memory { address })
+                    }
+                    // Everything else is classified by its typed variant: an invalid
+                    // target keeps the documented model outcome (no data, counted as a
+                    // discarded data-port access), while a capability gap or a refused
+                    // DMA is surfaced as the typed rejection and counted apart (W1Y).
+                    Err(error) => self
+                        .record_z80_vdp_rejection(classify_vdp_error(&error), address)
+                        .map(|()| Z80_UNDECODED_READ_VALUE),
+                }
+            }
+            // The PSG is write-only; the alias and the mirror window return the
+            // chip's documented open value.
+            PSG_Z80_ALIAS | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => Ok(self.psg.read()),
             Z80_ROM_WINDOW_BASE..=0xFFFF => self.read_z80_banked_rom(address),
-            _ => Err(Z80Error::Memory { address }),
+            // No device owns this byte: the guest gets the documented value and
+            // the run continues (see [`Z80_UNDECODED_READ_VALUE`]).
+            _ => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(Z80_UNDECODED_READ_VALUE)
+            }
         }
     }
 
@@ -1290,36 +2008,124 @@ impl Z80Bus for MegadriveBus {
                 self.z80_bank = u16::from(value);
                 Ok(())
             }
-            YM2612_Z80_BASE..=YM2612_Z80_END => {
+            YM2612_Z80_BASE..=YM2612_Z80_SOUND_END => {
                 let (bank, port) = z80_ym_port(address);
                 self.ym.write_bank(bank, port, value);
                 Ok(())
             }
-            PSG_Z80_BASE..=PSG_Z80_END | PSG_Z80_ALIAS => {
+            VDP_Z80_BASE..=VDP_Z80_END => {
+                // The Z80 VDP window drives the VDP ports, but the TMSS lockout
+                // applies to the VDP regardless of which master reaches it: the
+                // bridge writes through the 68000 bus
+                // (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`) and the lockout is
+                // signalled on the VDP access (`:1029-1037`). Same gate as
+                // `MegadriveBus::write8` above (W1X / W1U-F1).
+                if !self.cartridge.tmss().vdp_writes_allowed() {
+                    return Ok(());
+                }
+                // An invalid target has no effect (the pin logs a diagnostic and
+                // the access completes), so it is counted rather than ending the
+                // run; the Z80 core has no exception channel to deliver a bus
+                // error on.
+                let offset = (address - VDP_Z80_BASE) as u8;
+                match self.vdp.write8(offset, value) {
+                    Ok(()) => Ok(()),
+                    // Classified by variant, exhaustively (W1Y): a DMA refusal is not an
+                    // invalid target, and a capability gap is neither.
+                    Err(error) => {
+                        self.record_z80_vdp_rejection(classify_vdp_error(&error), address)
+                    }
+                }
+            }
+            PSG_Z80_ALIAS | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => {
                 self.psg.write(value);
                 Ok(())
             }
-            Z80_ROM_WINDOW_BASE..=0xFFFF => Err(Z80Error::Memory { address }),
-            _ => Err(Z80Error::Memory { address }),
+            // The banked window is not a universal ROM: the arbiter translates
+            // the Z80 address into the 68000 space (bank << 15 | offset) and
+            // forwards the access to whatever the target is
+            // (`Devices/MD1600IO/MDBusArbiter.cpp:537-560`, which duplicates the
+            // byte across the 16-bit data bus). So a bank aimed at work RAM really
+            // writes RAM, and only an unserved target has no effect.
+            Z80_ROM_WINDOW_BASE..=0xFFFF => {
+                let target = (u32::from(self.z80_bank) << 15) | u32::from(address & 0x7FFF);
+                match self.write8(target, value) {
+                    Ok(()) => Ok(()),
+                    // Exhaustive classification of the 68000-bus rejection (W1Y): a
+                    // read-only ROM target simply does not latch, a real hole is counted
+                    // as unmapped, an invalid target in its own bucket, and a VDP DMA
+                    // refusal keeps the DMA bucket — no wildcard swallows a typed error.
+                    Err(error) => {
+                        self.record_z80_bus_rejection(classify_bus_error(&error), address)
+                    }
+                }
+            }
+            // No device owns this byte: the write has no effect and the run
+            // continues (see [`Z80_UNDECODED_READ_VALUE`]).
+            _ => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(())
+            }
         }
     }
 
     fn input(&mut self, port: u16) -> Result<u8, Z80Error> {
-        // Every Mega Drive Z80 device is memory-mapped; the Z80 I/O space is
-        // not wired to anything.
-        Err(Z80Error::Io { port })
+        // Every Mega Drive Z80 device is memory-mapped, so the Z80 I/O space has
+        // no owner. `port` is unused because the outcome does not depend on it;
+        // the access is counted like every other undecoded guest access.
+        let _ = port;
+        self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+        Ok(Z80_UNDECODED_READ_VALUE)
     }
 
     fn output(&mut self, port: u16, _value: u8) -> Result<(), Z80Error> {
-        Err(Z80Error::Io { port })
+        // Write side of the same undecoded channel: ignored, never fatal.
+        let _ = port;
+        self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::cartridge::Cartridge;
+    use crate::z80::Z80;
 
-    use super::{BusError, MegadriveBus, RAM_BASE};
+    use super::{BusError, MegadriveBus, RAM_BASE, Z80_UNDECODED_READ_VALUE};
+
+    #[test]
+    fn undecoded_z80_accesses_are_counted_served_and_never_fatal() {
+        // A real Z80 executes LD A,(0x6100); LD (0x6100),A; LD A,(0x7F64);
+        // LD (0x7F64),A. None of those addresses owns a device, so each access is
+        // served by the undecoded path: the read yields the documented value, the
+        // write is ignored, and no access ends the run (W1R).
+        let mut bus = bus();
+        let mut program = vec![0_u8; 0x2000];
+        program[0] = 0x3A; // LD A,(0x6100)
+        program[1] = 0x00;
+        program[2] = 0x61;
+        program[3] = 0x32; // LD (0x6100),A
+        program[4] = 0x00;
+        program[5] = 0x61;
+        program[6] = 0x3A; // LD A,(0x7F64)
+        program[7] = 0x64;
+        program[8] = 0x7F;
+        program[9] = 0x32; // LD (0x7F64),A
+        program[10] = 0x64;
+        program[11] = 0x7F;
+        program[12] = 0x76; // HALT
+        bus.restore_z80_ram(program).expect("z80 ram");
+
+        let mut z80 = Z80::new();
+        for _ in 0..4 {
+            z80.step(&mut bus)
+                .expect("an undecoded access cannot end the run");
+        }
+        assert_eq!(bus.unmapped_z80_accesses(), 4);
+        assert_eq!(z80.a(), Z80_UNDECODED_READ_VALUE);
+        z80.step(&mut bus).expect("halt");
+        assert_eq!(bus.unmapped_z80_accesses(), 4, "HALT is not an access");
+    }
 
     fn bus() -> MegadriveBus {
         let mut rom = vec![0_u8; 0x400];
@@ -1362,13 +2168,17 @@ mod tests {
     #[test]
     fn rejects_unmapped_access() {
         let mut bus = bus();
+        // `0xC00010..=0xC00017` is the PSG window (W1Q); the first byte past it
+        // is still an unmapped hole.
         assert!(matches!(
-            bus.read8(0x00C0_0010),
+            bus.read8(0x00C0_0018),
             Err(BusError::UnmappedRead { .. })
         ));
         assert_eq!(bus.read8(0x00A0_0000).expect("z80 ram"), 0x00);
+        // The `0xE00000..=0xFFFFFF` range is the work RAM mirror (W1.2), so an
+        // unmapped hole is only the range below it that no device owns.
         assert!(matches!(
-            bus.read8(0x00E0_0000),
+            bus.read8(0x00C0_1000),
             Err(BusError::UnmappedRead { .. })
         ));
         assert!(matches!(
@@ -1444,44 +2254,137 @@ mod tests {
     }
 
     #[test]
-    fn controller_window_maps_only_two_execution_byte_reads() {
+    fn controller_window_maps_the_control_registers_open_bus_and_data_registers() {
         let mut bus = bus();
         bus.set_step_input([0x01, 0x02]);
         assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7E));
         assert_eq!(bus.read8(super::CONTROLLER_PORT_2), Ok(0x7D));
 
-        // Every other address in the controller/IO window, and every write,
-        // is a typed error rather than a silent skip.
-        for address in super::CONTROLLER_WINDOW_BASE..super::CONTROLLER_WINDOW_END {
-            if address == super::CONTROLLER_PORT_1
-                || address == super::CONTROLLER_PORT_2
-                || address == super::VERSION_REGISTER
-            {
-                continue;
-            }
+        // Port 1/2/3/EXT control registers (0xA10008..=0xA1000F) are a
+        // read/write stub: reset reads zero, each byte latches, and a word or
+        // long access reads both lanes.
+        for offset in 0..super::IO_CONTROL_LEN {
+            let address = super::IO_CONTROL_BASE + offset as u32;
+            assert_eq!(bus.read8(address), Ok(0), "reset at 0x{address:06X}");
+        }
+        // The port 1/2 control pairs (`0xA10008..=0xA1000B`) latch a written byte;
+        // the port 3/EXT control pairs (`0xA1000C..=0xA1000F`) are the ADR-0014
+        // constant-zero stub, so a write there is acknowledged and discarded and
+        // a read stays zero.
+        for offset in 0..super::IO_CONTROL_LEN {
+            let address = super::IO_CONTROL_BASE + offset as u32;
+            let value = 0x80 | offset as u8;
+            assert_eq!(bus.write8(address, value), Ok(()), "write 0x{address:06X}");
+            let expected = if address < super::IO_CONTROL_STUB_BASE {
+                value
+            } else {
+                0x00
+            };
             assert_eq!(
                 bus.read8(address),
-                Err(BusError::UnmappedRead { address }),
-                "read at 0x{address:06X}"
+                Ok(expected),
+                "read back 0x{address:06X}"
             );
+        }
+        assert_eq!(bus.read16(super::IO_CONTROL_BASE), Ok(0x8081));
+        assert_eq!(
+            bus.read16(super::IO_CONTROL_STUB_BASE),
+            Ok(0x0000),
+            "the port 3/EXT control stub never latches"
+        );
+        assert_eq!(
+            bus.read32(super::IO_CONTROL_BASE),
+            Ok(0x8081_8283),
+            "the long read latches all four port 1/2 control lanes"
+        );
+        assert_eq!(
+            bus.read32(super::IO_CONTROL_STUB_BASE),
+            Ok(0x0000_0000),
+            "a long read of the stub reads zero on every lane"
+        );
+        assert_eq!(bus.peek8(super::IO_CONTROL_BASE), Ok(0x80));
+        assert_eq!(
+            bus.read_memory(u64::from(super::IO_CONTROL_BASE), 8)
+                .expect("debugger read of the control file"),
+            vec![0x80, 0x81, 0x82, 0x83, 0x00, 0x00, 0x00, 0x00]
+        );
+        // The latched port 1/2 bytes are canonical state, not a per-step value,
+        // so the debugger and execution paths agree byte for byte; the four stub
+        // bytes stay at their reset value.
+        assert_eq!(
+            bus.io_control(),
+            &[0x80, 0x81, 0x82, 0x83, 0x00, 0x00, 0x00, 0x00]
+        );
+
+        // Every undecoded byte of the window reads the open value and accepts a
+        // discarded write instead of failing, so a boot store cannot stop here.
+        for address in [
+            super::CONTROLLER_WINDOW_BASE,
+            0x00A1_0002,
+            0x00A1_0004,
+            0x00A1_0010, // first byte past the eight control registers
+            0x00A1_001F,
+        ] {
+            assert_eq!(
+                bus.read8(address),
+                Ok(crate::audio::psg::OPEN_BUS_VALUE),
+                "open bus at 0x{address:06X}"
+            );
+            assert_eq!(bus.write8(address, 0x5A), Ok(()), "write 0x{address:06X}");
+            assert_eq!(
+                bus.read8(address),
+                Ok(crate::audio::psg::OPEN_BUS_VALUE),
+                "an open-bus write is discarded at 0x{address:06X}"
+            );
+        }
+        // The two controller data registers read their step-scoped value and
+        // discard a write (the hardware has no failing latch there).
+        assert_eq!(bus.write8(super::CONTROLLER_PORT_1, 0x00), Ok(()));
+        assert_eq!(bus.read8(super::CONTROLLER_PORT_1), Ok(0x7E));
+        assert_eq!(bus.write8(super::CONTROLLER_PORT_2, 0x00), Ok(()));
+        // A word over the undecoded high byte plus a data register reads the
+        // open value on the high lane and the step-scoped value on the low one:
+        // both bytes are mapped now, so the access succeeds.
+        assert_eq!(bus.read16(0x00A1_0002), Ok(0xFF7E));
+
+        // Port 3/EXT data (0xA10006/0xA10007) is a real register this slice does
+        // not model. Since W1X the access is accepted with no effect instead of
+        // faulting: the hardware accepts the store (V1W measured Kid's
+        // `MOVE.B #0x7F,(0x00A10007).L` skipped by a guest address error), so the
+        // divergence is counted instead of raised.
+        let mut counted = bus.port3_unmodelled_accesses();
+        for address in [
+            super::CONTROLLER_PORT_3_DATA,
+            super::CONTROLLER_PORT_3_DATA_LOW,
+        ] {
+            assert_eq!(
+                bus.read8(address),
+                Ok(super::OPEN_BUS_VALUE),
+                "port 3 data read 0x{address:06X} serves the window open value"
+            );
+            counted += 1;
+            assert_eq!(bus.port3_unmodelled_accesses(), counted);
             assert_eq!(
                 bus.write8(address, 0),
-                Err(BusError::UnmappedWrite { address }),
-                "write at 0x{address:06X}"
+                Ok(()),
+                "port 3 data write 0x{address:06X} is accepted with no effect"
             );
-        }
-        for address in [super::CONTROLLER_PORT_1, super::CONTROLLER_PORT_2] {
+            counted += 1;
             assert_eq!(
-                bus.write8(address, super::CONTROLLER_NEUTRAL),
-                Err(BusError::UnmappedWrite { address })
+                bus.port3_unmodelled_accesses(),
+                counted,
+                "port 3 write 0x{address:06X} is counted too"
             );
+            assert_eq!(bus.peek8(address), Ok(super::OPEN_BUS_VALUE));
         }
+
         // The version register is a side-effect-free cartridge read.
         assert_eq!(bus.read8(super::VERSION_REGISTER), Ok(0xA1));
         assert_eq!(bus.peek8(super::VERSION_REGISTER), Ok(0xA1));
 
-        // The debugger path stays unmapped: a step-scoped value is not a machine
-        // register and must not be presented as one.
+        // The debugger path stays unmapped for the step-scoped data registers: a
+        // per-step value is not a machine register and must not be presented as
+        // one.
         for address in [super::CONTROLLER_PORT_1, super::CONTROLLER_PORT_2] {
             assert_eq!(bus.peek8(address), Err(BusError::UnmappedRead { address }));
             assert_eq!(
@@ -1490,26 +2393,36 @@ mod tests {
             );
         }
 
-        // A word or long access that touches the window is a typed error, not a
-        // partial success: the high byte of the data register is not mapped.
+        // Past the I/O window the map is unchanged: the Z80 arbitration register
+        // is owned by the Z80 window, not by open bus, and an address above the
+        // window stays a typed error.
+        assert!(bus.read8(0x00A1_1100).is_ok());
+        assert!(matches!(
+            bus.write16(0x00A1_0020, 0),
+            Err(BusError::UnmappedWrite { .. })
+        ));
+
+        // A debugger write that overruns the control file by one byte is rejected
+        // as a whole: the first byte is not stored, so the canonical state and
+        // the state hash cannot move. This is the R1-F3 regression.
+        let before = bus.io_control().to_owned();
         assert_eq!(
-            bus.read16(0x00A1_0002),
-            Err(BusError::UnmappedRead {
-                address: 0x00A1_0002
-            })
-        );
-        assert_eq!(
-            bus.read32(0x00A1_0000),
-            Err(BusError::UnmappedRead {
-                address: 0x00A1_0000
-            })
-        );
-        assert_eq!(
-            bus.write16(0x00A1_0002, 0),
+            bus.write_memory(u64::from(super::IO_CONTROL_STUB_BASE + 3), &[0x55, 0x66]),
             Err(BusError::UnmappedWrite {
-                address: 0x00A1_0003
+                address: super::IO_CONTROL_BASE + super::IO_CONTROL_LEN as u32
             })
         );
+        assert_eq!(
+            bus.io_control(),
+            &before,
+            "a rejected control write must not store its first byte"
+        );
+        assert_eq!(
+            bus.read_memory(u64::from(super::IO_CONTROL_BASE), super::IO_CONTROL_LEN)
+                .expect("control file read"),
+            vec![0x80, 0x81, 0x82, 0x83, 0x00, 0x00, 0x00, 0x00]
+        );
+
         // An odd-address word access at the data register is rejected before the
         // read, as everywhere else on the 68000 bus.
         assert_eq!(
@@ -1518,6 +2431,202 @@ mod tests {
                 address: super::CONTROLLER_PORT_1
             })
         );
+        assert_eq!(
+            bus.read16(super::IO_CONTROL_BASE + 1),
+            Err(BusError::OddAddress {
+                address: super::IO_CONTROL_BASE + 1
+            })
+        );
+    }
+
+    #[test]
+    fn address_normalization() {
+        let mut bus = bus();
+        // Bits 31..24 are not decoded: 0xFFFFF7FE is the work RAM byte 0xF7FE.
+        assert_eq!(bus.read8(0xFFFF_F7FE), Ok(0x00));
+        assert_eq!(bus.write8(0xFFFF_F7FE, 0x5A), Ok(()));
+        assert_eq!(bus.read8(0x00FF_F7FE), Ok(0x5A));
+        assert_eq!(bus.peek8(0xFFFF_F7FE), Ok(0x5A));
+
+        // Every alias of the same 24-bit address reaches the same byte.
+        for alias in [0x00FF_F7FE, 0x10FF_F7FE, 0x0EFF_F7FE, 0xFFFF_F7FE] {
+            assert_eq!(bus.read8(alias), Ok(0x5A), "alias 0x{alias:08X}");
+        }
+        // 0x01000000 truncates to ROM 0x000000, the loader's alias, and a ROM
+        // write is rejected at the same truncated address.
+        assert_eq!(bus.read8(0x0100_0000), Ok(0x12));
+        assert_eq!(bus.read16(0x0100_0000), Ok(0x1234));
+        assert_eq!(bus.read32(0x0100_0000), Ok(0x1234_0000));
+        // A ROM write is rejected by the cartridge at the truncated address,
+        // exactly as the baseline already did for `0x000000`.
+        assert_eq!(
+            bus.write8(0x0100_0000, 0xFF),
+            Err(BusError::WriteProtected { address: 0 })
+        );
+        assert_eq!(bus.read8(0x0000_0000), Ok(0x12));
+        // 0xFFFF0000 truncates to the mirror's first byte, which is writable.
+        assert_eq!(bus.write8(0xFFFF_0000, 0xFF), Ok(()));
+        assert_eq!(bus.read8(0x00E0_0000), Ok(0xFF));
+
+        // Word and long accesses normalize each lane on its own. A 32-bit
+        // register value like 0xFFFF_FFFE is even, so the access is legal, and
+        // its two lanes decode to 0x00FFFFFE and 0x00000000: the word reads
+        // RAM. Also the alignment rule is applied to the *truncated* address,
+        // which is what the hardware decodes.
+        assert_eq!(bus.write8(0x00FF_FFFE, 0xBE), Ok(()));
+        assert_eq!(bus.write8(0x00FF_FFFF, 0xEF), Ok(()));
+        assert_eq!(bus.read16(0xFFFF_FFFE), Ok(0xBEEF));
+        assert_eq!(bus.read8(0x0000_0001), Ok(0x34));
+        // A lane that truncates into ROM is still a ROM access, so a write there
+        // keeps the cartridge's typed rejection rather than becoming a RAM write.
+        assert_eq!(
+            bus.write8(0x0100_0001, 0xAA),
+            Err(BusError::WriteProtected { address: 1 })
+        );
+        assert_eq!(
+            bus.read16(0x00FF_FFFF),
+            Err(BusError::OddAddress {
+                address: 0x00FF_FFFF
+            })
+        );
+
+        // The debugger paths normalize too, keeping both endpoints in the same
+        // 24-bit space.
+        assert_eq!(
+            bus.read_memory(0xFFFF_F7FE, 2).expect("mirror read"),
+            vec![0x5A, 0x00]
+        );
+        assert_eq!(bus.write_memory(0xFFFF_F7FE, &[0x11, 0x22]), Ok(()));
+        assert_eq!(
+            bus.read_memory(0x00FF_F7FE, 2).expect("ram read"),
+            vec![0x11, 0x22]
+        );
+        assert_eq!(bus.read16(0xFFFF_F7FE), Ok(0x1122));
+
+        // The Kid Chameleon exception frame: 14 bytes at the top of the mirror
+        // must be writable, which is what aborted the host before this phase.
+        assert_eq!(bus.validate_write_range(0xFFFF_F7F0, 14), Ok(()));
+        assert_eq!(bus.validate_write_range(0xFFFF_F7F0, 0), Ok(()));
+        // The last byte of the bus is writable too, and a run that starts there
+        // is rejected by its wrapped endpoint instead of being accepted as a
+        // range that runs off the 24-bit space.
+        assert_eq!(bus.validate_write_range(0xFFFF_FFFF, 1), Ok(()));
+        assert_eq!(
+            bus.validate_write_range(0xFFFF_FFF0, 16),
+            Ok(()),
+            "a range inside the block is accepted"
+        );
+        assert_eq!(
+            bus.validate_write_range(0xFFFF_FFFE, 3),
+            Err(BusError::UnmappedWrite {
+                address: 0x0100_0000
+            }),
+            "a range whose end wraps past the block is rejected, not wrapped"
+        );
+
+        // The bus never touches a CPU address register: the CPU keeps the raw
+        // 32-bit value it was loaded with, and only this bus decodes it.
+        let mut cpu = crate::cpu::M68000::new();
+        cpu.set_a7(0xFFFF_F7F0);
+        let _ = bus.read8(0xFFFF_F7F0);
+        assert_eq!(cpu.a7(), 0xFFFF_F7F0);
+    }
+
+    #[test]
+    fn ram_mirror() {
+        let mut bus = bus();
+        // The mirror decodes the same 64 KiB through address bits 15-0.
+        let cases = [
+            (0x00E0_0000_u32, 0x0000_u32),
+            (0x00E0_FFFF, 0xFFFF),
+            (0x00E1_0000, 0x0000),
+            (0x00F0_0000, 0x0000),
+            (0x00FE_FFFF, 0xFFFF),
+            (0x00FF_0000, 0x0000),
+            (0x00FF_FFFF, 0xFFFF),
+        ];
+        for (address, offset) in cases {
+            let value = 0x40_u8.wrapping_add((offset & 0x3F) as u8);
+            assert_eq!(bus.write8(address, value), Ok(()), "write 0x{address:06X}");
+            assert_eq!(bus.read8(address), Ok(value), "read 0x{address:06X}");
+            assert_eq!(
+                bus.read8(super::RAM_BASE + offset),
+                Ok(value),
+                "the mirror and 0x{offset:04X} are the same byte"
+            );
+        }
+        // The primary window is really the same view.
+        assert_eq!(bus.write16(super::RAM_BASE + 0x1234, 0xABCD), Ok(()));
+        assert_eq!(bus.read16(0x00E1_1234), Ok(0xABCD));
+        assert_eq!(bus.read32(0x00E0_1234), Ok(0xABCD_0000));
+        assert_eq!(bus.write32(0x00E0_1234, 0x0BAD_F00D), Ok(()));
+        assert_eq!(bus.read32(super::RAM_BASE + 0x1234), Ok(0x0BAD_F00D));
+
+        // A wide address truncates first, so 0x10FF0000 decodes to the primary
+        // window's first byte (`0x00FF0000`), which is the mirror's block 0.
+        assert_eq!(bus.read8(0x10FF_0000), Ok(0x40));
+        // 0x01000000 truncates below the mirror and is ROM, not RAM.
+        assert_eq!(bus.peek8(0x0100_0000), Ok(0x12));
+    }
+
+    #[test]
+    fn ram_mirror_read_memory_range() {
+        let mut bus = bus();
+        bus.write_memory(0x00E0_0000, &[1, 2, 3, 4])
+            .expect("mirror write");
+        assert_eq!(
+            bus.read_memory(0x00E0_0000, 4).expect("mirror read"),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            bus.read_memory(0x00FF_0000, 4).expect("primary read"),
+            vec![1, 2, 3, 4]
+        );
+        // A range that crosses a 64 KiB mirror-block boundary is still the same
+        // contiguous RAM, so it is served byte by byte.
+        assert_eq!(
+            bus.read_memory(0x00E0_FFFE, 4).expect("crossing read"),
+            vec![0, 0, 1, 2]
+        );
+        // Crossing the end of the 24-bit bus is different from crossing an
+        // internal 64 KiB block: `0x01000000` is not RAM (its low lane decodes
+        // ROM), so the range is rejected at the first byte the window cannot
+        // serve instead of wrapping into another region.
+        assert_eq!(
+            bus.read_memory(0x00FF_FFFE, 4),
+            Err(BusError::UnmappedRead {
+                address: 0x0100_0000
+            })
+        );
+        assert_eq!(
+            bus.read_memory(0x00FF_FFFF, 2),
+            Err(BusError::UnmappedRead {
+                address: 0x0100_0000
+            })
+        );
+        // The same rule for writes: the whole range is proven before any byte
+        // moves, so `0xFFFFFF` keeps its value.
+        let tail_before = bus.read8(0x00FF_FFFF).expect("tail");
+        assert_eq!(
+            bus.write_memory(0x00FF_FFFF, &[0xAA, 0xBB]),
+            Err(BusError::UnmappedWrite {
+                address: 0x0100_0000
+            })
+        );
+        assert_eq!(bus.read8(0x00FF_FFFF).expect("tail"), tail_before);
+        assert_eq!(
+            bus.read_memory(0x00FE_FFFE, 4).expect("mirror block read"),
+            vec![0, 0, 1, 2]
+        );
+        // A crossing write is served too: the bytes that pass the block end
+        // wrap to the block start, which is the same RAM byte the mirror alias
+        // addresses, so nothing is silently reinterpreted.
+        bus.write_memory(0x00E0_FFFE, &[9, 9, 9, 9])
+            .expect("crossing write");
+        assert_eq!(bus.read8(0x00E0_FFFE).expect("tail"), 9);
+        assert_eq!(bus.read8(0x00E0_FFFF).expect("last"), 9);
+        assert_eq!(bus.read8(0x00FF_0000).expect("primary head"), 9);
+        assert_eq!(bus.read8(0x00E1_0000).expect("mirror head"), 9);
     }
 
     #[test]
@@ -1565,22 +2674,26 @@ mod tests {
             bus.write16(0x00C0_0004, 0x9800),
             Err(BusError::Vdp(_))
         ));
+        // The PSG window `0xC00010..=0xC00017` is wired (W1Q) and reaches the
+        // same chip the Z80 window drives, so these bytes are no longer errors.
+        bus.write8(0x00C0_0011, 0x9F).expect("psg window write");
+        assert_eq!(bus.psg().attenuation(0), Some(0x0F));
+        assert_eq!(bus.read8(0x00C0_0011).expect("psg window read"), 0xFF);
         assert!(matches!(
-            bus.read8(0x00C0_0011),
+            bus.read8(0x00C0_0018),
             Err(BusError::UnmappedRead { .. })
         ));
         assert!(matches!(
-            bus.write8(0x00C0_0011, 0),
+            bus.write8(0x00C0_0018, 0),
             Err(BusError::UnmappedWrite { .. })
         ));
-        assert!(matches!(
+        // The unmapped rest of the I/O window is open bus, so a read there is
+        // the deterministic floating value and a write is discarded.
+        assert_eq!(
             bus.read8(0x00A1_0000),
-            Err(BusError::UnmappedRead { .. })
-        ));
-        assert!(matches!(
-            bus.write16(0x00A1_0000, 0),
-            Err(BusError::UnmappedWrite { .. })
-        ));
+            Ok(crate::audio::psg::OPEN_BUS_VALUE)
+        );
+        assert_eq!(bus.write16(0x00A1_0000, 0), Ok(()));
     }
 
     #[test]
@@ -1647,21 +2760,33 @@ mod tests {
     fn debugger_reads_validate_the_range_before_allocating() {
         let bus = bus();
         assert_eq!(bus.read_memory(0, 2).expect("rom read"), vec![0x12, 0x34]);
-        // The last RAM byte exists; one byte more is reported at the first
-        // address the window cannot serve.
+        // The last RAM byte exists; a range that would pass the end of the
+        // 24-bit bus is rejected at the first address the window cannot serve
+        // (`0x01000000` is not RAM: its low lane decodes ROM).
         let last_ram = u64::from(RAM_BASE) + u64::try_from(super::RAM_SIZE).expect("ram size") - 1;
+        assert_eq!(
+            bus.read_memory(last_ram, 1).expect("last ram byte"),
+            vec![0]
+        );
         assert_eq!(
             bus.read_memory(last_ram, 2),
             Err(BusError::UnmappedRead {
                 address: super::RAM_END
             })
         );
+        assert_eq!(
+            bus.read_memory(u64::from(u32::MAX) + 1, 1),
+            Err(BusError::UnmappedRead { address: u32::MAX })
+        );
         // A huge length is rejected by range arithmetic, never by asking the
         // allocator for it.
+        // A huge length is clamped to the 24-bit bus instead of asking the
+        // allocator for it, so it is still a typed error (never an abort).
         assert_eq!(
             bus.read_memory(u64::from(RAM_BASE), usize::MAX),
-            Err(BusError::UnmappedRead {
-                address: super::RAM_END
+            Err(BusError::AddressOverflow {
+                address: RAM_BASE,
+                length: usize::MAX
             })
         );
         assert_eq!(
@@ -1680,6 +2805,141 @@ mod tests {
         assert_eq!(
             bus.read_memory(u64::from(u32::MAX) + 1, 1),
             Err(BusError::UnmappedRead { address: u32::MAX })
+        );
+    }
+
+    #[test]
+    fn long_reads_compose_both_words_instead_of_zeroing_a_stub_lane() {
+        // R1b-F2: the long read used to return zero for the whole value when
+        // either word touched the port 3/EXT control stub. It now composes two
+        // independently decoded words, so a functional word next to a stub word
+        // keeps its bits and the stub/open-bus word only clears its own lane.
+        let mut bus = bus();
+        // 0xA1000A is in the functional port 2 control pair; 0xA1000C is stub.
+        assert_eq!(bus.write16(0x00A1_000A, 0x1234), Ok(()));
+        assert_eq!(bus.read16(0x00A1_000A), Ok(0x1234));
+        assert_eq!(
+            bus.read32(0x00A1_000A),
+            Ok(0x1234_0000),
+            "functional word plus stub word"
+        );
+        // 0xA1000E is stub; 0xA10010 is the deterministic open bus value.
+        assert_eq!(bus.read16(0x00A1_000E), Ok(0x0000));
+        assert_eq!(
+            bus.read16(0x00A1_0010),
+            Ok(u16::from_be_bytes([crate::audio::psg::OPEN_BUS_VALUE; 2]))
+        );
+        assert_eq!(
+            bus.read32(0x00A1_000E),
+            Ok(0x0000_FFFF),
+            "stub word plus open-bus word"
+        );
+        // The starts of both halves stay as before, and a long wholly inside the
+        // stub is still zero.
+        assert_eq!(bus.read32(0x00A1_0008), Ok(0x0000_1234));
+        assert_eq!(bus.read32(0x00A1_000C), Ok(0x0000_0000));
+        // The same composition holds for the execution path and for peek8.
+        assert_eq!(bus.read32(0x00A1_000A), bus.read32(0x00A1_000A));
+        assert_eq!(bus.peek8(0x00A1_000C), Ok(0x00));
+    }
+
+    #[test]
+    fn debugger_range_proofs_run_before_any_reservation() {
+        // R1-F2: `try_reserve` is a capacity guard, not a range check. A length
+        // that is representable but larger than its window must be rejected by
+        // the range proof, so the request never reaches the allocator and no
+        // partial state is written.
+        let mut probe = bus();
+        // A length that cannot even be expressed as a 24-bit span is an overflow
+        // (it would wrap the address space), so it is rejected first.
+        assert_eq!(
+            probe.read_memory(0, usize::MAX),
+            Err(BusError::AddressOverflow {
+                address: 0,
+                length: usize::MAX
+            })
+        );
+        // A representable length larger than the window is bounded by the
+        // window's last byte before anything is allocated.
+        // The cartridge window is the image itself: a 0x400-byte test ROM ends
+        // at 0x400, so an overrun is rejected there and never at the 4 MiB
+        // address-space span (R1b-F1).
+        assert_eq!(
+            probe.read_memory(0, u32::MAX as usize),
+            Err(BusError::UnmappedRead {
+                address: 0x0000_0400
+            }),
+            "a huge ROM read is bounded by the cartridge image, not the 4 MiB window"
+        );
+        assert_eq!(
+            probe.read_memory(u64::from(super::IO_CONTROL_BASE), usize::MAX),
+            Err(BusError::AddressOverflow {
+                address: super::IO_CONTROL_BASE,
+                length: usize::MAX
+            }),
+            "a length that cannot be a 24-bit span is an overflow"
+        );
+        assert_eq!(
+            probe.read_memory(u64::from(super::IO_CONTROL_BASE), 0x0000_0100),
+            Err(BusError::UnmappedRead {
+                address: super::IO_CONTROL_BASE + super::IO_CONTROL_LEN as u32
+            }),
+            "a read larger than the register file is bounded by it"
+        );
+        assert_eq!(
+            probe.read_memory(0x00FF_0000, 0x0002_0000),
+            Err(BusError::UnmappedRead {
+                address: super::RAM_END
+            }),
+            "a read larger than work RAM is bounded before allocating"
+        );
+        assert_eq!(
+            probe.write_memory(0x00FF_0000, &vec![0_u8; 0x0002_0000]),
+            Err(BusError::UnmappedWrite {
+                address: super::RAM_END
+            }),
+            "a write larger than work RAM is bounded before mutating"
+        );
+        assert_eq!(
+            probe.read_memory(0x00FF_0000, 1).expect("ram read"),
+            vec![0],
+            "the rejected requests left the machine untouched"
+        );
+        // R1b-F1: a length that fits the 4 MiB cartridge address space but not
+        // the 0x400-byte image is rejected at the image end, before the output
+        // buffer is reserved; the last image byte is still readable.
+        assert_eq!(
+            probe.read_memory(0, 0x0000_0401),
+            Err(BusError::UnmappedRead {
+                address: 0x0000_0400
+            })
+        );
+        assert_eq!(
+            probe.read_memory(0x0000_03FF, 1).expect("last image byte"),
+            vec![0]
+        );
+        // Order proof: a `u32::MAX`-byte request cannot be reserved (a 4 GiB
+        // reservation fails with a capacity error), so receiving the *range*
+        // error here can only mean the window proof ran before `try_reserve`.
+        assert_eq!(
+            probe.read_memory(0, usize::MAX),
+            Err(BusError::AddressOverflow {
+                address: 0,
+                length: usize::MAX
+            }),
+            "a length that cannot be a 24-bit span is still caught first"
+        );
+        // A cartridge image larger than the bus window is still bounded by
+        // ROM_END, which is the slice the window serves.
+        let mut big_rom = vec![0_u8; super::ROM_END as usize + 0x100];
+        big_rom[0] = 0x5A;
+        let big = MegadriveBus::new(test_cartridge(big_rom));
+        assert_eq!(big.read_memory(0, 2).expect("big rom"), vec![0x5A, 0x00]);
+        assert_eq!(
+            big.read_memory(u64::from(super::ROM_END) - 1, 2),
+            Err(BusError::UnmappedRead {
+                address: super::ROM_END
+            })
         );
     }
 }

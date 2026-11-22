@@ -88,8 +88,9 @@ absent (exit 3, never a pass). What it proves and what it does **not** claim:
 - The absolute status bits and H/V counter values differ at reset because the two models
   start at different scanline phases and the H counter is approximate. These values are
   recorded as scoped divergences with their deltas, not treated as equal.
-- VSRAM data-port reads are undecoded in ChronoFork; DMA state is not externally
-  observable. Both are covered by backend unit tests, not by this oracle differential.
+- The oracle's data-port reads return the stale write latch, so ChronoFork's decoded
+  VSRAM read (`0b0100`) is not cross-compared; DMA state is not externally observable
+  either. Both are covered by backend unit tests, not by this oracle differential.
 - A full workspace count is recorded with the run; do not copy a count from this
   definition into a verification claim.
 
@@ -132,14 +133,22 @@ attributed supersession note in the
 `.research/8.4-r2/` artifacts. The gate was re-run green at the repair HEAD, and the repair
 commit changed no `scripts/` file.
 
-R1-F2 and R1-F3 also move the `megadrive demo` stdout, so the current demo baseline is
-recorded here for the independent verification (three runs each, byte-identical, empty
-stderr): `cargo run -q -p chronofork-cli -- megadrive demo` writes 1994 stdout bytes with
-SHA-256 `e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609`. The closure-head
-value at `8382255` was `794252b3fc3d1c54b95a0d54664fa34ef9916df29c67e321d0009a2f43c138b1`
-(same length), so a verification must compare against the post-repair value. The `demo`
-(986 bytes, `9b4dd564…`) and `gui run` (2842 bytes, `d3abf57a…`) stdout hashes are unchanged
-from the closure head, and raw files are under the ignored `.research/8.4-r2/demos/`.
+R1-F2 and R1-F3 also move the `megadrive demo` stdout, so the phase-8.4 demo baseline was
+recorded for the independent verification (three runs each, byte-identical, empty stderr):
+`cargo run -q -p chronofork-cli -- megadrive demo` wrote 1994 stdout bytes with SHA-256
+`e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609`. The closure-head value at
+`8382255` was `794252b3fc3d1c54b95a0d54664fa34ef9916df29c67e321d0009a2f43c138b1` (same length),
+so a phase-8.4 verification must compare against the post-repair value.
+
+**The W1 bus phase moved this baseline again** (current value): `cargo run -q -p chronofork-cli
+-- megadrive demo` writes 1994 stdout bytes with SHA-256
+`64a95482e30f84a73175748f0de5c9baedf19da38877752747465b7d472e6f74` (three runs
+byte-identical). Cause: the payload/state/config version bump v6 → v7
+(`CFMD68K7`/`CFMDSTATE7`/`CFMDCONF7`; the body gained the eight `io_control` bytes at
+`0xA10008..=0xA1000F`) changes the `state_hash` that the demo's `fork isolation:` line prints,
+by construction. The `demo` (986 bytes, `9b4dd564…`) and `gui run` (2842 bytes, `d3abf57a…`)
+stdout hashes are unchanged from the closure head, and raw files are under the ignored
+`.research/8.4-r2/demos/` and `.research/w1-2026-11-21/evidence/`.
 
 The phase-8.4 differential harness was also realigned to the repaired polarity and re-run:
 with the **same** bus-request byte on both emulators (the former `1`/`0` workaround removed,

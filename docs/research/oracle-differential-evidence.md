@@ -5,12 +5,12 @@
 > per-ROM quantum/masked-boundary control described on this page are superseded by
 > the master-cycle timeline and the [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 > The address-projection and final-state results below remain historical evidence;
-> they are not a cycle-timing claim. The current Phase 8.2 differential runs twelve
-> synthetic ROMs and passes 12/12 address projections, 11/12 per-instruction cycle
-> comparisons, 11/12 selected final states and 12/12 negative controls; the one
+> they are not a cycle-timing claim. The current Phase 8.2 differential runs thirteen
+> synthetic ROMs and passes 13/13 address projections, 12/13 per-instruction cycle
+> comparisons, 12/13 selected final states and 13/13 negative controls; the one
 > scoped exception is ``rom_exception`` (see the W4.2/W4.3 review note in
 > ``.research/consolidation-2026-11-20/reviews/w4-oracle.md`` for the oracle's saved-SR
-> reserved bit and its 38-vs-34 ``TRAP`` cost). The twelve-ROM result is in the
+> reserved bit and its 38-vs-34 ``TRAP`` cost). The thirteen-ROM result is in the
 > [68000 cycle differential evidence](cpu-cycle-differential-evidence.md).
 
 - **Status:** Historical 3-ROM evidence **PASS 3/3** against the pinned Exodus
@@ -20,7 +20,7 @@
   `--instructions-per-line`, ran at the then-default quantum of 64, crossed two
   HBlank boundaries while the 68000 SR interrupt mask stayed 7, and entered no
   interrupt handler. This page is preserved history; the current harness and
-  result are the twelve-ROM master-cycle differential in the
+  result are the thirteen-ROM master-cycle differential in the
   [68000 cycle differential evidence](cpu-cycle-differential-evidence.md). The
   earlier pre-repair divergence (real 68000 absolute-long `MOVE` decoding defect)
   is preserved below as history and was fixed under
@@ -528,7 +528,7 @@ All of this is ignored by Git and is not distributed with ChronoFork:
 
 ## Evidence commands
 
-Harness (the current script generates the twelve-ROM corpus, runs both tools twice
+Harness (the current script generates the thirteen-ROM corpus, runs both tools twice
 per ROM, compares address streams, per-instruction cycles and final state, runs
 negative controls and writes the evidence files). The commands below are
 historical: they now run the current corpus, not the 3-ROM result on this page.
@@ -703,17 +703,17 @@ cp build/exodus-probe build/exodus-mcpd ../../oracle/build/
 cd ../../..
 cargo build -p chronofork-cli
 
-# 4. Run the current twelve-ROM differential harness with its own evidence directory.
+# 4. Run the current thirteen-ROM differential harness with its own evidence directory.
 python3 scripts/oracle-diff.py --out-dir .research/evidence
 
 # 5. Inspect the recorded result and per-ROM artifacts.
 sha256sum .research/evidence/oracle-diff.json .research/evidence/oracle-diff.md
 ```
 
-Expected exit code: **1** — the command above runs the **current twelve-ROM
+Expected exit code: **1** — the command above runs the **current thirteen-ROM
 master-cycle** harness, not the 3-ROM result documented on this page. Address
-projections pass 12/12 and the address/cycle/final-state negative controls pass
-12/12, but ``rom_exception`` reports two scoped oracle-side divergences (the
+projections pass 13/13 and the address/cycle/final-state negative controls pass
+13/13, but ``rom_exception`` reports two scoped oracle-side divergences (the
 oracle's saved-SR reserved bit and its 38-vs-34 ``TRAP`` cost), so the summary is
 ``DIVERGENCE`` and the harness exits 1 until that comparison is adjudicated; see the
 W4.2/W4.3 review note and the

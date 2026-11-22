@@ -102,7 +102,7 @@ scope, exit criteria, dependencies and non-goals.
   gating (level 7 always admitted, other levels only when strictly above the mask), `RTE`
   handler return and CPU-side VDP VINT pending/acknowledge.
 - Bounded debug-only instruction trace and the `megadrive trace` CLI.
-- Pinned-oracle differential evidence for twelve synthetic ROMs on the master-cycle
+- Pinned-oracle differential evidence for thirteen synthetic ROMs on the master-cycle
   timeline, with address, per-instruction cycle, final-state and negative-control
   comparisons; one ROM (`rom_exception`) carries two named scoped oracle-side
   divergences, and the historical masked-ROM default-quantum control is preserved.
@@ -657,7 +657,7 @@ carrying an unchecked hardware box.
 
 #### Scope and deliverables
 
-- A broader differential corpus beyond the current twelve synthetic ROMs.
+- A broader differential corpus beyond the current thirteen synthetic ROMs.
 - Positive differential comparison of interrupt delivery and timing, which needs an oracle
   model of those semantics.
 - Cycle accuracy, including prefetch and bus timing, at a documented level.

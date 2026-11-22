@@ -161,11 +161,13 @@ fn generate_roms() -> Vec<GeneratedRom> {
     let stdout = String::from_utf8(output.stdout).expect("the generator prints UTF-8 JSON lines");
     let roms: Vec<GeneratedRom> = stdout.lines().map(parse_generated_rom).collect();
     // W4c added the twelfth ROM (``rom_exception``, the TRAP/RTE coverage ROM);
-    // both this count and the corpus-size guard in the generator move together.
+    // the W1 boot phase added the thirteenth (``rom_branch16``, the taken 16-bit
+    // branch and DBcc base coverage). Both counts and the generator's corpus-size
+    // guard move together.
     assert_eq!(
         roms.len(),
-        12,
-        "the differential corpus should still hold twelve synthetic ROMs"
+        13,
+        "the differential corpus should still hold thirteen synthetic ROMs"
     );
     for rom in &roms {
         assert_eq!(

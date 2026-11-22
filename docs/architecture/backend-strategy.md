@@ -7,7 +7,7 @@
 produced its first slice: a minimal 68000 + ROM/RAM backend under
 `crates/chronofork-megadrive`. The Exodus oracle path is now instantiated as an
 external harness: the pinned headless oracle was built under ignored `.research/`
-and the final differential evidence passes all twelve synthetic ROMs (projected
+and the final differential evidence passes all thirteen synthetic ROMs (projected
 address streams, per-instruction 68000 cycle costs, selected final state and
 negative controls), with the two oracle-side `rom_exception` divergences recorded as
 named scoped exceptions rather than hidden; the earlier two-ROM run is preserved as

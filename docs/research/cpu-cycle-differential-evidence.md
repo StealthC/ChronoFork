@@ -17,7 +17,7 @@ field. The harness compares that field with the pinned Exodus oracle's accumulat
 next oracle record, while ChronoFork's fourth field is the completed instruction
 cost. Absolute cycle bases and the oracle `time` column are not compared.
 
-The corpus has twelve independently authored synthetic ROMs: the three existing
+The corpus has thirteen independently authored synthetic ROMs: the three existing
 ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and nine later additions, all
 committed under [`scripts/fixtures/`](../../scripts/fixtures/): EA forms (`rom_ea`),
 shifts/rotates (`rom_shift`), BCD (`rom_bcd`), MOVEM/MOVEP (`rom_movem`),
@@ -62,19 +62,19 @@ python3 scripts/oracle-diff.py --skip-build \
 
 ## Results
 
-- **Address projections: 12/12 match.** Every projected executed-address sequence
+- **Address projections: 13/13 match.** Every projected executed-address sequence
   agrees with the oracle, every ChronoFork opcode word matches the ROM bytes, and
-  the address negative control passes 12/12.
-- **Per-instruction cycles: 11/12 match.** Eleven ROMs agree with the oracle on every
+  the address negative control passes 13/13.
+- **Per-instruction cycles: 12/13 match.** Twelve ROMs agree with the oracle on every
   compared instruction. `rom_exception` differs on one instruction: the oracle
   charges `TRAP #0` 38 cycles, ChronoFork the documented 34. The cycle negative
-  control (first projected cost corrupted by one cycle) is detected 12/12.
-- **Selected final state: 11/12 match.** Eleven ROMs agree on registers, effective SR
+  control (first projected cost corrupted by one cycle) is detected 13/13.
+- **Selected final state: 12/13 match.** Twelve ROMs agree on registers, effective SR
   and the compared 64 work-RAM bytes. `rom_exception` differs in two 16-bit words:
   the oracle's saved-SR exception-frame word carries reserved bit 14 (`0x7FE4` where
   the architectural value is `0x2704`, and where the oracle's own live SR for the same
   program is `0x2704`), in the frame at `0x00FF0000` and in the handler's verbatim
-  archive of it at `0x00FF0010`. The final-state negative control passes 12/12.
+  archive of it at `0x00FF0010`. The final-state negative control passes 13/13.
 - **Scoped, named exceptions: 2/2.** Those two `rom_exception` divergences are declared
   as data (`W4e-F1`, `W4e-F2`) and excluded from the verdict **only** while the observed
   ROM, location and value pair match the declaration exactly; a changed or extra

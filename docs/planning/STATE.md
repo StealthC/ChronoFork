@@ -4,13 +4,15 @@
 
 ## Current Position
 
-- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.4 complete,
-  independently verified and reviewed; integration in progress).
-- **Phase 8.4 — Z80, bus arbitration and audio: COMPLETE, VERIFIED and REVIEWED.** Branch
-  `agent/8.4-z80-audio`, based on `origin/main` `b8d63a1` (created from `ab3b484`; the T1–T6
-  block HEAD was `4fe418d`). The captain is opening the phase PR (`Closes #17`); the PR is the
-  integration record for the merge into `main`. If a fresh session reads this before the merge
-  lands, check the PR/issue #17 state first.
+- **Milestone:** 8 — Functional Mega Drive emulator (**active**; phase 8.4 complete, verified,
+  reviewed and merged; integration record below).
+- **Phase 8.4 — Z80, bus arbitration and audio: COMPLETE, VERIFIED and REVIEWED; merged into
+  `main`.** Branch `agent/8.4-z80-audio`, based on `origin/main` `b8d63a1` (created from
+  `ab3b484`; the T1–T6 block HEAD was `4fe418d`). Integration executed: PR #31 (`Closes #17`)
+  merged into `main` at `dc5b31956a793c3d9d393e9d76a6ab73b86a9730`
+  (`Merge pull request #31 from StealthC/agent/8.4-z80-audio`, 2026-11-20T21:57:53-03:00,
+  issue #17 closed at 21:57:55); `origin/main` = `main` = that commit and the phase branch was
+  deleted after the merge.
 - **Delivered:** the complete documented Z80 core (main/CB/ED/DD-FD tables, flags, DAA, block
   ops, IM 0/1/2, NMI, one-instruction `EI` delay) with the Z80 memory map, bank register and
   deterministic 68000/Z80 bus arbitration following the hardware `ZBR` request polarity;
@@ -35,8 +37,9 @@
   and the configuration hash stayed fixed; the affected goldens were re-pinned with the cause
   recorded and four regression tests added. The recorded internal PCM fixture re-probed
   unchanged. Demos at the repaired tree (three runs each, byte-identical, empty stderr):
-  `demo` 986 B / `9b4dd564…`, `megadrive demo` 1994 B / `e5b9ecff…`, `gui run` 2842 B /
-  `d3abf57a…`.
+  `demo` 986 B / `9b4dd564…`, `gui run` 2842 B / `d3abf57a…`; `megadrive demo` was
+  1994 B / `e5b9ecff…` at that commit tree and is now 1994 B / `64a95482…` (v7
+  `state_hash` in its fork-isolation line — see the W1 entry below).
 - **Honest limits carried by phase 8.4:** Z80 `IXH`/`IXL`/`IYH`/`IYL` and `WZ`/`MEMPTR` are
   not modelled and undocumented `ED` opcodes are `NOP`s; bus arbitration follows the hardware
   `ZBR` request polarity but the Z80 yield is functional (on the request write, not at an
@@ -65,8 +68,47 @@
 
 ## Blockers
 
-- None. `./scripts/check.sh` and `git diff --check` exit 0 at the reviewed HEAD; the PR, CI
-  and merge are the remaining integration steps.
+- **None for phase 8.4.** `./scripts/check.sh` and `git diff --check` exit 0 at the reviewed
+  HEAD, and the reviewed work is integrated (`dc5b319`); push, PR and merge are done.
+- **Boot/bus blocker (W1 prerequisite) — FIXED by W1.1–W1.3, in the
+  `agent/w1-bus-boot-2026-11-21` worktree (uncommitted).** `TST.L $00A10008` and
+  `TST.L $00A1000C` no longer take an address exception: the machine decodes 24
+  address bits, work RAM is mirrored over `0xE00000..=0xFFFFFF`, and the port
+  1/2/3/EXT control registers at `0xA10008..=0xA1000F` are a read/write stub in
+  canonical state, so the 14-byte exception frame at `0xFFFFF7F0..0xFFFFF7FD` is
+  written into the memory map instead of aborting the host. The open value is
+  returned only inside the I/O window; the typed errors outside it, the
+  step-scoped controller data registers and the Z80 arbitration remain unchanged.
+  The controller/IO window follows ADR-0014 exactly: the port 1/2 control
+  pairs latch, the port 3/EXT **control** pairs are the constant-zero stub
+  (`0xA1000C..=0xA1000F`: reads return `0x00`, writes are discarded, so those
+  lanes never change), port 3/EXT data stays a typed error, and the rest of the
+  window is open bus. A debugger read or write that crosses `0xFFFFFF` is a
+  typed rejection (never a wrap into ROM) and a debugger write overrun fails
+  atomically.
+  **W1.4 is done too:** the three 68000-memory DMA modes are rejected with
+  `VdpError::DmaMemorySourceUnavailable { mode, words }` before any byte is read or
+  written (the engine's source is a VRAM address, so the old path silently copied
+  VRAM onto VRAM), while fill and copy keep working; a ROM that programs such a DMA
+  now stops with a typed error, which is a known boot blocker for the G-BOOT-0/1
+  gates, not a pass. The **W1.6 G-BOOT-0/1 gates and W1.7 re-verification are not
+  done yet**. **Snapshot payload/state/config
+  moved v6 → v7** (`CFMD68K7`/`CFMDSTATE7`/`CFMDCONF7`) because the control file
+  is canonical state; v1–v6 are rejected with typed errors. Gate on this base:
+  `./scripts/check.sh` exit 0, **1460 passed / 0 failed / 122 targets** (six more
+  tests than the 1454-test baseline, no target lost). Demos three runs each,
+  byte-identical:
+  `demo` 986 B / `9b4dd564…`, `gui run` 2842 B / `d3abf57a…` (both unchanged),
+  `megadrive demo` 1994 B / `64a95482…` (was `e5b9ecff…`: its fork-isolation line
+  prints the state hash, which the v7 bump moves; the 1994-byte length is
+  unchanged).
+- **Step 0 of W1 (gate on the base) — executed.** The full gate was re-executed on base
+  `dc5b319` before any W1 edit; the raw log
+  `.research/implementation-2026-11-20/step0-main-gate.log` (worktree
+  `consolidation-adrs-2026-11-20`) records `./scripts/check.sh` passing with **1454 passed /
+  0 failed / 0 ignored across 122 targets** (`==> all quality gates passed`). This restates the
+  recorded t11 PASS (`8500a4b`) as an execution on the W1 base, so W1 does not claim evidence it
+  did not run.
 
 ## Recommended Next Step
 

@@ -205,13 +205,42 @@ fn exception_entry_reports_its_documented_cycle_cost() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn failed_frame_access_is_a_host_error_without_half_updating_state() -> Result<(), Box<dyn Error>> {
+fn exception_entry_wraps_the_stack_pointer_into_the_mirror() -> Result<(), Box<dyn Error>> {
+    // W1K: the frame push is mod 2^32, so A7 = 0 pushes at 0xFFFF_FFFA, which
+    // the 24-bit bus decodes as 0x00FF_FFFA — work RAM mirror space. The entry
+    // is legal; the raw A7 keeps its wrapped value. (This test used to pin the
+    // removed `StackOverflow` host guard.)
     let (mut cpu, mut bus) = machine(&[0x4E, 0x42], &[(VECTOR_TRAP_BASE + 2, HANDLER)], None)?;
     cpu.set_a7(0);
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER);
+    assert_eq!(cpu.address_register(7), Some(0xFFFF_FFFA));
+    assert_eq!(bus.read16(0x00FF_FFFA)?, 0x2700, "SR in the frame");
+    assert_eq!(bus.read32(0x00FF_FFFC)?, 0x0000_0202, "return PC");
+    Ok(())
+}
+
+#[test]
+fn exception_entry_with_an_unmapped_wrapped_frame_stays_a_typed_error() -> Result<(), Box<dyn Error>>
+{
+    // Truncation is still applied: A7 = 0x0180_0006 wraps the frame to
+    // 0x0180_0000, which truncates to 0x0080_0000 — the hole between the
+    // cartridge window and the Z80 RAM — so the push is a typed bus error and no
+    // state is committed.
+    let (mut cpu, mut bus) = machine(&[0x4E, 0x42], &[(VECTOR_TRAP_BASE + 2, HANDLER)], None)?;
+    cpu.set_a7(0x0180_0006);
     let result = cpu.step(&mut bus);
-    assert!(matches!(result, Err(CpuError::StackOverflow)));
+    assert!(
+        matches!(result, Err(CpuError::Bus(BusError::UnmappedWrite { .. }))),
+        "an unmapped wrapped frame is a typed bus error: {result:?}"
+    );
     assert_eq!(cpu.sr(), 0x2700, "SR untouched");
-    assert_eq!(cpu.address_register(7), Some(0), "stack untouched");
+    assert_eq!(
+        cpu.address_register(7),
+        Some(0x0180_0006),
+        "stack untouched"
+    );
+    assert_eq!(cpu.pc(), 0x202, "only the opcode word was fetched");
     Ok(())
 }
 
@@ -309,6 +338,49 @@ fn failed_frame_write_is_atomic_for_short_and_address_error_frames() -> Result<(
     assert_eq!(cpu.sr(), 0x2700);
     assert_eq!(cpu.address_register(7), Some(0x0100_0002));
     assert_eq!(bus.read16(0x00FF_FFF4)?, 0xBBBB, "no partial frame write");
+    Ok(())
+}
+
+#[test]
+fn exception_frame_pushes_into_the_mirror() -> Result<(), Box<dyn Error>> {
+    // The Kid Chameleon reset stack is 0xFFFFF7FE. Before the 24-bit
+    // truncation and the `0xE00000..=0xFFFFFF` work RAM mirror this frame push
+    // aborted the host; now it lands in work RAM and moves only the active
+    // stack, while the raw 32-bit register value is never normalized.
+    let (mut cpu, mut bus) = machine(&[0x4A, 0xFC], &[(4, HANDLER)], Some(&[0x4E, 0x73]))?;
+    cpu.set_a7(0xFFFF_F7FE);
+    // A pre-existing marker proves the mirror aliases the primary window's
+    // block: A7-0xE00000 is the primary-window address of the same byte.
+    bus.write8(0x00FF_F7F0, 0xAA)?;
+    assert_eq!(bus.read8(0x00E0_F7F0)?, 0xAA, "mirror read");
+    assert_eq!(bus.validate_write_range(0xFFFF_F7F8_u32, 6), Ok(()));
+    assert_eq!(
+        bus.validate_write_range(0xFFFF_FFF9_u32, 8),
+        Err(BusError::UnmappedWrite {
+            address: 0x0100_0000
+        }),
+        "a range whose end wraps the block is rejected, not wrapped"
+    );
+
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), HANDLER, "the handler ran instead of aborting");
+    assert_eq!(
+        cpu.address_register(7),
+        Some(0xFFFF_F7F8),
+        "the active stack moved by the six-byte frame"
+    );
+    assert_eq!(cpu.a7(), 0xFFFF_F7F8);
+    // The frame is visible through both the raw register value and the primary
+    // window: SR word then return PC long, big-endian.
+    assert_eq!(bus.read16(0xFFFF_F7F8)?, 0x2700, "SR at the stack pointer");
+    assert_eq!(bus.read16(0x00FF_F7F8)?, 0x2700, "SR via the alias");
+    assert_eq!(bus.read32(0xFFFF_F7FA)?, 0x0000_0202, "return PC");
+    assert_eq!(bus.read8(0xFFFF_F7F0)?, 0xAA, "the marker is intact");
+
+    // RTE returns to the instruction after ILLEGAL and pops the same frame.
+    cpu.step(&mut bus)?;
+    assert_eq!(cpu.pc(), 0x202);
+    assert_eq!(cpu.address_register(7), Some(0xFFFF_F7FE));
     Ok(())
 }
 

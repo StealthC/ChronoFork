@@ -137,4 +137,5 @@ desktop.ini
 .claude/skills/
 # Python bytecode from local tooling (oracle/fixture scripts)
 __pycache__/
+**/__pycache__/
 *.pyc
