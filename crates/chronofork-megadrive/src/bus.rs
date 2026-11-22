@@ -203,6 +203,159 @@ pub const VDP_Z80_BASE: u16 = 0x7F00;
 pub const VDP_Z80_END: u16 = 0x7F03;
 /// Common Z80 alias for the PSG data port.
 pub const PSG_Z80_ALIAS: u16 = 0x7F11;
+/// How a typed device error from a **Z80 guest access** is classified.
+///
+/// The Z80 core has no guest exception channel, so a rejected access is served with no
+/// effect; the *reason* must still be distinguishable and observable. The classification is
+/// exhaustive over the typed errors, so a new error variant breaks the build instead of
+/// silently landing in a generic bucket (W1Y, closing the W1U-F2 class). No `bool` flags and
+/// no wildcard arms: each variant is classified deliberately.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuestAccessClass {
+    /// A documented operation this slice does not implement: the `0b1100` 8-bit VRAM
+    /// read. A capability gap is not a hardware discard.
+    MissingCapability,
+    /// The device refused a DMA transfer: a 68000-memory source, an unsupported DMA form,
+    /// or a copy-engine range/overlap rejection. Nothing was transferred.
+    DmaUnavailable,
+    /// The command code, offset or register is not a valid device operation.
+    InvalidTarget,
+    /// The target is decoded but read-only (cartridge ROM): the write does not latch.
+    ReadOnlyTarget,
+    /// The translated address has no owner.
+    UnmappedTarget,
+    /// A snapshot/codec fault. A port access cannot legitimately produce one; if it ever
+    /// does, the access must fail rather than be swallowed.
+    HostFault,
+}
+
+/// Classifies a [`VdpError`] raised by a Z80 guest access.
+///
+/// Exhaustive by construction: every variant is named, so adding one is a compile error here
+/// (W1Y).
+pub const fn classify_vdp_error(error: &VdpError) -> GuestAccessClass {
+    match error {
+        VdpError::UnsupportedBitRead { .. } => GuestAccessClass::MissingCapability,
+        VdpError::DmaUnsupported { .. }
+        | VdpError::DmaMemorySourceUnavailable { .. }
+        | VdpError::DmaSourceOutOfRange { .. }
+        | VdpError::DmaDestinationOutOfRange { .. }
+        | VdpError::DmaSourceDestinationOverlap { .. } => GuestAccessClass::DmaUnavailable,
+        VdpError::UnsupportedOffset { .. }
+        | VdpError::OddOffset { .. }
+        | VdpError::UnsupportedWrite { .. }
+        | VdpError::UnsupportedRegister { .. }
+        | VdpError::UnsupportedTarget { .. } => GuestAccessClass::InvalidTarget,
+        VdpError::SnapshotLengthMismatch { .. }
+        | VdpError::SnapshotMagicMismatch
+        | VdpError::SnapshotVersionUnsupported { .. }
+        | VdpError::SnapshotFlagsInvalid { .. }
+        | VdpError::SnapshotCodeInvalid { .. }
+        | VdpError::SnapshotFifoCountInvalid { .. }
+        | VdpError::SnapshotDmaModeInvalid { .. }
+        | VdpError::SnapshotBooleanInvalid { .. }
+        | VdpError::SnapshotLineOutOfRange { .. }
+        | VdpError::SnapshotDotOutOfRange { .. } => GuestAccessClass::HostFault,
+    }
+}
+
+/// Classifies a [`BusError`] reached through the Z80 banked window.
+///
+/// Exhaustive over `BusError`, for the same reason as [`classify_vdp_error`] (W1Y).
+pub fn classify_bus_error(error: &BusError) -> GuestAccessClass {
+    match error {
+        BusError::UnmappedRead { .. } | BusError::UnmappedWrite { .. } => {
+            GuestAccessClass::UnmappedTarget
+        }
+        BusError::WriteProtected { .. } => GuestAccessClass::ReadOnlyTarget,
+        BusError::Vdp(error) => classify_vdp_error(error),
+        // An odd address, an overflowing address, a side-effecting read or a cartridge
+        // failure reached through the translate-and-forward bridge is a target this slice
+        // refuses to serve, not a missing device and not a DMA refusal.
+        BusError::OddAddress { .. }
+        | BusError::AddressOverflow { .. }
+        | BusError::SideEffectingRead { .. }
+        | BusError::Cartridge(_) => GuestAccessClass::InvalidTarget,
+    }
+}
+
+impl MegadriveBus {
+    /// Applies the bookkeeping for a rejected Z80 access to the **VDP port window**.
+    ///
+    /// The invalid-target bucket there is the VDP's own discard counter (the documented model
+    /// choice); a capability gap or a refused DMA surfaces as the typed rejection for the
+    /// access and is counted in its own bucket. Exhaustive over
+    /// [`GuestAccessClass`] (W1Y).
+    fn record_z80_vdp_rejection(
+        &mut self,
+        class: GuestAccessClass,
+        address: u16,
+    ) -> Result<(), Z80Error> {
+        match class {
+            GuestAccessClass::InvalidTarget => {
+                self.vdp.count_discarded_data_port_access();
+                Ok(())
+            }
+            GuestAccessClass::MissingCapability => {
+                self.vdp.count_capability_gap();
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::DmaUnavailable => {
+                // A refused transfer is a capability gap (the operation the slice cannot
+                // perform) *and* is isolated in its own counter, so it can never be read as
+                // the invalid-target discard bucket (W1Y).
+                self.vdp.count_capability_gap();
+                self.z80_dma_unavailable_accesses =
+                    self.z80_dma_unavailable_accesses.saturating_add(1);
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::UnmappedTarget => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::ReadOnlyTarget => Ok(()),
+            GuestAccessClass::HostFault => Err(Z80Error::Memory { address }),
+        }
+    }
+
+    /// Applies the bookkeeping for a rejected Z80 access through the **banked window**.
+    ///
+    /// Exhaustive over [`GuestAccessClass`]; the invalid-target bucket here is the bus-side
+    /// counter, because no VDP data port is involved (W1Y).
+    fn record_z80_bus_rejection(
+        &mut self,
+        class: GuestAccessClass,
+        address: u16,
+    ) -> Result<(), Z80Error> {
+        match class {
+            GuestAccessClass::InvalidTarget => {
+                self.z80_invalid_target_accesses =
+                    self.z80_invalid_target_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::UnmappedTarget => {
+                self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                Ok(())
+            }
+            GuestAccessClass::ReadOnlyTarget => Ok(()),
+            GuestAccessClass::MissingCapability => {
+                self.vdp.count_capability_gap();
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::DmaUnavailable => {
+                // A refused transfer is a capability gap (the operation the slice cannot
+                // perform) *and* is isolated in its own counter, so it can never be read as
+                // the invalid-target discard bucket (W1Y).
+                self.vdp.count_capability_gap();
+                self.z80_dma_unavailable_accesses =
+                    self.z80_dma_unavailable_accesses.saturating_add(1);
+                Err(Z80Error::Memory { address })
+            }
+            GuestAccessClass::HostFault => Err(Z80Error::Memory { address }),
+        }
+    }
+}
+
 /// Value a Z80 read of an undecoded address returns.
 ///
 /// Executable reference (what the pinned oracle actually does): a Z80 byte read
@@ -399,6 +552,17 @@ pub struct MegadriveBus {
     z80_ram: Vec<u8>,
     /// Nine-bit Z80 bank register selecting the 32 KiB ROM window at `0x8000`.
     z80_bank: u16,
+    /// Z80 guest accesses rejected because the device refused a DMA transfer.
+    ///
+    /// A memory-source DMA, an unsupported DMA form, or a copy-engine range/overlap
+    /// rejection is **not** an invalid target and not a missing capability: it is a real
+    /// operation this slice cannot perform for the guest. Kept in its own bucket so it can
+    /// never be mistaken for the other two (W1Y / W1U-F2).
+    z80_dma_unavailable_accesses: u64,
+    /// Z80 guest accesses rejected as an invalid target by the 68000 bus reached through the
+    /// banked window (odd address, overflowing address, side-effecting read, cartridge
+    /// failure). Distinct from a real hole and from a DMA refusal (W1Y).
+    z80_invalid_target_accesses: u64,
     /// Port 3/EXT data accesses accepted with no effect.
     ///
     /// The two port 3 data bytes are real hardware registers this slice does not
@@ -469,6 +633,8 @@ impl MegadriveBus {
             z80_bank: 0,
             unmapped_z80_accesses: 0,
             port3_unmodelled_accesses: 0,
+            z80_dma_unavailable_accesses: 0,
+            z80_invalid_target_accesses: 0,
             io_control: [0; IO_CONTROL_LEN],
             // Power-on: the 68000 owns the bus and holds the Z80 in reset.
             arbitration: BusArbitration {
@@ -652,6 +818,16 @@ impl MegadriveBus {
     /// access is counted here so the path is observable instead of silent.
     pub const fn unmapped_z80_accesses(&self) -> u64 {
         self.unmapped_z80_accesses
+    }
+
+    /// Number of Z80 guest accesses rejected as an invalid target by the banked window.
+    pub const fn z80_invalid_target_accesses(&self) -> u64 {
+        self.z80_invalid_target_accesses
+    }
+
+    /// Number of Z80 guest accesses rejected because a DMA transfer was unavailable.
+    pub const fn z80_dma_unavailable_accesses(&self) -> u64 {
+        self.z80_dma_unavailable_accesses
     }
 
     /// Number of port 3/EXT data accesses accepted with no effect.
@@ -1476,6 +1652,8 @@ impl MegadriveBus {
     pub(crate) fn reset_diagnostic_counters(&mut self) {
         self.unmapped_z80_accesses = 0;
         self.port3_unmodelled_accesses = 0;
+        self.z80_dma_unavailable_accesses = 0;
+        self.z80_invalid_target_accesses = 0;
     }
 
     pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
@@ -1794,13 +1972,13 @@ impl Z80Bus for MegadriveBus {
                         self.vdp.count_capability_gap();
                         Err(Z80Error::Memory { address })
                     }
-                    // An invalid target is the documented model choice: served with
-                    // no data and counted as a discarded data-port access (the GX
-                    // path logs a diagnostic and returns the read buffer).
-                    Err(_) => {
-                        self.vdp.count_discarded_data_port_access();
-                        Ok(Z80_UNDECODED_READ_VALUE)
-                    }
+                    // Everything else is classified by its typed variant: an invalid
+                    // target keeps the documented model outcome (no data, counted as a
+                    // discarded data-port access), while a capability gap or a refused
+                    // DMA is surfaced as the typed rejection and counted apart (W1Y).
+                    Err(error) => self
+                        .record_z80_vdp_rejection(classify_vdp_error(&error), address)
+                        .map(|()| Z80_UNDECODED_READ_VALUE),
                 }
             }
             // The PSG is write-only; the alias and the mirror window return the
@@ -1850,9 +2028,10 @@ impl Z80Bus for MegadriveBus {
                 let offset = (address - VDP_Z80_BASE) as u8;
                 match self.vdp.write8(offset, value) {
                     Ok(()) => Ok(()),
-                    Err(_) => {
-                        self.vdp.count_discarded_data_port_access();
-                        Ok(())
+                    // Classified by variant, exhaustively (W1Y): a DMA refusal is not an
+                    // invalid target, and a capability gap is neither.
+                    Err(error) => {
+                        self.record_z80_vdp_rejection(classify_vdp_error(&error), address)
                     }
                 }
             }
@@ -1870,14 +2049,12 @@ impl Z80Bus for MegadriveBus {
                 let target = (u32::from(self.z80_bank) << 15) | u32::from(address & 0x7FFF);
                 match self.write8(target, value) {
                     Ok(()) => Ok(()),
-                    // A decoded but read-only target (cartridge ROM) simply does
-                    // not latch the write, which is the hardware outcome.
-                    Err(BusError::WriteProtected { .. }) => Ok(()),
-                    // Anything the 68000 bus cannot serve is an unserved Z80
-                    // access: no effect, counted, run continues.
-                    Err(_) => {
-                        self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
-                        Ok(())
+                    // Exhaustive classification of the 68000-bus rejection (W1Y): a
+                    // read-only ROM target simply does not latch, a real hole is counted
+                    // as unmapped, an invalid target in its own bucket, and a VDP DMA
+                    // refusal keeps the DMA bucket — no wildcard swallows a typed error.
+                    Err(error) => {
+                        self.record_z80_bus_rejection(classify_bus_error(&error), address)
                     }
                 }
             }

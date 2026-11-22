@@ -9,7 +9,8 @@ use chronofork_megadrive::bus::{
     Z80_BANK_REGISTER_ADDRESS, Z80_ROM_WINDOW_BASE, Z80_UNDECODED_READ_VALUE,
 };
 use chronofork_megadrive::cartridge::Cartridge;
-use chronofork_megadrive::z80::Z80Bus;
+use chronofork_megadrive::vdp::VdpError;
+use chronofork_megadrive::z80::{Z80Bus, Z80Error};
 use chronofork_megadrive::{BusError, MegadriveBus};
 
 const IMAGE_LEN: usize = 0x2_0000;
@@ -187,6 +188,116 @@ fn z80_byte_read_capacity_is_not_a_hardware_discard() -> Result<(), Box<dyn Erro
     ));
     assert_eq!(bus.vdp().capability_gap_accesses(), 1);
     assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
+    Ok(())
+}
+
+/// Programs the VDP for a 68000-memory DMA into VRAM (command code `0x21`) at address 0.
+fn program_memory_dma(bus: &mut MegadriveBus) -> Result<(), Box<dyn Error>> {
+    bus.write16(0x00C0_0004, 0x8110)?; // register 0x01: DMA enabled
+    bus.write16(0x00C0_0004, 0x4000)?; // command word 1: CD1:CD0 = 01
+    bus.write16(0x00C0_0004, 0x0080)?; // command word 2: code 0x21 = memory -> VRAM
+    Ok(())
+}
+
+#[test]
+fn z80_vdp_memory_dma_is_classified_as_dma_not_an_invalid_target() -> Result<(), Box<dyn Error>> {
+    // W1Y-F1 case 1: a memory-source DMA through the Z80 portal used to answer `Ok` and land
+    // in the invalid-target discard bucket. It is a refused DMA: its own bucket, and the
+    // typed rejection surfaces for the access.
+    let mut bus = bus()?;
+    program_memory_dma(&mut bus)?;
+    // The 68000 path keeps the typed rejection (the policy that must not be weakened).
+    assert!(matches!(
+        bus.write8(0x00C0_0000, 0xAA),
+        Err(BusError::Vdp(VdpError::DmaMemorySourceUnavailable { .. }))
+    ));
+    assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
+    assert_eq!(bus.vdp().capability_gap_accesses(), 0);
+
+    // The same rejected transfer through the Z80 window is classified as DMA-unavailable.
+    assert!(matches!(
+        Z80Bus::write8(&mut bus, 0x7F00, 0xAA),
+        Err(Z80Error::Memory { address: 0x7F00 })
+    ));
+    assert_eq!(bus.z80_dma_unavailable_accesses(), 1);
+    assert_eq!(bus.vdp().discarded_data_port_accesses(), 0, "not a discard");
+    assert_eq!(
+        bus.vdp().capability_gap_accesses(),
+        1,
+        "an unavailable transfer is a capability gap, isolated in its own DMA bucket too"
+    );
+    assert_eq!(bus.unmapped_z80_accesses(), 0, "not a hole");
+    Ok(())
+}
+
+#[test]
+fn z80_banked_window_to_the_vdp_keeps_the_dma_classification() -> Result<(), Box<dyn Error>> {
+    // W1Y-F1 case 2: bank 0x180 -> 0xC00000 (the VDP data port) used to answer `Ok` and count
+    // as unmapped. The target is decoded, and the refusal is the same DMA rejection.
+    let mut bus = bus()?;
+    program_memory_dma(&mut bus)?;
+    bus.write16(0x00A0_6000, 0x0180)?; // nine-bit bank register
+    assert!(matches!(
+        Z80Bus::write8(&mut bus, 0x8000, 0xAA),
+        Err(Z80Error::Memory { address: 0x8000 })
+    ));
+    assert_eq!(bus.z80_dma_unavailable_accesses(), 1);
+    assert_eq!(
+        bus.unmapped_z80_accesses(),
+        0,
+        "a decoded VDP target is not an unmapped hole"
+    );
+    assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
+
+    // A bank that really lands in a hole keeps the unmapped bucket.
+    bus.write16(0x00A0_6000, 0x0100)?; // 0x100 << 15 = 0x800000, unowned
+    Z80Bus::write8(&mut bus, 0x8000, 0xAA)?;
+    assert_eq!(bus.unmapped_z80_accesses(), 1);
+    assert_eq!(
+        bus.z80_dma_unavailable_accesses(),
+        1,
+        "buckets stay separate"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_three_z80_rejection_classes_never_collapse_into_one_bucket() -> Result<(), Box<dyn Error>> {
+    // Capability gap: the 0x0C 8-bit VRAM read, still unimplemented.
+    let mut capability = bus()?;
+    capability.write16(0x00C0_0004, 0x0000)?;
+    capability.write16(0x00C0_0004, 0x0030)?; // code 0x0C
+    assert!(matches!(
+        Z80Bus::read8(&mut capability, 0x7F00),
+        Err(Z80Error::Memory { .. })
+    ));
+    assert_eq!(capability.vdp().capability_gap_accesses(), 1);
+    assert_eq!(capability.vdp().discarded_data_port_accesses(), 0);
+    assert_eq!(capability.z80_dma_unavailable_accesses(), 0);
+
+    // Invalid target: the VSRAM-write code used as a read target.
+    let mut invalid = bus()?;
+    invalid.write16(0x00C0_0004, 0x4000)?;
+    invalid.write16(0x00C0_0004, 0x0010)?; // code 0x05
+    assert!(matches!(Z80Bus::read8(&mut invalid, 0x7F00), Ok(0x00)));
+    assert_eq!(invalid.vdp().discarded_data_port_accesses(), 1);
+    assert_eq!(invalid.vdp().capability_gap_accesses(), 0);
+    assert_eq!(invalid.z80_dma_unavailable_accesses(), 0);
+
+    // DMA unavailable: the memory-source transfer.
+    let mut dma = bus()?;
+    program_memory_dma(&mut dma)?;
+    assert!(matches!(
+        Z80Bus::write8(&mut dma, 0x7F00, 0xAA),
+        Err(Z80Error::Memory { .. })
+    ));
+    assert_eq!(dma.z80_dma_unavailable_accesses(), 1);
+    assert_eq!(dma.vdp().discarded_data_port_accesses(), 0);
+    assert_eq!(
+        dma.vdp().capability_gap_accesses(),
+        1,
+        "capability is the superset; the DMA bucket isolates the sub-class"
+    );
     Ok(())
 }
 
