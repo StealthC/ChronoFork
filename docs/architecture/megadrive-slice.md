@@ -421,6 +421,18 @@ superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity
 
 ### Known limitations of the integration
 
+- **No declared checkpoint payload bound (temporary, tracked).** The service layer decides
+  `max_bytes_per_session` before it captures a checkpoint and needs a payload size it can
+  bound; after `run`/trace/debug write that bound must come from
+  `Backend::snapshot_payload_bound()`, which this backend does not declare yet. Under a
+  **finite** byte quota a post-run `session.snapshot`/`session.fork` over the service is
+  therefore refused with `limit_exceeded` **before allocating** (the unbounded in-process
+  movie/player/rewind paths are unaffected). This is **not** intended behavior: owner
+  decision O-5 defers the fix to W1.8 in the
+  [consolidation plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md),
+  which declares the bound here (validated against every supported payload) and adds the
+  service+Mega Drive regression.
+
 - **Privilege is enforced for the implemented system instructions.** `MOVE` to
   `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
   the exception framework provides vectors 3-8/24-31/32+n, short frames and the

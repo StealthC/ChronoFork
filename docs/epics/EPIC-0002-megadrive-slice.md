@@ -1,5 +1,12 @@
 # EPIC-0002 — Minimal Mega Drive 68000 Slice
 
+> **Historical record.** This is a dated epic record: it describes the scope and state of
+> the epic on its own date and is **not current status**. Milestone status, integration
+> state and follow-ups live once in [Milestones](../roadmap/milestones.md); machine-level
+> Implemented / Not implemented lists live in
+> [Mega Drive slice](../architecture/megadrive-slice.md#implemented). Where this record
+> disagrees with those pages, they win.
+
 - **Status:** In progress (68000 + ROM/RAM + VDP port + interrupt-scheduler slices
   implemented; E2-13 absolute-long `MOVE` decoding repair landed; E2-15 SR-mask
   gating, `RTE` and VDP VINT pending/acknowledge implemented with backend, CLI and

@@ -1,5 +1,11 @@
 # Architecture Overview
 
+> **Scope.** This page describes the architecture. It is not a status home: milestone status
+> and integration state live once in
+> [Milestones](../roadmap/milestones.md), and the machine-level Implemented / Not
+> implemented lists live in the [Mega Drive slice](megadrive-slice.md#implemented). The
+> table below is a short pointer; when it disagrees with those pages, they win.
+
 ## Goals
 
 ChronoFork separates four concerns that are usually entangled in emulator
