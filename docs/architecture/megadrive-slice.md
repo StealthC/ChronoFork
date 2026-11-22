@@ -99,16 +99,23 @@ fixtures are independently authored synthetic data.
   are decoded as listed above; the Z80-side map (8 KiB RAM mirrored through
   `0x3FFF`, YM2612 at `0x4000`, bank write at `0x6000`, the **VDP port window** at
   `0x7F00..=0x7F03` (the arbiter maps it to `0xC00000 | offset`, so these four bytes
-  are the VDP **data port** lanes, never the PSG; a VDP rejection on this window is
-  served with no effect — no data for a read — and counted in
-  `Vdp::discarded_data_port_accesses`, because the Z80 core has no exception channel
-  and the pinned oracle's executable path logs a diagnostic and completes the access
-  instead of raising), the PSG at `0x7F11` plus its
+  are the VDP **data port** lanes, never the PSG; the TMSS write lockout applies to this
+  window exactly as it does to the 68000 VDP path, and a VDP rejection on it is either a
+  **capability gap** — the `0b1100` 8-bit VRAM read, counted in
+  `Vdp::capability_gap_accesses` and kept a typed rejection — or an invalid target, which is
+  served with no effect and counted in `Vdp::discarded_data_port_accesses`; the Z80 core has
+  no exception channel and the pinned oracle's executable path logs a diagnostic and
+  completes the access instead of raising), the PSG at `0x7F11` plus its
   mirror `0x7F10..=0x7F17`, and a 32 KiB banked window at `0x8000`) is reached
   through the Z80 bus view, and a PSG read returns the documented open value
   `0xFF`. The Z80 `SOUND` region is decoded across `0x4000..=0x5FFF` by an
   `0x0003` port mask and the PSG mirror drives the same PSG instance the 68000
-  window `0xC00010..=0xC00017` drives. A **word** access to the PSG is one 16-bit
+  window `0xC00010..=0xC00017` drives. The 68000 I/O window
+  `0x00A10006`/`0x00A10007` (port 3/EXT data) is a real register this slice does not
+  model: the access is **accepted with no effect and counted** in
+  `MegadriveBus::port3_unmodelled_accesses` instead of faulted, because faulting turned a
+  legal guest store into a guest address error that skipped the instruction in a
+  commercial boot (W1X). A **word** access to the PSG is one 16-bit
   transaction whose latch selector is bit 15 and whose channel/type/data fields come
   from the low byte (the fields consumed are `((word >> 8) & 0x80) | (word & 0x7F)`);
   a long access is two such transactions, and byte writes pass their byte through.

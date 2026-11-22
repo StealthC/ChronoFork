@@ -218,13 +218,15 @@ fn an_undecoded_eight_bit_vram_read_command_is_a_typed_error() {
     // `0b0001`/`0b0011`/`0b0101`), so it is discarded and counted.
     let mut vdp = Vdp::new();
     set_command(&mut vdp, 0, 0, NIBBLE_CD3_CD2).expect("8-bit read command");
+    // W1X: a documented operation this slice does not implement is its own
+    // variant, so a capability gap can never be confused with an invalid target.
     assert_eq!(
         vdp.read16(DATA_PORT_OFFSET),
-        Err(VdpError::UnsupportedTarget { code: 0x0C })
+        Err(VdpError::UnsupportedBitRead { code: 0x0C })
     );
     assert_eq!(
         vdp.read8(DATA_PORT_OFFSET),
-        Err(VdpError::UnsupportedTarget { code: 0x0C })
+        Err(VdpError::UnsupportedBitRead { code: 0x0C })
     );
     assert_eq!(
         vdp.discarded_data_port_accesses(),

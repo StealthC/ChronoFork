@@ -399,6 +399,13 @@ pub struct MegadriveBus {
     z80_ram: Vec<u8>,
     /// Nine-bit Z80 bank register selecting the 32 KiB ROM window at `0x8000`.
     z80_bank: u16,
+    /// Port 3/EXT data accesses accepted with no effect.
+    ///
+    /// The two port 3 data bytes are real hardware registers this slice does not
+    /// model (ADR-0009). Faulting on them turned a legal guest store into a guest
+    /// address error (W1V), so the access is accepted with no effect and counted
+    /// here: a documented, observable divergence instead of a silent one (W1X).
+    port3_unmodelled_accesses: u64,
     /// Z80 guest accesses served by the undecoded path.
     ///
     /// Diagnostic only, like the VDP's discarded-access counter: it is not part of
@@ -461,6 +468,7 @@ impl MegadriveBus {
             z80_ram: vec![0; Z80_RAM_SIZE],
             z80_bank: 0,
             unmapped_z80_accesses: 0,
+            port3_unmodelled_accesses: 0,
             io_control: [0; IO_CONTROL_LEN],
             // Power-on: the 68000 owns the bus and holds the Z80 in reset.
             arbitration: BusArbitration {
@@ -646,6 +654,14 @@ impl MegadriveBus {
         self.unmapped_z80_accesses
     }
 
+    /// Number of port 3/EXT data accesses accepted with no effect.
+    ///
+    /// Diagnostic like the other counters: not serialized, reset by a valid
+    /// backend restore.
+    pub const fn port3_unmodelled_accesses(&self) -> u64 {
+        self.port3_unmodelled_accesses
+    }
+
     pub const fn z80_bank(&self) -> u16 {
         self.z80_bank
     }
@@ -740,6 +756,19 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
             return Ok(value);
         }
+        // Port 3/EXT data is a real register this slice does not model: a guest
+        // read gets the window's open value and the access is counted, so the
+        // divergence is documented and observable instead of a guest fault (W1X).
+        if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
+            self.port3_unmodelled_accesses = self.port3_unmodelled_accesses.saturating_add(1);
+            self.debug.observe_watchpoints(
+                WatchpointAccess::Read,
+                address,
+                u32::from(OPEN_BUS_VALUE),
+                1,
+            );
+            return Ok(OPEN_BUS_VALUE);
+        }
         if let Some(value) = self.read_ym_window(address) {
             self.debug
                 .observe_watchpoints(WatchpointAccess::Read, address, u32::from(value), 1);
@@ -774,10 +803,10 @@ impl MegadriveBus {
         if controller_port(address).is_some() {
             return Err(BusError::UnmappedRead { address });
         }
-        // Port 3/EXT data is not modelled, so a debugger read of it is a typed
-        // error exactly like an execution read.
+        // Port 3/EXT data is unmodelled; the execution path serves the open value
+        // without side effects, so the debugger view matches it (W1X).
         if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
-            return Err(BusError::UnmappedRead { address });
+            return Ok(OPEN_BUS_VALUE);
         }
         if let Some(value) = self.read_ym_window(address) {
             return Ok(value);
@@ -965,11 +994,16 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
         }
-        // Port 3/EXT data is not modelled: an access there is a typed error
-        // rather than a silent discard, so a program that depends on it fails
-        // loudly.
+        // Port 3/EXT data is a real register this slice does not model. The
+        // hardware accepts the store, so faulting turned a legal guest write into
+        // a guest address error (W1V: Kid's `MOVE.B #0x7F,(0x00A10007).L` skipped
+        // by its exception handler). The access is accepted with no effect and
+        // counted, matching how the rest of the I/O window is handled (W1X).
         if matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW) {
-            return Err(BusError::UnmappedWrite { address });
+            self.port3_unmodelled_accesses = self.port3_unmodelled_accesses.saturating_add(1);
+            self.debug
+                .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
+            return Ok(());
         }
         // A controller/IO data register and the undecoded rest of the window
         // accept the write and discard it: the hardware has no latch that can
@@ -1441,6 +1475,7 @@ impl MegadriveBus {
     /// (W1T/F4). Nothing here is serialized, so no payload byte moves.
     pub(crate) fn reset_diagnostic_counters(&mut self) {
         self.unmapped_z80_accesses = 0;
+        self.port3_unmodelled_accesses = 0;
     }
 
     pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
@@ -1506,10 +1541,7 @@ const fn is_io_window(address: u32) -> bool {
 /// handled separately by [`is_io_control_stub`].
 #[must_use]
 const fn is_io_undecoded(address: u32) -> bool {
-    is_io_window(address)
-        && !matches!(address, CONTROLLER_PORT_3_DATA | CONTROLLER_PORT_3_DATA_LOW)
-        && io_control_offset(address).is_none()
-        && !is_io_control_stub(address)
+    is_io_window(address) && io_control_offset(address).is_none() && !is_io_control_stub(address)
 }
 
 /// Returns whether `address` is one of the port 3/EXT control stub bytes.
@@ -1753,10 +1785,18 @@ impl Z80Bus for MegadriveBus {
                 let offset = (address - VDP_Z80_BASE) as u8;
                 match self.vdp.read8(offset) {
                     Ok(value) => Ok(value),
-                    // An invalid VDP target is served with no data and counted:
-                    // the Z80 core has no exception channel, and the pin's
-                    // executable path logs a diagnostic and returns the read
-                    // buffer instead of raising (W1T/F5, documented limitation).
+                    // A documented operation this slice does not implement is a
+                    // CAPABILITY gap, not an invalid target: it is counted apart
+                    // and never turned into a fake read. The Z80 core has no
+                    // exception channel, so the typed rejection surfaces as the
+                    // bus error for this access (W1X / W1U-F2).
+                    Err(VdpError::UnsupportedBitRead { .. }) => {
+                        self.vdp.count_capability_gap();
+                        Err(Z80Error::Memory { address })
+                    }
+                    // An invalid target is the documented model choice: served with
+                    // no data and counted as a discarded data-port access (the GX
+                    // path logs a diagnostic and returns the read buffer).
                     Err(_) => {
                         self.vdp.count_discarded_data_port_access();
                         Ok(Z80_UNDECODED_READ_VALUE)
@@ -1794,10 +1834,19 @@ impl Z80Bus for MegadriveBus {
                 Ok(())
             }
             VDP_Z80_BASE..=VDP_Z80_END => {
-                // The Z80 VDP window drives the VDP ports. An invalid target has no
-                // effect (the pin logs a diagnostic and the access completes), so
-                // it is counted rather than ending the run; the Z80 core has no
-                // exception channel to deliver a bus error on.
+                // The Z80 VDP window drives the VDP ports, but the TMSS lockout
+                // applies to the VDP regardless of which master reaches it: the
+                // bridge writes through the 68000 bus
+                // (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`) and the lockout is
+                // signalled on the VDP access (`:1029-1037`). Same gate as
+                // `MegadriveBus::write8` above (W1X / W1U-F1).
+                if !self.cartridge.tmss().vdp_writes_allowed() {
+                    return Ok(());
+                }
+                // An invalid target has no effect (the pin logs a diagnostic and
+                // the access completes), so it is counted rather than ending the
+                // run; the Z80 core has no exception channel to deliver a bus
+                // error on.
                 let offset = (address - VDP_Z80_BASE) as u8;
                 match self.vdp.write8(offset, value) {
                     Ok(()) => Ok(()),
@@ -2119,23 +2168,35 @@ mod tests {
         // both bytes are mapped now, so the access succeeds.
         assert_eq!(bus.read16(0x00A1_0002), Ok(0xFF7E));
 
-        // Port 3/EXT data (0xA10006/0xA10007) is not modelled: it stays a typed
-        // error on both the execution and the debugger path.
+        // Port 3/EXT data (0xA10006/0xA10007) is a real register this slice does
+        // not model. Since W1X the access is accepted with no effect instead of
+        // faulting: the hardware accepts the store (V1W measured Kid's
+        // `MOVE.B #0x7F,(0x00A10007).L` skipped by a guest address error), so the
+        // divergence is counted instead of raised.
+        let mut counted = bus.port3_unmodelled_accesses();
         for address in [
             super::CONTROLLER_PORT_3_DATA,
             super::CONTROLLER_PORT_3_DATA_LOW,
         ] {
             assert_eq!(
                 bus.read8(address),
-                Err(BusError::UnmappedRead { address }),
-                "port 3 data read 0x{address:06X}"
+                Ok(super::OPEN_BUS_VALUE),
+                "port 3 data read 0x{address:06X} serves the window open value"
             );
+            counted += 1;
+            assert_eq!(bus.port3_unmodelled_accesses(), counted);
             assert_eq!(
                 bus.write8(address, 0),
-                Err(BusError::UnmappedWrite { address }),
-                "port 3 data write 0x{address:06X}"
+                Ok(()),
+                "port 3 data write 0x{address:06X} is accepted with no effect"
             );
-            assert_eq!(bus.peek8(address), Err(BusError::UnmappedRead { address }));
+            counted += 1;
+            assert_eq!(
+                bus.port3_unmodelled_accesses(),
+                counted,
+                "port 3 write 0x{address:06X} is counted too"
+            );
+            assert_eq!(bus.peek8(address), Ok(super::OPEN_BUS_VALUE));
         }
 
         // The version register is a side-effect-free cartridge read.

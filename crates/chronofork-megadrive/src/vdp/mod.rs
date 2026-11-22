@@ -135,7 +135,7 @@ use crate::interrupts::VideoStandard;
 use fifo::Fifo;
 use regs::{
     CODE_CRAM_READ, CODE_CRAM_WRITE, CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE,
-    CODE_VRAM_READ, CODE_VRAM_WRITE, CODE_VSRAM_READ, CODE_VSRAM_WRITE,
+    CODE_VRAM_READ, CODE_VRAM_READ_8BIT, CODE_VRAM_WRITE, CODE_VSRAM_READ, CODE_VSRAM_WRITE,
 };
 use timing::HBLANK_START_MASTER_CYCLES;
 
@@ -244,6 +244,17 @@ pub enum VdpError {
     /// read or write behaviour (including CRAM/VSRAM and half-completed
     /// commands).
     UnsupportedTarget {
+        /// Current six-bit command code.
+        code: u8,
+    },
+    /// A data-port access whose command code names a **documented** operation this
+    /// slice does not implement.
+    ///
+    /// The only case today is the `0b1100` 8-bit VRAM read
+    /// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`). This is a capability
+    /// gap, deliberately tracked apart from [`Self::UnsupportedTarget`]: an
+    /// invalid target is a hardware discard, a missing capability is not.
+    UnsupportedBitRead {
         /// Current six-bit command code.
         code: u8,
     },
@@ -374,6 +385,11 @@ impl fmt::Display for VdpError {
             Self::UnsupportedTarget { code } => write!(
                 f,
                 "VDP data-port access with unsupported command code 0x{code:02X}"
+            ),
+            Self::UnsupportedBitRead { code } => write!(
+                f,
+                "VDP 8-bit VRAM read (command code 0x{code:02X}) is not implemented \
+                 in this slice (capability gap, not an invalid target)"
             ),
             Self::DmaUnsupported { code } => write!(
                 f,
@@ -534,6 +550,13 @@ pub struct Vdp {
     /// serialized by [`Vdp::snapshot_bytes`], so two machines that discarded a
     /// different number of accesses still serialise byte-for-byte equal.
     discarded_data_port_accesses: u64,
+    /// Data-port accesses rejected because a documented operation is not
+    /// implemented (the `0b1100` 8-bit VRAM read).
+    ///
+    /// Kept apart from [`Vdp::discarded_data_port_accesses`] on purpose: a
+    /// capability gap is not a hardware discard, and mixing them would hide a
+    /// missing feature behind a modelling choice (W1X / W1U-F2). Diagnostic only.
+    capability_gap_accesses: u64,
     /// Accumulated 68000-cycle wait slots for data-port writes that found the
     /// FIFO full. Derived observation consumed by the owner, not serialized.
     fifo_wait_cycles: u32,
@@ -566,6 +589,7 @@ impl Vdp {
             sprite_limit_reached: false,
             dma_cycles: 0,
             discarded_data_port_accesses: 0,
+            capability_gap_accesses: 0,
             fifo_wait_cycles: 0,
         }
     }
@@ -1057,6 +1081,20 @@ impl Vdp {
         self.discarded_data_port_accesses
     }
 
+    /// Number of data-port accesses rejected because a documented operation is not
+    /// implemented.
+    ///
+    /// Diagnostic like the discard counter: not serialized, reset by a valid
+    /// restore.
+    pub const fn capability_gap_accesses(&self) -> u64 {
+        self.capability_gap_accesses
+    }
+
+    /// Counts one data-port access rejected for a missing capability.
+    pub(crate) fn count_capability_gap(&mut self) {
+        self.capability_gap_accesses = self.capability_gap_accesses.saturating_add(1);
+    }
+
     /// Counts one data-port access that had to be served with no effect.
     ///
     /// The Z80 reaches the VDP through its own window, and the Z80 core has no
@@ -1354,6 +1392,7 @@ impl Vdp {
         // restore resets them (W1T/F3). They are not part of the snapshot, so this
         // is a destination-side reset, not a carried value.
         self.discarded_data_port_accesses = 0;
+        self.capability_gap_accesses = 0;
         self.vblank_pending = false;
         self.hblank_pending = false;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
@@ -1388,6 +1427,11 @@ impl Vdp {
             CODE_VRAM_READ => VramTarget::Vram,
             CODE_VSRAM_READ => VramTarget::Vsram,
             CODE_CRAM_READ => VramTarget::Cram,
+            // A documented operation this slice does not model is a capability
+            // gap, not an invalid target (W1X / W1U-F2).
+            CODE_VRAM_READ_8BIT => {
+                return Err(VdpError::UnsupportedBitRead { code: self.code });
+            }
             _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
         };
         let address = Self::word_address(target, self.address);

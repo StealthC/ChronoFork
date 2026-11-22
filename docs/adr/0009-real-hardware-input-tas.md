@@ -296,8 +296,9 @@ deferred list.
 |---|---|---|
 | `0x00A10003` | byte read | Controller **port 1** data register (3-button TH-high subset) |
 | `0x00A10005` | byte read | Controller **port 2** data register (3-button TH-high subset) |
-| every other address in `0x00A10000..=0x00A1001F` | any | **Unmapped**: typed `UnmappedRead`/`UnmappedWrite`, including the version register `0x00A10001`, control registers `0x00A10009`/`0x00A1000B`, port 3 data `0x00A10007`, TX/RX and TH-related addresses |
+| every other address in `0x00A10000..=0x00A1001F` | any | **Unmapped**: typed `UnmappedRead`/`UnmappedWrite`, including the version register `0x00A10001`, control registers `0x00A10009`/`0x00A1000B`, TX/RX and TH-related addresses |
 | `0x00A10003`/`0x00A10005` | byte write | **Unmapped**: typed `UnmappedWrite`; no TH latch/direction is modelled |
+| `0x00A10006`/`0x00A10007` | byte read and byte write | **Accepted with no effect and counted** (`MegadriveBus::port3_unmodelled_accesses`): the port 3 (EXT) data register is real hardware (`Data/Modules/Sega Mega Drive 1600.xml:310`/`:311` and `Devices/MD1600IO/A10000.cpp:995-997`, read at `:902-904`) but this slice has no port 3 latch. The write is accepted and the read returns the window's open value; faulting instead turned a legal guest store into a guest address error, which skipped the instruction in a commercial boot (W1X, finding W1V) |
 
 Only **byte** reads are mapped. A word or long access that touches the controller window
 (for example `MOVE.W 0x00A10002`) is a typed error because the high byte `0x00A10002` is

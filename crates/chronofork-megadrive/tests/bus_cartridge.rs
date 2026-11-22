@@ -7,6 +7,7 @@
 #![allow(clippy::expect_used)]
 
 use chronofork_megadrive::cartridge::{Cartridge, TmssModel};
+use chronofork_megadrive::z80::Z80Bus;
 use chronofork_megadrive::{BusError, MegadriveBus};
 
 const IMAGE_LEN: usize = 0x4000;
@@ -130,6 +131,62 @@ fn locked_data_port_write_leaves_the_preset_vdp_address_and_registers_unchanged(
     assert_eq!(bus.vdp().address(), address_before);
     assert_eq!(bus.vdp().register(15), register_before);
     assert_eq!(&bus.vdp().vram()[0x10..0x14], vram_before.as_slice());
+}
+
+#[test]
+fn z80_vdp_window_respects_the_same_tmss_write_lock_as_68000() {
+    // The Z80 reaches the VDP through the arbiter, which writes on the 68000 bus
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`) and signals the TMSS lockout on
+    // a VDP access (`:1029-1037`). The lockout therefore applies to both masters
+    // (W1X / W1U-F1). A VRAM write is programmed first, unlocked, then TMSS is
+    // re-locked.
+    let cartridge = Cartridge::parse(rom_with_header()).expect("parse");
+    let mut bus = MegadriveBus::new(cartridge);
+    bus.write16(0x00C0_0004, 0x4000).expect("command word 1");
+    bus.write16(0x00C0_0004, 0x0000).expect("command word 2");
+    bus.cartridge_mut().set_tmss_model(TmssModel::Enabled);
+    assert!(bus.tmss().locked());
+
+    let vdp_before = bus.vdp().snapshot_bytes();
+    let psg_before = bus.psg().snapshot_bytes();
+
+    // The 68000 path is blocked.
+    bus.write16(0x00C0_0000, 0x1234)
+        .expect("locked 68000 write is consumed");
+    assert_eq!(
+        bus.vdp().snapshot_bytes(),
+        vdp_before,
+        "68000 write blocked"
+    );
+
+    // Every Z80 alias of the window is blocked the same way, and none of them
+    // reaches VRAM, CRAM, VSRAM or the FIFO.
+    for alias in 0x7F00_u16..=0x7F03 {
+        Z80Bus::write8(&mut bus, alias, 0x66).expect("locked Z80 write is consumed");
+    }
+    assert_eq!(
+        bus.vdp().snapshot_bytes(),
+        vdp_before,
+        "locked Z80 writes leave the whole VDP state untouched"
+    );
+    assert_eq!(
+        bus.psg().snapshot_bytes(),
+        psg_before,
+        "the PSG is untouched"
+    );
+
+    // Unlocked, both masters execute the programmed VRAM write again.
+    bus.write32(0x00A1_4000, 0x5345_4741).expect("SEGA unlock");
+    assert!(!bus.tmss().locked());
+    bus.write16(0x00C0_0000, 0x1234).expect("68000 VRAM write");
+    let after_68000 = bus.vdp().snapshot_bytes();
+    assert_ne!(after_68000, vdp_before, "the 68000 write executes");
+    Z80Bus::write8(&mut bus, 0x7F00, 0x5A).expect("Z80 VRAM write");
+    assert_ne!(
+        bus.vdp().snapshot_bytes(),
+        after_68000,
+        "the Z80 write executes when unlocked"
+    );
 }
 
 #[test]

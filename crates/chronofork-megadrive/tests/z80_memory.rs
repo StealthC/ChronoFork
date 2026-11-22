@@ -159,6 +159,38 @@ fn banked_z80_write_to_decoded_work_ram_is_not_silently_dropped() -> Result<(), 
 }
 
 #[test]
+fn z80_byte_read_capacity_is_not_a_hardware_discard() -> Result<(), Box<dyn Error>> {
+    // The `0b1100` 8-bit VRAM read is a documented operation this slice does not
+    // implement. Reading it through the Z80 VDP window must NOT become a fake read
+    // and must NOT be counted as an invalid-target discard: it keeps the typed
+    // rejection and its own capability counter (W1X / W1U-F2).
+    let mut bus = bus()?;
+    // Command code 0x0C: word 1 CD1:CD0 = 00, word 2 CD5:CD2 = 0b0011.
+    bus.write16(0x00C0_0004, 0x0000)?;
+    bus.write16(0x00C0_0004, 0x0030)?;
+    assert_eq!(bus.vdp().capability_gap_accesses(), 0);
+    assert!(matches!(
+        Z80Bus::read8(&mut bus, 0x7F00),
+        Err(chronofork_megadrive::z80::Z80Error::Memory { address: 0x7F00 })
+    ));
+    assert_eq!(bus.vdp().capability_gap_accesses(), 1);
+    assert_eq!(
+        bus.vdp().discarded_data_port_accesses(),
+        0,
+        "a capability gap is not an invalid-target discard"
+    );
+
+    // The 68000 path keeps the same typed rejection and counts nothing.
+    assert!(matches!(
+        bus.read8(0x00C0_0000),
+        Err(chronofork_megadrive::BusError::Vdp(_))
+    ));
+    assert_eq!(bus.vdp().capability_gap_accesses(), 1);
+    assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
+    Ok(())
+}
+
+#[test]
 fn a_bank_beyond_the_image_reads_the_undecoded_value() -> Result<(), Box<dyn Error>> {
     // The bank is selected but the image is shorter than the window, so no device
     // drives the byte: the guest reads the documented value and the run continues
