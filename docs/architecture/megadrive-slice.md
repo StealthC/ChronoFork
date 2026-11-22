@@ -129,6 +129,16 @@ fixtures are independently authored synthetic data.
 No **guest** memory access may end the run. Each channel converts deliberately;
 there is no catch-all, and host-level failures keep their typed identity.
 
+**Qualification (review round 4, W1Z).** Mapping holes are served with the model's
+defined read value and an observable count; declared capabilities that are **not**
+implemented (memory-sourced DMA and the VDP `0x0C` 8-bit read) produce an explicit
+diagnostic stop through a typed error, with a separate capability count — never an
+`Ok` that claims a read or a transfer that did not happen. This distinction qualifies
+the continuity rule above for unowned accesses; it neither revokes it nor permits
+swallowing host errors. The rule was written for mapping gaps, and applying it
+unqualified to declared capabilities would advance the guest with wrong state instead
+of announcing the limitation.
+
 - **Z80 memory and I/O:** an address no device owns is served by the undecoded
   path — a read returns `bus::Z80_UNDECODED_READ_VALUE`, a write is ignored, and
   the access is counted by `MegadriveBus::unmapped_z80_accesses`. The banked
