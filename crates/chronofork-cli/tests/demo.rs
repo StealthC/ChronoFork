@@ -142,10 +142,15 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
 /// measured on the reference host, one debug run costs ~82 s and one release run
 /// ~7 s, while the previous two-debug-run comparison cost ~166 s.
 const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
-    "fe254e5d193de273bc0d0db1b9b426ef6b069f4f96685486cb7303662d56a420";
+    "e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609";
 
 /// Bytes of the pinned `chronofork megadrive demo` stdout.
-const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1833;
+///
+/// Re-minted when phase 8.4 (Z80, bus arbitration and audio) was merged into this
+/// branch: the demo narration gained the Z80 and 48 kHz audio surface, so the
+/// previous 1833-byte pre-8.4 pin no longer described what the CLI emits. The
+/// narration itself is main's; the branch only contributed this pinned check.
+const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1994;
 
 /// Enables the "release build must exist" half of the check:
 /// `$CHRONOFORK_CROSS_PROFILE_GOLDEN=1`.
