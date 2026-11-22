@@ -1057,6 +1057,17 @@ impl Vdp {
         self.discarded_data_port_accesses
     }
 
+    /// Counts one data-port access that had to be served with no effect.
+    ///
+    /// The Z80 reaches the VDP through its own window, and the Z80 core has no
+    /// exception channel. The pinned oracle's executable path for an invalid VDP
+    /// target logs a diagnostic and completes the access
+    /// (`Devices/315-5313/S315-5313_Ports.cpp:1043-1078`), so the bus serves it
+    /// with no effect and records it here instead of ending the run.
+    pub(crate) fn count_discarded_data_port_access(&mut self) {
+        self.discarded_data_port_accesses = self.discarded_data_port_accesses.saturating_add(1);
+    }
+
     pub fn take_dma_cycles(&mut self) -> u32 {
         let cycles = self.dma_cycles;
         self.dma_cycles = 0;
@@ -1339,6 +1350,10 @@ impl Vdp {
         self.sprite_limit_reached = false;
         self.dma_cycles = 0;
         self.fifo_wait_cycles = 0;
+        // Diagnostic counters describe execution *since* the restore, so a valid
+        // restore resets them (W1T/F3). They are not part of the snapshot, so this
+        // is a destination-side reset, not a carried value.
+        self.discarded_data_port_accesses = 0;
         self.vblank_pending = false;
         self.hblank_pending = false;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
@@ -1858,6 +1873,39 @@ mod tests {
         // triggers the register-programmed engine.
         assert!(!vdp.dma_active());
         assert_eq!(vdp.take_dma_cycles(), 0);
+    }
+
+    #[test]
+    fn restoring_a_used_vdp_resets_diagnostic_counter() {
+        // A valid restore replaces the state and the diagnostic counter describes
+        // execution *since* that restore, so it starts at zero (W1T/F3). The
+        // destination here is an already-used instance with a non-zero count, not
+        // a fresh twin.
+        let mut used = Vdp::new();
+        used.write16(CONTROL_PORT_OFFSET, 0xC000)
+            .expect("unknown-code first half");
+        used.write16(CONTROL_PORT_OFFSET, 0x0030)
+            .expect("unknown-code second half");
+        used.write16(DATA_PORT_OFFSET, 0).expect("discarded write");
+        assert_eq!(used.discarded_data_port_accesses(), 1);
+
+        let clean = Vdp::new().snapshot_bytes();
+        used.restore_bytes(&clean).expect("restore");
+        assert_eq!(
+            used.discarded_data_port_accesses(),
+            0,
+            "a valid restore resets the diagnostic count"
+        );
+
+        // A rejected restore leaves both the state and the diagnostic untouched.
+        used.write16(DATA_PORT_OFFSET, 0).expect("second discard");
+        assert_eq!(used.discarded_data_port_accesses(), 1);
+        assert!(used.restore_bytes(&clean[..clean.len() - 1]).is_err());
+        assert_eq!(
+            used.discarded_data_port_accesses(),
+            1,
+            "a rejected restore keeps the previous diagnostic"
+        );
     }
 
     #[test]

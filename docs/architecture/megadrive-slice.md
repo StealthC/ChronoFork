@@ -97,12 +97,25 @@ fixtures are independently authored synthetic data.
   explicit typed error contract is unchanged: the 68000-side PSG window (`0xC00011`
   and above) is still `UnmappedRead`/`UnmappedWrite`. The 68000 YM2612 and Z80 windows
   are decoded as listed above; the Z80-side map (8 KiB RAM mirrored through
-  `0x3FFF`, YM2612 at `0x4000`, bank write at `0x6000`, PSG at
-  `0x7F00..=0x7F03`/`0x7F11` and a 32 KiB banked ROM window at `0x8000`) is reached
+  `0x3FFF`, YM2612 at `0x4000`, bank write at `0x6000`, the **VDP port window** at
+  `0x7F00..=0x7F03` (the arbiter maps it to `0xC00000 | offset`, so these four bytes
+  are the VDP **data port** lanes, never the PSG; a VDP rejection on this window is
+  served with no effect — no data for a read — and counted in
+  `Vdp::discarded_data_port_accesses`, because the Z80 core has no exception channel
+  and the pinned oracle's executable path logs a diagnostic and completes the access
+  instead of raising), the PSG at `0x7F11` plus its
+  mirror `0x7F10..=0x7F17`, and a 32 KiB banked window at `0x8000`) is reached
   through the Z80 bus view, and a PSG read returns the documented open value
   `0xFF`. The Z80 `SOUND` region is decoded across `0x4000..=0x5FFF` by an
-  `0x0003` port mask and the PSG mirror `0x7F10..=0x7F17` drives the same PSG
-  instance the 68000 window `0xC00010..=0xC00017` drives.
+  `0x0003` port mask and the PSG mirror drives the same PSG instance the 68000
+  window `0xC00010..=0xC00017` drives. A **word** access to the PSG is one 16-bit
+  transaction whose latch selector is bit 15 and whose channel/type/data fields come
+  from the low byte (the fields consumed are `((word >> 8) & 0x80) | (word & 0x7F)`);
+  a long access is two such transactions, and byte writes pass their byte through.
+  This is a model that matches the pinned oracle's executable path
+  (`Devices/M68000/M68000.cpp:2191-2204`, `Devices/315-5313/S315-5313_Ports.cpp:1639-1643`,
+  `Devices/SN76489/SN76489.cpp:723-748`, `ExodusSDK/DeviceInterface/Data.inl:560-562`),
+  **not** independent physical evidence of the real PSG lanes.
 
 ## Guest-access continuity (W1 phase)
 
@@ -111,9 +124,14 @@ there is no catch-all, and host-level failures keep their typed identity.
 
 - **Z80 memory and I/O:** an address no device owns is served by the undecoded
   path — a read returns `bus::Z80_UNDECODED_READ_VALUE`, a write is ignored, and
-  the access is counted by `MegadriveBus::unmapped_z80_accesses`. The write into
-  the banked ROM window is ignored because the window is decoded but read-only,
-  and a bank selected beyond the cartridge image reads the same undecoded value.
+  the access is counted by `MegadriveBus::unmapped_z80_accesses`. The banked
+  window `0x8000..=0xFFFF` is **not** universal ROM: the arbiter translates it to
+  the 68000 address `(bank << 15) | offset` and forwards the write
+  (`Devices/MD1600IO/MDBusArbiter.cpp:537-560`), so a bank aimed at work RAM really
+  writes RAM, a bank aimed at the cartridge is decoded but read-only (the write has
+  no effect and is *not* counted), and only a bank that translates into a hole is
+  counted as unserved. Reads keep the slice's prior raw-ROM behaviour; a bank
+  selected beyond the cartridge image reads the undecoded value.
   The value is `0x00`, taken from the pinned oracle's **executable** reference
   (`Devices/Z80/Z80.cpp:1455-1474` reads into a default-constructed `Z80Byte` and
   `System/BusInterface.cpp:2438-2490` leaves it untouched when no map entry
@@ -122,7 +140,9 @@ there is no catch-all, and host-level failures keep their typed identity.
   (`Devices/MD1600IO/MDBusArbiter.cpp:366-370`) and that the Z80 likely drives all
   lines high before a read (`:427-435`). The conflict is unresolved; if hardware
   evidence settles on `0xFF`, `Z80_UNDECODED_READ_VALUE` is the only point to
-  change. The counter is diagnostic: it is not part of any snapshot, so it never
+  change. The counter is diagnostic: it is not part of any snapshot and a valid
+  backend restore (which clones the bus before committing) resets it, so it
+  describes execution since that restore; it never
   moves the payload or the state hash.
 - **68000 data accesses:** `UnmappedRead`, `UnmappedWrite` and `WriteProtected`
   already become the guest address-error exception (vector 3). A **VDP** port
@@ -202,8 +222,10 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   `default:` (`Devices/315-5313/S315-5313_General.cpp:2575`); the target address
   still advances by the auto-increment register, and the slice counts the discard
   in `Vdp::discarded_data_port_accesses` so it is never silent. That counter is
-  diagnostic state and is deliberately **not** part of the canonical snapshot
-  (`Vdp::snapshot_bytes`), so it needs no payload-version change. A data-port
+  diagnostic state, deliberately **not** part of the canonical snapshot
+  (`Vdp::snapshot_bytes`), so it needs no payload-version change; it describes
+  execution *since* a valid restore, so `Vdp::restore_bytes` resets it (and a
+  rejected restore leaves it untouched). A data-port
   **read** whose code is not one of the three read codes — including the
   unmodelled `0b1100` 8-bit VRAM read — stays a typed rejection, matching the
   oracle's read `default:` that reports the error instead of hanging.
@@ -345,9 +367,11 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   are `NOP`s; block-operation undocumented X/Y flags stay clear; repeated `DD`/`FD`
   prefixes cost one bounded step.
 - **Z80 memory map:** 8 KiB RAM mirrored through `0x3FFF`, YM2612 at
-  `0x4000..=0x4003`, bank-register write at `0x6000`, PSG at
-  `0x7F00..=0x7F03`/`0x7F11` (read returns `0xFF`) and a 32 KiB banked raw-ROM
-  window at `0x8000..=0xFFFF`. The 68000 sees the 8 KiB Z80 RAM at
+  `0x4000..=0x4003` (repeated across `0x4000..=0x5FFF` by the `0x0003` mask),
+  bank-register write at `0x6000`, VDP port window at `0x7F00..=0x7F03`, PSG at
+  `0x7F11` plus the mirror `0x7F10..=0x7F17` (read returns `0xFF`) and a 32 KiB
+  banked window at `0x8000..=0xFFFF` that forwards writes to its translated 68000
+  target. The 68000 sees the 8 KiB Z80 RAM at
   `0xA00000..=0xA01FFF`, the nine-bit bank register at `0xA06000` and the
   request/reset latches at `0xA11100`/`0xA11200`.
 - **Arbitration:** `0xA11100` carries the Z80 bus request with the hardware `ZBR`

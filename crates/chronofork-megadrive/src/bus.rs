@@ -34,9 +34,9 @@
 //! `0xA06000`, and the bus-request/reset registers at `0xA11100`/`0xA11200`.
 //! The Z80 sees its RAM mirrored through `0x3FFF`, the `SOUND` region at
 //! `0x4000..=0x5FFF` (the YM2612's four ports repeated by an `0x0003` address
-//! mask), the bank-register write at `0x6000`, the PSG window at
-//! `0x7F00..=0x7F03`/`0x7F11` plus its mirror `0x7F10..=0x7F17`, and a 32 KiB
-//! banked raw-ROM window at
+//! mask), the bank-register write at `0x6000`, the VDP port window at
+//! `0x7F00..=0x7F03`, the PSG at `0x7F11` plus its mirror `0x7F10..=0x7F17`, and a
+//! 32 KiB banked window at
 //! `0x8000..=0xFFFF`. The YM2612 window is wired on both sides (the 68000 side
 //! at `0xA04000..=0xA04003`) and the Z80 PSG window writes the PSG latch/data
 //! protocol; a PSG read returns the chip's documented open value. The 68000-side
@@ -191,10 +191,16 @@ pub const YM2612_Z80_END: u16 = 0x4003;
 /// repeat across the whole region and `0x5F8B & 3 = 3` reaches the bank-2 data
 /// port, exactly like `0x4003`.
 pub const YM2612_Z80_SOUND_END: u16 = 0x5FFF;
-/// First Z80 address of the PSG window.
-pub const PSG_Z80_BASE: u16 = 0x7F00;
-/// Last Z80 address of the PSG window.
-pub const PSG_Z80_END: u16 = 0x7F03;
+/// First Z80 address of the VDP port window.
+///
+/// The arbiter translates every byte of its `0x7F00` window into the 68000
+/// address `0xC00000 | offset` (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`), and
+/// the VDP's `000*` device locations are the data and control ports
+/// (`Devices/315-5313/S315-5313_Ports.cpp:944-949`). These four bytes are
+/// therefore the VDP, never the PSG (W1T/F5).
+pub const VDP_Z80_BASE: u16 = 0x7F00;
+/// Last Z80 address of the VDP port window.
+pub const VDP_Z80_END: u16 = 0x7F03;
 /// Common Z80 alias for the PSG data port.
 pub const PSG_Z80_ALIAS: u16 = 0x7F11;
 /// Value a Z80 read of an undecoded address returns.
@@ -1004,10 +1010,15 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 2);
             return Ok(());
         }
-        if ym_window_covers(address, 2)
-            || z80_window_covers(address, 2)
-            || psg_window_covers(address, 2)
-        {
+        if psg_window_offset(address).is_some() {
+            // A 68000 word access to the PSG is ONE 16-bit transaction, not two
+            // byte writes (W1T/F2): the pinned model decides the latch selector
+            // from bit 15 and takes the channel/type/data fields from the low
+            // byte, which is the single byte below.
+            self.write_psg_transaction(value);
+            return Ok(());
+        }
+        if ym_window_covers(address, 2) || z80_window_covers(address, 2) {
             let bytes = value.to_be_bytes();
             self.write8(address, bytes[0])?;
             self.write8(address.wrapping_add(1), bytes[1])?;
@@ -1061,10 +1072,18 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, value, 4);
             return Ok(());
         }
+        if psg_window_covers(address, 4) {
+            // A long access is TWO 16-bit transactions, at `address` and
+            // `address + 2` (`Devices/M68000/M68000.cpp:2197-2204`), not four byte
+            // writes (W1T/F2).
+            let bytes = value.to_be_bytes();
+            self.write_psg_transaction(u16::from_be_bytes([bytes[0], bytes[1]]));
+            self.write_psg_transaction(u16::from_be_bytes([bytes[2], bytes[3]]));
+            return Ok(());
+        }
         if ym_window_covers(address, 4)
             || z80_window_covers(address, 4)
             || io_window_covers(address, 4)
-            || psg_window_covers(address, 4)
         {
             let bytes = value.to_be_bytes();
             for (offset, byte) in bytes.iter().enumerate() {
@@ -1415,6 +1434,15 @@ impl MegadriveBus {
     }
 
     /// Replaces the complete 8 KiB Z80 RAM during a snapshot restore.
+    /// Resets every non-canonical diagnostic counter on the bus.
+    ///
+    /// A valid restore replaces the machine's state, and the counters describe
+    /// execution *since* that restore, so the replacement state starts at zero
+    /// (W1T/F4). Nothing here is serialized, so no payload byte moves.
+    pub(crate) fn reset_diagnostic_counters(&mut self) {
+        self.unmapped_z80_accesses = 0;
+    }
+
     pub(crate) fn restore_z80_ram(&mut self, ram: Vec<u8>) -> Result<(), BusError> {
         if ram.len() != Z80_RAM_SIZE {
             return Err(BusError::UnmappedWrite {
@@ -1654,6 +1682,23 @@ fn psg_window_offset(address: u32) -> Option<u8> {
     }
 }
 
+/// Delivers one 16-bit 68000 transaction to the PSG.
+///
+/// Pinned model, matching the oracle's executable path (not physical proof): a
+/// word access is a single transaction (`Devices/M68000/M68000.cpp:2191-2194` one
+/// `M68000Word`, forwarded once by `Devices/315-5313/S315-5313_Ports.cpp:1639-1643`).
+/// The SN76489 decides latch versus data with `data.MSB()`
+/// (`Devices/SN76489/SN76489.cpp:723-748`, `ExodusSDK/DeviceInterface/Data.inl:560-562`)
+/// while extracting channel, type and data from the low segments, so the fields
+/// the chip consumes are `((word >> 8) & 0x80) | (word & 0x7F)`. This is a model
+/// choice matching the pin; it is not independent evidence of the real PSG lanes.
+impl MegadriveBus {
+    fn write_psg_transaction(&mut self, word: u16) {
+        let byte = (((word >> 8) as u8) & 0x80) | ((word as u8) & 0x7F);
+        self.psg.write(byte);
+    }
+}
+
 /// Returns whether every byte of `address..address + length` is a PSG byte.
 fn psg_window_covers(address: u32, length: u32) -> bool {
     let mut offset = 0;
@@ -1702,11 +1747,25 @@ impl Z80Bus for MegadriveBus {
                 Ok(self.ym.read_bank(bank, port))
             }
             Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
-            // The PSG is write-only; the decoded window returns the chip's
-            // documented open value.
-            PSG_Z80_BASE..=PSG_Z80_END
-            | PSG_Z80_ALIAS
-            | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => Ok(self.psg.read()),
+            // `0x7F00..=0x7F03` is the VDP's port window on the Z80 side, not the
+            // PSG (W1T/F5).
+            VDP_Z80_BASE..=VDP_Z80_END => {
+                let offset = (address - VDP_Z80_BASE) as u8;
+                match self.vdp.read8(offset) {
+                    Ok(value) => Ok(value),
+                    // An invalid VDP target is served with no data and counted:
+                    // the Z80 core has no exception channel, and the pin's
+                    // executable path logs a diagnostic and returns the read
+                    // buffer instead of raising (W1T/F5, documented limitation).
+                    Err(_) => {
+                        self.vdp.count_discarded_data_port_access();
+                        Ok(Z80_UNDECODED_READ_VALUE)
+                    }
+                }
+            }
+            // The PSG is write-only; the alias and the mirror window return the
+            // chip's documented open value.
+            PSG_Z80_ALIAS | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => Ok(self.psg.read()),
             Z80_ROM_WINDOW_BASE..=0xFFFF => self.read_z80_banked_rom(address),
             // No device owns this byte: the guest gets the documented value and
             // the run continues (see [`Z80_UNDECODED_READ_VALUE`]).
@@ -1734,16 +1793,45 @@ impl Z80Bus for MegadriveBus {
                 self.ym.write_bank(bank, port, value);
                 Ok(())
             }
-            PSG_Z80_BASE..=PSG_Z80_END
-            | PSG_Z80_ALIAS
-            | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => {
+            VDP_Z80_BASE..=VDP_Z80_END => {
+                // The Z80 VDP window drives the VDP ports. An invalid target has no
+                // effect (the pin logs a diagnostic and the access completes), so
+                // it is counted rather than ending the run; the Z80 core has no
+                // exception channel to deliver a bus error on.
+                let offset = (address - VDP_Z80_BASE) as u8;
+                match self.vdp.write8(offset, value) {
+                    Ok(()) => Ok(()),
+                    Err(_) => {
+                        self.vdp.count_discarded_data_port_access();
+                        Ok(())
+                    }
+                }
+            }
+            PSG_Z80_ALIAS | PSG_Z80_MIRROR_BASE..=PSG_Z80_MIRROR_END => {
                 self.psg.write(value);
                 Ok(())
             }
-            // The banked cartridge ROM is decoded but read-only, so a write
-            // there is ignored (the device does not latch it). The window is
-            // mapped, so this is not counted as an undecoded access.
-            Z80_ROM_WINDOW_BASE..=0xFFFF => Ok(()),
+            // The banked window is not a universal ROM: the arbiter translates
+            // the Z80 address into the 68000 space (bank << 15 | offset) and
+            // forwards the access to whatever the target is
+            // (`Devices/MD1600IO/MDBusArbiter.cpp:537-560`, which duplicates the
+            // byte across the 16-bit data bus). So a bank aimed at work RAM really
+            // writes RAM, and only an unserved target has no effect.
+            Z80_ROM_WINDOW_BASE..=0xFFFF => {
+                let target = (u32::from(self.z80_bank) << 15) | u32::from(address & 0x7FFF);
+                match self.write8(target, value) {
+                    Ok(()) => Ok(()),
+                    // A decoded but read-only target (cartridge ROM) simply does
+                    // not latch the write, which is the hardware outcome.
+                    Err(BusError::WriteProtected { .. }) => Ok(()),
+                    // Anything the 68000 bus cannot serve is an unserved Z80
+                    // access: no effect, counted, run continues.
+                    Err(_) => {
+                        self.unmapped_z80_accesses = self.unmapped_z80_accesses.saturating_add(1);
+                        Ok(())
+                    }
+                }
+            }
             // No device owns this byte: the write has no effect and the run
             // continues (see [`Z80_UNDECODED_READ_VALUE`]).
             _ => {

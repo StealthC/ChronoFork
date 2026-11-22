@@ -1087,6 +1087,9 @@ impl Backend for MegadriveBackend {
         bus.restore_arbitration(parsed.arbitration);
         bus.restore_z80_bank(parsed.z80_bank);
         bus.restore_io_control(parsed.io_control);
+        // Diagnostic counters describe execution since the restore (W1T/F4); the
+        // VDP half is reset by `Vdp::restore_bytes` above.
+        bus.reset_diagnostic_counters();
         let mut scheduler = self.scheduler.clone();
         scheduler.restore_bytes(parsed.scheduler).map_err(|error| {
             BackendError::InvalidSnapshot(format!("invalid interrupt state: {error}"))
@@ -2146,6 +2149,53 @@ mod tests {
             quiet.payload(),
             noisy.payload(),
             "a diagnostic count cannot move the canonical payload"
+        );
+    }
+
+    #[test]
+    fn used_backend_restore_resets_z80_counter_and_keeps_payload_identical() {
+        // The backend restore clones the bus, validates, then commits; the
+        // diagnostic counter describes execution since the restore, so the
+        // replacement state starts at zero (W1T/F4) while the payload stays
+        // byte-identical because the counter is not canonical.
+        let clean = factory()
+            .create_machine()
+            .expect("machine")
+            .snapshot()
+            .expect("snapshot");
+        let mut used = factory().create_machine().expect("machine");
+        Z80Bus::write8(&mut used.bus, 0x7F64, 0x5A).expect("undecoded write");
+        assert_eq!(used.bus.unmapped_z80_accesses(), 1);
+
+        used.restore(&clean).expect("restore");
+        assert_eq!(
+            used.bus.unmapped_z80_accesses(),
+            0,
+            "a valid restore resets the Z80 diagnostic count"
+        );
+        let restored = used.snapshot().expect("snapshot");
+        assert_eq!(restored.payload(), clean.payload());
+
+        // A rejected restore keeps the machine and its diagnostic intact.
+        Z80Bus::write8(&mut used.bus, 0x6100, 0x5A).expect("undecoded write");
+        assert_eq!(used.bus.unmapped_z80_accesses(), 1);
+        // Tamper the payload magic so the restore is rejected before it commits.
+        let mut corrupt = clean.payload().to_vec();
+        corrupt[..8].copy_from_slice(b"CFMD68KX");
+        let corrupt = BackendSnapshot::new(
+            clean.backend_id().clone(),
+            clean.backend_version().to_owned(),
+            clean.format_version(),
+            clean.tick(),
+            clean.config_hash(),
+            clean.state_hash(),
+            corrupt,
+        );
+        assert!(used.restore(&corrupt).is_err());
+        assert_eq!(
+            used.bus.unmapped_z80_accesses(),
+            1,
+            "a rejected restore keeps the previous diagnostic"
         );
     }
 

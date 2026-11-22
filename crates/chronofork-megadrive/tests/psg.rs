@@ -237,11 +237,40 @@ fn bus_window_reaches_the_psg_and_reads_open_bus() -> Result<(), Box<dyn Error>>
         OPEN_BUS_VALUE,
         "the PSG is write-only; the window returns the open value"
     );
-    for address in [0x7F00, 0x7F01, 0x7F02, 0x7F03] {
-        Z80Bus::write8(&mut bus, address, 0x90)?; // channel 0 volume 0
-        assert_eq!(bus.psg().attenuation(0), Some(0));
-        assert_eq!(Z80Bus::read8(&mut bus, address)?, OPEN_BUS_VALUE);
-    }
+    // `0x7F00..=0x7F03` is the VDP port window on the Z80 side, not the PSG
+    // (W1T/F5): the arbiter translates it to `0xC00000 | offset`
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`) and the VDP's `000*` device
+    // locations are its data and control ports.
+    // Those four bytes are the VDP **data port** lanes (offsets 0..=3 all select
+    // `offset & 0x0C == 0`). Prove it by writing a known word through the VDP and
+    // reading it back through the Z80 window; the PSG must stay untouched.
+    let psg_before = bus.psg().snapshot_bytes();
+    bus.write16(0x00C0_0004, 0x4000)?; // command word 1: VRAM write at 0
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    bus.write16(0x00C0_0000, 0x1234)?; // word write to the data port
+    assert_eq!(bus.vdp().vram()[0..2], [0x12, 0x34]);
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 1: VRAM read at 0
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    assert_eq!(
+        Z80Bus::read8(&mut bus, 0x7F00)?,
+        0x12,
+        "high lane of the VDP data port through the Z80 window"
+    );
+    assert_eq!(Z80Bus::read8(&mut bus, 0x7F01)?, 0x34, "low lane");
+    assert_eq!(
+        bus.psg().snapshot_bytes(),
+        psg_before,
+        "the VDP window must not touch the PSG"
+    );
+    // A write through the window reaches the VDP data port as well.
+    bus.write16(0x00C0_0004, 0x4000)?;
+    bus.write16(0x00C0_0004, 0x0000)?;
+    Z80Bus::write8(&mut bus, 0x7F00, 0x5A)?;
+    assert_eq!(
+        bus.vdp().vram()[0],
+        0x5A,
+        "Z80 data-port write reached VRAM"
+    );
     // `0x7F04` owns no device; it is served by the undecoded channel (W1R).
     assert_eq!(
         Z80Bus::read8(&mut bus, 0x7F04)?,
@@ -325,33 +354,50 @@ fn psg_reads_are_deterministic_and_identical_on_both_sides() -> Result<(), Box<d
 }
 
 #[test]
-fn word_and_long_accesses_reach_the_same_psg_bytes() -> Result<(), Box<dyn Error>> {
-    // A 68000 word write asserts both byte lanes, and this bus delivers the
-    // window byte by byte (high then low). Latch channel 2 at 0x0F, then clear
-    // its attenuation in the same word.
-    let mut via_word = bus()?;
-    via_word.write16(0x00C0_0010, 0x9F00)?;
-    assert_eq!(via_word.psg().attenuation(0), Some(0x00));
-
-    let mut via_bytes = bus()?;
-    via_bytes.write8(0x00C0_0010, 0x9F)?;
-    via_bytes.write8(0x00C0_0011, 0x00)?;
+fn psg_word_delivers_one_transaction_not_two_byte_writes() -> Result<(), Box<dyn Error>> {
+    // Pinned transaction model (W1T/F2): a word access to the PSG is ONE 16-bit
+    // transaction. The SN76489 decides latch versus data with the MSB of that
+    // transaction (bit 15 of the word) and takes channel/type/data from the low
+    // segments, so the fields consumed are `((word >> 8) & 0x80) | (word & 0x7F)`.
+    // The review's example: `90A0` has bit 15 set (latch) and a low byte of
+    // `A0` (channel 1, tone), so it must NOT inject a `90` command that zeroes
+    // channel 0 — the two-byte model did exactly that.
+    let mut word = bus()?;
+    word.write16(0x00C0_0010, 0x90A0)?;
     assert_eq!(
-        via_word.psg().snapshot_bytes(),
-        via_bytes.psg().snapshot_bytes(),
-        "the word write is the two documented byte writes"
+        word.psg().attenuation(0),
+        Some(0x0F),
+        "channel 0 attenuation stays at its reset value"
     );
 
-    // A long write covers four window bytes the same way.
-    let mut via_long = bus()?;
-    via_long.write32(0x00C0_0010, 0x9F00_8000)?;
-    let mut via_long_bytes = bus()?;
-    for (offset, byte) in [0x9F_u8, 0x00, 0x80, 0x00].iter().enumerate() {
-        via_long_bytes.write8(0x00C0_0010 + offset as u32, *byte)?;
-    }
+    // A word whose low byte carries the volume bit does reach the chip.
+    let mut volume = bus()?;
+    volume.write16(0x00C0_0010, 0x9F10)?;
+    assert_eq!(volume.psg().attenuation(0), Some(0x00));
+
+    // A long is TWO word transactions (`Devices/M68000/M68000.cpp:2197-2204`), so
+    // both halves act. A four-byte model would leave channel 1 untouched.
+    let mut long = bus()?;
+    long.write32(0x00C0_0010, 0x9F10_9F30)?;
+    assert_eq!(long.psg().attenuation(0), Some(0x00));
     assert_eq!(
-        via_long.psg().snapshot_bytes(),
-        via_long_bytes.psg().snapshot_bytes()
+        long.psg().attenuation(1),
+        Some(0x00),
+        "the second word of the long also reached the chip"
+    );
+
+    // Byte writes are unchanged: the byte itself is the transaction.
+    let mut byte = bus()?;
+    byte.write8(0x00C0_0011, 0x9F)?;
+    assert_eq!(byte.psg().attenuation(0), Some(0x0F));
+
+    // And a long still equals its two explicit word writes.
+    let mut two_words = bus()?;
+    two_words.write16(0x00C0_0010, 0x9F10)?;
+    two_words.write16(0x00C0_0012, 0x9F30)?;
+    assert_eq!(
+        long.psg().snapshot_bytes(),
+        two_words.psg().snapshot_bytes()
     );
     Ok(())
 }

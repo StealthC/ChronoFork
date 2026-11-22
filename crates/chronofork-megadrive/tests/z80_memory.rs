@@ -5,8 +5,8 @@ use std::error::Error;
 use chronofork_megadrive::audio::YmBank;
 use chronofork_megadrive::audio::psg::OPEN_BUS_VALUE;
 use chronofork_megadrive::bus::{
-    PSG_Z80_ALIAS, PSG_Z80_BASE, YM2612_Z80_BASE, YM2612_Z80_END, YM2612_Z80_SOUND_END,
-    Z80_BANK_REGISTER, Z80_BANK_REGISTER_ADDRESS, Z80_ROM_WINDOW_BASE, Z80_UNDECODED_READ_VALUE,
+    PSG_Z80_ALIAS, YM2612_Z80_BASE, YM2612_Z80_END, YM2612_Z80_SOUND_END, Z80_BANK_REGISTER,
+    Z80_BANK_REGISTER_ADDRESS, Z80_ROM_WINDOW_BASE, Z80_UNDECODED_READ_VALUE,
 };
 use chronofork_megadrive::cartridge::Cartridge;
 use chronofork_megadrive::z80::Z80Bus;
@@ -119,6 +119,46 @@ fn z80_side_bank_write_selects_the_same_window() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn banked_z80_write_to_decoded_work_ram_is_not_silently_dropped() -> Result<(), Box<dyn Error>> {
+    // The banked window is not universal ROM: the arbiter translates the Z80
+    // address into the 68000 space and forwards the access
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:537-560`). Bank 0x1FE selects 0xFF0000,
+    // which is work RAM, so a write there must land.
+    let mut bus = bus()?;
+    bus.write16(Z80_BANK_REGISTER, 0x01FE)?;
+    bus.write8(0x00FF_0000, 0x12)?;
+    Z80Bus::write8(&mut bus, 0x8000, 0xA5)?;
+    assert_eq!(
+        bus.read8(0x00FF_0000)?,
+        0xA5,
+        "the Z80 write reached the translated RAM target"
+    );
+    assert_eq!(
+        bus.unmapped_z80_accesses(),
+        0,
+        "a served access is not counted as a discard"
+    );
+
+    // A bank that translates into a hole has no effect and is counted instead of
+    // pretending to succeed silently.
+    bus.write16(Z80_BANK_REGISTER, 0x0100)?; // 0x100 << 15 = 0x800000, unmapped
+    Z80Bus::write8(&mut bus, 0x8000, 0xA5)?;
+    assert_eq!(bus.unmapped_z80_accesses(), 1);
+
+    // A bank aimed at the cartridge stays read-only: the write has no effect and
+    // the target is decoded, so it is not counted.
+    bus.write16(Z80_BANK_REGISTER, 0x0000)?;
+    Z80Bus::write8(&mut bus, 0x8000, 0x00)?;
+    assert_eq!(bus.rom()[0], 0x11, "ROM untouched");
+    assert_eq!(
+        bus.unmapped_z80_accesses(),
+        1,
+        "ROM is decoded, not discarded"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_bank_beyond_the_image_reads_the_undecoded_value() -> Result<(), Box<dyn Error>> {
     // The bank is selected but the image is shorter than the window, so no device
     // drives the byte: the guest reads the documented value and the run continues
@@ -201,7 +241,7 @@ fn device_windows_are_decoded_and_do_not_alias_ram_or_rom() -> Result<(), Box<dy
     );
     // The PSG window is decoded, write-only and cannot alias RAM or ROM: a read
     // returns the open value and a write reaches the chip's attenuation register.
-    for address in [PSG_Z80_BASE, 0x7F03, PSG_Z80_ALIAS] {
+    for address in [PSG_Z80_ALIAS, 0x7F10, 0x7F17] {
         assert_eq!(
             Z80Bus::read8(&mut bus, address),
             Ok(OPEN_BUS_VALUE),
