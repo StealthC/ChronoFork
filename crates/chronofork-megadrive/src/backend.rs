@@ -136,8 +136,8 @@ use crate::audio::psg::SNAPSHOT_LEN as PSG_SNAPSHOT_LEN;
 use crate::audio::ym2612::SNAPSHOT_LEN as YM_SNAPSHOT_LEN;
 use crate::audio::{AudioMixer, YmBank};
 use crate::bus::{
-    BusArbitration, BusError, MegadriveBus, RAM_BASE, RAM_END, RAM_SIZE, ROM_BASE, ROM_END,
-    Z80_RAM_SIZE,
+    BusArbitration, BusError, IO_CONTROL_BASE, IO_CONTROL_LEN, MegadriveBus, RAM_BASE, RAM_END,
+    RAM_MIRROR_BASE, RAM_SIZE, ROM_BASE, ROM_END, Z80_RAM_SIZE, bus_address, io_control_offset,
 };
 use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
 use crate::cpu::{CpuError, M68000, interrupt_level_deliverable};
@@ -168,23 +168,25 @@ pub const AUDIO_CHUNK_FRAMES: usize = 64;
 /// frame counter through the embedded VDP snapshot; version 6 adds the Z80
 /// register file and 8 KiB Z80 RAM, the 68000/Z80 arbitration latches, the Z80
 /// master-cycle carry, the nine-bit Z80 bank register, the complete YM2612 and
-/// PSG state and the 48 kHz mixer frame phase and device resamplers. Version 6
-/// is the only accepted version; payloads v1-v5 are rejected with a typed error
-/// instead of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 6;
+/// PSG state and the 48 kHz mixer frame phase and device resamplers; version 7
+/// adds the eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`,
+/// which are canonical state because they affect later reads. Version 7 is the
+/// only accepted version; payloads v1-v6 are rejected with a typed error instead
+/// of being reinterpreted.
+pub const PAYLOAD_VERSION: u16 = 7;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 6.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K6";
-/// State-hash magic for state hash version 6.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE6";
-/// Configuration-hash magic for configuration hash version 6.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF6";
+/// Snapshot payload magic for payload version 7.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K7";
+/// State-hash magic for state hash version 7.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE7";
+/// Configuration-hash magic for configuration hash version 7.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF7";
 
-/// Fixed byte length of the Z80, arbitration and audio state tail.
+/// Fixed byte length of the Z80, arbitration, I/O and audio state tail.
 ///
 /// It follows the variable-length interrupt-scheduler snapshot, so the payload
 /// parser splits the scheduler by subtracting this length from the remaining
@@ -194,6 +196,7 @@ const AUDIO_STATE_TAIL_LEN: usize = Z80_SNAPSHOT_LEN
     + 8
     + 2
     + 2
+    + 8
     + YM_SNAPSHOT_LEN
     + PSG_SNAPSHOT_LEN
     + MIXER_SNAPSHOT_LEN;
@@ -572,6 +575,7 @@ impl MegadriveBackend {
             z80_credit: self.z80_credit,
             arbitration: self.bus.arbitration(),
             z80_bank: self.bus.z80_bank(),
+            io_control: self.bus.io_control(),
             ym: &ym,
             psg: &psg,
             mixer: &mixer,
@@ -618,6 +622,7 @@ impl MegadriveBackend {
             z80_credit: self.z80_credit,
             arbitration: self.bus.arbitration(),
             z80_bank: self.bus.z80_bank(),
+            io_control: self.bus.io_control(),
             ym: &ym,
             psg: &psg,
             mixer: &mixer,
@@ -1031,6 +1036,7 @@ impl Backend for MegadriveBackend {
             z80_credit: parsed.z80_credit,
             arbitration: parsed.arbitration,
             z80_bank: parsed.z80_bank,
+            io_control: &parsed.io_control,
             ym: parsed.ym,
             psg: parsed.psg,
             mixer: parsed.mixer,
@@ -1080,6 +1086,10 @@ impl Backend for MegadriveBackend {
             .map_err(|error| BackendError::InvalidSnapshot(error.to_string()))?;
         bus.restore_arbitration(parsed.arbitration);
         bus.restore_z80_bank(parsed.z80_bank);
+        bus.restore_io_control(parsed.io_control);
+        // Diagnostic counters describe execution since the restore (W1T/F4); the
+        // VDP half is reset by `Vdp::restore_bytes` above.
+        bus.reset_diagnostic_counters();
         let mut scheduler = self.scheduler.clone();
         scheduler.restore_bytes(parsed.scheduler).map_err(|error| {
             BackendError::InvalidSnapshot(format!("invalid interrupt state: {error}"))
@@ -1367,29 +1377,47 @@ impl DebugAccess for MegadriveBackend {
 
 /// Exclusive end of the mapped window that contains `address`, if any.
 ///
-/// Debugger reads may target the cartridge image or work RAM; debugger writes
-/// may target work RAM only. The returned value is the end of the window that
-/// actually contains the requested start address, so a range overrun can report
-/// a [`BackendError::OutOfBounds::limit`] that is greater than the start address
+/// Debugger reads may target the cartridge image, work RAM (primary window or
+/// mirror) or the control register file; debugger writes may target work RAM
+/// only. A mirror address is bounded by its own 64 KiB block, which is what the
+/// bus serves, so an overrun reports the first byte the block cannot serve. The
+/// returned value is the end of the window that actually contains the requested
+/// start address, so a range overrun can report a
+/// [`BackendError::OutOfBounds::limit`] that is greater than the start address
 /// and names the region the request exceeded.
 ///
 /// `None` means no mapped window contains the start address (an unmapped hole,
 /// the VDP port window, or an address above the 32-bit bus). That is not a range
 /// overrun and must not be reported as out-of-bounds.
 fn debugger_window_end(rom_len: usize, address: u64, writable: bool) -> Option<u64> {
-    let start = u32::try_from(address).ok()?;
+    // The bus decodes 24-bit addresses, so the window check uses the same
+    // truncation; otherwise a mirror address above `0x00FFFFFF` would be
+    // classified as an unmapped hole while the bus serves it.
+    let start = bus_address(u32::try_from(address).ok()?);
+    if (RAM_BASE..RAM_END).contains(&start) {
+        return Some(u64::from(RAM_END));
+    }
+    if start >= RAM_MIRROR_BASE {
+        let block_start = start & !0xFFFF;
+        return Some(u64::from(block_start) + 0x1_0000);
+    }
     if writable {
-        return (RAM_BASE..RAM_END)
-            .contains(&start)
-            .then_some(u64::from(RAM_END));
+        // The bus serves a single debugger write window: work RAM. The control
+        // register file is a readable window, but `write_memory` reaches it
+        // through its own path, so a caller that starts there is classified by
+        // the scratch path in `write_memory` instead of this helper.
+        return io_control_offset(start)
+            .map(|_| u64::from(IO_CONTROL_BASE) + IO_CONTROL_LEN as u64);
     }
     let rom_len = rom_len.min(ROM_END as usize);
     if (start as usize) < rom_len {
         return Some(u64::from(ROM_BASE) + rom_len as u64);
     }
-    (RAM_BASE..RAM_END)
-        .contains(&start)
-        .then_some(u64::from(RAM_END))
+    // The control register file is a readable, side-effect-free window.
+    if io_control_offset(start).is_some() {
+        return Some(u64::from(IO_CONTROL_BASE) + IO_CONTROL_LEN as u64);
+    }
+    None
 }
 
 /// Maps a side-effect-free debugger bus failure to the backend contract.
@@ -1537,6 +1565,7 @@ struct StateView<'a> {
     z80_credit: u64,
     arbitration: BusArbitration,
     z80_bank: u16,
+    io_control: &'a [u8; IO_CONTROL_LEN],
     ym: &'a [u8],
     psg: &'a [u8],
     mixer: &'a [u8],
@@ -1605,6 +1634,7 @@ fn state_body(state: &StateView<'_>) -> Vec<u8> {
     body.write_u8(u8::from(state.arbitration.requested()));
     body.write_u8(u8::from(state.arbitration.reset_asserted()));
     body.write_u16_be(state.z80_bank);
+    body.write_bytes(state.io_control);
     body.write_bytes(state.ym);
     body.write_bytes(state.psg);
     body.write_bytes(state.mixer);
@@ -1655,6 +1685,7 @@ struct ParsedState<'a> {
     z80_credit: u64,
     arbitration: BusArbitration,
     z80_bank: u16,
+    io_control: [u8; IO_CONTROL_LEN],
     ym: &'a [u8],
     psg: &'a [u8],
     mixer: &'a [u8],
@@ -1751,6 +1782,8 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
             "Z80 bank register is wider than nine bits".to_owned(),
         ));
     }
+    let mut io_control = [0_u8; IO_CONTROL_LEN];
+    io_control.copy_from_slice(reader.read_exact(IO_CONTROL_LEN).map_err(payload_error)?);
     let ym = reader.read_exact(YM_SNAPSHOT_LEN).map_err(payload_error)?;
     let psg = reader.read_exact(PSG_SNAPSHOT_LEN).map_err(payload_error)?;
     let mixer = reader
@@ -1780,6 +1813,7 @@ fn parse_payload(payload: &[u8]) -> Result<ParsedState<'_>, BackendError> {
         z80_credit,
         arbitration: BusArbitration::from_parts(requested, reset_asserted),
         z80_bank,
+        io_control,
         ym,
         psg,
         mixer,
@@ -1919,7 +1953,7 @@ pub fn interrupt_rom(mask: u8) -> Vec<u8> {
         0x46, 0xFC, 0x27, 0x00, // MOVE.W #$2700,SR (explicitly mask the VDP levels)
         0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0x00C00004)
         0x30, 0x3C, 0x00, 0x64, // MOVE.W #100,D0 (busy delay over two scanlines)
-        0x51, 0xC8, 0xFF, 0xFC, // DBRA D0,*-4 (10 cycles per iteration)
+        0x51, 0xC8, 0xFF, 0xFE, // DBRA D0,*-2 (10 cycles per iteration)
         0x46, 0xFC, // MOVE.W #imm,SR: lower the mask to `mask`
     ];
     let lowered_status = 0x2000_u16 | (u16::from(mask) << 8);
@@ -2072,24 +2106,116 @@ mod tests {
     use chronofork_sessions::SessionManager;
 
     use super::{
-        HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_VERSION,
-        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom, stamp_synthetic_header,
+        HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION,
+        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom, map_scheduler, map_z80,
+        stamp_synthetic_header,
     };
+    /// First index of the port 3/EXT control stub inside the control file.
+    const IO_CONTROL_STUB_OFFSET: usize = 4;
     use crate::bus::{
-        BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, RAM_BASE, RAM_END,
-        RAM_SIZE, ROM_END,
+        BusError, CONTROLLER_NEUTRAL, CONTROLLER_PORT_1, CONTROLLER_PORT_2, IO_CONTROL_BASE,
+        IO_CONTROL_LEN, RAM_BASE, RAM_END, RAM_SIZE, ROM_END,
     };
     use crate::cycles::MASTER_CYCLES_PER_LINE;
     use crate::interrupts::{
         InterruptLevel, InterruptScheduler, NTSC_ACTIVE_LINES, NTSC_LINES_PER_FRAME,
-        SchedulerConfig,
+        SchedulerConfig, SchedulerError,
     };
     use crate::vdp::{
         SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING, VdpError,
     };
+    use crate::z80::{Z80Bus, Z80Error};
 
     fn factory() -> MegadriveFactory {
         MegadriveFactory::new(demo_rom()).expect("valid demo ROM")
+    }
+
+    #[test]
+    fn the_z80_undecoded_counter_is_not_canonical() {
+        // The counter is diagnostic: two machines that differ only in how many
+        // guest accesses were served by the undecoded path must serialize to the
+        // same payload, so no payload version bump is needed (W1R).
+        let quiet = factory().create_machine().expect("machine");
+        let mut noisy = factory().create_machine().expect("machine");
+        assert_eq!(quiet.bus.unmapped_z80_accesses(), 0);
+        Z80Bus::write8(&mut noisy.bus, 0x7F64, 0x5A).expect("undecoded write");
+        Z80Bus::read8(&mut noisy.bus, 0x6100).expect("undecoded read");
+        assert_eq!(noisy.bus.unmapped_z80_accesses(), 2);
+
+        let quiet = quiet.snapshot().expect("snapshot");
+        let noisy = noisy.snapshot().expect("snapshot");
+        assert_eq!(quiet.payload().len(), noisy.payload().len());
+        assert_eq!(
+            quiet.payload(),
+            noisy.payload(),
+            "a diagnostic count cannot move the canonical payload"
+        );
+    }
+
+    #[test]
+    fn used_backend_restore_resets_z80_counter_and_keeps_payload_identical() {
+        // The backend restore clones the bus, validates, then commits; the
+        // diagnostic counter describes execution since the restore, so the
+        // replacement state starts at zero (W1T/F4) while the payload stays
+        // byte-identical because the counter is not canonical.
+        let clean = factory()
+            .create_machine()
+            .expect("machine")
+            .snapshot()
+            .expect("snapshot");
+        let mut used = factory().create_machine().expect("machine");
+        Z80Bus::write8(&mut used.bus, 0x7F64, 0x5A).expect("undecoded write");
+        assert_eq!(used.bus.unmapped_z80_accesses(), 1);
+
+        used.restore(&clean).expect("restore");
+        assert_eq!(
+            used.bus.unmapped_z80_accesses(),
+            0,
+            "a valid restore resets the Z80 diagnostic count"
+        );
+        let restored = used.snapshot().expect("snapshot");
+        assert_eq!(restored.payload(), clean.payload());
+
+        // A rejected restore keeps the machine and its diagnostic intact.
+        Z80Bus::write8(&mut used.bus, 0x6100, 0x5A).expect("undecoded write");
+        assert_eq!(used.bus.unmapped_z80_accesses(), 1);
+        // Tamper the payload magic so the restore is rejected before it commits.
+        let mut corrupt = clean.payload().to_vec();
+        corrupt[..8].copy_from_slice(b"CFMD68KX");
+        let corrupt = BackendSnapshot::new(
+            clean.backend_id().clone(),
+            clean.backend_version().to_owned(),
+            clean.format_version(),
+            clean.tick(),
+            clean.config_hash(),
+            clean.state_hash(),
+            corrupt,
+        );
+        assert!(used.restore(&corrupt).is_err());
+        assert_eq!(
+            used.bus.unmapped_z80_accesses(),
+            1,
+            "a rejected restore keeps the previous diagnostic"
+        );
+    }
+
+    #[test]
+    fn host_level_errors_are_never_swallowed() {
+        // The guest-access conversion is per channel and deliberate; host-level
+        // failures keep their typed identity. InvalidConfiguration and
+        // InvalidSnapshot have their own rejection tests in this module.
+        assert!(matches!(
+            map_z80(Z80Error::SnapshotMagic),
+            BackendError::Execution(_)
+        ));
+        assert!(matches!(
+            map_scheduler(SchedulerError::TickOverflow),
+            BackendError::TickOverflow
+        ));
+        assert!(matches!(
+            map_scheduler(SchedulerError::SnapshotMagicMismatch),
+            BackendError::Execution(_)
+        ));
     }
 
     /// Factory for the mask-gating synthetic ROM with a four-instruction line.
@@ -2211,7 +2337,7 @@ mod tests {
             &[0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04]
         ); // MOVE.W #$8030,(0x00C00004): enable VBlank and HBlank
         assert_eq!(&rom[0x20C..0x210], &[0x30, 0x3C, 0x00, 0x64]);
-        assert_eq!(&rom[0x210..0x214], &[0x51, 0xC8, 0xFF, 0xFC]);
+        assert_eq!(&rom[0x210..0x214], &[0x51, 0xC8, 0xFF, 0xFE]);
         assert_eq!(&rom[0x214..0x218], &[0x46, 0xFC, 0x23, 0x00]);
         assert_eq!(&rom[0x218..0x21A], &[0x70, 0x00]); // MOVEQ #0,D0
         assert_eq!(
@@ -2914,7 +3040,7 @@ mod tests {
             0x33, 0xFC, 0x80, 0x30, 0x00, 0xC0, 0x00, 0x04, // MOVE.W #$8030,(0xC00004)
             0x30, 0x3C, 0x03, 0xE8, // MOVE.W #1000,D0
             0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // loop: MOVE.W (0xC00004).L,D5
-            0x51, 0xC8, 0xFF, 0xF6, // DBRA D0,loop
+            0x51, 0xC8, 0xFF, 0xF8, // DBRA D0,loop (instruction+2)
             0x46, 0xFC, 0x23, 0x00, // MOVE.W #$2300,SR (lower the mask)
             0x3A, 0x39, 0x00, 0xC0, 0x00, 0x04, // MOVE.W (0xC00004).L,D5
             0x60, 0xF8, // BRA.S back to the status read
@@ -3215,19 +3341,58 @@ mod tests {
         let snapshot = machine.snapshot().expect("snapshot");
         assert_eq!(snapshot.payload()[8..10], PAYLOAD_VERSION.to_le_bytes());
 
-        let mut old_payload = snapshot.payload().to_vec();
-        old_payload[0..8].copy_from_slice(b"CFMD68K1");
-        old_payload[8..10].copy_from_slice(&1_u16.to_le_bytes());
-        let old = BackendSnapshot::new(
-            snapshot.backend_id().clone(),
-            snapshot.backend_version(),
-            snapshot.format_version(),
-            snapshot.tick(),
-            snapshot.config_hash(),
-            snapshot.state_hash(),
-            old_payload,
-        );
-        assert!(machine.restore(&old).is_err());
+        // Every earlier version is rejected with a typed error, never
+        // reinterpreted as v7 bytes.
+        for (index, magic, version) in [
+            (1_u16, *b"CFMD68K1", 1_u16),
+            (2, *b"CFMD68K2", 2),
+            (3, *b"CFMD68K3", 3),
+            (4, *b"CFMD68K4", 4),
+            (5, *b"CFMD68K5", 5),
+            (6, *b"CFMD68K6", 6),
+        ] {
+            let mut old_payload = snapshot.payload().to_vec();
+            old_payload[0..8].copy_from_slice(&magic);
+            old_payload[8..10].copy_from_slice(&version.to_le_bytes());
+            let old = BackendSnapshot::new(
+                snapshot.backend_id().clone(),
+                snapshot.backend_version(),
+                snapshot.format_version(),
+                snapshot.tick(),
+                snapshot.config_hash(),
+                snapshot.state_hash(),
+                old_payload,
+            );
+            // The magic is checked before the version field, so an old magic is
+            // rejected on its own terms; either way the error is typed and
+            // nothing is reinterpreted. The version byte is also exercised on
+            // its own below.
+            let rejected = machine.restore(&old);
+            assert!(
+                matches!(rejected, Err(BackendError::InvalidSnapshot(_))),
+                "payload v{index} must be rejected with a typed error, got {rejected:?}"
+            );
+            // Same v7 magic with an old version field is rejected by the version
+            // check rather than the magic check.
+            let mut versioned = snapshot.payload().to_vec();
+            versioned[8..10].copy_from_slice(&version.to_le_bytes());
+            let versioned = BackendSnapshot::new(
+                snapshot.backend_id().clone(),
+                snapshot.backend_version(),
+                snapshot.format_version(),
+                snapshot.tick(),
+                snapshot.config_hash(),
+                snapshot.state_hash(),
+                versioned,
+            );
+            let rejected = machine.restore(&versioned);
+            assert!(
+                matches!(&rejected, Err(BackendError::InvalidSnapshot(message))
+                    if message.contains(&format!("version {version}"))
+                        && message.contains(&format!("expected {PAYLOAD_VERSION}"))),
+                "payload version {index} must be rejected by the version check: {rejected:?}"
+            );
+        }
 
         let mut bad_vdp = snapshot.payload().to_vec();
         let vdp_start = bad_vdp
@@ -3509,15 +3674,29 @@ mod tests {
     #[test]
     fn protected_and_unmapped_writes_are_not_reported_as_out_of_bounds() {
         let mut machine = factory().create_machine().expect("machine");
-        for address in [0x200, u64::from(ROM_END - 1), u64::from(RAM_BASE - 1)] {
+        // The cartridge, the unmapped hole above the ROM window and the YM2612
+        // window are all failures with no containing writable window, so none of
+        // them may be reported as a bounds overrun.
+        for address in [0x200, u64::from(ROM_END), 0x00A0_4004] {
             let error = machine
                 .write_memory(address, &[0])
                 .expect_err("write outside work RAM must fail");
             assert!(
-                !matches!(error, BackendError::OutOfBounds { .. }),
+                matches!(error, BackendError::Execution(_)),
                 "an address that is not a range overrun must not be out of bounds: {error}"
             );
         }
+        // The `0xE00000..=0xFEFFFF` range is the work RAM mirror, so a write
+        // through it succeeds and lands on the same byte as the primary window.
+        machine
+            .write_memory(0x00E0_0004, &[0xAB])
+            .expect("mirror write");
+        assert_eq!(
+            machine
+                .read_memory(u64::from(RAM_BASE) + 4, 1)
+                .expect("ram read"),
+            vec![0xAB]
+        );
         // A real overrun reports the containing window end, which is strictly
         // above the requested start address, so the limit explains the failure.
         let last_ram = u64::from(RAM_BASE) + RAM_SIZE as u64 - 1;
@@ -3545,15 +3724,40 @@ mod tests {
             machine.read_memory(0, 2).expect("rom read"),
             vec![0x01, 0x00]
         );
-        // The last RAM byte is readable; one byte more is reported as bounds.
+        // The last RAM byte is readable, but a range that would pass the end of
+        // the 24-bit bus is a bounds failure at the first unserved byte
+        // (`0x01000000` decodes to ROM, so it is not RAM).
         let last_ram = u64::from(RAM_BASE) + RAM_SIZE as u64 - 1;
+        assert_eq!(
+            machine.read_memory(last_ram, 1).expect("last ram byte"),
+            vec![0]
+        );
         assert_eq!(
             machine.read_memory(last_ram, 2),
             Err(BackendError::OutOfBounds {
                 address: last_ram,
                 length: 2,
                 limit: u64::from(RAM_END),
-            })
+            }),
+            "a range past the end of the 24-bit bus is a bounds failure"
+        );
+        assert_eq!(
+            machine
+                .read_memory(u64::from(RAM_END), 1)
+                .expect("rom alias"),
+            vec![0x01]
+        );
+        // A cartridge overrun is classified against the real image end (the
+        // window the bus serves), not the 4 MiB cartridge address span.
+        let rom_len = demo_rom().len();
+        assert_eq!(
+            machine.read_memory(0, rom_len + 1),
+            Err(BackendError::OutOfBounds {
+                address: 0,
+                length: rom_len + 1,
+                limit: rom_len as u64,
+            }),
+            "the cartridge limit is the image length (R1b-F1)"
         );
         // An enormous length is rejected by range arithmetic before the backend
         // can ask the allocator for it; an allocation of this size would abort.
@@ -3834,38 +4038,260 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v6 / state hash v6 / configuration hash v6
+        // Golden values for payload v7 / state hash v7 / configuration hash v7
         // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
         // moved the outer identity from v4 to v5; phase 8.4 task 14 moved it to
-        // v6 and the body now also embeds the Z80 register snapshot and 8 KiB Z80
-        // RAM, the arbitration latches and Z80 master-cycle carry, and the fixed
-        // YM2612, PSG and 48 kHz mixer snapshots. The VDP advances on the
+        // v6; the W1 bus phase moved it to v7 and the body now also embeds the
+        // eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`
+        // (payload length 206 251 -> 206 259). The VDP advances on the
         // master-cycle timeline, so the six-step state includes a non-zero
-        // line/dot position. The length and both hashes below are the current v6
-        // golden; v1-v5 payloads are rejected before any body byte is
+        // line/dot position. The length and all three hashes below are the
+        // current v7 golden; v1-v6 payloads are rejected before any body byte is
         // reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 206_251);
-        // Re-pinned by the 8.4 repair round (R1-F2/R1-F3): the PSG noise periods
-        // moved from 512/1024/2048 to 32/64/128 internal ticks, which changes the
-        // canonical noise counter over time, and the 0xA11100 bus request now
-        // follows the hardware ZBR polarity. The payload length and the
-        // configuration hash are unchanged, so only canonical *state* bytes moved.
+        assert_eq!(snapshot.payload().len(), 206_259);
+        // Re-pinned once more by this phase: the body gained the eight control
+        // register bytes, so the payload hash and the state hash moved by
+        // construction. The configuration hash moved with the `CFMDCONF7` magic
+        // (the cartridge/ROM/video configuration itself is unchanged). The prior
+        // v6 values were re-pinned by the 8.4 repair round (R1-F2/R1-F3): the PSG
+        // noise periods moved from 512/1024/2048 to 32/64/128 internal ticks and
+        // the 0xA11100 bus request now follows the hardware ZBR polarity.
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "fa87fe3f519c9f940194f1e7bf0e1db091dbbe43ec39de5cfb859979ae6311e1"
+            "e89067cc8e46902a6424655957db9917af9cdb3d3773d655cbe724c81d29a252"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "2e2db861007ad5ab9eee89ae3c5eea87ea05b28505b1b343da42b5788b91998b"
+            "61c93ed39ef1ad05e0451912330399f4d6eb14946544dba4f7a3c9bb4479d720"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "695ab251aa18ec298e9461b77d46faccc7e302d5b12c87156d5fc714a3af7268"
+            "c7731b6c81d4618023524d78431aa359e7a81643f6bfd5b30233cb07b14d3fd6"
+        );
+    }
+
+    #[test]
+    fn io_control_v7_round_trip() {
+        let factory = factory();
+        let mut machine = factory.create_machine().expect("machine");
+        for _ in 0..4 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        // Non-zero port 1/2 control bytes, so the round trip would also catch a
+        // field that was serialized as zeros. The port 3/EXT half is the
+        // ADR-0014 constant-zero stub, so those writes are discarded.
+        for offset in 0..IO_CONTROL_STUB_OFFSET {
+            machine
+                .write_memory(
+                    u64::from(IO_CONTROL_BASE) + offset as u64,
+                    &[0x80 + offset as u8],
+                )
+                .expect("control write");
+        }
+        for offset in IO_CONTROL_STUB_OFFSET..IO_CONTROL_LEN {
+            machine
+                .write_memory(
+                    u64::from(IO_CONTROL_BASE) + offset as u64,
+                    &[0x80 + offset as u8],
+                )
+                .expect("stub write is discarded, not rejected");
+        }
+        let mut expected: Vec<u8> = (0..IO_CONTROL_LEN).map(|o| 0x80 + o as u8).collect();
+        for byte in expected.iter_mut().skip(IO_CONTROL_STUB_OFFSET) {
+            *byte = 0;
+        }
+        assert_eq!(
+            machine
+                .read_memory(u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("control read"),
+            expected
+        );
+
+        let snapshot = machine.snapshot().expect("snapshot");
+        assert_eq!(
+            &snapshot.payload()[..PAYLOAD_MAGIC.len()],
+            &PAYLOAD_MAGIC,
+            "the snapshot must carry the v7 payload magic"
+        );
+
+        // Mutate the live registers, then restore: the latched bytes come back.
+        machine
+            .write_memory(u64::from(IO_CONTROL_BASE), &[0x00])
+            .expect("mutate control");
+        machine
+            .write_memory(0x00FF_0000, &[0xEE])
+            .expect("mutate ram");
+        machine.restore(&snapshot).expect("restore");
+        assert_eq!(
+            machine
+                .read_memory(u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("control read after restore"),
+            expected
+        );
+        assert_eq!(
+            machine
+                .read_memory(0x00FF_0000, 1)
+                .expect("ram read after restore"),
+            vec![0x00]
+        );
+        assert_eq!(
+            machine.snapshot().expect("re-snapshot").state_hash(),
+            snapshot.state_hash(),
+            "a restored control file must hash back to the snapshot"
+        );
+
+        // A fork from the snapshot keeps the control bytes and diverges only
+        // after a mutation.
+        let mut manager = SessionManager::new(Arc::new(factory));
+        let source = manager.create_session().expect("source");
+        for offset in 0..IO_CONTROL_STUB_OFFSET {
+            manager
+                .write_memory(
+                    source,
+                    u64::from(IO_CONTROL_BASE) + offset as u64,
+                    &[0x40 + offset as u8],
+                )
+                .expect("session control write");
+        }
+        let checkpoint = manager.snapshot(source).expect("checkpoint");
+        let fork = manager
+            .fork_from_snapshot(source, checkpoint)
+            .expect("fork");
+        assert_eq!(
+            manager
+                .read_memory(fork, u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("fork control read"),
+            vec![0x40, 0x41, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00]
+        );
+        manager
+            .write_memory(fork, u64::from(IO_CONTROL_BASE), &[0x01])
+            .expect("fork mutation");
+        assert_ne!(
+            manager
+                .inspect(fork)
+                .expect("fork inspect")
+                .machine
+                .state_hash,
+            manager
+                .inspect(source)
+                .expect("source inspect")
+                .machine
+                .state_hash
+        );
+        assert_eq!(
+            manager
+                .read_memory(source, u64::from(IO_CONTROL_BASE), 1)
+                .expect("source control read"),
+            vec![0x40],
+            "the fork mutation must not touch the source"
+        );
+    }
+
+    #[test]
+    fn io_control_stub_discards_writes_and_stays_zero_across_a_snapshot() {
+        // ADR-0014: the port 3/EXT control pairs (0xA1000C..=0xA1000F) are a
+        // stub pinned to zero. A write is acknowledged and discarded on the
+        // execution, debugger and control-port paths, the long read of the
+        // whole file reads zero on those lanes, and a snapshot/restore keeps
+        // them zero while the port 1/2 pairs keep their latched bytes.
+        let factory = factory();
+        let mut machine = factory.create_machine().expect("machine");
+        for _ in 0..4 {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        // The functional pairs latch.
+        for offset in 0..4 {
+            machine
+                .write_memory(
+                    u64::from(IO_CONTROL_BASE) + offset as u64,
+                    &[0xA0 + offset as u8],
+                )
+                .expect("port 1/2 write");
+        }
+        // The stub half discards.
+        for offset in 4..IO_CONTROL_LEN {
+            machine
+                .write_memory(
+                    u64::from(IO_CONTROL_BASE) + offset as u64,
+                    &[0x80 + offset as u8],
+                )
+                .expect("stub write is discarded, not rejected");
+        }
+        let expected = vec![0xA0, 0xA1, 0xA2, 0xA3, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(
+            machine
+                .read_memory(u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("control read"),
+            expected,
+            "the stub bytes must read zero"
+        );
+
+        let snapshot = machine.snapshot().expect("snapshot");
+        machine
+            .write_memory(u64::from(IO_CONTROL_BASE), &[0xFF])
+            .expect("mutate a functional byte");
+        machine.restore(&snapshot).expect("restore");
+        assert_eq!(
+            machine
+                .read_memory(u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("control read after restore"),
+            expected
+        );
+
+        // A rejected range that overruns the control file by one byte is
+        // atomic: neither the stub byte nor any functional byte moves, and the
+        // state hash is unchanged (the R1-F3 regression at the backend).
+        let hash_before = machine.snapshot().expect("snapshot").state_hash();
+        assert!(
+            machine
+                .write_memory(
+                    u64::from(IO_CONTROL_BASE) + IO_CONTROL_LEN as u64 - 1,
+                    &[0x55, 0x66,]
+                )
+                .is_err(),
+            "a write that overruns the control file must fail"
+        );
+        assert_eq!(
+            machine
+                .read_memory(u64::from(IO_CONTROL_BASE), IO_CONTROL_LEN)
+                .expect("control read after rejection"),
+            expected,
+            "a rejected write must not store its first byte"
+        );
+        assert_eq!(
+            machine.snapshot().expect("snapshot").state_hash(),
+            hash_before,
+            "a rejected write must not move the state hash"
+        );
+    }
+
+    #[test]
+    fn io_control_affects_the_state_hash() {
+        let factory = factory();
+        let mut base = factory.create_machine().expect("machine");
+        for _ in 0..4 {
+            base.step(InputFrame::NEUTRAL).expect("step");
+        }
+        let neutral = base.snapshot().expect("snapshot").state_hash();
+
+        let mut latched = factory.create_machine().expect("machine");
+        for _ in 0..4 {
+            latched.step(InputFrame::NEUTRAL).expect("step");
+        }
+        // Nothing but a control register changes, so the control file is proof
+        // of canonical state rather than decoration.
+        latched
+            .write_memory(u64::from(IO_CONTROL_BASE) + 3, &[0x5A])
+            .expect("control write");
+        let changed = latched.snapshot().expect("snapshot").state_hash();
+        assert_ne!(
+            neutral, changed,
+            "the control file must enter the state hash"
         );
     }
 

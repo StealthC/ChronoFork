@@ -35,9 +35,9 @@
 //!   return the requested byte lane of the transferred word.
 //! - Space-addressed `write_word`/`read_word` primitives for VRAM, CRAM and
 //!   VSRAM with the documented wrapping (CRAM aliases every 64 words, VSRAM
-//!   wraps modulo its 40 words through a 9-bit address). CRAM/VSRAM data-port
-//!   reads are supported for CRAM; VSRAM reads have no decoded command in this
-//!   slice and are rejected.
+//!   wraps modulo its 40 words through a 9-bit address). CRAM and VSRAM
+//!   data-port reads are both decoded: VSRAM read is the command code `0b0100`
+//!   and VSRAM write `0b0101` (the boot fixtures' `0x4000`/`0x0010` pair).
 //! - Master-cycle line timing through [`Vdp::advance_master`]: dot, line and
 //!   frame counters, the approximate H/V counters and the HV-counter port.
 //!   VBlank/HBlank status comes from the position; interlace and dot-exact
@@ -58,14 +58,18 @@
 //! - Canonical device state: 64 CRAM words, 40 VSRAM words, the bounded write
 //!   FIFO, DMA state, the frame index, the line/dot position and the latched
 //!   status conditions.
-//! - Eager DMA with pre-validated source/destination ranges: memory to VRAM,
-//!   CRAM or VSRAM, VRAM fill and VRAM copy. The register path
+//! - Eager DMA with pre-validated source/destination ranges: VRAM fill and VRAM
+//!   copy. The three 68000-memory modes (`memory->VRAM`/`CRAM`/`VSRAM`) are
+//!   **rejected** with [`VdpError::DmaMemorySourceUnavailable`] before any read
+//!   or write: this slice has no 68000-memory view for the VDP, so the transfer
+//!   engine's source is VRAM itself and a "memory" transfer would silently
+//!   produce plausible but wrong pixels. The register path
 //!   ([`Vdp::start_dma_from_registers`]) uses the hardware layout
-//!   (`0x13`/`0x14` length, `0x15`/`0x16`/`0x17` source and mode, with modes 0/1
-//!   taking the destination from the command code, 2 fill and 3 copy), and is
-//!   gated by register `0x01` bit 4. A transfer sets `DMA_BUSY` and records its
-//!   slot cost for [`Vdp::take_dma_cycles`]; the 68000-side stalls are not
-//!   modelled.
+//!   (`0x13`/`0x14` length, `0x15`/`0x16`/`0x17` source and mode, with mode 2
+//!   fill and mode 3 copy; modes 0/1 select a 68000-memory destination from the
+//!   command code and land in the rejection), and is gated by register `0x01`
+//!   bit 4. A transfer sets `DMA_BUSY` and records its slot cost for
+//!   [`Vdp::take_dma_cycles`]; the 68000-side stalls are not modelled.
 //! - The bounded four-word write FIFO: data-port writes fill it in order; a
 //!   write while it is full adds one deterministic 68000 wait slot (never
 //!   dropping or reordering a word), and the owner drains it after an advance.
@@ -101,11 +105,12 @@
 //! pending/acknowledge surface and the derived VINT latches are implemented; the
 //! backend uses them for 68000 level-6/level-4 delivery.
 //!
-//! **Not implemented (and not claimed):** VSRAM data-port reads, Z80/PSG
-//! interaction, audio, interlace, the byte-swapped/interleaved physical VRAM
-//! layout, dot-exact H/V counters, exact H32 window geometry, exact line-mode
-//! vertical scrolling (see the `render` module notes), 68000-side DMA stalls and
-//! cycle-accurate port timing.
+//! **Not implemented (and not claimed):** the 68000-memory DMA modes (rejected
+//! with a typed error, see above; the VDP has no 68000-memory view in this
+//! slice), VSRAM data-port reads, Z80/PSG interaction, audio, interlace, the
+//! byte-swapped/interleaved physical VRAM layout, dot-exact H/V counters, exact
+//! H32 window geometry, exact line-mode vertical scrolling (see the `render`
+//! module notes), 68000-side DMA stalls and cycle-accurate port timing.
 //!
 //! **Deterministic reset state:** VRAM, CRAM, VSRAM, the FIFO, DMA state,
 //! status latches, the frame index and the line/dot position are zero, all 24
@@ -130,7 +135,7 @@ use crate::interrupts::VideoStandard;
 use fifo::Fifo;
 use regs::{
     CODE_CRAM_READ, CODE_CRAM_WRITE, CODE_DMA, CODE_READ_INHIBIT, CODE_REGISTER_WRITE,
-    CODE_VRAM_READ, CODE_VRAM_WRITE, CODE_VSRAM_WRITE,
+    CODE_VRAM_READ, CODE_VRAM_READ_8BIT, CODE_VRAM_WRITE, CODE_VSRAM_READ, CODE_VSRAM_WRITE,
 };
 use timing::HBLANK_START_MASTER_CYCLES;
 
@@ -242,6 +247,17 @@ pub enum VdpError {
         /// Current six-bit command code.
         code: u8,
     },
+    /// A data-port access whose command code names a **documented** operation this
+    /// slice does not implement.
+    ///
+    /// The only case today is the `0b1100` 8-bit VRAM read
+    /// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`). This is a capability
+    /// gap, deliberately tracked apart from [`Self::UnsupportedTarget`]: an
+    /// invalid target is a hardware discard, a missing capability is not.
+    UnsupportedBitRead {
+        /// Current six-bit command code.
+        code: u8,
+    },
     /// A DMA command whose destination space, mode or copy flag cannot be
     /// decoded (for example a DX command with no data target, or a copy
     /// without command bit CD4).
@@ -325,6 +341,19 @@ pub enum VdpError {
         /// Number of words the destination can hold.
         capacity: u32,
     },
+    /// A DMA transfer whose source is 68000 memory.
+    ///
+    /// This slice has no 68000-memory view for the VDP: the transfer engine
+    /// reads its source from VRAM, so a `memory->VRAM`/`CRAM`/`VSRAM` transfer
+    /// would silently read VRAM instead of the programmed memory address and
+    /// produce plausible but wrong pixels. The mode is rejected with a typed
+    /// error before any byte is read or written.
+    DmaMemorySourceUnavailable {
+        /// Rejected transfer mode.
+        mode: DmaMode,
+        /// Number of words the rejected transfer would have moved.
+        words: u32,
+    },
     /// A DMA source and destination overlap inside VRAM.
     DmaSourceDestinationOverlap {
         /// Source byte address.
@@ -356,6 +385,11 @@ impl fmt::Display for VdpError {
             Self::UnsupportedTarget { code } => write!(
                 f,
                 "VDP data-port access with unsupported command code 0x{code:02X}"
+            ),
+            Self::UnsupportedBitRead { code } => write!(
+                f,
+                "VDP 8-bit VRAM read (command code 0x{code:02X}) is not implemented \
+                 in this slice (capability gap, not an invalid target)"
             ),
             Self::DmaUnsupported { code } => write!(
                 f,
@@ -414,6 +448,11 @@ impl fmt::Display for VdpError {
                 f,
                 "VDP DMA destination {target:?} from word {word_index} for {words} words \
                  exceeds the {capacity}-word space"
+            ),
+            Self::DmaMemorySourceUnavailable { mode, words } => write!(
+                f,
+                "VDP DMA mode {mode:?} for {words} words needs a 68000-memory source, which \
+                 this slice does not model"
             ),
             Self::DmaSourceDestinationOverlap {
                 source,
@@ -504,6 +543,20 @@ pub struct Vdp {
     /// Slot cost of the most recent eager DMA transfer, in master cycles.
     /// Derived observation consumed by the owner, not serialized.
     dma_cycles: u32,
+    /// Data-port accesses whose command code is not modelled, discarded exactly
+    /// like the pinned oracle's `default:` cases instead of failing the host.
+    ///
+    /// Diagnostic only, like [`Vdp::dma_cycles`]: it is deliberately **not**
+    /// serialized by [`Vdp::snapshot_bytes`], so two machines that discarded a
+    /// different number of accesses still serialise byte-for-byte equal.
+    discarded_data_port_accesses: u64,
+    /// Data-port accesses rejected because a documented operation is not
+    /// implemented (the `0b1100` 8-bit VRAM read).
+    ///
+    /// Kept apart from [`Vdp::discarded_data_port_accesses`] on purpose: a
+    /// capability gap is not a hardware discard, and mixing them would hide a
+    /// missing feature behind a modelling choice (W1X / W1U-F2). Diagnostic only.
+    capability_gap_accesses: u64,
     /// Accumulated 68000-cycle wait slots for data-port writes that found the
     /// FIFO full. Derived observation consumed by the owner, not serialized.
     fifo_wait_cycles: u32,
@@ -535,6 +588,8 @@ impl Vdp {
             hblank_pending: false,
             sprite_limit_reached: false,
             dma_cycles: 0,
+            discarded_data_port_accesses: 0,
+            capability_gap_accesses: 0,
             fifo_wait_cycles: 0,
         }
     }
@@ -823,7 +878,33 @@ impl Vdp {
     /// Word counts are the literal transfer length (this slice does not model
     /// the hardware's length-minus-one encoding).
     pub fn start_dma(&mut self, source: u32, length: u16, mode: DmaMode) -> Result<(), VdpError> {
-        let words = u32::from(length);
+        self.start_dma_words(source, u32::from(length), mode, length)
+    }
+
+    /// Performs a DMA transfer of an explicit word count.
+    ///
+    /// `encoded_length` is what the canonical [`DmaState`] records: the word
+    /// count for the direct entry point, or the hardware length-minus-one
+    /// register value on the register path. The count is a `u32` here because
+    /// the full-VRAM clear is 65 536 words, one past a `u16`.
+    fn start_dma_words(
+        &mut self,
+        source: u32,
+        words: u32,
+        mode: DmaMode,
+        encoded_length: u16,
+    ) -> Result<(), VdpError> {
+        // The three 68000-memory modes are rejected before any range check,
+        // memory read or mutation: `self.read_vram_word(read)` would otherwise
+        // read VRAM where the program meant 68000 memory, and every destination
+        // of a half-completed transfer would be committed on the way. Only the
+        // VRAM-source modes (fill and copy) are modelled.
+        if matches!(
+            mode,
+            DmaMode::MemoryToVram | DmaMode::MemoryToCram | DmaMode::MemoryToVsram
+        ) {
+            return Err(VdpError::DmaMemorySourceUnavailable { mode, words });
+        }
         let bytes = words * 2;
         if mode != DmaMode::Fill {
             let end = source
@@ -837,7 +918,13 @@ impl Vdp {
         let (target, first_index) = match mode {
             DmaMode::MemoryToVram | DmaMode::Fill | DmaMode::Copy => {
                 let index = u32::from(self.address & 0xFFFE);
-                if index + bytes > VRAM_SIZE as u32 {
+                // A fill walks the 64 KiB VRAM sequentially and wraps at the end,
+                // which is how the boot fixtures clear VRAM with one 65 536-word
+                // fill from address 0. The copy forms keep the pre-validated
+                // range because their source and destination share the same space
+                // and a wrapping copy would need the aliasing rules this slice
+                // does not model.
+                if mode != DmaMode::Fill && index + bytes > VRAM_SIZE as u32 {
                     return Err(VdpError::DmaDestinationOutOfRange {
                         target: VramTarget::Vram,
                         word_index: index / 2,
@@ -891,7 +978,10 @@ impl Vdp {
             };
             let index = offset;
             let address = match target {
-                VramTarget::Vram => u16::try_from(first_index + index * 2).unwrap_or(0),
+                VramTarget::Vram => {
+                    let byte_address = (first_index + index * 2) % VRAM_SIZE as u32;
+                    u16::try_from(byte_address).unwrap_or(0)
+                }
                 VramTarget::Cram | VramTarget::Vsram => {
                     u16::try_from(first_index + index).unwrap_or(0)
                 }
@@ -900,7 +990,7 @@ impl Vdp {
             self.write_word(target, address, word)?;
         }
 
-        self.dma = DmaState::from_parts(source, length, mode, true);
+        self.dma = DmaState::from_parts(source, encoded_length, mode, true);
         self.dma_cycles = words * DMA_MASTER_CYCLES_PER_WORD;
         Ok(())
     }
@@ -917,15 +1007,21 @@ impl Vdp {
     /// - `0b11`: VRAM copy, which additionally requires command bit CD4.
     ///
     /// Register `0x01` bit 4 gates DMA: while it is clear, a data-port access with
-    /// a DMA command performs no transfer and mutates nothing. The length is the
-    /// literal word count in this slice (the hardware length-minus-one encoding is
-    /// not modelled); a zero length performs no words. A data-port access with the
-    /// DMA command code triggers the transfer, as on hardware.
+    /// a DMA command performs no transfer and mutates nothing. Registers
+    /// `0x13`/`0x14` use the documented **length-minus-one** encoding, so the
+    /// transfer moves `encoded + 1` words: `0xFFFF` means 65 536 words, the whole
+    /// 64 KiB of VRAM, exactly the clear-VRAM fill the boot fixtures program. (The
+    /// direct [`Vdp::start_dma`] entry point keeps its literal word count, which is
+    /// a test-facing API rather than a hardware register.) A data-port access with
+    /// the DMA command code triggers the transfer, as on hardware.
     pub fn start_dma_from_registers(&mut self) -> Result<(), VdpError> {
         if self.registers[0x01] & 0x10 == 0 {
             return Ok(());
         }
-        let length = u16::from(self.registers[0x13]) | (u16::from(self.registers[0x14]) << 8);
+        let encoded = u16::from(self.registers[0x13]) | (u16::from(self.registers[0x14]) << 8);
+        // Hardware length-minus-one: 0xFFFF encodes the full 65 536-word VRAM
+        // clear, decoded in `u32` below. The direct `start_dma` entry point takes
+        // a literal word count instead.
         let source = u32::from(self.registers[0x15])
             | (u32::from(self.registers[0x16]) << 8)
             | (u32::from(self.registers[0x17] & 0x3F) << 16);
@@ -944,7 +1040,10 @@ impl Vdp {
                 DmaMode::Copy
             }
         };
-        self.start_dma(source, length, mode)
+        // `encoded` is the hardware length-minus-one value; the transfer moves
+        // `encoded + 1` words, computed in `u32` so 0xFFFF is 65 536 and not a
+        // wrapped zero.
+        self.start_dma_words(source, u32::from(encoded) + 1, mode, encoded)
     }
 
     /// Returns whether the eager DMA transfer's busy window is still open.
@@ -969,6 +1068,44 @@ impl Vdp {
     /// [`Vdp::acknowledge`]/[`Vdp::take_interrupts`] respectively, so an owner
     /// that only consumes the DMA cost cannot silently lose waits or
     /// interrupts.
+    /// Number of data-port accesses discarded because their command code is not
+    /// modelled.
+    ///
+    /// The pinned oracle discards such an access and leaves the VDP unaffected
+    /// (`Devices/315-5313/S315-5313_General.cpp:2575` for writes, `:2458` for
+    /// reads), so the slice does the same rather than aborting the host, and
+    /// keeps this counter so the discard is never silent. It is diagnostic
+    /// state: it does not enter the canonical snapshot (see
+    /// [`Vdp::discarded_data_port_accesses`]'s field) and no restore needs it.
+    pub const fn discarded_data_port_accesses(&self) -> u64 {
+        self.discarded_data_port_accesses
+    }
+
+    /// Number of data-port accesses rejected because a documented operation is not
+    /// implemented.
+    ///
+    /// Diagnostic like the discard counter: not serialized, reset by a valid
+    /// restore.
+    pub const fn capability_gap_accesses(&self) -> u64 {
+        self.capability_gap_accesses
+    }
+
+    /// Counts one data-port access rejected for a missing capability.
+    pub(crate) fn count_capability_gap(&mut self) {
+        self.capability_gap_accesses = self.capability_gap_accesses.saturating_add(1);
+    }
+
+    /// Counts one data-port access that had to be served with no effect.
+    ///
+    /// The Z80 reaches the VDP through its own window, and the Z80 core has no
+    /// exception channel. The pinned oracle's executable path for an invalid VDP
+    /// target logs a diagnostic and completes the access
+    /// (`Devices/315-5313/S315-5313_Ports.cpp:1043-1078`), so the bus serves it
+    /// with no effect and records it here instead of ending the run.
+    pub(crate) fn count_discarded_data_port_access(&mut self) {
+        self.discarded_data_port_accesses = self.discarded_data_port_accesses.saturating_add(1);
+    }
+
     pub fn take_dma_cycles(&mut self) -> u32 {
         let cycles = self.dma_cycles;
         self.dma_cycles = 0;
@@ -1251,6 +1388,11 @@ impl Vdp {
         self.sprite_limit_reached = false;
         self.dma_cycles = 0;
         self.fifo_wait_cycles = 0;
+        // Diagnostic counters describe execution *since* the restore, so a valid
+        // restore resets them (W1T/F3). They are not part of the snapshot, so this
+        // is a destination-side reset, not a carried value.
+        self.discarded_data_port_accesses = 0;
+        self.capability_gap_accesses = 0;
         self.vblank_pending = false;
         self.hblank_pending = false;
         self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
@@ -1272,9 +1414,24 @@ impl Vdp {
         if self.code & CODE_READ_INHIBIT != 0 {
             return Err(VdpError::UnsupportedTarget { code: self.code });
         }
+        // The mirror image of the write decode: VRAM (0b0000), VSRAM (0b0100)
+        // and CRAM (0b1000) reads are the decoded directions. `0b1100` is the
+        // oracle's undocumented 8-bit VRAM read (`:2447`): a capability this
+        // slice does not model, so it stays a typed rejection and is **not**
+        // counted as a discard. Every other code hits the oracle's read
+        // `default:` (`:2458`), where no fetch happens and the oracle reports
+        // the error to the caller instead of leaving the port hanging; this
+        // slice reports the same way with a typed error and, unlike the write
+        // path, commits no state, so the access stays atomic.
         let target = match self.code & 0x0F {
             CODE_VRAM_READ => VramTarget::Vram,
+            CODE_VSRAM_READ => VramTarget::Vsram,
             CODE_CRAM_READ => VramTarget::Cram,
+            // A documented operation this slice does not model is a capability
+            // gap, not an invalid target (W1X / W1U-F2).
+            CODE_VRAM_READ_8BIT => {
+                return Err(VdpError::UnsupportedBitRead { code: self.code });
+            }
             _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
         };
         let address = Self::word_address(target, self.address);
@@ -1298,11 +1455,26 @@ impl Vdp {
             self.start_dma_from_registers()?;
             return Ok(());
         }
+        // A data-port write is only meaningful for the three *write* codes:
+        // VRAM (0b0001), CRAM (0b0011) and VSRAM (0b0101), decoded from the low
+        // four code bits exactly as the pinned oracle does
+        // (`Devices/315-5313/S315-5313_General.cpp:2507`). Anything else —
+        // including a *read* code such as `0b0100`, which has no write to
+        // perform — is discarded with no effect on the VDP (`:2575-2580`), and
+        // the target address still advances by the auto-increment register,
+        // because every data-port write chains the previous write address plus
+        // that register (`Devices/315-5313/S315-5313_Ports.cpp:1321-1331`).
+        // The discard is counted so it can never be silent.
         let target = match self.code & 0x0F {
             CODE_VRAM_WRITE => VramTarget::Vram,
             CODE_CRAM_WRITE => VramTarget::Cram,
             CODE_VSRAM_WRITE => VramTarget::Vsram,
-            _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
+            _ => {
+                self.discarded_data_port_accesses =
+                    self.discarded_data_port_accesses.saturating_add(1);
+                self.increment_address();
+                return Ok(());
+            }
         };
         let address = Self::word_address(target, self.address);
         self.write_word(target, address, value)?;
@@ -1717,6 +1889,70 @@ mod tests {
     }
 
     #[test]
+    fn boot_vsram_write_macro_reaches_vsram_word_zero() {
+        // The exact control-word pair the boot fixtures issue right after the
+        // 64 KiB clear: `0x4000` then `0x0010`, i.e. CD3..CD0 = 0b0101 (VSRAM
+        // write) at command address 0. It must land in VSRAM word 0 and the same
+        // code must stay a typed error on a read, because the direction comes
+        // from the access, not from the code alone in the opposite sense.
+        let mut vdp = Vdp::new();
+        vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
+            .expect("boot first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("boot second half");
+        vdp.write16(DATA_PORT_OFFSET, 0x0123).expect("vsram write");
+        assert_eq!(vdp.vsram_word(0), Some(0x0123));
+
+        // The VSRAM write code is not a read direction.
+        vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
+            .expect("boot first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("boot second half");
+        assert_eq!(
+            vdp.read16(DATA_PORT_OFFSET),
+            Err(VdpError::UnsupportedTarget { code: 0x05 })
+        );
+
+        // And the boot pair is not a DMA target: with CD5 clear it never
+        // triggers the register-programmed engine.
+        assert!(!vdp.dma_active());
+        assert_eq!(vdp.take_dma_cycles(), 0);
+    }
+
+    #[test]
+    fn restoring_a_used_vdp_resets_diagnostic_counter() {
+        // A valid restore replaces the state and the diagnostic counter describes
+        // execution *since* that restore, so it starts at zero (W1T/F3). The
+        // destination here is an already-used instance with a non-zero count, not
+        // a fresh twin.
+        let mut used = Vdp::new();
+        used.write16(CONTROL_PORT_OFFSET, 0xC000)
+            .expect("unknown-code first half");
+        used.write16(CONTROL_PORT_OFFSET, 0x0030)
+            .expect("unknown-code second half");
+        used.write16(DATA_PORT_OFFSET, 0).expect("discarded write");
+        assert_eq!(used.discarded_data_port_accesses(), 1);
+
+        let clean = Vdp::new().snapshot_bytes();
+        used.restore_bytes(&clean).expect("restore");
+        assert_eq!(
+            used.discarded_data_port_accesses(),
+            0,
+            "a valid restore resets the diagnostic count"
+        );
+
+        // A rejected restore leaves both the state and the diagnostic untouched.
+        used.write16(DATA_PORT_OFFSET, 0).expect("second discard");
+        assert_eq!(used.discarded_data_port_accesses(), 1);
+        assert!(used.restore_bytes(&clean[..clean.len() - 1]).is_err());
+        assert_eq!(
+            used.discarded_data_port_accesses(),
+            1,
+            "a rejected restore keeps the previous diagnostic"
+        );
+    }
+
+    #[test]
     fn data_port_decodes_supported_targets_and_rejects_unknown_ones() {
         let mut vdp = Vdp::new();
         // CRAM write command: CD3..CD0 = 0x3.
@@ -1727,14 +1963,60 @@ mod tests {
         vdp.write16(DATA_PORT_OFFSET, 0x0EEE).expect("cram write");
         assert_eq!(vdp.cram_entry(0), Some(0x0EEE));
 
-        // A command code outside the decoded targets is rejected.
+        // The `0x4000`/`0x0010` pair is CD3..CD0 = 0b0101, the documented
+        // VSRAM **write** code (`0x40000010` is the standard VSRAM macro), so it
+        // writes VSRAM word 0. An earlier table had VSRAM read and write
+        // swapped, which made this legal write a typed error.
         vdp.write16(CONTROL_PORT_OFFSET, 0x4000)
-            .expect("unknown first half");
+            .expect("vsram write first half");
         vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("vsram write second half");
+        vdp.write16(DATA_PORT_OFFSET, 0x0E3C).expect("vsram write");
+        assert_eq!(vdp.vsram_word(0), Some(0x0E3C));
+
+        // A code outside the decoded targets is **discarded**, not rejected:
+        // `0xC000` / `0x0030` latches CD3..CD0 = 0b1111 and the write has no
+        // effect on the VDP, exactly like the pinned oracle's write `default:`
+        // (`S315-5313_General.cpp:2575`). The target address still advances by
+        // the auto-increment register and the discard is counted.
+        assert_eq!(vdp.discarded_data_port_accesses(), 0);
+        let address_before = vdp.address();
+        vdp.write16(CONTROL_PORT_OFFSET, 0xC000)
+            .expect("unknown first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0030)
             .expect("unknown second half");
+        assert_eq!(vdp.write16(DATA_PORT_OFFSET, 0xFFFF), Ok(()));
+        assert_eq!(vdp.discarded_data_port_accesses(), 1);
+        assert_eq!(vdp.vsram_word(0), Some(0x0E3C), "no VSRAM mutation");
+        assert_eq!(vdp.cram_entry(0), Some(0x0EEE), "no CRAM mutation");
+
+        // A *read* code on a data-port write is the same case: no write to
+        // perform, so it is discarded with the counter and the address advance.
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0000)
+            .expect("read code first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("read code second half");
+        assert_eq!(vdp.write16(DATA_PORT_OFFSET, 0x1234), Ok(()));
+        assert_eq!(vdp.discarded_data_port_accesses(), 2);
         assert_eq!(
-            vdp.write16(DATA_PORT_OFFSET, 0),
-            Err(VdpError::UnsupportedTarget { code: 0x05 })
+            vdp.address().wrapping_sub(address_before),
+            0,
+            "both discards advanced by the auto-increment register, which is 0 here"
+        );
+
+        // The counter is diagnostic state and does **not** enter the canonical
+        // snapshot: a machine that discarded accesses still serialises
+        // byte-for-byte like one that discarded none, and a restore cannot carry
+        // the count (which is why no payload version bump is needed).
+        let mut twin = Vdp::new();
+        assert_eq!(twin.discarded_data_port_accesses(), 0);
+        assert_eq!(twin.snapshot_bytes().len(), vdp.snapshot_bytes().len());
+        twin.restore_bytes(&vdp.snapshot_bytes()).expect("restore");
+        assert_eq!(twin.snapshot_bytes(), vdp.snapshot_bytes());
+        assert_eq!(
+            twin.discarded_data_port_accesses(),
+            0,
+            "a restore cannot carry a diagnostic count"
         );
 
         // DMA transfer: CD5 set in the second command word. The registers are
@@ -1761,6 +2043,26 @@ mod tests {
             vdp.read16(DATA_PORT_OFFSET),
             Err(VdpError::UnsupportedTarget { code: 0x10 })
         );
+
+        // VSRAM **read** is CD3..CD0 = 0b0100, latched by `0x0000`/`0x0010`.
+        // The read uses the same `word_address` (address >> 1) and the same
+        // 9-bit modulo-40 wrap as the write.
+        let mut vdp = Vdp::new();
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0000)
+            .expect("vsram read first half");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("vsram read second half");
+        vdp.write_word(VramTarget::Vsram, 0, 0x1AB2)
+            .expect("seed vsram");
+        assert_eq!(vdp.read16(DATA_PORT_OFFSET), Ok(0x1AB2));
+        // An odd command address still selects a word: `>> 1` is the decode.
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0002)
+            .expect("vsram read first half, word 1");
+        vdp.write16(CONTROL_PORT_OFFSET, 0x0010)
+            .expect("vsram read second half");
+        vdp.write_word(VramTarget::Vsram, 1, 0x2BC3)
+            .expect("seed vsram word 1");
+        assert_eq!(vdp.read16(DATA_PORT_OFFSET), Ok(0x2BC3));
     }
 
     #[test]

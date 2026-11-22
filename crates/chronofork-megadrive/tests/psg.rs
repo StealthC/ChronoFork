@@ -13,7 +13,7 @@ use chronofork_megadrive::audio::psg::{
 };
 use chronofork_megadrive::cartridge::Cartridge;
 use chronofork_megadrive::cycles::MASTER_CLOCK_HZ_NTSC;
-use chronofork_megadrive::z80::{Z80Bus, Z80Error};
+use chronofork_megadrive::z80::Z80Bus;
 
 /// Programs tone channel 0 with `divider` (low ten bits) at full volume.
 fn programmed_tone(divider: u16) -> Psg {
@@ -237,14 +237,205 @@ fn bus_window_reaches_the_psg_and_reads_open_bus() -> Result<(), Box<dyn Error>>
         OPEN_BUS_VALUE,
         "the PSG is write-only; the window returns the open value"
     );
-    for address in [0x7F00, 0x7F01, 0x7F02, 0x7F03] {
-        Z80Bus::write8(&mut bus, address, 0x90)?; // channel 0 volume 0
-        assert_eq!(bus.psg().attenuation(0), Some(0));
-        assert_eq!(Z80Bus::read8(&mut bus, address)?, OPEN_BUS_VALUE);
+    // `0x7F00..=0x7F03` is the VDP port window on the Z80 side, not the PSG
+    // (W1T/F5): the arbiter translates it to `0xC00000 | offset`
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:514-527`) and the VDP's `000*` device
+    // locations are its data and control ports.
+    // Those four bytes are the VDP **data port** lanes (offsets 0..=3 all select
+    // `offset & 0x0C == 0`). Prove it by writing a known word through the VDP and
+    // reading it back through the Z80 window; the PSG must stay untouched.
+    let psg_before = bus.psg().snapshot_bytes();
+    bus.write16(0x00C0_0004, 0x4000)?; // command word 1: VRAM write at 0
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    bus.write16(0x00C0_0000, 0x1234)?; // word write to the data port
+    assert_eq!(bus.vdp().vram()[0..2], [0x12, 0x34]);
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 1: VRAM read at 0
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    assert_eq!(
+        Z80Bus::read8(&mut bus, 0x7F00)?,
+        0x12,
+        "high lane of the VDP data port through the Z80 window"
+    );
+    assert_eq!(Z80Bus::read8(&mut bus, 0x7F01)?, 0x34, "low lane");
+    assert_eq!(
+        bus.psg().snapshot_bytes(),
+        psg_before,
+        "the VDP window must not touch the PSG"
+    );
+    // A write through the window reaches the VDP data port as well.
+    bus.write16(0x00C0_0004, 0x4000)?;
+    bus.write16(0x00C0_0004, 0x0000)?;
+    Z80Bus::write8(&mut bus, 0x7F00, 0x5A)?;
+    assert_eq!(
+        bus.vdp().vram()[0],
+        0x5A,
+        "Z80 data-port write reached VRAM"
+    );
+    // `0x7F04` owns no device; it is served by the undecoded channel (W1R).
+    assert_eq!(
+        Z80Bus::read8(&mut bus, 0x7F04)?,
+        chronofork_megadrive::bus::Z80_UNDECODED_READ_VALUE
+    );
+    Ok(())
+}
+
+// --- W1Q: the 68000 PSG window is the same chip as the Z80 window ----------
+
+#[test]
+fn the_68000_psg_window_drives_the_same_chip_as_the_z80_alias() -> Result<(), Box<dyn Error>> {
+    // `0xC00010..=0xC00017` reaches the PSG through the VDP, which is selected
+    // for the whole `0xC00000..=0xC0001F` block
+    // (`Data/Modules/Sega Mega Drive 1600.xml:318`, PSG reference at `:319`) and
+    // forwards its `10*` port cases to the referenced SN76489
+    // (`Devices/315-5313/S315-5313_Ports.cpp` around `:1639`). The arbiter ORs
+    // the Z80 `0x7F00` window offset into `0xC00000`
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:352`/`:516`), so `0x7F11` is the same
+    // register. Both windows must drive one instance with one latch/data state.
+    let mut via_68000 = bus()?;
+    let mut via_z80 = bus()?;
+
+    // The same latch + data sequence through each window leaves equal state.
+    for value in [0x80 | 0x2, 0x0F, 0x90, 0x00, 0xE4, 0xF5] {
+        let value = u8_to_hex(value);
+        via_68000.write8(0x00C0_0011, value)?;
+        Z80Bus::write8(&mut via_z80, 0x7F11, value)?;
+        assert_eq!(
+            via_68000.psg().snapshot_bytes(),
+            via_z80.psg().snapshot_bytes(),
+            "both windows reach the same PSG state after {value:#04x}"
+        );
     }
+    // The last two bytes latched the noise channel and set its attenuation.
+    assert_eq!(via_68000.psg().attenuation(0), Some(0x00));
+    assert_eq!(via_68000.psg().attenuation(3), Some(0x05));
+    Ok(())
+}
+
+/// Identity helper that keeps the test's byte type obvious.
+const fn u8_to_hex(value: u8) -> u8 {
+    value
+}
+
+#[test]
+fn every_byte_of_the_68000_psg_window_mirrors_the_chip() -> Result<(), Box<dyn Error>> {
+    // No odd-byte-only rule: each of the eight bytes drives the chip.
+    const PSG_BASE: u32 = 0x00C0_0010;
+    let mut bus = bus()?;
+    for offset in 0..8 {
+        let address = PSG_BASE + offset;
+        bus.write8(address, 0x90)?; // latch channel 0 at attenuation 0
+        bus.write8(address, 0x9F)?; // channel 0 volume 15
+        assert_eq!(
+            bus.psg().attenuation(0),
+            Some(0x0F),
+            "byte {offset} of the window reaches the PSG"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn psg_reads_are_deterministic_and_identical_on_both_sides() -> Result<(), Box<dyn Error>> {
+    let mut bus = bus()?;
+    // Byte reads: the two windows cannot disagree, and the value is the single
+    // documented modelling choice (see the `audio::psg` module docs).
+    for address in 0x00C0_0010..=0x00C0_0017 {
+        assert_eq!(bus.read8(address)?, OPEN_BUS_VALUE, "byte {address:#08x}");
+        assert_eq!(
+            bus.read8(address)?,
+            Z80Bus::read8(&mut bus, 0x7F11)?,
+            "both sides return the same open value"
+        );
+    }
+    // Word and long reads over the window decompose into those byte reads.
+    assert_eq!(bus.read16(0x00C0_0010)?, 0xFFFF);
+    assert_eq!(bus.read32(0x00C0_0014)?, 0xFFFF_FFFF);
+    Ok(())
+}
+
+#[test]
+fn psg_word_delivers_one_transaction_not_two_byte_writes() -> Result<(), Box<dyn Error>> {
+    // Pinned transaction model (W1T/F2): a word access to the PSG is ONE 16-bit
+    // transaction. The SN76489 decides latch versus data with the MSB of that
+    // transaction (bit 15 of the word) and takes channel/type/data from the low
+    // segments, so the fields consumed are `((word >> 8) & 0x80) | (word & 0x7F)`.
+    // The review's example: `90A0` has bit 15 set (latch) and a low byte of
+    // `A0` (channel 1, tone), so it must NOT inject a `90` command that zeroes
+    // channel 0 — the two-byte model did exactly that.
+    let mut word = bus()?;
+    word.write16(0x00C0_0010, 0x90A0)?;
+    assert_eq!(
+        word.psg().attenuation(0),
+        Some(0x0F),
+        "channel 0 attenuation stays at its reset value"
+    );
+
+    // A word whose low byte carries the volume bit does reach the chip.
+    let mut volume = bus()?;
+    volume.write16(0x00C0_0010, 0x9F10)?;
+    assert_eq!(volume.psg().attenuation(0), Some(0x00));
+
+    // A long is TWO word transactions (`Devices/M68000/M68000.cpp:2197-2204`), so
+    // both halves act. A four-byte model would leave channel 1 untouched.
+    let mut long = bus()?;
+    long.write32(0x00C0_0010, 0x9F10_9F30)?;
+    assert_eq!(long.psg().attenuation(0), Some(0x00));
+    assert_eq!(
+        long.psg().attenuation(1),
+        Some(0x00),
+        "the second word of the long also reached the chip"
+    );
+
+    // Byte writes are unchanged: the byte itself is the transaction.
+    let mut byte = bus()?;
+    byte.write8(0x00C0_0011, 0x9F)?;
+    assert_eq!(byte.psg().attenuation(0), Some(0x0F));
+
+    // And a long still equals its two explicit word writes.
+    let mut two_words = bus()?;
+    two_words.write16(0x00C0_0010, 0x9F10)?;
+    two_words.write16(0x00C0_0012, 0x9F30)?;
+    assert_eq!(
+        long.psg().snapshot_bytes(),
+        two_words.psg().snapshot_bytes()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_psg_mirror_window_is_bounded_and_beyond_it_is_undecoded() -> Result<(), Box<dyn Error>> {
+    // The Z80 mirror derived from the arbiter's `0xC00000 | offset` translation
+    // is `0x7F10..=0x7F17`; `0x7F64` maps to `0xC00064`, outside the VDP block,
+    // and stays a typed error until the undecoded-access policy lands (W1R).
+    let mut bus = bus()?;
+    // Reset attenuation is 0x0F (silent), so these two writes must move the
+    // value in both directions to be meaningful.
+    Z80Bus::write8(&mut bus, 0x7F10, 0x90)?;
+    assert_eq!(bus.psg().attenuation(0), Some(0x00));
+    Z80Bus::write8(&mut bus, 0x7F17, 0x9F)?;
+    assert_eq!(bus.psg().attenuation(0), Some(0x0F));
+
+    // Neither address owns a device: they are served by the undecoded channel, so
+    // they must not reach the PSG and must not end the run (W1R).
+    let attenuation = bus.psg().attenuation(0);
+    let before = bus.unmapped_z80_accesses();
+    for address in [0x7F18, 0x7F64] {
+        Z80Bus::write8(&mut bus, address, 0x90)?;
+        assert_eq!(
+            bus.psg().attenuation(0),
+            attenuation,
+            "{address:#06x} is not the PSG window"
+        );
+    }
+    assert_eq!(bus.unmapped_z80_accesses(), before + 2);
+    assert_eq!(
+        Z80Bus::read8(&mut bus, 0x7F64)?,
+        chronofork_megadrive::bus::Z80_UNDECODED_READ_VALUE
+    );
+    // The 68000 window is bounded too: the byte past it keeps its typed error.
     assert!(matches!(
-        Z80Bus::read8(&mut bus, 0x7F04),
-        Err(Z80Error::Memory { address: 0x7F04 })
+        bus.write8(0x00C0_0018, 0x9F),
+        Err(chronofork_megadrive::BusError::UnmappedWrite { .. })
     ));
     Ok(())
 }

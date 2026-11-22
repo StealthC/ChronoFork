@@ -78,14 +78,9 @@ fn bcd(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, Cpu
     let extend = u32::from(cpu.flag(FLAG_X));
 
     let (source, destination, destination_address, source_address) = if memory_form {
-        let source_address = cpu
-            .read_an(source_register)
-            .checked_sub(1)
-            .ok_or(CpuError::StackOverflow)?;
-        let destination_address = cpu
-            .read_an(destination_register)
-            .checked_sub(1)
-            .ok_or(CpuError::StackOverflow)?;
+        // `-(An)` wraps modulo 2^32; the bus decodes the truncated address.
+        let source_address = cpu.read_an(source_register).wrapping_sub(1);
+        let destination_address = cpu.read_an(destination_register).wrapping_sub(1);
         let source = u32::from(bus.read8(source_address)?);
         let destination = u32::from(bus.read8(destination_address)?);
         (
@@ -288,15 +283,10 @@ fn addx_or_subx(
         (cpu.read_dn(first, size), cpu.read_dn(second, size), None)
     } else {
         let bytes = size.bytes();
-        let source_address = cpu
-            .read_an(second)
-            .checked_sub(bytes)
-            .ok_or(CpuError::StackOverflow)?;
+        // `-(An)` wraps modulo 2^32; the bus decodes the truncated address.
+        let source_address = cpu.read_an(second).wrapping_sub(bytes);
         cpu.set_a(second, source_address);
-        let destination_address = cpu
-            .read_an(first)
-            .checked_sub(bytes)
-            .ok_or(CpuError::StackOverflow)?;
+        let destination_address = cpu.read_an(first).wrapping_sub(bytes);
         cpu.set_a(first, destination_address);
         (
             read_sized(bus, destination_address, size)?,

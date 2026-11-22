@@ -171,29 +171,29 @@ pub fn ea_address(cpu: &mut M68000, bus: &mut MegadriveBus, ea: Ea) -> Result<u3
         Ea::Indirect(register) => Ok(cpu.read_an(usize::from(register))),
         Ea::Disp16(register) => {
             let displacement = i32::from(cpu.fetch_u16(bus)? as i16);
-            add_signed(cpu.read_an(usize::from(register)), displacement)
+            Ok(add_signed(cpu.read_an(usize::from(register)), displacement))
         }
         Ea::Index(register) => {
             let extension = cpu.fetch_u16(bus)?;
             let index = index_value(cpu, extension);
             let displacement = i32::from(extension as i8);
-            let base = add_signed(cpu.read_an(usize::from(register)), displacement)?;
-            add_signed(base, index as i32)
+            let base = add_signed(cpu.read_an(usize::from(register)), displacement);
+            Ok(add_signed(base, index as i32))
         }
         Ea::Abs16 => Ok(Size::Word.sign_extend(u32::from(cpu.fetch_u16(bus)?))),
         Ea::Abs32 => cpu.fetch_u32(bus),
         Ea::PcDisp16 => {
             let base = cpu.pc();
             let displacement = i32::from(cpu.fetch_u16(bus)? as i16);
-            add_signed(base, displacement)
+            Ok(add_signed(base, displacement))
         }
         Ea::PcIndex => {
             let base = cpu.pc();
             let extension = cpu.fetch_u16(bus)?;
             let index = index_value(cpu, extension);
             let displacement = i32::from(extension as i8);
-            let address = add_signed(base, displacement)?;
-            add_signed(address, index as i32)
+            let address = add_signed(base, displacement);
+            Ok(add_signed(address, index as i32))
         }
         Ea::Dn(_) | Ea::An(_) | Ea::PostInc(_) | Ea::PreDec(_) | Ea::Imm => Err(
             CpuError::Unsupported("effective address is not a control addressing mode".to_owned()),
@@ -219,11 +219,11 @@ pub fn read_ea(
         Ea::PostInc(register) => {
             let address = cpu.read_an(usize::from(register));
             let value = read_memory(bus, address, size)?;
-            cpu.write_an(usize::from(register), advance(address, size.bytes())?);
+            cpu.write_an(usize::from(register), advance(address, size.bytes()));
             Ok(value)
         }
         Ea::PreDec(register) => {
-            let address = retreat(cpu.read_an(usize::from(register)), size.bytes())?;
+            let address = retreat(cpu.read_an(usize::from(register)), size.bytes());
             let value = read_memory(bus, address, size)?;
             cpu.write_an(usize::from(register), address);
             Ok(value)
@@ -264,11 +264,11 @@ pub fn write_ea(
         Ea::PostInc(register) => {
             let address = cpu.read_an(usize::from(register));
             write_memory(bus, address, size, value)?;
-            cpu.write_an(usize::from(register), advance(address, size.bytes())?);
+            cpu.write_an(usize::from(register), advance(address, size.bytes()));
             Ok(())
         }
         Ea::PreDec(register) => {
-            let address = retreat(cpu.read_an(usize::from(register)), size.bytes())?;
+            let address = retreat(cpu.read_an(usize::from(register)), size.bytes());
             write_memory(bus, address, size, value)?;
             cpu.write_an(usize::from(register), address);
             Ok(())
@@ -369,21 +369,33 @@ fn write_memory(
     Ok(())
 }
 
-fn advance(address: u32, amount: u32) -> Result<u32, CpuError> {
-    address.checked_add(amount).ok_or(CpuError::AddressOverflow)
+/// Advances an address register by `amount` modulo 2^32.
+///
+/// The 68000 has no overflow trap for `(An)+`: the register simply wraps, and the
+/// bus then truncates the value to 24 bits and decodes the map. Whether the
+/// resulting access is legal is the bus's decision, not the CPU's.
+fn advance(address: u32, amount: u32) -> u32 {
+    address.wrapping_add(amount)
 }
 
-fn retreat(address: u32, amount: u32) -> Result<u32, CpuError> {
-    address.checked_sub(amount).ok_or(CpuError::StackOverflow)
+/// Decrements an address register by `amount` modulo 2^32.
+///
+/// `-(An)` with `An = 0` produces `0xFFFF_FFFC`, which the 24-bit bus decodes as
+/// `0x00FF_FFFC` — legitimate work RAM mirror space, not an error. There is no
+/// stack-pointer guard on the hardware; see `W1K`.
+fn retreat(address: u32, amount: u32) -> u32 {
+    address.wrapping_sub(amount)
 }
 
-pub(crate) fn add_signed(base: u32, displacement: i32) -> Result<u32, CpuError> {
-    let target = i64::from(base) + i64::from(displacement);
-    if target < 0 || target > i64::from(u32::MAX) {
-        return Err(CpuError::AddressOverflow);
-    }
-    // Proven by the range check above.
-    Ok(target as u32)
+/// Adds a signed displacement to an address base modulo 2^32.
+///
+/// Effective-address arithmetic is address arithmetic like any other: the sum
+/// wraps, the bus truncates to 24 bits, and the map decides whether the access is
+/// legal. `0xB8C6` on `A5 = 0x200` is `0xFFFF_BAC6`, which truncates to
+/// `0x00FF_BAC6` — the work-RAM mirror, a legal write — so there is no overflow
+/// error to raise (W1S).
+pub(crate) fn add_signed(base: u32, displacement: i32) -> u32 {
+    base.wrapping_add(displacement as u32)
 }
 
 /// Resolves the index register and sign-extends it according to its size bit.
@@ -450,11 +462,11 @@ where
             let old = read_memory(bus, address, size)?;
             let new = update(old) & size.mask();
             write_memory(bus, address, size, new)?;
-            cpu.write_an(usize::from(register), advance(address, size.bytes())?);
+            cpu.write_an(usize::from(register), advance(address, size.bytes()));
             Ok((old, new))
         }
         Ea::PreDec(register) => {
-            let address = retreat(cpu.read_an(usize::from(register)), size.bytes())?;
+            let address = retreat(cpu.read_an(usize::from(register)), size.bytes());
             let old = read_memory(bus, address, size)?;
             let new = update(old) & size.mask();
             write_memory(bus, address, size, new)?;

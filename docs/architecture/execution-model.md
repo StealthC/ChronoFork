@@ -59,10 +59,11 @@ and verified for the deterministic minimal-slice scope. The backend reads the Me
 controller data registers `0xA10003`/`0xA10005` from `InputFrame` ports 0 and 1 with
 stateless per-step semantics: the input is visible only during the executed step, is
 cleared on every exit path including typed failures, and is never serialized into the
-snapshot or state hash. The canonical payload is now `CFMD68K6` v6 (the M3 increment
+snapshot or state hash. The canonical payload is now `CFMD68K7` v7 (the M3 increment
 used v2; phase 8.2 added the extended CPU and master-cycle scheduler state, phase 8.3
-added the CFVDP002 VDP state and phase 8.4 added the Z80, arbitration, YM2612, PSG and
-48 kHz mixer state, rejecting v1-v5), so a restored machine uses the next step's input;
+added the CFVDP002 VDP state, phase 8.4 added the Z80, arbitration, YM2612, PSG and
+48 kHz mixer state and the W1 bus phase added the port 1/2/3/EXT control register file,
+rejecting v1-v6), so a restored machine uses the next step's input;
 the
 differential probe, demos, M1 oracle/state probes and all existing M2/M3 movie fixtures are
 byte-identical to baseline. The verified subset is the TH-high 3-button phase
@@ -357,8 +358,8 @@ best-effort parse.
   claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
-  slice hash (`CFMDSTATE6`) covers the extended CPU, RAM, the CFVDP002 VDP state, the
+  slice hash (`CFMDSTATE7`) covers the extended CPU, RAM, the CFVDP002 VDP state, the
   scheduler state, the Z80 register file and 8 KiB Z80 RAM, the Z80 bank register and
-  master-cycle carry, both arbitration latches, the YM2612 and PSG state and the 48 kHz
-  mixer/resampler phase. A cross-backend
+  master-cycle carry, both arbitration latches, the eight port 1/2/3/EXT control
+  register bytes, the YM2612 and PSG state and the 48 kHz mixer/resampler phase. A cross-backend
   canonicalization remains undefined.

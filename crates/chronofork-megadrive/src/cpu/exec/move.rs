@@ -232,15 +232,15 @@ fn movep(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
     let memory_to_register = operation < 6;
     let displacement = cpu.fetch_u16(bus)? as i16;
     let base = cpu.read_an(address_register);
-    let address = add_signed(base, i32::from(displacement))?;
+    let address = add_signed(base, i32::from(displacement));
 
     if memory_to_register {
         let mut value = 0_u32;
         for byte_index in 0..size.bytes() {
-            let offset = byte_index.checked_mul(2).ok_or(CpuError::AddressOverflow)?;
-            let address = address
-                .checked_add(offset)
-                .ok_or(CpuError::AddressOverflow)?;
+            // `byte_index` is bounded by the operand size (at most four lanes), so
+            // the lane offset cannot overflow.
+            let offset = byte_index * 2;
+            let address = address.wrapping_add(offset);
             value = (value << 8) | u32::from(bus.read8(address)?);
         }
         cpu.write_dn(data, value, size);
@@ -249,12 +249,9 @@ fn movep(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
         let bytes = value.to_be_bytes();
         let source = if long { &bytes[..] } else { &bytes[2..] };
         for (byte_index, byte) in source.iter().enumerate() {
-            let offset = (byte_index as u32)
-                .checked_mul(2)
-                .ok_or(CpuError::AddressOverflow)?;
-            let address = address
-                .checked_add(offset)
-                .ok_or(CpuError::AddressOverflow)?;
+            // Same bounded lane offset as above.
+            let offset = (byte_index as u32) * 2;
+            let address = address.wrapping_add(offset);
             bus.write8(address, *byte)?;
         }
     }
@@ -307,9 +304,7 @@ fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
             } else {
                 cpu.write_dn(usize::from(*index), value, Size::Long);
             }
-            address = address
-                .checked_add(width)
-                .ok_or(CpuError::AddressOverflow)?;
+            address = address.wrapping_add(width);
         }
         if let Ea::PostInc(register) = ea {
             cpu.write_an(usize::from(register), address);
@@ -322,7 +317,9 @@ fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
                 cpu.read_dn(usize::from(*index), size)
             };
             if predecrement {
-                address = address.checked_sub(width).ok_or(CpuError::StackOverflow)?;
+                // Address registers wrap modulo 2^32; the bus decodes the
+                // truncated address (W1K).
+                address = address.wrapping_sub(width);
             }
             if long {
                 bus.write32(address, value)?;
@@ -330,9 +327,7 @@ fn movem(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, C
                 bus.write16(address, value as u16)?;
             }
             if !predecrement {
-                address = address
-                    .checked_add(width)
-                    .ok_or(CpuError::AddressOverflow)?;
+                address = address.wrapping_add(width);
             }
         }
         if let Ea::PreDec(register) = ea {
