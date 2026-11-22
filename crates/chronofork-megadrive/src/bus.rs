@@ -23,7 +23,10 @@
 //! (`0xA1000C..=0xA1000F`) are the ADR-0014 constant-zero **stub** — a read
 //! returns `0x00` and a write is acknowledged and discarded, so those four
 //! bytes never change. Port 3/EXT data
-//! (`0xA10006`/`0xA10007`) is not modelled and stays a typed error; every other
+//! (`0xA10006`/`0xA10007`) is a register this slice does not model: the access is
+//! accepted with no effect and counted in [`MegadriveBus::port3_unmodelled_accesses`],
+//! because faulting it turned a legal guest store into a guest address error that
+//! skipped the instruction in a commercial boot (W1X); every other
 //! address in the window reads [`OPEN_BUS_VALUE`] and discards writes, as the
 //! undecoded pins of the window do. Every debugger read of a step-scoped data
 //! register stays a typed error, because a per-step input value is not a
@@ -809,13 +812,12 @@ impl MegadriveBus {
         &self.z80_ram
     }
 
-    /// Returns the nine-bit Z80 bank register.
-    #[must_use]
     /// Number of Z80 guest accesses answered by the undecoded path.
     ///
     /// A Z80 access to an address that no device owns cannot stop the run: the
     /// read returns [`Z80_UNDECODED_READ_VALUE`], the write is ignored, and the
     /// access is counted here so the path is observable instead of silent.
+    #[must_use]
     pub const fn unmapped_z80_accesses(&self) -> u64 {
         self.unmapped_z80_accesses
     }

@@ -29,23 +29,34 @@
 //! gate as passing by absence, and a fixture-gate run with **zero** fixtures
 //! present is a hard failure.
 //!
-//! Measured fixture profile at the W1.6 base (`agent/w1-bus-boot-2026-11-21`,
-//! uncommitted W1B–W1D, oracle-pinned release build):
+//! # History of the measured profile (the numbers live in the evidence, not here)
 //!
-//! - `Kid Chameleon`: G-BOOT-0 **fails** — the run stops early with
-//!   `68000 bus error: VDP port access failed: VDP data-port access with
-//!   unsupported command code 0x12` (a control-port register write leaves the
-//!   read-inhibit code latched, and the ROM's next data-port access is a real
-//!   hardware sequence this slice rejects).
-//! - `Chakan`: G-BOOT-0 passes (300 000 steps, no host error) but G-BOOT-1
-//!   **fails**: the VDP register file is written 24 times with the *same* byte
-//!   instead of the ROM's 24-value table, no data-port write ever occurs, and the
-//!   PC sits in the ROM's own fatal trap at `0x000220` for the rest of the run.
-//!   The root cause is outside this harness: see `w1d.md` §3 (the 16-bit
-//!   branch-displacement base differs from the pinned oracle).
+//! The gate was written when both fixtures stopped early (93 steps) and the run
+//! was red; each blocker it named was then reproduced, attributed and fixed in
+//! the emulator: the 16-bit branch-displacement base (`w1d.md` §3), the VDP DMA
+//! length-minus-one encoding (`w1g-gate.md` §3.2), a 68000 predecrement that
+//! aborted the host instead of decrementing modulo 2^32, the VSRAM command codes,
+//! and the port 3/EXT data store. At the W1 freeze both fixtures complete the
+//! 300 000-step budget with no host error and pass every marker below; the
+//! measured profile of each revision is recorded under `.research/w1-2026-11-21/`
+//! (`w1d.md`, `w1g-gate.md`, `w1l-gate.md`, `g3-gate.md`). Keeping the numbers in
+//! the ignored evidence instead of this doc comment is deliberate: a test header
+//! that promises a count goes stale the moment the gate moves.
 //!
-//! The gates are therefore **red** on this tree; the harness exists to make that
-//! reproducible rather than to decree it green.
+//! Two marker semantics are worth knowing when reading a red result:
+//!
+//! - Marker (c) can only observe a **content** change. A successful write of
+//!   zeros (a DMA fill that clears VRAM) leaves VRAM at its reset value, so the
+//!   marker fails while the write was accepted; the profile reports the data-port
+//!   access separately, and the failure message distinguishes "no write ever
+//!   reached the data port" from "a data-port write was observed but VRAM, CRAM
+//!   and VSRAM are still at their reset values".
+//! - Marker (e) flags *any* entry into the ROM's own exception handler, which is
+//!   a conservative proxy: it caught a real device divergence (a `0xA10007` port 3
+//!   data store the hardware accepts was raising a guest address error) and the
+//!   emulator was fixed for it — the marker was never weakened to make the gate
+//!   pass. A ROM that deliberately raises and services an exception would trip it
+//!   too; that is the documented cost of a positive marker.
 
 use std::collections::HashSet;
 use std::error::Error;
