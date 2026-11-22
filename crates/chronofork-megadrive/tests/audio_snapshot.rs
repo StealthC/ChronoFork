@@ -112,11 +112,11 @@ fn tampered(snapshot: &BackendSnapshot, magic: &[u8; 8], version: u16) -> Backen
 }
 
 #[test]
-fn version_six_identity_is_published_and_the_media_seam_is_advertised() {
-    assert_eq!(PAYLOAD_VERSION, 6);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K6");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE6");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF6");
+fn version_seven_identity_is_published_and_the_media_seam_is_advertised() {
+    assert_eq!(PAYLOAD_VERSION, 7);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K7");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE7");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF7");
     let factory = MegadriveFactory::new(demo_rom()).expect("factory");
     let capabilities = factory.descriptor().capabilities();
     assert!(capabilities.rendering, "frame production is implemented");
@@ -217,16 +217,16 @@ fn two_runs_produce_the_same_state_and_pcm() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn v1_to_v5_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Error>> {
+fn v1_to_v6_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Error>> {
     let mut machine = z80_machine();
     for _ in 0..800 {
         machine.step(InputFrame::NEUTRAL)?;
     }
     let snapshot = machine.snapshot()?;
     let before = machine.snapshot()?.payload().to_vec();
-    // The version word alone selects the layout; a v1-v5 version word is
-    // rejected by version even when the surrounding bytes are v6.
-    for version in 1..=5_u16 {
+    // The version word alone selects the layout; a v1-v6 version word is
+    // rejected by version even when the surrounding bytes are v7.
+    for version in 1..=6_u16 {
         let candidate = tampered(&snapshot, &PAYLOAD_MAGIC, version);
         let error = machine
             .restore(&candidate)
@@ -252,6 +252,7 @@ fn v1_to_v5_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Erro
         *b"CFMD68K3",
         *b"CFMD68K4",
         *b"CFMD68K5",
+        *b"CFMD68K6",
     ] {
         let candidate = tampered(&snapshot, &magic, PAYLOAD_VERSION);
         let error = machine

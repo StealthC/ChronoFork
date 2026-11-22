@@ -76,6 +76,11 @@ pub fn execute(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<
 
 fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, CpuError> {
     let condition = ((opcode >> 8) & 0xF) as u8;
+    // A branch displacement is relative to the branch instruction's address plus
+    // two. Capture that base before the extension fetch: for the byte form the
+    // PC already is that base, and for the word form the fetch would otherwise
+    // move it two bytes too far and shift every target.
+    let base = cpu.pc();
     // A zero byte displacement selects the documented 16-bit extension form;
     // every other value is the sign-extended 8-bit form.
     let byte = (opcode & 0xFF) as u8;
@@ -88,7 +93,7 @@ fn branch(cpu: &mut M68000, bus: &mut MegadriveBus, opcode: u16) -> Result<u16, 
     if !taken {
         return Ok(timing::branch_cycles(opcode, false));
     }
-    let target = cpu.relative_target(displacement)?;
+    let target = cpu.relative_target_from(base, displacement)?;
     if condition == 1 {
         let return_pc = cpu.pc();
         cpu.push_long(bus, return_pc)?;
@@ -103,6 +108,8 @@ fn dbcc(
     opcode: u16,
     condition: u8,
 ) -> Result<u16, CpuError> {
+    // Same instruction-plus-two base as every other 16-bit relative form.
+    let base = cpu.pc();
     let displacement = cpu.fetch_u16(bus)? as i16;
     if cc_to_bool(cpu, condition) {
         return Ok(timing::dbcc_cycles(true, false));
@@ -114,7 +121,7 @@ fn dbcc(
     if decremented == 0xFFFF {
         return Ok(timing::dbcc_cycles(false, false));
     }
-    let target = cpu.relative_target(i32::from(displacement))?;
+    let target = cpu.relative_target_from(base, i32::from(displacement))?;
     cpu.write_pc(target)?;
     Ok(timing::dbcc_cycles(false, true))
 }

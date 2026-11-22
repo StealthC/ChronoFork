@@ -50,9 +50,10 @@
 //! - an absolute-long effective address is `($` plus 8 hexadecimal digits plus
 //!   `).L`;
 //! - a branch or `DBRA` target is `$` plus 8 hexadecimal digits of the absolute
-//!   target address, computed from the instruction address, the encoded
-//!   displacement and the instruction length, exactly like the CPU; a zero
-//!   8-bit branch displacement selects the 16-bit extension form;
+//!   target address, computed from the instruction address **plus two** (the
+//!   address of the displacement word) and the encoded displacement, exactly
+//!   like the CPU; a zero byte displacement selects the 16-bit extension form,
+//!   which occupies four bytes but still uses the plus-two relative base;
 //! - `ADDQ`/`SUBQ` print their encoded count as decimal `#1`..`#8`, because the
 //!   field is a count and not a data value;
 //! - an unknown or unsupported opcode word is `DC.W $` plus 4 hexadecimal
@@ -342,13 +343,14 @@ fn extension_long(
     Ok((u32::from(high) << 16) | u32::from(low))
 }
 
-/// Computes a control-flow target the way the CPU's `relative_target` does.
+/// Computes a control-flow target the way the CPU's `relative_target_from` does.
 ///
-/// `length` is the number of bytes consumed before the displacement is applied,
-/// so the base is the address immediately after the instruction. A target
-/// outside the 32-bit address space is a typed error. An odd target is printed
-/// as encoded; the CPU decides at execution time whether it is an address error,
-/// and this view does not execute.
+/// `length` is the number of bytes added to the instruction address before the
+/// displacement is applied; every branch and `DBcc` form passes two, the address
+/// of the displacement word, even when the instruction itself is four bytes long.
+/// A target outside the 32-bit address space is a typed error. An odd target is
+/// printed as encoded; the CPU decides at execution time whether it is an
+/// address error, and this view does not execute.
 fn relative_target(address: u32, length: u32, displacement: i32) -> Result<u32, DisasmError> {
     let target = i64::from(address) + i64::from(length) + i64::from(displacement);
     if target < 0 || target > i64::from(u32::MAX) {
@@ -424,7 +426,9 @@ fn decode_branch(
     } else {
         (i32::from(byte as i8), 2_u8)
     };
-    let target = relative_target(address, u32::from(length), displacement)?;
+    // A branch displacement is relative to the instruction address plus two,
+    // the address of the displacement word itself in the 16-bit form.
+    let target = relative_target(address, 2, displacement)?;
     Ok(Decoded::new(format!("{mnemonic} ${target:08X}"), length))
 }
 
@@ -574,7 +578,8 @@ fn decode_other(
     if (opcode & 0xFFF8) == 0x51C8 {
         let register = opcode & 0x7;
         let displacement = i32::from(extension_word(memory, address, 2)? as i16);
-        let target = relative_target(address, 4, displacement)?;
+        // DBcc shares the instruction-plus-two relative base.
+        let target = relative_target(address, 2, displacement)?;
         return Ok(Decoded::new(format!("DBRA D{register},${target:08X}"), 4));
     }
 
@@ -681,43 +686,45 @@ mod tests {
     /// makes one step succeed and, for control flow, land exactly on the address
     /// implied by the instruction length.
     const CASES: &[Case] = &[
-        // MOVEQ, all unconditional and conditional branches and BSR. The word
-        // forms use a zero 16-bit displacement, so the target is the next
-        // address and the observed PC delta equals the four-byte length. The
-        // final case pins the 8-bit form with a not-taken conditional branch,
-        // whose PC delta is the two-byte length.
+        // MOVEQ, all unconditional and conditional branches and BSR. A word
+        // form's displacement is relative to the instruction address plus two,
+        // so the cases use a `+2` displacement: the target is then the next
+        // instruction and the observed PC delta equals the four-byte length.
+        // (A zero displacement would target the extension word itself, two bytes
+        // into the instruction, and the delta-equals-length invariant below
+        // would no longer hold.) The byte forms keep the two-byte delta.
         case(&[], &[0x72, 0xFE], &[], "MOVEQ #$FE,D1"),
-        case(&[], &[0x60, 0x00, 0x00, 0x00], &[], "BRA $00000204"),
-        case(&[], &[0x61, 0x00, 0x00, 0x00], &[], "BSR $00000204"),
-        case(&[], &[0x64, 0x00, 0x00, 0x00], &[], "BCC $00000204"),
+        case(&[], &[0x60, 0x00, 0x00, 0x02], &[], "BRA $00000204"),
+        case(&[], &[0x61, 0x00, 0x00, 0x02], &[], "BSR $00000204"),
+        case(&[], &[0x64, 0x00, 0x00, 0x02], &[], "BCC $00000204"),
         // CMP.B D1,D0 with D0 = 0 and D1 = 1 sets C and N without touching X.
         case(
             &[0x70, 0x00, 0x72, 0x01, 0xB0, 0x01],
-            &[0x65, 0x00, 0x00, 0x00],
+            &[0x65, 0x00, 0x00, 0x02],
             &[],
             "BCS $0000020A",
         ),
         case(
             &[0x70, 0x00],
-            &[0x67, 0x00, 0x00, 0x00],
+            &[0x67, 0x00, 0x00, 0x02],
             &[],
             "BEQ $00000206",
         ),
         case(
             &[0x70, 0x01],
-            &[0x66, 0x00, 0x00, 0x00],
+            &[0x66, 0x00, 0x00, 0x02],
             &[],
             "BNE $00000206",
         ),
         case(
             &[0x70, 0xFF],
-            &[0x6B, 0x00, 0x00, 0x00],
+            &[0x6B, 0x00, 0x00, 0x02],
             &[],
             "BMI $00000206",
         ),
         case(
             &[0x70, 0x00],
-            &[0x6A, 0x00, 0x00, 0x00],
+            &[0x6A, 0x00, 0x00, 0x02],
             &[],
             "BPL $00000206",
         ),
@@ -823,7 +830,7 @@ mod tests {
         // DBRA with counter 1 and displacement 0 branches to the next address.
         case(
             &[0x70, 0x01],
-            &[0x51, 0xC8, 0x00, 0x00],
+            &[0x51, 0xC8, 0x00, 0x02],
             &[],
             "DBRA D0,$00000206",
         ),

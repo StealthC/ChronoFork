@@ -109,13 +109,17 @@ tone channel 0, `MASTER_CLOCK_HZ_NTSC`, one second of emulated time) is:
 It was produced by an out-of-tree probe that links the same
 `chronofork-megadrive` crate and reproduces the test fixture, so no repository
 source was changed to obtain it. The pinned payload/state/config hashes for the
-six-step demo machine are recorded in `backend::tests::snapshot_payload_and_hashes_are_golden`
-(`CFMD68K6`, payload length `206251`, payload sha256
-`fa87fe3f519c9f940194f1e7bf0e1db091dbbe43ec39de5cfb859979ae6311e1`, state hash
-`2e2db861007ad5ab9eee89ae3c5eea87ea05b28505b1b343da42b5788b91998b`). The phase-8.4 repair
-round re-pinned the payload and state hashes for R1-F2/R1-F3 (the pre-repair values were
-`e69b6da1…` and `b45ae6c1…`), while the payload length and the configuration hash
-(`695ab251aa18ec298e9461b77d46faccc7e302d5b12c87156d5fc714a3af7268`) are unchanged.
+six-step demo machine are recorded in `backend::tests::snapshot_payload_and_hashes_are_golden`.
+They are pinned **on the W1 bus-phase tree** (`CFMD68K7`, payload length `206259`, payload sha256
+`e89067cc8e46902a6424655957db9917af9cdb3d3773d655cbe724c81d29a252`, state hash
+`61c93ed39ef1ad05e0451912330399f4d6eb14946544dba4f7a3c9bb4479d720`, configuration hash
+`c7731b6c81d4618023524d78431aa359e7a81643f6bfd5b30233cb07b14d3fd6`). The v6 values recorded
+for the phase-8.4 tree were payload length `206251`, payload sha256 `fa87fe3f…`, state hash
+`2e2db861…` and configuration hash `695ab251…`; the phase-8.4 repair round had re-pinned the
+payload and state hashes for R1-F2/R1-F3 (pre-repair `e69b6da1…` and `b45ae6c1…`) with the
+length and configuration hash unchanged. The W1 phase moved the length and all three hashes by
+construction: it added the eight `io_control` bytes at `0xA10008..=0xA1000F` to the canonical
+body and moved the outer identity to v7, so nothing was reinterpreted and v1–v6 are rejected.
 
 **No cross-emulator sample equality is claimed.** The oracle run never reads audio
 samples, the harness has no sample path, and the emitted WAV/streaming capture

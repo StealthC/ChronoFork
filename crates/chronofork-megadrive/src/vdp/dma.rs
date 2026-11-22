@@ -1,23 +1,32 @@
 //! VDP DMA transfer state.
 //!
 //! The 315-5313 has five transfer modes: 68000 memory to VRAM, CRAM or VSRAM,
-//! VRAM fill and VRAM copy. The eager transfer engine in `mod.rs` validates the
-//! complete range and performs the transfer; this module owns the mode enum and
-//! the latched source/length/busy state that the engine reports and the status
-//! register exposes. The register-programmed path uses the hardware layout:
-//! `0x13`/`0x14` are the little-endian word length, `0x15`/`0x16`/`0x17` the
-//! source low/mid/high, and `0x17` bits 7..=6 select 68k-to-VDP (destination
-//! from the command code), fill or copy.
+//! VRAM fill and VRAM copy. This slice models only the two VRAM-source modes
+//! (fill and copy): the three 68000-memory modes are rejected with
+//! [`VdpError::DmaMemorySourceUnavailable`](super::VdpError::DmaMemorySourceUnavailable)
+//! before the engine reads or writes anything, because the engine's source is
+//! VRAM itself and there is no 68000-memory view to read instead. The eager
+//! transfer engine in `mod.rs` validates the complete range and performs the
+//! transfer; this module owns the mode enum and the latched source/length/busy
+//! state that the engine reports and the status register exposes. The
+//! register-programmed path uses the hardware layout: `0x13`/`0x14` are the
+//! little-endian word length, `0x15`/`0x16`/`0x17` the source low/mid/high, and
+//! `0x17` bits 7..=6 select 68k-to-VDP (destination from the command code),
+//! fill or copy.
 
 /// A VDP DMA transfer mode.
+///
+/// The three 68000-memory variants are part of the documented mode space (the
+/// serialized codes are unchanged), but [`Vdp::start_dma`](super::Vdp::start_dma)
+/// rejects them with a typed error: this slice cannot read 68000 memory.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DmaMode {
-    /// 68000 memory to VRAM.
+    /// 68000 memory to VRAM (rejected: no 68000-memory source view).
     #[default]
     MemoryToVram,
-    /// 68000 memory to CRAM.
+    /// 68000 memory to CRAM (rejected: no 68000-memory source view).
     MemoryToCram,
-    /// 68000 memory to VSRAM.
+    /// 68000 memory to VSRAM (rejected: no 68000-memory source view).
     MemoryToVsram,
     /// VRAM fill.
     Fill,

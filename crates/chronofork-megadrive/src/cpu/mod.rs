@@ -196,10 +196,6 @@ pub enum CpuError {
         /// Access that faulted.
         access: AddressAccess,
     },
-    /// Address arithmetic overflowed.
-    AddressOverflow,
-    /// The stack pointer moved outside the representable address space.
-    StackOverflow,
     /// The requested interrupt level is not a 68000 interrupt level.
     InvalidInterruptLevel {
         /// Rejected level.
@@ -220,8 +216,6 @@ impl fmt::Display for CpuError {
             Self::AddressError { address, .. } => {
                 write!(f, "68000 address error at 0x{address:06X}")
             }
-            Self::AddressOverflow => f.write_str("68000 address overflow"),
-            Self::StackOverflow => f.write_str("68000 stack pointer overflow"),
             Self::InvalidInterruptLevel { level } => {
                 write!(
                     f,
@@ -354,13 +348,15 @@ impl M68000 {
         let was_supervisor = self.sr & SR_SUPERVISOR != 0;
         let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
         let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
-        let stack = saved_ssp.checked_sub(6).ok_or(CpuError::StackOverflow)?;
+        // Address-register arithmetic is modulo 2^32; the bus decodes the
+        // truncated address (W1K).
+        let stack = saved_ssp.wrapping_sub(6);
         bus.validate_write_range(stack, 6)?;
 
         let return_pc = self.pc;
         let previous_sr = self.sr;
         bus.write16(stack, previous_sr)?;
-        let return_pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        let return_pc_address = stack.wrapping_add(2);
         bus.write32(return_pc_address, return_pc)?;
 
         self.usp = saved_usp;
@@ -393,9 +389,8 @@ impl M68000 {
         vector: u8,
         frame: ExceptionFrame,
     ) -> Result<u16, CpuError> {
-        let vector_address = u32::from(vector)
-            .checked_mul(4)
-            .ok_or(CpuError::AddressOverflow)?;
+        // `vector` is a byte, so `vector * 4` (<= 1020) cannot overflow.
+        let vector_address = u32::from(vector) * 4;
         let target = bus.read32(vector_address)?;
         self.ensure_even(target)?;
 
@@ -403,18 +398,18 @@ impl M68000 {
         let was_supervisor = self.sr & SR_SUPERVISOR != 0;
         let saved_usp = if was_supervisor { self.usp } else { self.a[7] };
         let saved_ssp = if was_supervisor { self.a[7] } else { self.ssp };
-        let stack = saved_ssp
-            .checked_sub(frame_size)
-            .ok_or(CpuError::StackOverflow)?;
-        bus.validate_write_range(
-            stack,
-            usize::try_from(frame_size).map_err(|_| CpuError::AddressOverflow)?,
-        )?;
+        // The stack pointer wraps modulo 2^32 like every other address register;
+        // `validate_write_range` below is what rejects a frame whose wrapped
+        // address really falls outside the map.
+        let stack = saved_ssp.wrapping_sub(frame_size);
+        // The frame size is one of the documented constants (6 or 14), so the
+        // widening to `usize` cannot truncate.
+        bus.validate_write_range(stack, frame_size as usize)?;
 
         let return_pc = self.pc;
         let supervisor = was_supervisor;
         bus.write16(stack, self.sr)?;
-        let pc_address = stack.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        let pc_address = stack.wrapping_add(2);
         bus.write32(pc_address, return_pc)?;
         if let ExceptionFrame::AddressError {
             address,
@@ -422,11 +417,11 @@ impl M68000 {
             access,
         } = frame
         {
-            let address_address = stack.checked_add(6).ok_or(CpuError::AddressOverflow)?;
+            let address_address = stack.wrapping_add(6);
             bus.write32(address_address, address)?;
-            let opcode_address = stack.checked_add(10).ok_or(CpuError::AddressOverflow)?;
+            let opcode_address = stack.wrapping_add(10);
             bus.write16(opcode_address, opcode)?;
-            let function_code_address = stack.checked_add(12).ok_or(CpuError::AddressOverflow)?;
+            let function_code_address = stack.wrapping_add(12);
             bus.write16(function_code_address, access.function_code(supervisor))?;
         }
 
@@ -846,8 +841,8 @@ impl M68000 {
             return self.raise_exception(bus, VECTOR_PRIVILEGE_VIOLATION, ExceptionFrame::Short);
         }
         let frame = self.a[7];
-        let return_pc_address = frame.checked_add(2).ok_or(CpuError::StackOverflow)?;
-        let restored_a7 = frame.checked_add(6).ok_or(CpuError::StackOverflow)?;
+        let return_pc_address = frame.wrapping_add(2);
+        let restored_a7 = frame.wrapping_add(6);
 
         let restored_sr = bus.read16(frame)?;
         let restored_pc = bus.read32(return_pc_address)?;
@@ -870,13 +865,25 @@ impl M68000 {
     /// [`CpuError::AddressOverflow`]. The wide bounds check below is the single
     /// proof of the `u32` range, so the narrowing conversion that follows is
     /// lossless and has no error path of its own.
-    fn relative_target(&self, displacement: i32) -> Result<u32, CpuError> {
-        let target = i64::from(self.pc) + i64::from(displacement);
-        if target < 0 || target > i64::from(u32::MAX) {
-            return Err(CpuError::AddressOverflow);
-        }
-        // Proven by the check above: `0 <= target <= u32::MAX`.
-        let target = target as u32;
+    /// Computes a PC-relative target from an explicit base address.
+    ///
+    /// A 68000 branch displacement is relative to the address of the branch
+    /// instruction **plus two** — the address of the 16-bit displacement word
+    /// itself for the word form, and the address of the next instruction for the
+    /// byte form. Callers therefore capture [`M68000::pc`] *before* fetching a
+    /// 16-bit extension word and pass it here; using the post-fetch PC would add
+    /// the extension word's two bytes to every `BRA.W`/`BSR.W`/`Bcc.W`/`DBcc`
+    /// target.
+    ///
+    /// A negative result and a result above `u32::MAX` are
+    /// [`CpuError::AddressOverflow`]. The wide bounds check below is the single
+    /// proof of the `u32` range, so the narrowing conversion that follows is
+    /// lossless and has no error path of its own. # Errors An overflowed target
+    /// or an odd one (the guest address-error case) is returned as a typed error.
+    fn relative_target_from(&self, base: u32, displacement: i32) -> Result<u32, CpuError> {
+        // A branch target is address arithmetic mod 2^32 too (W1S); what decides
+        // legality is the odd-target rule, which is the guest address error.
+        let target = base.wrapping_add(displacement as u32);
         self.ensure_even(target)?;
         Ok(target)
     }
@@ -1021,8 +1028,11 @@ impl M68000 {
     }
 
     pub(crate) fn fetch_u16(&mut self, bus: &mut MegadriveBus) -> Result<u16, CpuError> {
+        // The program counter is address arithmetic mod 2^32, and the fetch itself
+        // goes through the 24-bit bus (W1S). A fetch that starts at the top of the
+        // space reads the word at the truncated address and wraps its PC.
         let value = bus.read16(self.pc)?;
-        self.pc = self.pc.checked_add(2).ok_or(CpuError::AddressOverflow)?;
+        self.pc = self.pc.wrapping_add(2);
         Ok(value)
     }
 
@@ -1033,7 +1043,7 @@ impl M68000 {
     }
 
     pub(crate) fn push_long(&mut self, bus: &mut MegadriveBus, value: u32) -> Result<(), CpuError> {
-        let stack = self.a[7].checked_sub(4).ok_or(CpuError::StackOverflow)?;
+        let stack = self.a[7].wrapping_sub(4);
         bus.write32(stack, value)?;
         self.set_a7(stack);
         Ok(())
@@ -1042,7 +1052,7 @@ impl M68000 {
     fn pop_long(&mut self, bus: &mut MegadriveBus) -> Result<u32, CpuError> {
         let stack = self.a[7];
         let value = bus.read32(stack)?;
-        let next = stack.checked_add(4).ok_or(CpuError::StackOverflow)?;
+        let next = stack.wrapping_add(4);
         self.set_a7(next);
         Ok(value)
     }
@@ -1307,8 +1317,8 @@ mod tests {
 
     #[test]
     fn dbra_loops_until_the_counter_wraps_to_minus_one() {
-        // MOVEQ #2,D0; DBRA D0,-4; NOP
-        let (mut cpu, mut bus) = cpu_at_program(&[0x70, 0x02, 0x51, 0xC8, 0xFF, 0xFC, 0x4E, 0x71]);
+        // MOVEQ #2,D0; DBRA D0,-2; NOP
+        let (mut cpu, mut bus) = cpu_at_program(&[0x70, 0x02, 0x51, 0xC8, 0xFF, 0xFE, 0x4E, 0x71]);
         cpu.step(&mut bus).expect("moveq");
         let flags_after_moveq = cpu.sr();
         let mut iterations = 0;
@@ -1325,9 +1335,9 @@ mod tests {
 
     #[test]
     fn dbra_odd_target_delivers_an_address_error_exception() {
-        // DBRA D0,-3 targets 0x201 after the two displacement bytes. The ROM
-        // vector-3 entry is zero, so the exception handler target is 0.
-        let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFD]);
+        // DBRA D0,-1 targets 0x201 (instruction address plus two, minus one).
+        // The ROM vector-3 entry is zero, so the exception handler target is 0.
+        let (mut cpu, mut bus) = cpu_at_program(&[0x51, 0xC8, 0xFF, 0xFF]);
         cpu.d[0] = 2;
         assert!(cpu.step(&mut bus).is_ok());
         assert_eq!(cpu.pc(), 0);
@@ -1344,18 +1354,41 @@ mod tests {
     }
 
     #[test]
-    fn relative_target_reports_overflow_and_keeps_the_u32_boundary() {
-        let (mut cpu, _bus) = cpu_at_program(&[]);
-        cpu.pc = 0;
-        assert_eq!(cpu.relative_target(-1), Err(CpuError::AddressOverflow));
-        cpu.pc = u32::MAX;
-        assert_eq!(cpu.relative_target(1), Err(CpuError::AddressOverflow));
-        // The widest representable even target survives the conversion intact.
+    fn a_fetch_at_the_top_of_the_space_truncates_and_wraps_the_pc() {
+        // The M68k bus is 24 bits wide and masks every location
+        // (`Data/Modules/Sega Mega Drive 1600.xml:25`, `System/BusInterface.cpp:72`
+        // and `:2441`), so a fetch at 0xFFFF_FFFE reads 0x00FF_FFFE in the work-RAM
+        // mirror and the program counter keeps counting mod 2^32 (W1S).
+        let (mut cpu, mut bus) = cpu_at_program(&[]);
+        bus.write16(0x00FF_FFFE, 0x4E71).expect("NOP in the mirror");
         cpu.pc = 0xFFFF_FFFE;
-        assert_eq!(cpu.relative_target(0), Ok(0xFFFF_FFFE));
+        assert_eq!(cpu.fetch_u16(&mut bus), Ok(0x4E71));
+        assert_eq!(cpu.pc(), 0x0000_0000, "the PC wrapped past 2^32");
+    }
+
+    #[test]
+    fn relative_target_wraps_modulo_32_bits_and_rejects_only_an_odd_target() {
+        // W1S: a branch target is address arithmetic mod 2^32, so there is no
+        // overflow error any more — only the guest's odd-target rule.
+        let (cpu, _bus) = cpu_at_program(&[]);
+        assert_eq!(
+            cpu.relative_target_from(0, -1),
+            Err(CpuError::AddressError {
+                address: 0xFFFF_FFFF,
+                access: AddressAccess::ProgramRead,
+            }),
+            "0 - 1 wraps to 0xFFFF_FFFF, which is odd"
+        );
+        assert_eq!(
+            cpu.relative_target_from(u32::MAX, 1),
+            Ok(0),
+            "u32::MAX + 1 wraps to zero, an even target"
+        );
+        // The widest representable even target survives the conversion intact.
+        assert_eq!(cpu.relative_target_from(0xFFFF_FFFE, 0), Ok(0xFFFF_FFFE));
         // One past that is odd, so the target is preserved and then rejected.
         assert_eq!(
-            cpu.relative_target(1),
+            cpu.relative_target_from(0xFFFF_FFFE, 1),
             Err(CpuError::AddressError {
                 address: 0xFFFF_FFFF,
                 access: AddressAccess::ProgramRead,
@@ -1446,14 +1479,20 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_rejects_stack_underflow() {
+    fn interrupt_wraps_the_stack_pointer_through_the_mirror() {
+        // W1K: the interrupt frame is pushed at A7 − 6 modulo 2^32. With A7 = 0
+        // the frame lands at 0xFFFF_FFFA, which the 24-bit bus decodes as
+        // 0x00FF_FFFA — work RAM mirror space — so the entry is legal and the
+        // raw A7 keeps its wrapped value. (This test used to pin the removed
+        // `StackOverflow` host guard, which the hardware does not have.)
         let (mut cpu, mut bus) = cpu_with_vector(0x78, 0x0000_0300);
         cpu.a[7] = 0;
-        assert_eq!(
-            cpu.interrupt(6, 0x78, &mut bus),
-            Err(CpuError::StackOverflow)
-        );
-        assert_eq!(cpu.pc(), 0x200);
+        cpu.interrupt(6, 0x78, &mut bus)
+            .expect("the wrapped frame push is legal through the mirror");
+        assert_eq!(cpu.pc(), 0x300);
+        assert_eq!(cpu.address_register(7), Some(0xFFFF_FFFA));
+        assert_eq!(bus.read16(0x00FF_FFFA), Ok(0x2700), "SR in the frame");
+        assert_eq!(bus.read32(0x00FF_FFFC), Ok(0x0000_0200), "return PC");
     }
 
     #[test]
@@ -1915,10 +1954,23 @@ mod tests {
     }
 
     #[test]
-    fn rte_rejects_stack_underflow_without_touching_state() {
+    fn rte_pops_the_frame_from_the_wrapped_address() {
+        // W1K: RTE reads the SR word at A7 and the return PC at A7 + 2, both
+        // modulo 2^32. With A7 = 0xFFFF_FFFC the SR truncates to 0x00FF_FFFC
+        // (mirror RAM, zero) and the PC word starts at 0xFFFF_FFFE, wrapping to
+        // 0x0000_0000 = the reset vector's stack word (0x00FF), which is odd.
+        // The wrapped frame is therefore read and then rejected as a typed
+        // address error, exactly like any other odd return PC, with state
+        // untouched.
         let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
         cpu.a[7] = 0xFFFF_FFFC;
-        assert_eq!(cpu.step(&mut bus), Err(CpuError::StackOverflow));
+        assert_eq!(
+            cpu.step(&mut bus),
+            Err(CpuError::AddressError {
+                address: 0x0000_00FF,
+                access: AddressAccess::ProgramRead,
+            })
+        );
         assert_eq!(cpu.sr(), 0x2700);
         assert_eq!(cpu.address_register(7), Some(0xFFFF_FFFC));
         assert_eq!(cpu.pc(), 0x202, "only the opcode word was fetched");
@@ -1941,20 +1993,22 @@ mod tests {
 
     #[test]
     fn rte_rejects_an_unmapped_pc_read_after_a_valid_sr_read() {
-        // The SR word is readable but the return PC crosses the RAM window end,
-        // so the frame must be validated before any state is committed.
+        // The SR word is readable but the return PC runs off the end of the Z80
+        // RAM window into an unmapped hole, so the frame must be validated before
+        // any state is committed. The frame behaves exactly as on hardware: the
+        // SR really is read first and really must not be committed.
         let (mut cpu, mut bus) = cpu_at_program(&[0x4E, 0x73]);
-        cpu.a[7] = 0x00FF_FFFE;
+        cpu.a[7] = 0x00A0_1FFE;
         cpu.sr = 0x2701;
-        bus.write16(0x00FF_FFFE, 0x2004).expect("frame sr");
+        bus.write16(0x00A0_1FFE, 0x2004).expect("frame sr");
         assert_eq!(
             cpu.step(&mut bus),
             Err(CpuError::Bus(BusError::UnmappedRead {
-                address: 0x0100_0000
+                address: 0x00A0_2000
             }))
         );
         assert_eq!(cpu.sr(), 0x2701, "the valid SR read must not be committed");
-        assert_eq!(cpu.address_register(7), Some(0x00FF_FFFE));
+        assert_eq!(cpu.address_register(7), Some(0x00A0_1FFE));
         assert_eq!(cpu.pc(), 0x202);
     }
 

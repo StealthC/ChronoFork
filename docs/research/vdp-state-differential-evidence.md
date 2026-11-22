@@ -93,7 +93,7 @@ status bit *dynamics* agree, while recording the absolute values.
 | VDP registers `0x00`-`0x17` | not exposed by the oracle | `chronofork debug vdp` | exact match against the programmed values |
 | VRAM (64 KiB) | not exposed by the oracle | `chronofork debug vdp` VRAM windows + SHA-256 | exact match against the expected image built from the writes |
 | CRAM (16 words) | prefetch-shifted data-port readback only | data-port readback into work RAM | ChronoFork matches the written words; the oracle's lagging readback is recorded as a scoped limit |
-| VSRAM | stale write latch only | data-port reads undecoded | not content-compared; covered by backend unit tests |
+| VSRAM | stale write latch only | data-port read and write decoded (9-bit mod-40) | not content-compared; covered by backend unit tests |
 | Status register | guest readback into RAM | guest readback into RAM | absolute values recorded; phase-dependent bits diverge (scoped) |
 | H/V counters | guest readback into RAM | guest readback into RAM | absolute values recorded; H counter and power-on phase diverge (scoped) |
 
@@ -155,8 +155,10 @@ classification.
 - H32 window geometry, line-mode vertical scrolling and column-scroll details are
   approximations (see the slice page); interlace is absent.
 - Physical byte-swapped VRAM layout is not modelled.
-- VDP data-port VSRAM reads are undecoded in ChronoFork; CRAM/VSRAM canonical
-  content and round-trip are covered by `vdp_ports`/`vdp_snapshot` unit tests.
+- VDP data-port VSRAM reads **are** decoded in ChronoFork (`0b0100`, with the
+  same 9-bit modulo-40 address wrap as the write); CRAM/VSRAM canonical content
+  and round-trip are covered by `vdp_ports`/`vdp_snapshot` unit tests. The
+  oracle's `0b1100` 8-bit VRAM read is still a capability gap, not a discard.
 - DMA source is a VRAM address in this slice, and DMA is exercised by
   `vdp_dma`/`vdp_fifo` unit tests; it is not content-compared against the oracle
   because DMA state is not externally observable.

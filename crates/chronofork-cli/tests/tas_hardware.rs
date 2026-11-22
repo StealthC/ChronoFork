@@ -1033,7 +1033,10 @@ fn record_with_an_unusable_reset_vector_fails_typed_without_a_movie() -> TestRes
     // The reset program counter points into the controller window, whose fetch is
     // a typed unmapped read, so the fresh session cannot execute step 0.
     let mut rom = controller_rom();
-    rom[4..8].copy_from_slice(&0x00A1_0000_u32.to_be_bytes());
+    // The hole between the cartridge window and the Z80 RAM is genuinely
+    // unmapped; `0x00A10000` would no longer do, because the undecoded bytes of
+    // the I/O window are deterministic open bus now.
+    rom[4..8].copy_from_slice(&0x0080_0000_u32.to_be_bytes());
     let rom_path = dir.join("bad-vector.rom");
     std::fs::write(&rom_path, &rom)?;
     let movie = dir.join("unused.cfmovie");

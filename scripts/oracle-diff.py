@@ -143,6 +143,20 @@ class Assembler:
         self.items.append(("rel8", base, label))
         self.pos += 2
 
+    def branch16(self, base, label):
+        """Emits a 16-bit-displacement branch or DBcc.
+
+        ``base`` is the opcode word (0x60xx for BRA, 0x61xx for BSR, 0x6xxx for the
+        conditional forms, 0x5xCx for DBcc) whose low byte is zero -- the
+        documented selector for the word form. The displacement word follows the
+        opcode and is relative to the *opcode's address plus two*, which is the
+        address of the displacement word itself; a core that used the
+        post-extension PC as the base would land two bytes too far and this
+        fixture would diverge on the very next trace address.
+        """
+        self.items.append(("rel16", base, label))
+        self.pos += 4
+
     def encode(self):
         out = bytearray()
         addr = self.origin
@@ -158,6 +172,16 @@ class Assembler:
                     )
                 out += struct.pack(">H", item[1] | (displacement & 0xFF))
                 addr += 2
+            elif item[0] == "rel16":
+                # Instruction address plus two, the address of the displacement
+                # word: the documented 68000 relative base for every 16-bit form.
+                displacement = self.labels[item[2]] - (addr + 2)
+                if not -32768 <= displacement <= 32767:
+                    raise HarnessError(
+                        "branch to {} is out of range ({})".format(item[2], displacement)
+                    )
+                out += struct.pack(">HH", item[1], displacement & 0xFFFF)
+                addr += 4
             elif item[0] == "abs32":
                 out += struct.pack(">I", self.labels[item[1]])
                 addr += 4
@@ -840,10 +864,14 @@ def build_bits_dbcc_rom():
         bit_op(operation, True, 2, 0)
 
     # DBRA D2,self: 2 -> 1 (taken), 1 -> 0 (taken), 0 -> 0xFFFF (expired).
+    # The self-loop displacement is -2, because the relative base is the DBRA
+    # opcode address plus two; the previous fixture used 0x51C8 (D0, whose reset
+    # counter of 0 expires on the first pass) with a -4 displacement, so the taken
+    # path never ran and the base was not observed.
     asm.moveq(2, 2)
     asm.label("dbra")
-    asm.emit16(0x51C8)
-    asm.emit16(0xFFFC)  # target the DBRA opcode itself
+    asm.emit16(0x51CA)  # DBRA D2,disp16
+    asm.emit16(0xFFFE)  # branch to the opcode itself (instruction + 2 - 2)
     # DBEQ D4,+2 with Z set by TST.W D3 (D3 remains zero).
     asm.emit16(0x4A43)  # TST.W D3
     asm.emit16(0x57CC)  # DBEQ D4,+2
@@ -854,6 +882,92 @@ def build_bits_dbcc_rom():
     asm.label("marker")
     asm.bra_self()
     return _make_rom(asm.encode(), b"CHRONOFORK DIFF BITS DBCC ROM"), asm.labels
+
+
+def build_branch16_rom():
+    """16-bit-displacement branches and DBcc, with every relative form taken.
+
+    The displacement of a 16-bit branch or DBcc is relative to the instruction
+    address plus two (the address of the displacement word). Every 16-bit form
+    here is *taken*, so the base is visible in the address trace on the next
+    executed record; a core that used the post-extension PC as the base lands two
+    bytes too far and diverges immediately. The 8-bit twins and the not-taken
+    word forms pin the other side: the fix must not move them.
+    """
+    asm = Assembler(PROGRAM_AT)
+    _init_registers(asm)
+
+    # BRA.W forward over a two-byte NOP.
+    asm.branch16(0x6000, "after_bra")
+    asm.nop()
+    asm.label("after_bra")
+    asm.moveq(1, 1)  # D1 = 1 marker after the forward branch
+
+    # BSR.W / RTS: the return address is the word after the displacement.
+    asm.branch16(0x6100, "subroutine")
+    asm.moveq(2, 2)  # D2 = 2 after the call returns
+    asm.branch16(0x6000, "after_sub")
+    asm.label("subroutine")
+    asm.moveq(3, 3)  # D3 = 3 inside the subroutine
+    asm.rts()
+    asm.label("after_sub")
+
+    # Bcc.W taken: TST.W D4 leaves Z set, so BEQ.W is taken and the marker after
+    # the branch is the next observed address.
+    asm.tst("w", 4)
+    asm.branch16(0x6700, "after_beq")
+    asm.moveq(5, 5)  # skipped: a taken branch must not fall through
+    asm.label("after_beq")
+    asm.moveq(6, 6)  # D6 = 6, which also clears Z
+
+    # Bcc.W not taken: TST.W D4 sets Z again, so BNE.W falls through to the word
+    # after the displacement and both markers run in order.
+    asm.tst("w", 4)
+    asm.branch16(0x6600, "only_if_wrongly_branched")
+    asm.moveq(7, 7)  # D7 = 7 on the not-taken path
+    asm.branch16(0x6000, "after_not_taken")
+    asm.label("only_if_wrongly_branched")
+    asm.moveq(8, 0)  # D0 = 8 only if BNE.W wrongly branched
+    asm.label("after_not_taken")
+
+    # Bcc.W taken on the same opcode: MOVEQ #1,D3 clears Z, so BNE.W branches.
+    asm.moveq(1, 3)
+    asm.branch16(0x6600, "after_bne_taken")
+    asm.moveq(2, 0)  # skipped
+    asm.label("after_bne_taken")
+    asm.moveq(9, 0)  # D0 = 9
+
+    # DBRA with a non-zero counter and a self-loop displacement of -2, which is
+    # exactly "instruction address plus two, minus two".
+    asm.moveq(2, 0)  # D0 = 2 counter
+    asm.label("dbra_self")
+    asm.emit16(0x51C8)  # DBRA D0,disp16
+    asm.emit16(0xFFFE)  # back to the opcode itself
+    asm.moveq(1, 5)  # D5 = 1 after the counter expires
+
+    # DBRA with a non-zero counter and a forward displacement: skips one NOP.
+    asm.moveq(3, 0)  # D0 = 3
+    asm.label("dbra_forward")
+    asm.emit16(0x51C8)  # DBRA D0,disp16
+    asm.emit16(0x0004)  # instruction + 2 + 4: past the NOP
+    asm.nop()
+    asm.moveq(4, 4)  # D4 = 4 after the forward hop
+
+    # The 8-bit twins still use their own two-byte base.
+    asm.bra("bra8")
+    asm.nop()
+    asm.label("bra8")
+    asm.moveq(5, 5)  # D5 = 5 (overwritten by the DBRA marker above, intentional)
+    asm.bne("bne8_taken")
+    asm.moveq(6, 0)
+    asm.label("bne8_taken")
+    asm.moveq(7, 0)  # D0 = 7: the counter registers end distinguishable
+
+    for dn in range(8):
+        asm.move_dn_abs("l", dn, 0x00FF0000 + dn * 4)
+    asm.label("marker")
+    asm.bra_self()
+    return _make_rom(asm.encode(), b"CHRONOFORK DIFF BRANCH16 ROM"), asm.labels
 
 
 # (name, builder) for the current master-cycle differential corpus
@@ -869,6 +983,7 @@ ROMS = (
     ("rom_exg_tas", build_exg_tas_rom),
     ("rom_status_reg", build_status_reg_rom),
     ("rom_bits_dbcc", build_bits_dbcc_rom),
+    ("rom_branch16", build_branch16_rom),
 )
 
 

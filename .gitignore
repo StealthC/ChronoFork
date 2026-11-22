@@ -130,3 +130,7 @@ desktop.ini
 .agents/worktrees/
 .agents/notes/
 .claude/skills/
+
+# Python bytecode caches from the research and oracle scripts
+__pycache__/
+**/__pycache__/

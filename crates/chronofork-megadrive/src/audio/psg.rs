@@ -29,8 +29,16 @@
 //! 2 dB steps; the absolute output scale is this model's choice, not a measured
 //! hardware level. The PSG is write-only on hardware and the Mega Drive bus is
 //! not driven by it, so [`Psg::read`] returns the documented open value
-//! [`OPEN_BUS_VALUE`]. The 68000-side `0xC00011` PSG window remains out of scope
-//! for this phase; the Z80 window `0x7F00..=0x7F03`/`0x7F11` reaches the chip.
+//! [`OPEN_BUS_VALUE`]. Both windows reach this one chip: the 68000 window
+//! `0xC00010..=0xC00017` and the Z80 window `0x7F00..=0x7F03`/`0x7F11` plus its
+//! mirror `0x7F10..=0x7F17`, so the latch/data sequence and the byte a read
+//! returns are identical on both sides.
+//!
+//! The read value itself is a documented modelling choice, not a measured
+//! hardware level: the pinned oracle's PSG inherits `Device:356`'s `read`
+//! without filling the data, and there is no uniform executable proof of
+//! `0xFF` for it. This slice keeps the single deterministic
+//! [`OPEN_BUS_VALUE`] on *both* sides rather than letting them disagree.
 
 use chronofork_core::codec::{Reader, Writer};
 

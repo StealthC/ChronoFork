@@ -25,19 +25,19 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "776a3fda850451c88397e31a6597f183df7d518deaa6c6590163d42e70464243";
+const RESET_STATE_HASH: &str = "5c3a0dfe169d7e0af865d1efa3f2e815e32bf7be8484153d1a091d2c8fbf558d";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "bca01cfc154197ab24f29a993a6c003f5b96dd086634da9d468e48e2056bc789";
+    "63314b7d9aee9e10bfcb24e834e0c3c8490ef007238560d004aee3fbba74d41d";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "66c9e91609588f15be900cdb061cd128303370c84b19945e184b606c956104d9";
+    "7161d65ef290d6cf997e16034b6b51d3d46fe75088ca6a82db1afe02b6440df2";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "51907e3f389f6f9c9b1f4c5e61d398649a5bd6d8ed7cab73ecbeb8afd442f1a6";
+    "d68284b9b1e05df34c25b49a8845b56b44d273723847d2175aeee326fadda245";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "74d0d9c9aae5adfb3f2543934784681fd9b3b57b42ae2e81724a92c73535d4a3";
+    "842a5284addc928068d50cc2b78b882718967de477ac9c1246823ef1a2263c93";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -246,7 +246,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=bca01cfc154197ab24f29a993a6c003f5b96dd086634da9d468e48e2056bc789\n\
+state_hash=63314b7d9aee9e10bfcb24e834e0c3c8490ef007238560d004aee3fbba74d41d\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -321,18 +321,44 @@ rows=2\n\
     ]);
     assert!(stderr.contains("is odd"), "{stderr}");
 
-    // A request that starts inside work RAM and crosses its end is out of bounds.
+    // A request that starts inside work RAM and crosses the end of the primary
+    // window is rejected: `0x01000000` is not RAM (its low lane decodes ROM),
+    // so the range is a bounds failure rather than a wrap into another region.
     let stderr = run_fail(&[
         "debug",
         "memory",
         "--rom",
         rom_path,
+        "--steps",
+        "5",
         "--address",
         "0x00FFFFFE",
         "--length",
         "4",
     ]);
     assert!(stderr.contains("memory access out of bounds"), "{stderr}");
+    assert!(stderr.contains("16777214"), "{stderr}");
+
+    // A request that stops exactly at the end of the window is still served.
+    let tail = stable(&[
+        "debug",
+        "memory",
+        "--rom",
+        rom_path,
+        "--steps",
+        "5",
+        "--address",
+        "0x00FFFFF0",
+        "--length",
+        "16",
+    ]);
+    let tail_block = single_block(&tail);
+    assert_eq!(tail_block.field("address"), "0x00FFFFF0");
+    assert_eq!(
+        tail_block.field("state_hash"),
+        FIVE_STEP_STATE_HASH,
+        "a rejected or served read leaves canonical state alone"
+    );
 
     // An unmapped hole is a typed failure, not an empty dump.
     let stderr = run_fail(&[
@@ -566,7 +592,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "3444"),
         (
             "state_hash",
-            "797fe7b2d2261a47f72abfc151e645b7b1167dc2558e3657696de7fce452aed7",
+            "e80816e71f8efe5fb9331ae9d072a3d859f2f6d9956f7277c90b1d2492097e0d",
         ),
         ("video", "ntsc"),
         ("lines_per_frame", "262"),
@@ -1418,9 +1444,11 @@ fn debug_command_rejects_invalid_input_with_typed_errors() {
     assert!(stderr.contains("between 0 and 65536"), "{stderr}");
 
     // A ROM whose reset vector cannot execute is a typed runtime failure, not a
-    // partial report.
+    // partial report. The vector points into the hole between the cartridge
+    // window and the Z80 RAM; `0x00A10000` would no longer do, because the I/O
+    // window's undecoded bytes are now deterministic open bus, not an error.
     let mut broken = synthetic_rom();
-    broken[4..8].copy_from_slice(&0x00A1_0000_u32.to_be_bytes());
+    broken[4..8].copy_from_slice(&0x0080_0000_u32.to_be_bytes());
     let broken = write_named_rom(&dir, "broken-vector.rom", broken);
     let stderr = run_fail(&["debug", "run", "--rom", path_str(&broken), "--steps", "1"]);
     assert!(stderr.contains("unmapped read"), "{stderr}");

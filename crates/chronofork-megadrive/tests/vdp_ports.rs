@@ -12,13 +12,25 @@ use chronofork_megadrive::vdp::{
     CONTROL_PORT_OFFSET, CRAM_WORDS, DATA_PORT_OFFSET, VSRAM_WORDS, Vdp, VdpError, VramTarget,
 };
 
-/// Low command code bits: CD1/CD0 (first control word bits 15..14).
+// The latched command code is `CD5..CD0`: `CD1:CD0` come from the first control
+// word (its bits 15..14) and `CD5:CD2` from the second (its bits 7..4). The low
+// nibble `CD3..CD0` selects target *and* direction on hardware:
+//
+//   0b0000 VRAM read    0b0001 VRAM write   0b0011 CRAM write
+//   0b0100 VSRAM read   0b0101 VSRAM write  0b1000 CRAM read
+//   0b1100 8-bit VRAM read (not modelled)
+
+/// Low command code bits `CD1:CD0 = 0b11` for the CRAM write code `0b0011`.
 const CODE_1_1: u16 = 0x3;
-/// Second-word nibble for CD2 (VSRAM write).
+/// Low command code bits `CD1:CD0 = 0b01` for the VSRAM write code `0b0101`.
+const CODE_0_1: u16 = 0x1;
+/// Second-word nibble `CD5:CD2 = 0b0001`, i.e. `CD2` set: shared by the VSRAM
+/// read (`0b0100`) and write (`0b0101`) codes.
 const NIBBLE_CD2: u16 = 0x1;
-/// Second-word nibble for CD3 (CRAM read).
+/// Second-word nibble `CD5:CD2 = 0b0010`, i.e. `CD3` set: the CRAM read code.
 const NIBBLE_CD3: u16 = 0x2;
-/// Second-word nibble for CD3+CD2 (unsupported VSRAM read).
+/// Second-word nibble `CD5:CD2 = 0b0011`: the `0b1100` 8-bit VRAM read code,
+/// which this slice does not model yet (a capability gap, not a discard).
 const NIBBLE_CD3_CD2: u16 = 0x3;
 
 fn set_command(
@@ -47,6 +59,13 @@ fn set_cram_read(vdp: &mut Vdp, address: u16) -> Result<(), VdpError> {
 }
 
 fn set_vsram_write(vdp: &mut Vdp, address: u16) -> Result<(), VdpError> {
+    // `0b0101`: CD1:CD0 = 0b01 with CD2 set. This is the boot fixtures' macro
+    // (`0x4000` / `0x0010`); the earlier helper built `0b0100`, the read code.
+    set_command(vdp, address, CODE_0_1, NIBBLE_CD2)
+}
+
+fn set_vsram_read(vdp: &mut Vdp, address: u16) -> Result<(), VdpError> {
+    // `0b0100`: CD1:CD0 = 0b00 with CD2 set.
     set_command(vdp, address, 0, NIBBLE_CD2)
 }
 
@@ -171,9 +190,34 @@ fn cram_reads_use_the_data_port_and_select_the_requested_byte_lane() {
 }
 
 #[test]
-fn an_unsupported_vsram_read_command_is_a_typed_error() {
+fn vsram_reads_use_the_data_port_with_the_same_word_address_and_wrap() {
+    // `0b0100` is the VSRAM read code; the address decode and the 9-bit
+    // modulo-40 wrap are shared with the write path (`address >> 1`).
     let mut vdp = Vdp::new();
-    set_command(&mut vdp, 0, 0, NIBBLE_CD3_CD2).expect("vsram read command");
+    vdp.write_word(VramTarget::Vsram, 0, 0x1234)
+        .expect("vsram 0");
+    vdp.write_word(VramTarget::Vsram, 39, 0xABCD)
+        .expect("vsram 39");
+    set_vsram_read(&mut vdp, 0).expect("vsram read command");
+    assert_eq!(vdp.read16(DATA_PORT_OFFSET), Ok(0x1234));
+    // Byte address 78 selects word 39 (78 >> 1), and the 9-bit wrap means an
+    // address of 80 reads word 0 again.
+    set_vsram_read(&mut vdp, 78).expect("vsram read command 39");
+    assert_eq!(vdp.read16(DATA_PORT_OFFSET), Ok(0xABCD));
+    set_vsram_read(&mut vdp, 80).expect("vsram read command wrapped");
+    assert_eq!(vdp.read16(DATA_PORT_OFFSET), Ok(0x1234));
+}
+
+#[test]
+fn an_undecoded_eight_bit_vram_read_command_is_a_typed_error() {
+    // `0b1100` is the documented 8-bit VRAM read (the pinned oracle's 0x0C).
+    // This slice does not model that capability yet, so a *read* stays a typed
+    // error; it is a capability gap, not a discarded command. A *write* with the
+    // same code, on the other hand, is exactly the oracle's write `default:`
+    // (its write decode looks at the low four bits and `0b1100` matches none of
+    // `0b0001`/`0b0011`/`0b0101`), so it is discarded and counted.
+    let mut vdp = Vdp::new();
+    set_command(&mut vdp, 0, 0, NIBBLE_CD3_CD2).expect("8-bit read command");
     assert_eq!(
         vdp.read16(DATA_PORT_OFFSET),
         Err(VdpError::UnsupportedTarget { code: 0x0C })
@@ -182,6 +226,22 @@ fn an_unsupported_vsram_read_command_is_a_typed_error() {
         vdp.read8(DATA_PORT_OFFSET),
         Err(VdpError::UnsupportedTarget { code: 0x0C })
     );
+    assert_eq!(
+        vdp.discarded_data_port_accesses(),
+        0,
+        "a capability gap is not a discard"
+    );
+
+    vdp.write_word(VramTarget::Cram, 0, 0x1234)
+        .expect("seed cram");
+    set_command(&mut vdp, 0, 0, NIBBLE_CD3_CD2).expect("8-bit read command");
+    assert_eq!(vdp.write16(DATA_PORT_OFFSET, 0x4242), Ok(()));
+    assert_eq!(
+        vdp.discarded_data_port_accesses(),
+        1,
+        "the write is discarded"
+    );
+    assert_eq!(vdp.cram_entry(0), Some(0x1234), "no CRAM mutation");
 }
 
 #[test]

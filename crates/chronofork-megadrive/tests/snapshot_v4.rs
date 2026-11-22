@@ -15,10 +15,10 @@ fn new_machine() -> Result<MegadriveBackend, Box<dyn Error>> {
 
 #[test]
 fn version_five_identity_is_published() {
-    assert_eq!(PAYLOAD_VERSION, 6);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K6");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE6");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF6");
+    assert_eq!(PAYLOAD_VERSION, 7);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K7");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE7");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF7");
 }
 
 #[test]
