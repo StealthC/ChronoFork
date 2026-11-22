@@ -7,7 +7,11 @@ toolchain or environment changes.
 **Current status:** M8 phase 8.3 (complete VDP) is **implemented, independently verified
 (rounds 1–3) and reviewed (rounds 2–3)**, and merged to `main` through the phase-8.3 PR
 (issue #16); the phase gate below was executed and passed (evidence in the
-[VDP state differential](../research/vdp-state-differential-evidence.md)). The latest dated
+[VDP state differential](../research/vdp-state-differential-evidence.md)). Phase 8.4
+(Z80 core, arbitration, YM2612/PSG, 48 kHz mixer/resampler, payload v6) is
+**complete on `agent/8.4-z80-audio` and gate-executed there, with independent
+verification, review and integration pending**; the run is recorded on 2026-11-20
+[below](#phase-84-z80-audio-gate-executed-pass--evidence-recorded). The latest dated
 verification block remains the [2026-11-17 M8 phase 8.1 cartridge,
 region, TMSS and boot](#2026-11-17--m8-phase-81-cartridge-region-tmss-and-boot-integration-gate)
 (81 targets / 1,047 passed, 0 failed, 0 ignored; both demos byte-identical or explained only
@@ -90,6 +94,107 @@ absent (exit 3, never a pass). What it proves and what it does **not** claim:
   definition into a verification claim.
 
 See [VDP state differential evidence](../research/vdp-state-differential-evidence.md).
+
+## Phase 8.4 Z80 audio gate (executed; PASS — evidence recorded)
+
+```sh
+python3 scripts/oracle-audio-state-diff.py --out-dir .research/evidence/8.4
+./scripts/check.sh
+cargo test -p chronofork-megadrive --test audio_snapshot
+```
+
+Executed at the phase-8.4 branch HEAD on 2026-11-20: the three commands exit 0, the
+audio-state differential reports **PASS** for all 25 compared device-state fields and
+`./scripts/check.sh` remains green (format, check, Clippy, workspace tests and rustdoc).
+Run artifacts are under `.research/evidence/8.4` and summarized in the
+[audio state differential](../research/audio-state-differential-evidence.md).
+
+The gate was re-executed at the phase-closure HEAD on 2026-11-20, after merging
+`origin/main` `b8d63a1` and applying the documentation closure: `./scripts/check.sh`
+and `git diff --check` both exit 0. The closure commit is Conventional and scoped to
+`docs/` + `AGENTS.md`; no `crates/` or `scripts/` file is touched. No test count is
+copied into this record — run the gate yourself.
+
+**Repair round (t5, 2026-11-20).** A review of the closed phase raised five findings and
+all five were repaired: the YM2612 `0x28` key-on channel derivation (R1-F1), the PSG noise
+shift periods and the tone-2-clocked mode (R1-F2), the `0xA11100` bus-request polarity, now
+the hardware `ZBR` line per the owner's decision (R1-F3), the `execution-model.md`
+`CFMDSTATE6` coverage (R1-F4) and the phase-8.4 inspection-surface record (R1-F5).
+R1-F2 and R1-F3 are canonical-state behaviour fixes, so state hashes moved while payload
+lengths and the configuration hash did not; the affected goldens were re-pinned
+mechanically with the cause recorded (`backend::tests::snapshot_payload_and_hashes_are_golden`
+and six `chronofork-cli --test debug` `state_hash` expectations, whose RAM/VRAM dumps stayed
+byte-identical), four regression tests were added and none was removed, ignored or weakened.
+The recorded internal PCM fixture was re-probed and is **unchanged**
+(`73855433…`, 48 000 frames) because that fixture leaves the PSG noise channel silent; see the
+attributed supersession note in the
+[audio state differential](../research/audio-state-differential-evidence.md) and the ignored
+`.research/8.4-r2/` artifacts. The gate was re-run green at the repair HEAD, and the repair
+commit changed no `scripts/` file.
+
+R1-F2 and R1-F3 also move the `megadrive demo` stdout, so the current demo baseline is
+recorded here for the independent verification (three runs each, byte-identical, empty
+stderr): `cargo run -q -p chronofork-cli -- megadrive demo` writes 1994 stdout bytes with
+SHA-256 `e5b9ecffacb2364c889b2ef969c5c2ee86e4da892c4c0e9b22baa8163ca99609`. The closure-head
+value at `8382255` was `794252b3fc3d1c54b95a0d54664fa34ef9916df29c67e321d0009a2f43c138b1`
+(same length), so a verification must compare against the post-repair value. The `demo`
+(986 bytes, `9b4dd564…`) and `gui run` (2842 bytes, `d3abf57a…`) stdout hashes are unchanged
+from the closure head, and raw files are under the ignored `.research/8.4-r2/demos/`.
+
+The phase-8.4 differential harness was also realigned to the repaired polarity and re-run:
+with the **same** bus-request byte on both emulators (the former `1`/`0` workaround removed,
+one byte-identical ROM, `sha256 2d7c469e…`) it exits **0** with **PASS** for all 25 compared
+fields at the shared Z80 `HALT` boundary (HALT PC 186; both corrupted-field controls and the
+missing-oracle exit-3 control pass). The request-asserted probe that previously demonstrated
+the divergence (oracle Z80 `PC = 4`, ChronoFork `PC = 186`) now agrees on `PC = 4` on both
+sides, which is the direct evidence that the `ZBR` polarity repair took effect; the note on
+the [audio state differential](../research/audio-state-differential-evidence.md) records it.
+Raw report: `.research/8.4-r2/evidence-r3/` (ignored).
+
+Two harness executions are recorded, both exit 0 with **PASS** 25/25 at the shared Z80
+`HALT` boundary, all three corrupted-field controls (`corrupt-z80-af`, `corrupt-psg-tone`,
+`corrupt-ym-status`) detected plus the missing-oracle child exiting 3, one ROM shared by both
+emulators (`sha256 2d7c469e…`, `oracle_bus_request` = `chronofork_bus_request` = 0) and the
+request-asserted probe agreeing at Z80 `PC = 4` on both sides:
+
+1. at commit `2001286` — artifacts `.research/8.4-t10/evidence/` (ignored). That commit is a
+   **historical** HEAD, not the current one.
+2. at the t12 repair tree, which is the **current HEAD** — this commit — with production code
+   unchanged at `06f5e95`; artifacts `.research/evidence/8.4-final/` (ignored), the
+   artifacts of record. The harness's own recorded `commit` field is `8500a4b` (this commit's
+   parent) because the run predates the commit, and `crates/` is identical in both.
+
+The exit-0 condition now includes the probe: `z80_pc_agrees` is part of the PASS gate (not
+only a report field), so a probe disagreement is a divergence and exits 1. That gate was
+exercised with an out-of-repo negative control (probe agreement forced false: exit 1, status
+`divergence`, `arbitration_probe_agrees: false`).
+
+The audio differential drives the pinned `exodus-mcpd` oracle (revision `ec005615…`)
+and ChronoFork over one independently authored synthetic ROM and compares **device
+state only** at a shared Z80 `HALT` boundary: the Z80 register file, the PSG tone/
+volume/noise/source-control registers and the readable YM2612 status byte. It never
+reads or compares audio samples. What it proves and what it does **not** claim:
+
+- The recorded run predates the phase-8.4 repair round: the 68000 fixture differs in
+  the Z80 bus-request byte because the model then had the inverse execution polarity of
+  the pinned hardware model, and the literal same-ROM probe is recorded as a scoped
+  arbitration divergence (oracle Z80 stops at `PC = 4`, ChronoFork reaches `PC = 186`).
+  The repair implements the hardware `ZBR` polarity (asserting `0xA11100` bit 8 stops the
+  Z80 and gives the 68000 the window; read bit 8 reports ownership), so that divergence is
+  historical. No 68000 or arbitration equivalence is claimed.
+- The pinned oracle publishes no YM2612 register/channel reflection (only Audio
+  Logging), so YM2612 register and channel state is **not** compared; only the readable
+  status byte is. PSG noise shift state is time-dependent and excluded; the unused
+  PSG channel-4 tone register and Z80 alternate registers have no ChronoFork
+  counterpart and are excluded with reasons.
+- Negative controls corrupt a Z80 field, a PSG field and the YM status and require the
+  exact first mismatch; a missing-oracle child invocation must exit **3** with a reason.
+  The harness exits 0 only when every field matches and both controls pass, so it cannot
+  report a silent PASS.
+- Internal PCM determinism is pinned by hash in the backend tests, not by
+  cross-emulator sample equality; no sample-equality claim is made anywhere.
+
+See [audio state differential evidence](../research/audio-state-differential-evidence.md).
 
 ## Historical bootstrap results (2026-11-13; superseded, not a current claim)
 
@@ -1062,7 +1167,7 @@ passed without a command and an exit code recorded there or in your own run.
 | Corruption/version rejection | Implemented |
 | Property-based tests | Implemented: codec/snapshot property tests ([evidence §8.2](anti-slop-refactor-evidence.md#82-gates-and-the-199-test-accounting)) |
 | Fuzz testing | Planned |
-| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the CPU oracle differential (11 synthetic ROMs) and the phase-8.3 VDP state differential are implemented as external harnesses; full emulator/pixel differential remains out of scope |
+| Differential execution | Baseline-vs-refactor serialized-state probe implemented ([evidence §8.4](anti-slop-refactor-evidence.md#84-differential-serialized-state-probe-recreated)); the CPU oracle differential (11 synthetic ROMs) and the phase-8.3 VDP and phase-8.4 audio-state differentials are implemented as external harnesses; full emulator/pixel differential remains out of scope |
 | Performance benchmarks | Implemented as `bench_step` example; evidence, not a CI gate ([evidence §8.5](anti-slop-refactor-evidence.md#85-benchmark-on-the-post-repair-tree)) |
 | Concurrency tests | Implemented: M6 service manager lock and per-session writer lease (typed retryable `conflict`, reads allowed during a mutation) |
 | Transport/wire tests | Implemented: M6 bounded HTTP/1.1 and MCP wire contracts, rejection matrices, server bounds, typed client and direct/HTTP/MCP byte parity |

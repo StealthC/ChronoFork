@@ -61,10 +61,11 @@ and verified for the deterministic minimal-slice scope. The backend reads the Me
 controller data registers `0xA10003`/`0xA10005` from `InputFrame` ports 0 and 1 with
 stateless per-step semantics: the input is visible only during the executed step, is
 cleared on every exit path including typed failures, and is never serialized into the
-snapshot or state hash. The canonical payload is now `CFMD68K5` v5 (the M3 increment
-used v2; phase 8.2 added the extended CPU and master-cycle scheduler state and phase 8.3
-added the CFVDP002 VDP state, rejecting v1-v4), so a restored machine uses the next step's
-input; the
+snapshot or state hash. The canonical payload is now `CFMD68K6` v6 (the M3 increment
+used v2; phase 8.2 added the extended CPU and master-cycle scheduler state, phase 8.3
+added the CFVDP002 VDP state and phase 8.4 added the Z80, arbitration, YM2612, PSG and
+48 kHz mixer state, rejecting v1-v5), so a restored machine uses the next step's input;
+the
 differential probe, demos, M1 oracle/state probes and all existing M2/M3 movie fixtures are
 byte-identical to baseline. The verified subset is the TH-high 3-button phase
 (Up/Down/Left/Right/B/C, active-low; neutral `0x7F`) on ports 1–2; A, Start, TH/6-button
@@ -124,10 +125,12 @@ Current evidence (synthetic backend and the minimal Mega Drive controller-read s
   2026-11-16).
 
 These tests do **not** establish determinism for a complete real Mega Drive backend. That
-requires differential tests against a trusted reference, including floating-point audio
-paths and device scheduling; the controller-read slice is deterministic but is not a
-controller-protocol or game-compatibility claim. M3 is complete for the documented
-deterministic minimal-slice scope.
+requires differential tests against a trusted reference, including device scheduling and
+audio; phase 8.4's audio path is integer and byte-deterministic within ChronoFork (one
+emulated second is exactly 48 000 frames), but no cross-emulator sample equality is
+claimed. The controller-read slice is deterministic but is not a controller-protocol or
+game-compatibility claim. M3 is complete for the documented deterministic minimal-slice
+scope.
 
 ## Replay
 
@@ -297,19 +300,27 @@ best-effort parse.
 
 ## Known limitations
 
-- No fully cycle-accurate hardware timing, timer/Z80 interrupts or audio. The Mega
+- No fully cycle-accurate hardware timing or timer/Z80 interrupt delivery. The Mega
   Drive slice uses a 3420-master-cycle scanline timeline with VDP-owned HBlank/VBlank
   request generation at line/dot boundaries, 68000 interrupt entry on that timeline,
   SR-mask gating, `RTE` handler return, VDP register-0 interrupt-enable gating,
   acknowledge-on-delivery, privilege enforcement for the implemented system
   instructions and exception vectors 1-9/24-31/32+n. VDP DMA (memory-to-VRAM/CRAM/
-  VSRAM, fill and copy), the FIFO/CPU-wait model and deterministic headless video
-  frames are implemented. Remaining limits: functional prefetch, bus contention and
-  68000-side DMA stalls are not cycle-modelled (VDP DMA uses eager transfers with a
-  busy window); only HBlank (level 4) and VBlank (level 6) sources exist, with level 7
-  a predicate rule rather than a wired source; no interrupt-latency equivalence is
-  claimed; the H counter and power-on scanline phase are approximate; interlace is
-  absent.
+  VSRAM, fill and copy), the FIFO/CPU-wait model, deterministic headless video frames,
+  the Z80 core and memory map, the YM2612/PSG device models, the 48 kHz integer
+  mixer/resampler and bounded `MediaSource` audio capture are implemented. Remaining
+  limits: functional prefetch, bus contention and 68000-side DMA stalls are not
+  cycle-modelled (VDP DMA uses eager transfers with a busy window); only HBlank
+  (level 4) and VBlank (level 6) sources exist, with level 7 a predicate rule rather
+  than a wired source; Z80 bus arbitration implements the hardware `ZBR` request polarity with a
+  functional fixed-stall model (the yield happens on the request write, not at the Z80
+  instruction boundary); timer
+  interrupts and timer IRQ delivery to the Z80 are absent; no interrupt-latency
+  equivalence is claimed; the H counter and power-on scanline phase are approximate;
+  interlace is absent. Audio output is deterministic internal 16-bit stereo at 48 kHz;
+  there is no host audio device or WAV/streaming capture until phase 8.7, and no
+  cross-emulator sample equality is claimed (see the
+  [audio state differential](../research/audio-state-differential-evidence.md)).
 - No general structured/timestamped trace format, conditional breakpoints or
   watchpoints. A narrow debug-only instruction `index`/`pc`/`opcode` trace and an
   external oracle address-stream comparison exist, but no bus/device trace,
@@ -348,6 +359,8 @@ best-effort parse.
   claim is the deterministic synthetic backend on Linux.
 - No cross-platform determinism claim beyond repeated runs on the current host.
 - The synthetic backend state hash covers only synthetic state; the real Mega Drive
-  slice hash covers the extended CPU, RAM, the CFVDP002 VDP state and scheduler state
-  (`CFMDSTATE5`). A cross-backend
+  slice hash (`CFMDSTATE6`) covers the extended CPU, RAM, the CFVDP002 VDP state, the
+  scheduler state, the Z80 register file and 8 KiB Z80 RAM, the Z80 bank register and
+  master-cycle carry, both arbitration latches, the YM2612 and PSG state and the 48 kHz
+  mixer/resampler phase. A cross-backend
   canonicalization remains undefined.

@@ -1,11 +1,5 @@
 # Architecture Overview
 
-> **Scope.** This page describes the architecture. It is not a status home: milestone
-> status and integration state live once in
-> [Milestones](../roadmap/milestones.md), and the machine-level Implemented / Not
-> implemented lists live in the [Mega Drive slice](megadrive-slice.md#implemented). The
-> table below is a short pointer; when it disagrees with those pages, they win.
-
 ## Goals
 
 ChronoFork separates four concerns that are usually entangled in emulator
@@ -49,8 +43,7 @@ backends; layer 4 must not own canonical emulated state.
         │ implement backend-api
 ┌───────┴───────────────────────┬────────────────────────────────────┐
 │ chronofork-test-backend       │ chronofork-megadrive               │
-│ (synthetic validation)        │ (MC68000 + complete VDP +          │
-│                               │  cartridge/TMSS; Z80/audio absent) │
+│ (synthetic validation)        │ (minimal 68000 + ROM/RAM)          │
 └───────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -181,16 +174,14 @@ mutable state with its source.
 | Snapshot/restore/import | Implemented |
 | Fork + lineage | Implemented |
 | Deterministic synthetic backend | Implemented |
-| Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Historical (M1; superseded by the phases below) |
-| Complete MC68000 instruction set, privilege and cycle model | Implemented (phase 8.2, merged): documented instruction set, privilege enforcement for the implemented system instructions, master-cycle timeline (3420 master cycles per scanline) |
-| Complete VDP: CRAM/VSRAM, planes/window/sprites/scrolling/priority/shadow-highlight, 256/320 modes, DMA, FIFO/CPU wait accounting, line/dot timing and VDP-owned VBlank/HBlank | Implemented (phase 8.3, merged) — see [Mega Drive slice](megadrive-slice.md). Residual limits are recorded there |
-| VDP rendering/DMA | Implemented (phase 8.3): one deterministic 256/320×224 RGBA frame per VDP frame, `rendering = true`; DMA memory→VRAM/CRAM/VSRAM, fill and copy with typed errors |
+| Minimal 68000 + ROM/RAM + VDP port + interrupt-scheduler Mega Drive slice | Implemented (partial hardware) |
+| VDP status/control/VRAM port window, rendering (planes/window/sprites/scrolling/priority/shadow-highlight, 256/320 modes), CRAM/VSRAM, DMA, FIFO/CPU wait accounting and H/V timing | Implemented (phase 8.3) — see [Mega Drive slice](megadrive-slice.md) |
 | Deterministic VBlank/HBlank interrupt scheduler | Implemented on the master-cycle timeline (3420 master cycles per scanline; instruction-boundary costs, not full hardware cycle accuracy). The superseded instruction-quantum model is historical. |
-| Cartridge header/region/TMSS, Sega mapper and 64 KiB SRAM | Implemented for phase 8.1 (merged); mapper variants, SRAM banking and commercial boot remain open (H4) |
-| TH-high 3-button controller-read subset (ports 1–2) | Implemented for the slice — see [Mega Drive slice](megadrive-slice.md) |
-| Audio (YM2612/PSG), Z80 and bus arbitration, timer interrupts, full TH/6-button protocol, port 3/analog/keyboard | Not implemented (phases 8.4/8.5; H3/H4) |
-| `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege enforced for the implemented system instructions; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence) |
-| HTTP/MCP/GUI | Implemented for the documented scope: HTTP and MCP (M6) — see [agent interfaces](agent-interfaces.md), [ADR-0012](../adr/0012-agent-native-interfaces.md) and [M6 acceptance](../quality/m6-agent-interfaces-acceptance.md); GUI presentation (M7) — see [GUI architecture](gui.md), [ADR-0013](../adr/0013-human-facing-gui.md) and [M7 acceptance](../quality/m7-gui-acceptance.md). GUI is text/HTML only (no native toolkit, picture or sound). M6 and M7 are `Complete`; the canonical integration state is in [Milestones](../roadmap/milestones.md) |
+| TH-high 3-button controller-read subset (ports 1–2) | Implemented for the minimal slice — see [Mega Drive slice](megadrive-slice.md) |
+| Z80 core and memory map, 68000/Z80 bus arbitration, YM2612/PSG audio (48 kHz integer mixer/resampler) and cartridge header/region/TMSS/Sega mapper/SRAM | Implemented (phases 8.1 and 8.4, payload v6) — see [Mega Drive slice](megadrive-slice.md) |
+| Timer interrupts and timer IRQ delivery, controller protocol beyond the TH-high 3-button subset, microcycle-exact timing and guest bus-error/trace exception delivery | Not implemented — see [Mega Drive slice](megadrive-slice.md#not-implemented) and the [requirements](../requirements/functional.md) |
+| `RTE`, SR-mask interrupt gating and VDP VINT-pending status | Implemented for the modelled slice (privilege enforced for the implemented system instructions; HBlank level 4 / VBlank level 6 sources only, level 7 a predicate rule only; no interrupt-timing equivalence; VDP interrupt-enable/ack logic absent) |
+| HTTP/MCP/GUI | **Implemented** for the documented scope: HTTP and MCP (M6) — see [agent interfaces](agent-interfaces.md), [ADR-0012](../adr/0012-agent-native-interfaces.md) and [M6 acceptance](../quality/m6-agent-interfaces-acceptance.md); GUI presentation (M7) — see [GUI architecture](gui.md), [ADR-0013](../adr/0013-human-facing-gui.md) and [M7 acceptance](../quality/m7-gui-acceptance.md). The GUI is text/HTML only (no native toolkit, picture or sound); M6/M7 are verified and merged to `main` at `cb05836` (PR #6) |
 | Transport-agnostic service + bounded HTTP/1.1 and MCP adapters | Implemented (M6): 16-operation catalog, canonical JSON, token/scope/ownership, manager lock + writer leases, daemon and typed client; HTTP/1.1 loopback/sidecar scope with **no TLS, SSE, keep-alive or chunked bodies** |
 | Debug/trace/script/TAS operations over transport | Not implemented (M6-FU1): those surfaces stay CLI-local |
 | Durable per-principal ownership, restart-persistent live sessions, TLS, token rotation/expiry, audit log, multi-node, MCP resources/prompts/logging/`Mcp-Session-Id` | Not implemented (M6-FU2–M6-FU4) |

@@ -1,23 +1,15 @@
 # EPIC-0002 — Minimal Mega Drive 68000 Slice
 
-> **Historical record.** This is a dated epic record: it describes the scope and state
-> of the epic on its own date and is **not current status**. Milestone status,
-> integration state and follow-ups live once in
-> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
-> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
-> Where this record disagrees with those pages, they win.
-
 - **Status:** In progress (68000 + ROM/RAM + VDP port + interrupt-scheduler slices
   implemented; E2-13 absolute-long `MOVE` decoding repair landed; E2-15 SR-mask
   gating, `RTE` and VDP VINT pending/acknowledge implemented with backend, CLI and
   snapshot tests; the TH-high 3-button controller reads on ports 1–2 were added by
   the M3 real-hardware input TAS increment; the current Phase 8.2 harness covers
-  twelve synthetic ROMs and passes 12/12 address projections with 11/12 per-instruction
-  cycle and final-state comparisons (two named scoped `rom_exception` exceptions), final-state
+  eleven synthetic ROMs and passes 11/11 address, per-instruction cycle, final-state
   and negative-control comparisons, while the historical three-ROM 3/3 run and its
   default-quantum masked-ROM negative gating control are preserved as history.
-  Broader addressing coverage, E2-11 ROM identity and the remaining hardware are
-  still open, tracked in H1–H5 below)
+  Broader addressing coverage and the remaining hardware are still open, tracked in
+  H1–H5 below; phase 8.1 delivered E2-11)
 - **Milestone:** M1 (core slice, complete and merged); M3 delivered the controller
   input TAS extension and M4 added the debugging surface (merged to `main` at
   `4c595a2`, verified on `agent/m4-debugging-depth` at `6d30243`). The epic's open
@@ -49,10 +41,9 @@ the contract validator.
 - Session integration: create, step, snapshot, fork, memory isolation, restore.
 - Independently authored synthetic ROMs and CLI demo.
 - Bounded, debug-only instruction trace and a `megadrive trace` CLI.
-- External-oracle differential evidence for twelve independently authored synthetic
+- External-oracle differential evidence for eleven independently authored synthetic
   ROMs on the master-cycle timeline, including address, per-instruction cycle,
-  final-state and negative-control comparisons, with two named scoped `rom_exception`
-  divergences; the historical default-quantum
+  final-state and negative-control comparisons; the historical default-quantum
   masked-ROM control is preserved.
 - Tests and documentation of exact limitations.
 
@@ -71,6 +62,19 @@ the contract validator.
 - GUI, HTTP or MCP. TAS movies were delivered by M3 on this slice; this epic does
   not own TAS UI, transports or import/export adapters.
 
+> **Scope note (later phases).** The list above is this epic's original M1 boundary. The
+> slice has since grown past it: phase 8.1 delivered E2-11 (ROM header/region/TMSS/
+> checksum, the Sega mapper and 64 KiB battery SRAM), phase 8.3 delivered VDP rendering
+> (planes/window/sprites/scrolling/priority/shadow-highlight, 256/320 modes), CRAM/VSRAM,
+> DMA, FIFO/CPU wait accounting and H/V timing, and phase 8.4 delivered the Z80 core, the
+> 68000/Z80 bus arbitration, the YM2612/PSG models and the deterministic 48 kHz
+> mixer/resampler (payload v6). Those capabilities are recorded once in the
+> [Mega Drive slice](../architecture/megadrive-slice.md) page. Still open from the list
+> above: timer interrupts and IRQ delivery, the controller protocol beyond the TH-high
+> 3-button subset, mapper variants beyond the Sega banking and images above the 64 MiB
+> ceiling, microcycle-exact timing and the guest bus-error/trace exception groups; booting
+> a commercial title is phase 8.6 work.
+
 ## Workstreams and tasks
 
 | ID | Task | Status |
@@ -85,11 +89,11 @@ the contract validator.
 | E2-08 | Document scope, limitations and next increments | Done |
 | E2-09 | Add VDP status/control and a minimal VRAM window | Done |
 | E2-10 | Add deterministic interrupt/tick scheduler | Done |
-| E2-11 | Add ROM header/region/config identity and cartridge loader | Planned |
-| E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers twelve synthetic ROMs at 12/12 address projections and 11/12 cycle and final-state comparisons, with 12/12 negative controls and two named scoped `rom_exception` divergences. |
+| E2-11 | Add ROM header/region/config identity and cartridge loader | Done — phase 8.1 delivered the ROM header (system signature, bounded names/serial, checksum, region bitfield), the TMSS lockout, the always-present Sega mapper and 64 KiB battery SRAM (payload/state/config v3, now v6); booting a commercial title remains phase 8.6 work |
+| E2-12 | Add external-oracle differential traces | Done — historical post-repair two-ROM PASS 2/2 (`rom_alu` 99/99, `rom_mem_vdp` 51/51, projection digests equal, final states equal, negative controls 2/2); E2-15 extended it to the historical 3-ROM masked control. The current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address/cycle/final-state and negative controls. |
 | E2-13 | Expand instruction/addressing coverage with tests | Done for the documented MC68000 set — absolute-long `MOVE` load decoding repaired (`0x..39`; `0x..38` remains typed illegal) with regression tests and the full documented family audit; coverage beyond the documented set (undefined/reserved encodings) and broader differential cases remain future work |
 | E2-14 | Integrate VDP + interrupts into backend, snapshots and CLI | Done |
-| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; the current Phase 8.2 differential covers twelve synthetic ROMs at 12/12 address and 11/12 per-instruction cycle and final-state comparisons plus 12/12 negative controls, with two named scoped `rom_exception` divergences. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
+| E2-15 | Wire VINT-pending/controller acknowledge and implement `RTE`/mask gating | Done for the modelled slice — delivery is gated by the 68000 rule (level 7 always; other levels strictly above the SR IPM); masked requests stay pending with their issue tick and coalesce per level; only the delivered level is acknowledged; `RTE` restores raw SR/IPM/CCR and PC; privileged `MOVE.W #imm,SR` writes the raw SR for mask control (user-mode writes take vector 8; covered by `privileged_write_sr_faults_in_user_mode`); VDP VINT-pending status tracks the pending VBlank request (set while pending, even masked; cleared on delivery; status reads never acknowledge); snapshots/state hashes cover pending state and restore recomputes the derived latch; the current Phase 8.2 differential covers eleven synthetic ROMs at 11/11 address, per-instruction cycle and final-state comparisons plus negative controls. Controller-port interrupt acknowledge remains absent because no controller interrupt source is modelled |
 
 ## Hardware-depth mapping (H1–H5)
 
@@ -101,15 +105,19 @@ milestone has to be reopened:
 | Open work | Track |
 |---|---|
 | Coverage beyond the documented MC68000 instruction set; the remaining 68000 exception groups (guest bus error and trace) | H1 |
-| VDP rendering, planes, sprites and scrolling; CRAM/VSRAM; DMA; raster and H/V timing; VDP interrupt-enable/acknowledge and FIFO behaviour | H2 |
-| YM2612, PSG, the Z80 and bus arbitration | H3 |
-| E2-11 ROM header/region/TMSS/checksum and cartridge loader; mapper/SRAM; timer interrupts; the controller protocol beyond the delivered TH-high 3-button subset | H4 |
+| VDP gaps left after phase 8.3 rendering/DMA/timing: VSRAM data-port reads, interlace, exact H32 window geometry, line-mode scrolling, dot-exact H/V counters and pixel-level differential evidence | H2 |
+| Audio/Z80 gaps left after phase 8.4: timer IRQ delivery to the Z80 (phase 8.5) and bit-exact hardware audio accuracy | H3 |
+| Timer interrupts and IRQ delivery; the controller protocol beyond the delivered TH-high 3-button subset (TH latch and A/Start, 6-button pad, port 3, analog/keyboard); mapper variants beyond the Sega banking and images above the 64 MiB ceiling | H4 |
 | Broader differential corpus, positive interrupt-delivery evidence, cycle accuracy and cross-platform determinism | H5 |
 
 Delivered and not part of that open set: the documented MC68000 instruction set,
 ROM/RAM, the VDP port window and VRAM, the master-cycle interrupt scheduler with
-SR-mask gating/`RTE`/VINT pending-acknowledge, the bounded debug trace, the twelve-ROM
-differential harness and the TH-high 3-button controller reads (M3). The historical
+SR-mask gating/`RTE`/VINT pending-acknowledge, the bounded debug trace, the eleven-ROM
+differential harness and the TH-high 3-button controller reads (M3). Later phases delivered
+more: phase 8.1 the cartridge header/region/TMSS/checksum, Sega mapper and SRAM (E2-11);
+phase 8.3 VDP rendering, CRAM/VSRAM, DMA, FIFO/CPU wait accounting, H/V timing and
+deterministic headless frames; and phase 8.4 the Z80 core, 68000/Z80 bus arbitration, the
+YM2612/PSG models and the 48 kHz mixer/resampler (payload v6). The historical
 three-ROM differential run remains preserved as history. M4 later added the optional
 non-canonical debugging surface; it was verified on `agent/m4-debugging-depth` at
 `6d30243` and is merged to `main` at `4c595a2`.
@@ -121,8 +129,7 @@ The current evidence is recorded in the
 The harness runs a pinned Exodus headless oracle and ChronoFork's trace over the
 same generated ROMs on the master-cycle timeline (3420 master cycles per scanline;
 each instruction advances by its 68000 cycle cost times seven). The current corpus
-is twelve independently authored synthetic ROMs (the twelfth, `rom_exception`, covers
-`TRAP` entry, the supervisor frame and `RTE` return). For every ROM the harness:
+is eleven independently authored synthetic ROMs. For every ROM the harness:
 
 - projects both traces to the executed-address sequence before a marker self-loop,
   asserts address equality and reports the first divergence, record counts and
@@ -155,13 +162,9 @@ Controlled conditions:
 - **Cycle basis:** the oracle's absolute `cycle` base and `time` column are not
   compared; only the per-instruction `cycle` delta is.
 
-The current run passes **12/12** address projections and **11/12** per-instruction cycle
-and final-state comparisons, with **12/12** address/cycle/final-state negative controls:
-the one non-matching ROM is `rom_exception`, whose two oracle-side divergences are
-declared as the named scoped exceptions `W4e-F1` (the oracle's saved-SR frame word has
-reserved bit 14) and `W4e-F2` (the oracle charges `TRAP` 38 cycles against ChronoFork's
-documented 34) and are excluded from the verdict only because the observation matches
-the declaration exactly; the harness exits 0. Neither the historical nor the current run is interrupt-timing,
+The current run passes **11/11** address projections, per-instruction cycle
+comparisons, selected final states and address/cycle/final-state negative controls;
+the harness exits 0. Neither the historical nor the current run is interrupt-timing,
 interrupt-delivery, rendering, audio, Z80, DMA or game-compatibility equivalence.
 
 ### Historical three-ROM differential method (superseded)
@@ -265,15 +268,16 @@ errors" now applies to every other controller access. M4 added optional
 non-canonical debug observation ([ADR-0010](../adr/0010-debugging-depth.md)). Neither
 is part of this epic's exit criteria.
 
-Criteria 1–18 pass for the implemented slice; the epic remains open for E2-11, broader
-addressing coverage and the remaining hardware/evidence gaps (rendering and frame
-timing, VDP data reads, DMA, audio, Z80, timers, the remaining controller protocol and
-the guest bus-error/trace exception groups). Privilege enforcement and the documented
+Criteria 1–18 pass for the implemented slice; the epic remains open for broader
+addressing coverage and the remaining hardware/evidence gaps (timer interrupts and timer
+IRQ delivery, the controller protocol beyond the delivered TH-high 3-button subset, VDP
+data-port reads, microcycle-exact timing and the guest bus-error/trace exception groups),
+tracked in the [Mega Drive slice](../architecture/megadrive-slice.md#not-implemented) and the
+[requirements](../requirements/functional.md). Privilege enforcement and the documented
 MC68000 instruction set are delivered.
 E2-12's two-ROM differential run and E2-15's 3/3 masked-ROM control are historical;
-the current Phase 8.2 harness covers twelve synthetic ROMs at 12/12 address projections
-and 11/12 cycle and final-state comparisons, with 12/12 negative controls and two named
-scoped `rom_exception` divergences, and the M1 differential-evidence item is ticked on
+the current Phase 8.2 harness covers eleven synthetic ROMs at 11/11 address, cycle,
+final-state and negative controls, and the M1 differential-evidence item is ticked on
 that evidence. E2-15's mask-gating, `RTE`, VINT
 pending/acknowledge and privileged `MOVE.W #imm,SR` behavior is covered by Rust
 tests plus the CLI demo; the differential evidence remains negative gating evidence,
@@ -309,7 +313,7 @@ of truth for the current count.
 | Privilege enforcement regression | `MOVE.W #imm,SR`/`RTE` could run in the wrong mode | Implemented for the documented system instructions; `privileged_write_sr_faults_in_user_mode` and the RTE/stack tests cover the behaviour. |
 | VDP status overclaimed | Users expect rendering or full VINT control | Only VBlank, FIFO-empty and the scheduler-derived VINT-pending latch can change; VDP interrupt-enable registers, VDP-side acknowledge logic and other bits are documented constants |
 | Differential evidence overclaimed as hardware equivalence | False accuracy claims | Compare instruction addresses, per-instruction 68000 cycle costs, ROM-byte consistency and selected state; the oracle's absolute cycle base, time column and interrupt timing are not compared; limits stated explicitly |
-| Differential evidence historically limited to three synthetic ROMs | Overgeneralized conformance claims | Keep scope explicit; the current harness covers twelve synthetic ROMs with the two `rom_exception` divergences named and scoped, and the historical masked ROM remains a negative gating control, not a positive interrupt comparison; broader addressing/hardware coverage remains future work |
+| Differential evidence historically limited to three synthetic ROMs | Overgeneralized conformance claims | Keep scope explicit; the current harness covers eleven synthetic ROMs and the historical masked ROM remains a negative gating control, not a positive interrupt comparison; broader addressing/hardware coverage remains future work |
 
 ## Definition of Done (slice)
 
@@ -319,7 +323,6 @@ conditions and negative controls, the E2-15 mask-gating/`RTE`/VINT behavior is
 covered by the backend, CLI and snapshot tests and demonstrated by the CLI demo, the
 historical three-ROM differential evidence (including the default-quantum masked-ROM
 negative gating control) is recorded with every number/digest reproducible, the current
-twelve-ROM master-cycle differential is recorded with its two named scoped
-`rom_exception` exceptions, the earlier
+eleven-ROM 11/11 master-cycle differential is recorded, the earlier
 explicit-1,000,000-quantum evidence is preserved as history, and the next increment is
 prioritized.

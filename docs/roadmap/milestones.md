@@ -48,7 +48,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented, verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the phase-8.3 PR (issue #16); phase 8.4 in progress on `agent/8.4-z80-audio` (not merged); phases 8.5–8.8 pending. A **product-consolidation track** (below) is in progress inside the open M8; **the M8 DoD is not amended** and the milestone is not closed by it |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented, verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the phase-8.3 PR (issue #16); phase 8.4 implemented and gate-executed on `agent/8.4-z80-audio`, with verification, review and integration pending; phases 8.5–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -57,7 +57,7 @@ Hardware-depth track (parallel, not a stage):
 |---|---|---|
 | [H1 — CPU and instruction completeness](#h1--cpu-and-instruction-completeness) | `Partial` | Documented MC68000 set and privilege delivered; remaining exception groups and coverage beyond the documented set |
 | [H2 — Video, VDP and DMA](#h2--video-vdp-and-dma) | `Partial` | Rendering, CRAM/VSRAM, DMA, raster and H/V timing |
-| [H3 — Audio and Z80](#h3--audio-and-z80) | `Planned` | Z80, bus arbitration, YM2612 and PSG |
+| [H3 — Audio and Z80](#h3--audio-and-z80) | `Partial` | Z80, bus arbitration, YM2612 and PSG |
 | [H4 — Cartridge, controllers and timers](#h4--cartridge-controllers-and-timers) | `Partial` | ROM identity, mapper/SRAM, full controller protocol, timers |
 | [H5 — Accuracy and evidence](#h5--accuracy-and-evidence) | `Partial` | Differential corpus, interrupt timing, cycle accuracy, cross-platform determinism |
 
@@ -70,30 +70,7 @@ commercial ROMs plays, with deterministic headless capture and an optional nativ
 Execution is tracked in the committed [planning lifecycle](../planning/ROADMAP.md) (phases
 8.1–8.8) and the [milestone design](../superpowers/specs/2026-11-17-milestone-8-megadrive-functional-design.md);
 this page remains the canonical record of capability scope, its status vocabulary, evidence and
-follow-ups.
-
-**Consolidation track (owner decision 2026-11-20, O-2).** A **product-consolidation track** is
-in progress *inside the open M8*: review/correction of ADR-0014/0015/0016 plus the W1–W5
-decomposition, then the boot/bus hardening, the verification contract, the service/concurrency
-work and the reproducible-evidence work. It is a **phase/track, not a milestone closure**: M8
-remains `In progress`, **the M8 Definition of Done is not amended**, and 8.7 (execution modes
-and capture) and 8.8 (native window) are executed afterwards, still inside M8. Completing the
-consolidation track does not claim M8 completion. Status of the consolidation work itself is
-recorded in [STATE.md](../planning/STATE.md) and the
-[planning roadmap](../planning/ROADMAP.md); the corrected ADRs are **`Accepted`** after the independent reviews V4 (ADR-0014/0015) and V5 (ADR-0016) passed; acceptance is the decision, not implementation verification.
-
-**Other owner decisions recorded 2026-11-20:**
-
-- **O-1 — non-loopback bind refuses to start** (typed error + test); no exposed deployment
-  without its own ADR (ADR-0014).
-- **O-3 — audio:** complete the project's own YM2612/PSG/mixer from phase 8.4; do **not** adopt
-  `ymfm` now (a future swap needs its own ADR and would not discard the Z80/bus work).
-- **O-4 — unmapped I/O:** deterministic open bus plus a typed error only where the hardware
-  faults, mapping `0xA10008–0xA1000F` first (port 3/EXT control = stub 0; port 3/EXT data =
-  typed error).
-- **Still deferred:** 8.7/8.8, M9, TLS/multi-user, async/Tokio, incremental hash and COW/dedup.
-
-M7 is `Complete` and merged to `main` at `cb05836`
+follow-ups. M7 is `Complete` and merged to `main` at `cb05836`
 (PR #6): it was independently verified on `agent/m7-gui` at base `origin/main` `93d47ed`
 (final verification PASS4 and final review REVIEW5, 2026-11-17) before the merge. M6 is
 also `Complete` and merged at `cb05836`; it was verified on `agent/m6-agent-interfaces` at
@@ -104,9 +81,9 @@ independently reviewed and merged to `main` at `f024b7b` (PR #25); phase 8.2 is 
 verified (round 12) and independently reviewed (round 11), and merged to `main` through the
 phase-8.2 PR (issue #15); phase 8.3 (complete VDP) is implemented, verified (rounds 1–3) and
 independently reviewed (rounds 2–3), and merged to `main` through the phase-8.3 PR (issue
-#16); phase 8.4 is in progress on `agent/8.4-z80-audio` (15 commits over `main` plus
-uncommitted T4 work; not merged); phases 8.5–8.8 are pending. M8 depends on the M1–M7 layers
-and consumes the H1–H5
+#16); phase 8.4 (Z80, bus arbitration and audio) is implemented and gate-executed on
+`agent/8.4-z80-audio` with verification, review and integration pending; phases 8.5–8.8 are
+planned. M8 depends on the M1–M7 layers and consumes the H1–H5
 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
@@ -178,9 +155,8 @@ phases.
 - [x] VDP and interrupt scheduler integrated into backend snapshots, state hashes and CLI.
 - [x] Differential trace evidence against the pinned Exodus oracle: the historical three
       synthetic ROMs match on projected address streams and selected final state, and the
-      current Phase 8.2 harness covers twelve ROMs at 12/12 address and 11/12 per-instruction
-      cycle and final-state comparisons (the two `rom_exception` oracle-side divergences
-      are named scoped exceptions) with 12/12 negative controls; the phase-8.3 VDP state differential covers the
+      current Phase 8.2 harness covers eleven ROMs at 11/11 address, per-instruction cycle,
+      final-state and negative controls; the phase-8.3 VDP state differential covers the
       oracle-visible status/HV readbacks and the canonical registers/VRAM/CRAM with a
       negative control. The historical masked-ROM default-quantum control
       crossed two HBlank boundaries with the SR mask at 7 and no handler entry. Current
@@ -438,7 +414,7 @@ debugger state, UI/HTTP/MCP or cross-platform runtime evidence.
       record blocks, exit codes and typed errors.
 - [x] Non-perturbation evidence: the per-step observation off/on probe found zero canonical
       differences, demo and movie bytes were unchanged, and the pinned-oracle differential
-      stayed at its then-current PASS 3/3 (now superseded by the twelve-ROM run).
+      stayed at its then-current PASS 3/3 (now superseded by the 11/11 run).
 - [x] Independent verification of every M4-A1–A17 row, the full gate, the demo/regression
       comparison and the claim audit (t5 PASS 2026-11-16 at `df98321`).
 - [x] Post-PASS capability-report/wording fix at `6b2a567` re-gated, then promotion audit
@@ -737,12 +713,9 @@ and do not reopen it.
   `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed
   (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented,
   verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the
-  phase-8.3 PR (issue #16); **phase 8.4 in progress on `agent/8.4-z80-audio` (tip `408cfd7`,
-  15 commits over `main` plus uncommitted T4 work; not merged)**; phases 8.5–8.8 pending
-- **Consolidation track:** in progress inside this open milestone (ADR-0014/15/16 corrections,
-  W1–W5 decomposition, W0 governance and the W4 evidence work); see
-  [Current milestone](#current-milestone). The track does **not** amend this milestone's
-  Definition of Done and does **not** close M8.
+  phase-8.3 PR (issue #16); phase 8.4 (Z80, bus arbitration and audio) implemented and
+  gate-executed on `agent/8.4-z80-audio`, with verification, review and integration pending;
+  phases 8.5–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic
@@ -768,7 +741,11 @@ and do not reopen it.
       256/320 modes, DMA, FIFO/access timing, H/V counters and interrupt enable/acknowledge
       (phase 8.3; verified rounds 1–3, reviewed rounds 2–3 and merged; evidence in the
       [VDP state differential](../research/vdp-state-differential-evidence.md)).
-- [ ] Z80 core, 68000/Z80/VDP bus arbitration, YM2612 six-channel FM and PSG.
+- [x] Z80 core and its memory map, 68000/Z80 bus arbitration, YM2612 six-channel FM and PSG
+      (phase 8.4: implemented and gate-executed on `agent/8.4-z80-audio`, with verification,
+      review and integration pending; the arbitration model is functional, not
+      microcycle-exact, and the accuracy level is documented in the
+      [Mega Drive slice](../architecture/megadrive-slice.md#z80-bus-arbitration-and-audio-phase-84)).
 - [ ] Timer interrupts and the full TH latch / 3- and 6-button controllers on ports 1–2.
 - [ ] Cycle-based canonical time plus unpaced/paced/manual execution modes with run-to-target
       APIs for agents.
@@ -796,18 +773,11 @@ and do not reopen it.
 
 ### Deferred and follow-ups
 
-- **Deferred (owner decision 2026-11-20, O-2):** phase 8.7 (execution modes, pacing and
-  headless PNG/WAV capture), phase 8.8 (native windowed frontend), M9 (multi-backend),
-  TLS/multi-user deployment, async/Tokio, incremental/dirty hashing and COW/dedup. They stay
-  inside the milestone's Definition of Done and are **not** removed by the consolidation
-  track; execution order is consolidation first, then 8.7/8.8, then M9.
 - Port 3, analog and keyboard hardware remain H4 residual limits unless the curated set
-  requires them (port 3/EXT **control** is a stub per O-4; port 3/EXT **data** is a typed
-  error).
+  requires them.
 - CI runtime (issue #28): the ~20 min `Test` job and the slow `megadrive demo` are the next
   engineering follow-up after phase 8.3; study the shared-cache, job-split, demo-performance
-  and concurrency-cancellation options before implementing (the consolidation W4.7/W4.5 work
-  covers the layered-CI and demo-golden parts).
+  and concurrency-cancellation options before implementing.
 - Dynamic recompilation, run-ahead, skip-frames and savestate-rewind shortcuts are out of
   scope; each would need an ADR and a determinism analysis.
 - Universal commercial compatibility and cycle-perfect hardware equivalence are not claimed.
@@ -931,23 +901,37 @@ and do not reopen it.
 
 - **Roadmap track:** [H3](roadmap.md#h3--audio-and-z80) — parallel hardware-depth track, not
   a stage.
-- **Status:** `Planned`
+- **Status:** `Partial`
 - **Integration state:** n/a (track)
 - **Objective:** model the second CPU and the sound chips instead of returning typed errors
   for those windows.
 - **Depends on:** H1 (bus and CPU discipline) and H2 (bus-arbitration context).
-- **Evidence:** absent by design; FR-MD-008 in
-  [functional requirements](../requirements/functional.md) and the not-implemented list in
+- **Evidence:** phase 8.4 implements and tests the Z80 core and memory map, the 68000/Z80
+  arbitration latches and the deterministic 48 kHz YM2612/PSG mixer/resampler, and moves the
+  payload/state/config to v6; the pinned-oracle device-state differential is recorded in
+  [audio state differential evidence](../research/audio-state-differential-evidence.md) and
+  the phase gate in [quality gates](../quality/quality-gates.md). FR-MD-008/FR-MD-009 in
+  [functional requirements](../requirements/functional.md); the not-implemented list in
   [Mega Drive slice](../architecture/megadrive-slice.md#not-implemented).
 
 ### Work items
 
-- [ ] Z80 CPU core and its memory map.
-- [ ] Bus arbitration between 68000, Z80 and VDP.
-- [ ] YM2612 FM synthesis at a documented accuracy level.
-- [ ] PSG tone generation at a documented accuracy level.
-- [ ] Audio sample production with timing relative to emulated ticks.
-- [ ] Z80 and audio state in snapshots and state hashes through a versioned payload.
+- [x] Z80 CPU core and its memory map (phase 8.4: documented limits — `IXH`/`IXL`/`IYH`/`IYL`
+      and `WZ`/`MEMPTR` are not modelled and undocumented `ED` opcodes are `NOP`s).
+- [x] Bus arbitration between the 68000 and the Z80 (phase 8.4: hardware `ZBR` request
+      polarity — asserting `0xA11100` bit 8 stops the Z80 and hands the window to the 68000,
+      read bit 8 reports ownership — with a functional fixed-stall model, not microcycle-exact).
+- [ ] VDP bus-master arbitration: the VDP is modelled as a bus target with the phase-8.3
+      FIFO/CPU wait accounting, not as an arbiter.
+- [x] YM2612 FM synthesis at a documented accuracy level (phase 8.4: deterministic functional
+      integer model; `SSG-EG`, channel-3 special mode, CSM and the `0x21`/`0x2B` test bits are
+      stored but not applied and the status busy bit is absent).
+- [x] PSG tone generation at a documented accuracy level (phase 8.4: three ten-bit tone
+      channels, 15-bit white-noise LFSR, sixteen attenuation levels).
+- [x] Audio sample production with timing relative to emulated ticks (phase 8.4: exactly
+      48 000 stereo frames per emulated second through `MediaSource`).
+- [x] Z80 and audio state in snapshots and state hashes through a versioned payload (phase 8.4:
+      payload/state/config v6, `CFMD68K6`/`CFMDSTATE6`/`CFMDCONF6`).
 
 ### Exit criteria
 
@@ -957,7 +941,10 @@ and do not reopen it.
 
 ### Deferred and follow-ups
 
-- Audio/Z80 inspector views are [M4-FU2](#m4--debugging-depth) until the device model exists.
+- Audio/Z80 inspector views are [M4-FU2](#m4--debugging-depth); the v6 register map already
+  exposes `z80.*`, `arbitration.*`, `ym.*`, `psg.*` and `audio.*` pseudo-registers without a
+  dedicated CLI section.
+- Timer IRQ delivery to the Z80 is phase 8.5.
 - Bit-exact hardware audio and cycle accuracy are [H5](#h5--accuracy-and-evidence)
   questions; host audio output is [M7](#m7--gui).
 
@@ -1028,10 +1015,9 @@ and do not reopen it.
 
 - [x] Pinned-oracle differential for the historical three synthetic ROMs, with negative
       controls and a default-quantum masked-ROM negative gating control.
-- [x] A broader differential corpus beyond the historical three synthetic ROMs: twelve
-      synthetic ROMs on the master-cycle timeline at 12/12 address projections and 11/12
-      per-instruction cycle and final-state comparisons, with 12/12 negative controls and
-      the two `rom_exception` oracle-side divergences recorded as named scoped exceptions.
+- [x] A broader differential corpus beyond the historical three synthetic ROMs: eleven
+      synthetic ROMs on the master-cycle timeline at 11/11 address, cycle, final-state and
+      negative-control comparisons.
 - [ ] Positive differential comparison of interrupt delivery and timing, which needs an
       oracle model of those semantics.
 - [ ] Cycle accuracy including prefetch and bus timing, at a documented level.

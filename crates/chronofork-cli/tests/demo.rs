@@ -93,9 +93,10 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
     );
     for expected in [
         "chronofork megadrive demo:",
-        "68000 + VDP port + interrupt scheduler slice",
-        "deterministic headless video frames only",
-        "no audio, Z80, interlace or game compatibility",
+        "68000 + Z80 + VDP + 48 kHz audio capture slice",
+        "deterministic headless video frames and 48 kHz stereo audio chunks only",
+        "no host window or audio device",
+        "YM2612/PSG models and a 48 kHz integer audio mixer",
         // VDP/VRAM evidence is retained.
         "vdp: register 15 (auto-increment)=2",
         "vdp: program wrote and read back VRAM word 0x1234",
@@ -121,6 +122,7 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
         "E2-15",
         "1000000",
         "no rendering",
+        "no audio, Z80, interlace or game compatibility",
         "VBlank entered at IPM 6; RTE returned",
     ] {
         assert!(
