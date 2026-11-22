@@ -87,6 +87,7 @@ dependencies = [
  "chronofork-core",
  "chronofork-sessions",
  "proptest",
+ "sha2",
 ]
 
 [[package]]
@@ -147,6 +148,8 @@ dependencies = [
 name = "chronofork-transport"
 version = "0.1.0"
 dependencies = [
+ "chronofork-backend-api",
+ "chronofork-core",
  "chronofork-service",
  "chronofork-test-backend",
 ]

@@ -1,5 +1,12 @@
 # M4 Debugging Depth — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed; every row M4-A1–M4-A17 is `executed - passed`** (independent
   verifier PASS, 2026-11-16). The design contract
   [ADR-0010](../adr/0010-debugging-depth.md) is accepted and implemented for the documented

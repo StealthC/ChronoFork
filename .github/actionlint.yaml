@@ -1,0 +1,11 @@
+# actionlint configuration for this repository.
+#
+# `chronofork-nightly` is a custom label of the self-hosted runner that owns the
+# commercial-ROM fixtures and the pinned Exodus oracle (see
+# `.github/workflows/ci.yml`, jobs `fixtures` and `differential`). actionlint does
+# not know custom self-hosted labels, so it is declared here instead of being
+# suppressed at the call site: an unknown label is a real defect, and only this
+# one is intentional.
+self-hosted-runner:
+  labels:
+    - chronofork-nightly

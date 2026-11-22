@@ -1,5 +1,12 @@
 # M2 Durable Sessions — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** Fase A accepted design; Fase B implementation executed and independently
   verified in two rounds (2026-11-15). Every acceptance row below is
   **executed - passed**; the round-1 CLI lock-scope finding F1 was repaired and

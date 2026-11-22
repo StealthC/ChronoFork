@@ -84,6 +84,7 @@ fn capabilities_result(max_steps: u64) -> JsonValue {
     }
     JsonValue::object([
         ("schema", JsonValue::string("chronofork.capabilities.v1")),
+        ("api_version", JsonValue::int(2)),
         ("service_version", JsonValue::string("0.1.0")),
         (
             "backend",
@@ -107,6 +108,14 @@ fn capabilities_result(max_steps: u64) -> JsonValue {
                 ("max_store_entries", int(256)),
                 ("max_checkpoints", int(32)),
                 ("json_max_depth", int(32)),
+                ("max_run_wall_ms", int(30_000)),
+                ("max_operation_journal", int(1_024)),
+                ("operation_ttl", int(600)),
+                ("max_closed_retained", int(64)),
+                ("closed_retention_ttl", int(300)),
+                ("max_snapshots_per_session", int(64)),
+                ("max_bytes_per_session", int(67_108_864)),
+                ("max_store_bytes", int(1_073_741_824)),
             ]),
         ),
         (
@@ -117,6 +126,7 @@ fn capabilities_result(max_steps: u64) -> JsonValue {
             "artifacts",
             JsonValue::object([("configured", JsonValue::from_bool(false))]),
         ),
+        ("process_epoch", JsonValue::int(7)),
     ])
 }
 
@@ -166,6 +176,8 @@ fn create_result(session: u64) -> JsonValue {
         ("tick", int(0)),
         ("state_hash", JsonValue::string(HASH)),
         ("lineage", lineage()),
+        // The v2 mutation result names the process epoch (ADR-0016 §2).
+        ("process_epoch", int(7)),
     ])
 }
 
@@ -179,6 +191,7 @@ fn list_result(sessions: &[(u64, u64)]) -> JsonValue {
                 ("tick", int(*tick)),
                 ("state_hash", JsonValue::string(HASH)),
                 ("lineage", lineage()),
+                ("running", JsonValue::from_bool(false)),
             ])
         })
         .collect();
@@ -193,6 +206,7 @@ fn inspect_result(session: u64, tick: u64, memory_length: u64) -> JsonValue {
         ("session", int(session)),
         ("state", JsonValue::string("ready")),
         ("lineage", lineage()),
+        ("revision", int(0)),
         ("backend", backend_descriptor()),
         (
             "machine",
@@ -225,9 +239,15 @@ fn run_result(session: u64, steps: u64, tick: u64) -> JsonValue {
     JsonValue::object([
         ("session", int(session)),
         ("steps", int(steps)),
+        ("performed", int(steps)),
+        ("stop_reason", JsonValue::string("completed")),
+        ("revision", int(1)),
+        ("max_wall_ms", int(30_000)),
         ("tick", int(tick)),
         ("state_hash", JsonValue::string(HASH)),
         ("halted", JsonValue::from_bool(false)),
+        // The v2 mutation result names the process epoch (ADR-0016 §2).
+        ("process_epoch", int(7)),
     ])
 }
 

@@ -1,5 +1,12 @@
 # EPIC-0001 — Project Foundation, Research and Deterministic Session Architecture
 
+> **Historical record.** This is a dated epic record: it describes the scope and state
+> of the epic on its own date and is **not current status**. Milestone status,
+> integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** Complete (bootstrap foundation); ADR-0002 accepted 2026-11-13
 - **Milestone:** M0
 - **Owner:** Lead architect

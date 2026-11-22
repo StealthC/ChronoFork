@@ -1,0 +1,74 @@
+--- /tmp/pristine/crates/chronofork-megadrive/src/backend.rs	2026-11-20 13:34:59.000000000 -0300
++++ /tmp/perf-iso/crates/chronofork-megadrive/src/backend.rs	2026-11-20 14:05:51.802326402 -0300
+@@ -486,6 +486,9 @@
+     /// The serialized field layout still has exactly one writer,
+     /// [`state_body`].
+     fn state_hash(&self) -> StateHash {
++        if !review_hash_enabled() {
++            return StateHash::from_bytes([0_u8; 32]);
++        }
+         let (d, a, pc, sr, halted) = self.cpu.snapshot_state();
+         let (usp, ssp, stopped, cycles) = self.cpu.extended_state();
+         let vdp = self.bus.vdp().snapshot_bytes();
+@@ -512,6 +515,48 @@
+         })
+     }
+ 
++    /// REVIEW-ONLY instrumentation: computes the canonical state hash without advancing.
++    #[doc(hidden)]
++    pub fn review_state_hash(&self) -> StateHash {
++        self.state_hash()
++    }
++
++    /// REVIEW-ONLY instrumentation: serializes the canonical state body.
++    #[doc(hidden)]
++    pub fn review_state_body(&self) -> Vec<u8> {
++        self.state_body_bytes()
++    }
++
++    /// REVIEW-ONLY instrumentation: runs `capture_frame` (VDP clone + render + RGBA).
++    #[doc(hidden)]
++    pub fn review_capture_frame(&mut self) -> Result<usize, BackendError> {
++        self.capture_frame()?;
++        Ok(self.pending_frame.as_ref().map_or(0, |frame| frame.rgba.len()))
++    }
++
++    /// REVIEW-ONLY instrumentation: clones the VDP once, as `capture_frame` does.
++    #[doc(hidden)]
++    pub fn review_clone_vdp(&self) -> usize {
++        let cloned = std::hint::black_box(self.bus.vdp().clone());
++        std::mem::size_of_val(&cloned)
++    }
++
++    /// REVIEW-ONLY instrumentation: clones the cartridge, as `create_machine` does.
++    #[doc(hidden)]
++    pub fn review_clone_cartridge(&self) -> usize {
++        let cloned = std::hint::black_box(self.bus.cartridge().clone());
++        std::mem::size_of_val(&cloned)
++    }
++
++    /// REVIEW-ONLY instrumentation: total bytes held by ROM + SRAM + RAM + VRAM.
++    #[doc(hidden)]
++    pub fn review_footprint_bytes(&self) -> usize {
++        self.bus.cartridge().rom().len()
++            + self.bus.cartridge().sram().len()
++            + self.bus.ram().len()
++            + std::mem::size_of_val(self.bus.vdp())
++    }
++
+     fn sync_vdp_vblank(&mut self) {
+         let vblank = self.scheduler.line_in_frame() >= self.scheduler.config().active_lines();
+         self.bus.vdp_mut().set_vblank(vblank);
+@@ -685,6 +730,12 @@
+     }
+ }
+ 
++/// REVIEW-ONLY: `REVIEW_HASH=0` skips the per-step canonical state hash.
++fn review_hash_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| std::env::var_os("REVIEW_HASH").as_deref() != Some(std::ffi::OsStr::new("0")))
++}
++
+ /// Converts palette-index pixels into RGBA8 with opaque alpha.
+ ///
+ /// CRAM is the documented 9-bit `0BBBGGGRRR` word, expanded by bit replication;

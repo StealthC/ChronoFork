@@ -22,6 +22,7 @@ use chronofork_sessions::{
 use crate::error::{ErrorCode, MAX_ANOMALY_LABELS, ServiceError, anomaly_label};
 use crate::json::JsonValue;
 use crate::limits::ServiceLimits;
+use crate::service::OperationContext;
 use crate::values::{optional_name, optional_unsigned, unsigned};
 
 /// Lists durable sessions and their snapshots, bounded by the configured entry cap.
@@ -136,6 +137,12 @@ pub(crate) fn load(
 }
 
 /// Creates a durable session, or continues an existing one, and publishes a checkpoint.
+///
+/// `context` is the caller's operation context: the durable write that first becomes
+/// visible is the mutation's first irreversible effect, so this function marks it with
+/// `context.begin()` **before** it happens. A failure after that point (a checkpoint
+/// write, a lock release) therefore keeps the journal entry and a retry with the same
+/// key replays the recorded outcome instead of publishing a second session.
 pub(crate) fn save(
     root: &Path,
     factory: &Arc<dyn BackendFactory>,
@@ -143,26 +150,45 @@ pub(crate) fn save(
     steps: u64,
     buttons: u32,
     name: Option<&str>,
+    context: &OperationContext<'_>,
 ) -> Result<JsonValue, ServiceError> {
     match session_key {
-        Some(session_key) => save_continuation(root, factory, session_key, steps, buttons, name),
-        None => save_new(root, factory, steps, buttons, name),
+        Some(session_key) => {
+            save_continuation(root, factory, session_key, steps, buttons, name, context)
+        }
+        None => save_new(root, factory, steps, buttons, name, context),
     }
 }
 
+/// Publishes a new durable session and its first checkpoint.
+///
+/// All fallible work — advancing the machine, capturing the state and serializing the
+/// record — happens **before** the first durable write, so a backend or quota failure
+/// leaves no partially published session behind. Only the last two steps touch the
+/// store, and the first of them is journaled.
 fn save_new(
     root: &Path,
     factory: &Arc<dyn BackendFactory>,
     steps: u64,
     buttons: u32,
     name: Option<&str>,
+    context: &OperationContext<'_>,
 ) -> Result<JsonValue, ServiceError> {
     // A brand-new durable session may initialize an empty root; continuing an
     // existing session never creates one as a side effect of a command about to fail.
+    // An initialized-but-empty root carries no session and no checkpoint, so it is not a
+    // published mutation.
     let repository = SnapshotRepository::initialize(root).map_err(ServiceError::from)?;
     let mut manager = SessionManager::new(Arc::clone(factory));
     let runtime = manager.create_session().map_err(ServiceError::from)?;
     advance(&mut manager, runtime, steps, buttons)?;
+    let snapshot = manager.snapshot(runtime).map_err(ServiceError::from)?;
+    let record = manager
+        .snapshot_record(runtime, snapshot)
+        .map_err(ServiceError::from)?;
+    // Everything that can fail before the store is written has already happened; this is
+    // the mutation's first irreversible effect.
+    context.begin();
     let session = repository
         .create_session(
             SessionId::from_raw(runtime.raw()),
@@ -173,12 +199,8 @@ fn save_new(
     manager
         .attach_storage_session(runtime, session.session_key)
         .map_err(ServiceError::from)?;
-    let snapshot = manager.snapshot(runtime).map_err(ServiceError::from)?;
-    let record = manager
-        .snapshot_record(runtime, snapshot)
-        .map_err(ServiceError::from)?;
     let entry = repository
-        .save_snapshot(session.session_key, record, name)
+        .save_snapshot(session.session_key, &record, name)
         .map_err(ServiceError::from)?;
     report(session.session_key, &entry, entry.tick, entry.state_hash)
 }
@@ -190,11 +212,14 @@ fn save_continuation(
     steps: u64,
     buttons: u32,
     name: Option<&str>,
+    context: &OperationContext<'_>,
 ) -> Result<JsonValue, ServiceError> {
     // Continue-and-save is one linearizable read-modify-publish workflow: the
     // per-session writer lock is taken before the base is read and held through
     // rehydration, advance, capture and publish. A concurrent writer fails with a
-    // typed retryable conflict instead of reading a stale base.
+    // typed retryable conflict instead of reading a stale base. The only durable write
+    // is the final publish, and it is the mutation's first irreversible effect, so it
+    // is journaled immediately before it happens.
     let repository = SnapshotRepository::open(root).map_err(ServiceError::from)?;
     let entry = repository.with_writer_lock(
         session_key,
@@ -215,8 +240,9 @@ fn save_continuation(
             let record = manager
                 .snapshot_record(runtime, snapshot)
                 .map_err(ServiceError::from)?;
+            context.begin();
             repository
-                .save_snapshot_with_lock(lock, record, name)
+                .save_snapshot_with_lock(lock, &record, name)
                 .map_err(ServiceError::from)
         },
     )?;

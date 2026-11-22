@@ -25,6 +25,9 @@ pub const BACKEND_ID: &str = "chronofork.test.synthetic";
 /// Version of the synthetic backend payload format.
 pub const PAYLOAD_FORMAT_VERSION: u16 = 1;
 
+/// Size of the synthetic machine's RAM, in bytes (fixed by the payload format).
+pub const RAM_BYTES: usize = 256;
+
 /// Independent verifiable program used by the default factory.
 pub const DEFAULT_PROGRAM: &[u8] = &[
     0x01, // INC_ACC
@@ -146,7 +149,7 @@ pub struct SyntheticBackend {
     program: Arc<SyntheticProgram>,
     pc: u16,
     acc: u32,
-    ram: [u8; 256],
+    ram: [u8; RAM_BYTES],
     tick: Tick,
     steps: u64,
     halted: bool,
@@ -442,7 +445,20 @@ impl Backend for SyntheticBackend {
         self.ram[start..end].copy_from_slice(data);
         Ok(())
     }
+
+    /// The synthetic payload size is fixed by its format, so it is an exact bound.
+    ///
+    /// `payload_from_body` prefixes the state body with the payload magic and the format
+    /// version, and the body is the fixed-width register block plus the 256-byte RAM, so
+    /// every snapshot this backend produces has exactly
+    /// [`SYNTHETIC_PAYLOAD_BYTES`] payload bytes.
+    fn snapshot_payload_bound(&self) -> Option<usize> {
+        Some(SYNTHETIC_PAYLOAD_BYTES)
+    }
 }
+
+/// Exact payload size of every synthetic snapshot (see [`SyntheticBackend`]).
+pub const SYNTHETIC_PAYLOAD_BYTES: usize = PAYLOAD_MAGIC.len() + 2 + 2 + 4 + 8 + 8 + 1 + RAM_BYTES;
 
 /// Translates a shared codec failure into the backend snapshot error contract.
 fn payload_error(error: CodecError) -> BackendError {

@@ -61,7 +61,7 @@ fn save_new_session(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, name)
+        .save_snapshot(session.session_key, &snapshot, name)
         .expect("publish snapshot");
     (runtime, session.session_key, entry)
 }
@@ -137,7 +137,7 @@ fn continue_and_save_appends_snapshot_with_greater_sequence() {
         .snapshot_record(runtime, snapshot_id)
         .expect("second checkpoint record");
     let second = repository
-        .save_snapshot(session_key, snapshot, Some("second"))
+        .save_snapshot(session_key, &snapshot, Some("second"))
         .expect("append snapshot");
     assert!(second.snapshot_key > first.snapshot_key);
     assert!(second.creation_sequence > first.creation_sequence);

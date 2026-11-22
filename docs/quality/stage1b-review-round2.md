@@ -1,5 +1,12 @@
 # Stage 1b Re-review (Round 2) — Repairs for Findings F1–F6
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** Complete (review only; no implementation or existing-document edits)
 - **Reviewer:** `verifier` (independent reviewer; did not author the repairs)
 - **Date:** 2026-11-14

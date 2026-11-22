@@ -47,7 +47,7 @@ fn save_snapshot(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("publish snapshot")
 }
 
@@ -391,7 +391,7 @@ fn existing_key_is_a_conflict_not_an_overwrite() {
         .expect("checkpoint record");
     assert_eq!(
         repository
-            .save_snapshot(session_key, snapshot, None)
+            .save_snapshot(session_key, &snapshot, None)
             .expect_err("occupied snapshot key"),
         SessionError::SnapshotExists {
             session: session_key,

@@ -141,7 +141,7 @@ fn save_snapshot(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("publish snapshot")
 }
 
@@ -337,7 +337,7 @@ fn failed_publish_never_advances_visible_state() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let error = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect_err("a publish that cannot create staging fails");
     drop(restricted);
     assert!(
@@ -375,7 +375,7 @@ fn failed_publish_never_advances_visible_state() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let retried = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("a new publish uses the next reserved key");
     assert_eq!(retried.snapshot_key, 2);
     assert!(
@@ -406,7 +406,7 @@ fn post_rename_parent_sync_failure_is_durability_unconfirmed() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let error = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect_err("a failed parent sync is never reported as success");
     drop(restricted);
     assert!(
@@ -457,7 +457,7 @@ fn post_rename_failure_never_reports_success_or_retries_blindly() {
 
     let restricted = ModeRestriction::without_read(&snapshots);
     let error = repository
-        .save_snapshot(session_key, first, None)
+        .save_snapshot(session_key, &first, None)
         .expect_err("unconfirmed publish");
     drop(restricted);
     assert!(matches!(error, SessionError::DurabilityUnconfirmed { .. }));
@@ -468,7 +468,7 @@ fn post_rename_failure_never_reports_success_or_retries_blindly() {
         .snapshot_record(runtime, snapshot_id)
         .expect("second checkpoint record");
     let second = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("a caller-driven retry publishes a new reserved key");
     assert_eq!(second.snapshot_key, 2);
     assert!(
@@ -629,7 +629,7 @@ fn unconfirmed_publish(name: &str) -> (PathBuf, SnapshotRepository, u64) {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let error = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect_err("unconfirmed publish");
     drop(restricted);
     assert!(matches!(&error, SessionError::DurabilityUnconfirmed { .. }));
@@ -892,7 +892,7 @@ fn key_and_sequence_reservations_are_never_reused() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let error = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect_err("unconfirmed publish");
     drop(restricted);
     assert!(matches!(error, SessionError::DurabilityUnconfirmed { .. }));
@@ -909,7 +909,7 @@ fn key_and_sequence_reservations_are_never_reused() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let third = repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("publish after the reserved object is lost");
     assert_eq!(third.snapshot_key, 3);
     assert_eq!(third.creation_sequence, 3);

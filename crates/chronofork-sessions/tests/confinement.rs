@@ -54,7 +54,7 @@ fn save_first_snapshot(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, name)
+        .save_snapshot(session.session_key, &snapshot, name)
         .expect("publish snapshot");
     (session.session_key, entry.snapshot_key)
 }
@@ -243,7 +243,7 @@ fn names_never_become_path_components() {
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, Some(&escape_name))
+        .save_snapshot(session.session_key, &snapshot, Some(&escape_name))
         .expect("names are labels, not paths");
     assert_eq!(entry.name.as_deref(), Some(escape_name.as_str()));
     let loaded = repository
@@ -264,7 +264,7 @@ fn names_never_become_path_components() {
         .snapshot_record(runtime, snapshot_id)
         .expect("second checkpoint record");
     let slash = repository
-        .save_snapshot(session.session_key, snapshot, Some("a/b"))
+        .save_snapshot(session.session_key, &snapshot, Some("a/b"))
         .expect("a slash remains a label");
     assert_eq!(slash.name.as_deref(), Some("a/b"));
 
@@ -274,7 +274,7 @@ fn names_never_become_path_components() {
         .expect("third checkpoint record");
     assert!(matches!(
         repository
-            .save_snapshot(session.session_key, snapshot, Some("bad\nname"))
+            .save_snapshot(session.session_key, &snapshot, Some("bad\nname"))
             .expect_err("control character"),
         SessionError::InvalidName(_)
     ));
@@ -285,7 +285,7 @@ fn names_never_become_path_components() {
     let long_name = "n".repeat(257);
     assert!(matches!(
         repository
-            .save_snapshot(session.session_key, snapshot, Some(&long_name))
+            .save_snapshot(session.session_key, &snapshot, Some(&long_name))
             .expect_err("over-long name"),
         SessionError::InvalidName(_)
     ));

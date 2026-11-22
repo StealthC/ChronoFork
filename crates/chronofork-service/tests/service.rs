@@ -22,8 +22,8 @@ use chronofork_backend_api::{
 use chronofork_core::{InputFrame, hash_bytes};
 use chronofork_service::json::{JsonValue, to_canonical_bytes};
 use chronofork_service::{
-    AppService, ErrorCode, Principal, Scope, ServiceConfig, ServiceError, ServiceLimits,
-    parse_token_file,
+    ApiVersion, AppService, ErrorCode, Principal, Scope, ServiceConfig, ServiceError,
+    ServiceLimits, parse_token_file,
 };
 use chronofork_sessions::{SessionManager, SnapshotRepository};
 use chronofork_test_backend::{SyntheticBackendFactory, SyntheticProgram};
@@ -69,13 +69,35 @@ fn request_bytes(op: &str, input: &JsonValue) -> Vec<u8> {
     to_canonical_bytes(&request, &limits()).expect("request bytes")
 }
 
+/// Replaces the operational `process_epoch` value with `0` before a byte comparison.
+///
+/// Two services are two processes, so they always report different epochs; the epoch is
+/// deliberately not emulated state (ADR-0016 §2), so the cross-run byte equality this
+/// test asserts covers every field except that one.
+fn normalize_epoch(bytes: &[u8]) -> Vec<u8> {
+    let limits = limits();
+    let document = chronofork_service::json::parse(bytes, &limits).expect("canonical document");
+    let JsonValue::Object(mut root) = document else {
+        return bytes.to_vec();
+    };
+    if let Some(JsonValue::Object(result)) = root.get_mut("result") {
+        if result.contains_key("process_epoch") {
+            result.insert("process_epoch".to_owned(), JsonValue::int(0));
+        }
+    }
+    to_canonical_bytes(&JsonValue::Object(root), &limits).expect("canonical bytes")
+}
+
 fn dispatch_bytes(
     service: &AppService,
     principal: &Principal,
     op: &str,
     input: &JsonValue,
 ) -> Result<Vec<u8>, ServiceError> {
-    service.dispatch(principal, &request_bytes(op, input))
+    // These acceptance tests exercise the v2 agent-API contract, so every request
+    // declares v2. The v1 matrix has its own tests in the service unit suite and in
+    // the wire test file.
+    service.dispatch_versioned(principal, &request_bytes(op, input), ApiVersion::V2)
 }
 
 fn call(
@@ -376,9 +398,13 @@ fn app_service_is_send_and_sync() {
 }
 
 #[test]
-fn the_catalog_is_exactly_the_sixteen_documented_operations_in_order() {
+fn the_catalog_is_exactly_the_twenty_documented_operations_in_order() {
     let service = service(limits());
     let tools = service.tools();
+    // Sixteen pre-ADR-0016 operations plus the v2 control operations and the W3.3
+    // lifecycle operation. The first sixteen keep their order and flags so an
+    // existing client's decoder keeps working; the additions are additive
+    // (ADR-0016 §Compatibility).
     let expected = [
         ("capabilities", false, Scope::Read),
         ("session.create", true, Scope::Write),
@@ -390,7 +416,11 @@ fn the_catalog_is_exactly_the_sixteen_documented_operations_in_order() {
         ("session.restore", true, Scope::Write),
         ("session.compare", false, Scope::Read),
         ("session.close", true, Scope::Write),
+        ("session.reap", true, Scope::Write),
         ("session.read_memory", false, Scope::Read),
+        ("session.cancel", true, Scope::Write),
+        ("session.progress", false, Scope::Read),
+        ("session.operation", false, Scope::Read),
         ("store.list", false, Scope::Read),
         ("store.load", false, Scope::Read),
         ("store.save", true, Scope::Write),
@@ -448,7 +478,22 @@ fn capabilities_describe_service_backend_limits_and_configuration() {
         Some(14),
         "every capability field is published"
     );
-    assert_eq!(array(&capabilities, "ops").len(), 16);
+    assert_eq!(array(&capabilities, "ops").len(), 20);
+    assert_eq!(
+        number(&capabilities, "api_version"),
+        chronofork_service::WIRE_VERSION,
+        "the v2 wire version is declared"
+    );
+    // The process epoch is operational metadata, not emulated state: the v2
+    // capabilities publishes it so a client can compare it before trusting a
+    // reconciled result (ADR-0016 §2). It is the one field two processes may differ in.
+    assert!(
+        capabilities
+            .get("process_epoch")
+            .and_then(JsonValue::as_u64)
+            .is_some_and(|epoch| epoch > 0),
+        "the v2 capabilities publishes its process epoch"
+    );
     let limit_fields = object(&capabilities, "limits");
     for name in [
         "max_request_bytes",
@@ -459,9 +504,32 @@ fn capabilities_describe_service_backend_limits_and_configuration() {
         "max_store_entries",
         "max_checkpoints",
         "json_max_depth",
+        "max_run_wall_ms",
+        "max_operation_journal",
+        "operation_ttl",
+        "max_closed_retained",
+        "closed_retention_ttl",
     ] {
         assert!(limit_fields.contains_key(name), "{name}");
     }
+    assert_eq!(
+        limit_fields
+            .get("max_run_wall_ms")
+            .and_then(JsonValue::as_u64),
+        Some(30_000)
+    );
+    assert_eq!(
+        limit_fields
+            .get("max_operation_journal")
+            .and_then(JsonValue::as_u64),
+        Some(1_024)
+    );
+    assert_eq!(
+        limit_fields
+            .get("operation_ttl")
+            .and_then(JsonValue::as_u64),
+        Some(600)
+    );
     assert_eq!(
         limit_fields
             .get("max_steps_per_request")
@@ -756,8 +824,23 @@ fn identical_request_sequences_produce_identical_bytes() {
 
     let first = service(limits());
     let second = service(limits());
-    let left = scenario(&first, &operator());
-    let right = scenario(&second, &operator());
+    let left: Vec<Vec<u8>> = scenario(&first, &operator())
+        .into_iter()
+        .map(|bytes| normalize_epoch(&bytes))
+        .collect();
+    let right: Vec<Vec<u8>> = scenario(&second, &operator())
+        .into_iter()
+        .map(|bytes| normalize_epoch(&bytes))
+        .collect();
+    for (index, (a, b)) in left.iter().zip(&right).enumerate() {
+        if a != b {
+            eprintln!(
+                "step {index}:\n  left  {}\n  right {}",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b)
+            );
+        }
+    }
     assert_eq!(left, right, "identical sequences produce identical bytes");
     assert_eq!(left.len(), 17);
 }
@@ -1683,7 +1766,7 @@ fn tokens_never_appear_in_service_outputs() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn max_sessions_counts_registered_sessions_including_closed() {
+fn max_sessions_counts_live_sessions_and_closing_frees_a_slot() {
     let operator = operator();
     let service = self::service(ServiceLimits {
         max_sessions: 2,
@@ -1700,25 +1783,37 @@ fn max_sessions_counts_registered_sessions_including_closed() {
         ErrorCode::LimitExceeded
     );
 
-    // Closing every registered session frees no slot: the limit is a bound on
-    // registered records, not on open ones (architecture §3.2 and §7).
+    // Closing a session frees its **live** slot: `max_sessions` is
+    // `max_live_sessions` (ADR-0016 §3), so the closed entries stay as bounded
+    // tombstones while a new session can be admitted.
     ok(&service, &operator, "session.close", "{\"session\":1}");
     ok(&service, &operator, "session.close", "{\"session\":2}");
+    let admitted = ok(&service, &operator, "session.create", "{}");
+    // The identifier is whatever the monotonic allocator hands out (a rejected create
+    // consumes one without leaking a session); the slot count is what proves the point.
+    assert!(number(&admitted, "session") >= 3);
+    assert_eq!(text_field(&admitted, "state"), "ready");
+    assert_eq!(service.session_count().expect("count"), 1);
+    // A fork of a closed session is a lifecycle error, not a limit error.
+    assert_eq!(
+        err(&service, &operator, "session.fork", "{\"session\":1}").code(),
+        ErrorCode::Closed
+    );
+    // The bound still applies to live sessions: with two admitted the next create is
+    // refused until one is closed or reaped.
+    ok(&service, &operator, "session.create", "{}");
     assert_eq!(
         err(&service, &operator, "session.create", "{}").code(),
         ErrorCode::LimitExceeded
     );
-    assert_eq!(
-        err(&service, &operator, "session.fork", "{\"session\":1}").code(),
-        ErrorCode::LimitExceeded
-    );
 
-    // Closed sessions remain unlisted and cannot be mutated, so the retained
-    // registrations expose no state.
+    // Closed entries stay unlisted while the live ones are listed, so the retained
+    // tombstones expose no state.
     let listed = ok(&service, &operator, "session.list", "{}");
-    assert!(
-        array(&listed, "sessions").is_empty(),
-        "closed sessions are not listed"
+    assert_eq!(
+        array(&listed, "sessions").len(),
+        2,
+        "only live sessions are listed"
     );
     assert_eq!(
         err(&service, &operator, "session.inspect", "{\"session\":1}").code(),
@@ -1736,7 +1831,7 @@ fn max_sessions_counts_registered_sessions_including_closed() {
     );
 
     // `session_count` keeps its documented live-only meaning.
-    assert_eq!(service.session_count().expect("count"), 0);
+    assert_eq!(service.session_count().expect("count"), 2);
 }
 
 #[test]
@@ -1756,16 +1851,17 @@ fn every_documented_limit_is_enforced_before_bounded_work() {
         err(&service, &operator, "session.fork", "{\"session\":1}").code(),
         ErrorCode::LimitExceeded
     );
-    // The registry has no removal API: a closed session still occupies its
-    // registration slot, so the bound cannot be bypassed by a create/close loop.
+    // `max_sessions` bounds **live** sessions (ADR-0016 §3): closing the only session
+    // frees its slot, so a create/close loop cannot be used to grow the registry but a
+    // new session is admitted normally.
     ok(&service, &operator, "session.close", "{\"session\":1}");
-    assert_eq!(
-        err(&service, &operator, "session.create", "{}").code(),
-        ErrorCode::LimitExceeded
-    );
+    let admitted = ok(&service, &operator, "session.create", "{}");
+    assert_eq!(text_field(&admitted, "state"), "ready");
+    assert_eq!(service.session_count().expect("count"), 1);
+    // A fork of the closed session is a lifecycle error, not a limit error.
     assert_eq!(
         err(&service, &operator, "session.fork", "{\"session\":1}").code(),
-        ErrorCode::LimitExceeded
+        ErrorCode::Closed
     );
 
     let service = self::service(ServiceLimits {

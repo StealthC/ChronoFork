@@ -1541,7 +1541,10 @@ fn help_with_an_unwritable_stdout_is_one_channel_line() {
 // ---------------------------------------------------------------------------
 
 /// The canonical `chronofork.error.v1` document a ChronoFork daemon answers with.
-const CANONICAL_ERROR_ENVELOPE: &str = "{\"error\":{\"code\":\"forbidden\",\"message\":\"read only\",\"retryable\":false},\"schema\":\"chronofork.error.v1\"}";
+///
+/// The `wire_version` member is part of the envelope (ADR-0016 §2): the v2 control
+/// codes are declared by the version beside the schema string.
+const CANONICAL_ERROR_ENVELOPE: &str = "{\"error\":{\"code\":\"forbidden\",\"message\":\"read only\",\"retryable\":false},\"schema\":\"chronofork.error.v1\",\"wire_version\":2}";
 
 /// A non-ChronoFork 403 body: HTML, several lines, and text a terminal must not receive.
 const FOREIGN_ERROR_BODY: &str =

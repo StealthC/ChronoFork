@@ -1,5 +1,12 @@
 # M6 Agent Interfaces — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed and independently verified.** Every row M6-A1–M6-A32 is
   `executed - passed`. The promotion basis is the **pass-2** independent re-verification
   (2026-11-17) after the first review returned `needs_revision` with findings M6-R1–M6-R10

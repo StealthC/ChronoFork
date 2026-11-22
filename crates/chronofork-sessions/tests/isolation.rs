@@ -60,7 +60,7 @@ fn publish_session(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     let entry = repository
-        .save_snapshot(session.session_key, snapshot, name)
+        .save_snapshot(session.session_key, &snapshot, name)
         .expect("publish snapshot");
     (runtime, session.session_key, entry)
 }
@@ -190,7 +190,7 @@ fn publishing_a_child_does_not_mutate_the_parent_checkpoint() {
         .snapshot_record(child_runtime, snapshot_id)
         .expect("child checkpoint record");
     repository
-        .save_snapshot(child_session.session_key, snapshot, Some("child"))
+        .save_snapshot(child_session.session_key, &snapshot, Some("child"))
         .expect("publish child");
     assert_eq!(
         fs::read(&parent_path).expect("re-read parent checkpoint"),
@@ -324,7 +324,7 @@ fn a_held_writer_lock_is_local_to_its_session_and_readers_stay_lock_free() {
         .snapshot_record(child, snapshot_id)
         .expect("child checkpoint record");
     repository
-        .save_snapshot(child_session.session_key, snapshot, Some("child"))
+        .save_snapshot(child_session.session_key, &snapshot, Some("child"))
         .expect("publish a child while the first session writer lock is held");
     assert!(
         !root.join("v1/state/allocation.lock").exists(),

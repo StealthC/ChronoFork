@@ -170,6 +170,7 @@ fn capability_result() -> Vec<u8> {
         "capabilities",
         JsonValue::object([
             ("schema", JsonValue::string("chronofork.capabilities.v1")),
+            ("api_version", JsonValue::int(2)),
             ("service_version", JsonValue::string("0.1.0")),
             ("backend", descriptor(false, false)),
             ("ops", JsonValue::Array(Vec::new())),
@@ -184,6 +185,14 @@ fn capability_result() -> Vec<u8> {
                     ("max_store_entries", JsonValue::int(256)),
                     ("max_checkpoints", JsonValue::int(32)),
                     ("json_max_depth", JsonValue::int(32)),
+                    ("max_run_wall_ms", JsonValue::int(30_000)),
+                    ("max_operation_journal", JsonValue::int(1_024)),
+                    ("operation_ttl", JsonValue::int(600)),
+                    ("max_closed_retained", JsonValue::int(64)),
+                    ("closed_retention_ttl", JsonValue::int(300)),
+                    ("max_snapshots_per_session", JsonValue::int(64)),
+                    ("max_bytes_per_session", JsonValue::int(67_108_864)),
+                    ("max_store_bytes", JsonValue::int(1_073_741_824)),
                 ]),
             ),
             (
@@ -194,6 +203,7 @@ fn capability_result() -> Vec<u8> {
                 "artifacts",
                 JsonValue::object([("configured", JsonValue::from_bool(false))]),
             ),
+            ("process_epoch", JsonValue::int(7)),
         ]),
     )
 }
@@ -211,6 +221,7 @@ fn create_result(session: u64, backend_id: &str) -> Vec<u8> {
             ("tick", JsonValue::int(0)),
             ("state_hash", JsonValue::string(HASH)),
             ("lineage", lineage()),
+            ("process_epoch", JsonValue::int(7)),
         ]),
     )
 }
@@ -229,6 +240,7 @@ fn create_result_with_a_descriptor(session: u64) -> Vec<u8> {
             ("state_hash", JsonValue::string(HASH)),
             ("lineage", lineage()),
             ("backend", descriptor(false, false)),
+            ("process_epoch", JsonValue::int(7)),
         ]),
     )
 }
@@ -243,6 +255,7 @@ fn inspect_result(session: u64, tick: u64, memory_base: u64, memory_length: u64)
             ),
             ("state", JsonValue::string("ready")),
             ("lineage", lineage()),
+            ("revision", JsonValue::int(0)),
             ("backend", descriptor(false, false)),
             (
                 "machine",

@@ -88,6 +88,23 @@ for their session (see §7). All field names are exact; unknown fields are rejec
 | 15 | `store.delete` | write | yes | Delete one durable session or snapshot |
 | 16 | `experiment.run` | write | yes | Produce a content-addressed experiment artifact |
 
+The **v2 control operations** of [ADR-0016](../adr/0016-session-service-and-agent-api.md) §2
+extend this catalog. They are served from the bounded operation journal and touch no session
+owner, which is what lets them be answered while a `session.run` holds its session:
+
+| # | Operation | Scope | Mutating | Summary |
+|---|---|---|---|---|
+| 17 | `session.cancel` | write | yes | Request cancellation of a running operation |
+| 18 | `session.progress` | read | no | Read the journal entry of one operation |
+| 19 | `session.operation` | read | no | Read a retained result inside the reconciliation horizon |
+
+`capabilities` reports `api_version: 2` for this surface. The exact v2 shapes, the
+reconciliation horizon, the journal bounds and the smoke evidence are the contract of
+[ADR-0016 §2, §6 and §Verification](../adr/0016-session-service-and-agent-api.md); the
+executed evidence for this implementation is the W3.2 acceptance suite
+(`crates/chronofork-service/tests/w3_control.rs`,
+`crates/chronofork-transport/tests/w3_control.rs`).
+
 Common wire types:
 
 - `session`, `snapshot`, `session_key`, `snapshot_key`, `parent_session`,
@@ -169,13 +186,33 @@ Input: `{"session":1,"steps":10,"buttons":0}`. `steps` is an integer in
 Output:
 
 ```json
-{"session":1,"steps":10,"tick":10,"state_hash":"<64 hex>","halted":false}
+{"session":1,"steps":10,"performed":10,"tick":10,"state_hash":"<64 hex>",
+ "halted":false,"stop_reason":"completed","revision":1,"max_wall_ms":30000}
 ```
 
 A machine that halts during the requested steps succeeds with the `steps` actually
 performed and `halted:true` (the loop stops at the halt). A request that starts on an
 already-halted machine fails with code `halted`; a paused machine fails with code
 `conflict` and `retryable:false`.
+
+**v2 inputs (ADR-0016 §2).** Four optional fields are accepted, all validated before any
+step runs:
+
+- `max_wall_ms` in `1..=max_run_wall_ms` lowers the host wall-clock budget of this one run;
+- `operation_id` is a client-chosen key known **before** the mutation, used to reconcile a
+  lost response (a retry with the same key and the same arguments replays the recorded
+  outcome instead of applying the run twice);
+- `expected_revision` / `expected_tick` are preconditions checked **under the session
+  owner** before the first step, so a stale retry is rejected without applying anything.
+
+**v2 result.** `performed` is the authoritative applied step count, `steps` repeats it,
+`stop_reason` ∈ {`completed`, `halted`, `cancelled`, `deadline`} (`stop_condition` joins
+them with the W3.4 stop grammar) and follows the total order
+`cancelled` > `deadline` > `halted` > `completed`, `revision` is the monotonic session
+revision a retry pins, and `max_wall_ms` is the effective budget. A cancelled or
+deadline-truncated run returns this result rather than a generic error, so no partial
+result is lost; its state is the deterministic prefix of exactly `performed` canonical
+steps.
 
 ### 3.6 `session.fork`
 
@@ -338,7 +375,9 @@ bytes on every surface and run. With `--artifacts <DIR>` configured, the service
   request bodies. `Content-Length` is required on `POST`.
 - `Content-Type: application/json` is required on `POST`; `Transfer-Encoding` is rejected.
 - `Authorization: Bearer <token>` is required for every route except `GET /health`.
-- Base error envelope: `chronofork.error.v1`. HTTP status mapping:
+- Base error envelope: `chronofork.error.v1` with the declared `wire_version` (2 for the
+  ADR-0016 control surface; the v2 codes are `cancelled`, `deadline` and `unknown_outcome`,
+  additive members of the same envelope). HTTP status mapping:
 
 | Code | HTTP status |
 |---|---|
@@ -485,6 +524,44 @@ A failed write is a `storage_error`; an id is never reused with different bytes.
 `max_store_entries` 256, `max_checkpoints` 32, `json_max_depth` 32. Transport adds the
 wire bounds in §4. A limit violation is a typed error before the bounded work starts.
 
+The ADR-0016 §2 control bounds are part of the same table and are readable through
+`capabilities` as `service.limits`:
+
+| Limit | Default | Unit | Rejection on exceed |
+|---|---:|---|---|
+| `max_run_wall_ms` | 30 000 | ms of host wall clock per `session.run` | typed `deadline` (a caller may lower it per request, never raise it) |
+| `max_operation_journal` | 1 024 | retained journal entries | typed `limit`, checked **before** the operation starts; an active entry is never evicted |
+| `operation_ttl` | 600 | seconds after completion | beyond it the key is `unknown_outcome`, and the server does not re-execute |
+| `max_closed_retained` / `closed_retention_ttl` | 64 / 300 | closed entries / seconds since close | forced cleanup (W3.3) |
+
+The typed-client read timeout is above the server deadline by construction: the client
+waits `max_run_wall_ms` plus a margin for the final response, so a long run reaches its own
+`deadline` stop reason instead of failing the socket first (ADR-0016 §1, V3-1).
+
+**Checkpoint payload bound (quota preflight).** `max_bytes_per_session` is decided **before** a
+checkpoint is captured, which needs a payload size the session layer can bound. It is exact
+while the state has not changed since the last capture; after `session.run`, a trace or a debug
+write the bound comes from `Backend::snapshot_payload_bound()`, the backend's declared and
+guaranteed payload upper bound. A backend that declares none cannot be preflighted: under a
+finite quota the capture is refused with `limit_exceeded` **before** allocating, and the
+unbounded in-process path (movie/player/rewind) is unaffected. The synthetic backend declares
+its exact payload size; **the Mega Drive backend does not declare one yet**, so a post-`run`
+`snapshot`/`fork` there is refused under a finite quota. That is a temporary, tracked
+limitation, not the intended behavior: W1.8 in the
+[consolidation plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md) declares
+the bound in the backend and adds the service+Mega Drive regression (owner decision O-5).
+
+**Durable process identity.** A `serve` start mints the process epoch from an identity file
+beside the configured token/store root, so a restarted process never reuses an epoch; a keyed
+mutation must name it (`operation_epoch`) and a key from another epoch is `unknown_outcome`
+(ADR-0016 §2). The increment is published as: write a temporary, sync the **file**, atomically
+rename it over the identity file, then sync the **directory**. On Unix (Linux and macOS) all
+four steps run, so a crash after the start cannot reuse the epoch it published. Windows has no
+portable directory sync in `std`, so there the publication is **best-effort** — the file is
+synced and the rename is atomic, but a host crash can lose the new directory entry — and the
+start is not refused (owner decision, R1d/D3). Host-crash behavior cannot be exercised in this
+environment; the guarantee rests on that sequence.
+
 ## 11. Parity method
 
 One scenario (create → inspect → run → snapshot → run → restore → fork → compare →
@@ -501,6 +578,11 @@ unknown tool, batch request) compare their typed code and message too.
 - Durable per-principal ownership and restart-persistent sessions (**M6-FU2**).
 - TLS, token rotation/expiry, audit logs, multi-node deployment (**M6-FU3**).
 - SSE/streaming, MCP resources/prompts/logging/completion, `Mcp-Session-Id` (**M6-FU4**).
+- **Server-initiated notifications are unsupported, deliberately:** the endpoint returns
+  `202 Accepted` with an empty body for any JSON-RPC message without an `id`, and it never
+  sends one. `notifications/cancelled` and `progressToken` therefore have no effect and are
+  **not advertised**; the v2 equivalents are the out-of-band `session.cancel` call and the
+  `session.progress` poll of ADR-0016 §2, which is what a caller uses instead.
 - Per-request backend selection, cartridge upload, external SDKs (Stage 9).
 - Closed in-memory sessions are retained for the process lifetime; `max_sessions` bounds
   registered sessions and there is no reclamation API yet.

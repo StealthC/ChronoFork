@@ -275,7 +275,7 @@ documents its field classes. The comparison tool must:
 | D3 | Continuous run vs restore from checkpoint and continue | Incomplete snapshot, state that is not captured | Required |
 | D4 | Fork from checkpoint vs original continuing with the same input | Fork isolation, shared mutable state, copy-on-write mistakes | Required |
 | D5 | Test backend vs real backend on a shared contract subset | Contract drift; not emulation accuracy | Deferred until a real backend exists |
-| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Post-repair PASS for eleven synthetic ROMs (address projection, opcode/ROM-byte audit, per-instruction 68000 cycle costs, final state and negative controls). No interrupt-timing or hardware-accuracy comparison |
+| D6 | ChronoFork trace vs exodus-for-ais trace for a generated program | Instruction-level disagreement with a known-good MIT emulator | Post-repair PASS for thirteen synthetic ROMs (address projection, opcode/ROM-byte audit, per-instruction 68000 cycle costs, final state and negative controls). One ROM (`rom_exception`) carries two named scoped divergences: the oracle's saved-SR frame word has reserved bit 14 and its `TRAP` costs 38 cycles against ChronoFork's documented 34. No interrupt-timing or hardware-accuracy comparison |
 | D7 | Linux vs Windows vs macOS; x86_64 vs aarch64 | Endianness, float formatting, host assumptions | Deferred; gate before a cross-platform release |
 | D8 | Mutated trace/checkpoint bytes | Comparison and validation robustness | Required self-test |
 | D9 | Session replay from an input log | Replay completeness, event ordering | Required once session replay exists |
@@ -418,11 +418,10 @@ the local entry point for G0/G1/G4.
 
 ### G0 — Workspace hygiene (every change)
 
-```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-```
+`./scripts/check.sh` is the single executable gate. It runs `cargo fmt --all -- --check`,
+`cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` and `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+Do not duplicate the command list elsewhere; if the gate changes, change the script.
 
 The workspace sets `unsafe_code = "forbid"` and denies `unwrap_used`, `panic`, `todo` and
 `unimplemented`; `-D warnings` promotes any violation to a gate. `expect_used` is allowed
@@ -431,11 +430,7 @@ for test diagnostics but must not appear in production library paths. Do not add
 
 ### G1 — Unit and contract correctness (every change)
 
-```sh
-cargo test --workspace --lib
-cargo test --workspace --tests
-cargo test --workspace --doc
-```
+Covered by `./scripts/check.sh` (`cargo test --workspace`); no separate command list here.
 
 Required coverage at bootstrap:
 
@@ -451,7 +446,6 @@ tests, so an accidentally disabled suite cannot look green.
 ### G2 — Determinism and state gate (every change)
 
 ```sh
-cargo test --workspace
 cargo test -p chronofork-sessions --test acceptance -- --test-threads=1
 cargo test --workspace --release
 ```

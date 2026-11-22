@@ -350,6 +350,7 @@ mod tests {
         let result = JsonValue::object([
             ("schema", JsonValue::string("chronofork.capabilities.v1")),
             ("service_version", JsonValue::string("0.1.0")),
+            ("api_version", JsonValue::int(2)),
             (
                 "backend",
                 JsonValue::object([
@@ -372,6 +373,14 @@ mod tests {
                     ("max_store_entries", JsonValue::int(256)),
                     ("max_checkpoints", JsonValue::int(32)),
                     ("json_max_depth", JsonValue::int(32)),
+                    ("max_run_wall_ms", JsonValue::int(30_000)),
+                    ("max_operation_journal", JsonValue::int(1_024)),
+                    ("operation_ttl", JsonValue::int(600)),
+                    ("max_closed_retained", JsonValue::int(64)),
+                    ("closed_retention_ttl", JsonValue::int(300)),
+                    ("max_snapshots_per_session", JsonValue::int(64)),
+                    ("max_bytes_per_session", JsonValue::int(67_108_864)),
+                    ("max_store_bytes", JsonValue::int(1_073_741_824)),
                 ]),
             ),
             (
@@ -382,6 +391,7 @@ mod tests {
                 "artifacts",
                 JsonValue::object([("configured", JsonValue::from_bool(false))]),
             ),
+            ("process_epoch", JsonValue::int(7)),
         ]);
         let envelope = JsonValue::object([
             ("op", JsonValue::string("capabilities")),

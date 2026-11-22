@@ -53,7 +53,7 @@ fn save_snapshot(
         .snapshot_record(runtime, snapshot_id)
         .expect("checkpoint record");
     repository
-        .save_snapshot(session_key, snapshot, None)
+        .save_snapshot(session_key, &snapshot, None)
         .expect("publish snapshot")
 }
 

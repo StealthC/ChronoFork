@@ -7,8 +7,10 @@
 > scanline is exactly 3420 master cycles. See
 > [Mega Drive slice timing](megadrive-slice.md#deterministic-interrupt-scheduler)
 > and [cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
-> The regenerated 11-ROM differential matches 11/11 address projections, per-instruction
-> cycle costs and selected final states, with 11/11 negative controls.
+> The regenerated 13-ROM differential matches 13/13 address projections and 12/13
+> per-instruction cycle costs and selected final states (the single non-matching ROM,
+> `rom_exception`, carries two named scoped oracle-side exceptions `W4e-F1`/`W4e-F2`),
+> with 13/13 negative controls.
 
 ## Virtual time
 

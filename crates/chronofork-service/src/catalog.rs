@@ -47,6 +47,24 @@ pub(crate) enum FieldKind {
     },
     /// Optional strictly increasing experiment checkpoint list.
     Checkpoints,
+    /// Optional operation identifier used for reconciliation (ADR-0016 §2).
+    ///
+    /// The key is known to the client **before** the mutation is sent, which is what
+    /// makes a retry after a lost response safe: the server replays the retained
+    /// result instead of re-applying the operation.
+    OperationId,
+    /// Optional per-request host wall-clock budget in `1..=max_run_wall_ms`.
+    MaxWallMs,
+    /// Optional process epoch a request key was minted under (ADR-0016 §2).
+    ///
+    /// A keyed mutation of a durable service must carry it, and a control query may use
+    /// it to refuse a result produced by another process. An absent value is the current
+    /// process (the in-process form) unless the service is durable.
+    Epoch,
+    /// Optional monotonic revision precondition.
+    ExpectedRevision,
+    /// Optional absolute tick precondition.
+    ExpectedTick,
 }
 
 impl FieldKind {
@@ -79,6 +97,11 @@ impl FieldKind {
                 ("items", limited_integer("integer", 0, MAX_INTEGER)),
                 ("maxItems", JsonValue::int(bound(limits.max_checkpoints))),
             ]),
+            Self::OperationId => limited_integer("integer", 1, MAX_INTEGER),
+            Self::MaxWallMs => limited_integer("integer", 1, bound(limits.max_run_wall_ms)),
+            Self::Epoch => limited_integer("integer", 0, MAX_INTEGER),
+            Self::ExpectedRevision => limited_integer("integer", 0, MAX_INTEGER),
+            Self::ExpectedTick => limited_integer("integer", 0, MAX_INTEGER),
         }
     }
 
@@ -178,6 +201,33 @@ impl FieldKind {
                 }
                 args.checkpoints = checkpoints;
             }
+            Self::OperationId => {
+                if matches!(value, JsonValue::Null) {
+                    return Ok(());
+                }
+                let number = at_least(name, value, 1)?;
+                args.operations.insert(
+                    name,
+                    u64::try_from(number).map_err(|_| {
+                        ServiceError::internal("validated operation id is negative")
+                    })?,
+                );
+            }
+            Self::MaxWallMs => {
+                if matches!(value, JsonValue::Null) {
+                    return Ok(());
+                }
+                let number = at_least(name, value, 1)?;
+                at_most(name, number, bound(limits.max_run_wall_ms))?;
+                args.integers.insert(name, number);
+            }
+            Self::Epoch | Self::ExpectedRevision | Self::ExpectedTick => {
+                if matches!(value, JsonValue::Null) {
+                    return Ok(());
+                }
+                let number = at_least(name, value, 0)?;
+                args.integers.insert(name, number);
+            }
         }
         Ok(())
     }
@@ -188,6 +238,7 @@ impl FieldKind {
 pub(crate) struct Args {
     integers: BTreeMap<&'static str, i64>,
     names: BTreeMap<&'static str, Option<String>>,
+    operations: BTreeMap<&'static str, u64>,
     checkpoints: Vec<u64>,
 }
 
@@ -230,6 +281,14 @@ impl Args {
         self.names.get(name).and_then(|value| value.as_deref())
     }
 
+    /// Returns the validated operation key, when the request supplied one.
+    ///
+    /// A request key is a client-chosen positive integer, so it is bounded by the
+    /// JSON integer rules and never carries caller-controlled text.
+    pub(crate) fn operation(&self, name: &str) -> Option<u64> {
+        self.operations.get(name).copied()
+    }
+
     /// Returns the validated checkpoint list, empty when it was omitted.
     pub(crate) fn checkpoints(&self) -> &[u64] {
         &self.checkpoints
@@ -259,8 +318,16 @@ pub(crate) enum OpKind {
     Compare,
     /// `session.close`
     Close,
+    /// `session.reap` (ADR-0016 §3 lifecycle)
+    Reap,
     /// `session.read_memory`
     ReadMemory,
+    /// `session.cancel` (ADR-0016 §2)
+    Cancel,
+    /// `session.progress` (ADR-0016 §2)
+    Progress,
+    /// `session.operation` (ADR-0016 §2 reconciliation horizon)
+    Operation,
     /// `store.list`
     StoreList,
     /// `store.load`
@@ -310,7 +377,10 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         mutating: true,
         scope: Scope::Write,
         kind: OpKind::Create,
-        fields: &[],
+        fields: &[
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+        ],
     },
     OpSpec {
         name: "session.list",
@@ -338,6 +408,11 @@ pub(crate) const CATALOG: &[OpSpec] = &[
             field("session", FieldKind::Key),
             field("steps", FieldKind::Steps { min: 1 }),
             field("buttons", FieldKind::OptionalButtons),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+            field("max_wall_ms", FieldKind::MaxWallMs),
+            field("expected_revision", FieldKind::ExpectedRevision),
+            field("expected_tick", FieldKind::ExpectedTick),
         ],
     },
     OpSpec {
@@ -346,7 +421,11 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         mutating: true,
         scope: Scope::Write,
         kind: OpKind::Fork,
-        fields: &[field("session", FieldKind::Key)],
+        fields: &[
+            field("session", FieldKind::Key),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+        ],
     },
     OpSpec {
         name: "session.snapshot",
@@ -357,6 +436,8 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         fields: &[
             field("session", FieldKind::Key),
             field("name", FieldKind::Name { min_bytes: 0 }),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
         ],
     },
     OpSpec {
@@ -368,6 +449,9 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         fields: &[
             field("session", FieldKind::Key),
             field("snapshot", FieldKind::Key),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+            field("expected_revision", FieldKind::ExpectedRevision),
         ],
     },
     OpSpec {
@@ -387,7 +471,23 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         mutating: true,
         scope: Scope::Write,
         kind: OpKind::Close,
-        fields: &[field("session", FieldKind::Key)],
+        fields: &[
+            field("session", FieldKind::Key),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+        ],
+    },
+    OpSpec {
+        name: "session.reap",
+        description: "Remove closed session entries and release their memory",
+        mutating: true,
+        scope: Scope::Write,
+        kind: OpKind::Reap,
+        fields: &[
+            field("session", FieldKind::OptionalKey),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
+        ],
     },
     OpSpec {
         name: "session.read_memory",
@@ -399,6 +499,39 @@ pub(crate) const CATALOG: &[OpSpec] = &[
             field("session", FieldKind::Key),
             field("address", FieldKind::Address),
             field("length", FieldKind::MemoryLength),
+        ],
+    },
+    OpSpec {
+        name: "session.cancel",
+        description: "Request cancellation of a running operation (control path)",
+        mutating: true,
+        scope: Scope::Write,
+        kind: OpKind::Cancel,
+        fields: &[
+            field("operation", FieldKind::OperationId),
+            field("session", FieldKind::OptionalKey),
+        ],
+    },
+    OpSpec {
+        name: "session.progress",
+        description: "Read the operation journal entry of one operation (control path)",
+        mutating: false,
+        scope: Scope::Read,
+        kind: OpKind::Progress,
+        fields: &[
+            field("operation", FieldKind::OperationId),
+            field("epoch", FieldKind::Epoch),
+        ],
+    },
+    OpSpec {
+        name: "session.operation",
+        description: "Read a retained operation result inside the reconciliation horizon",
+        mutating: false,
+        scope: Scope::Read,
+        kind: OpKind::Operation,
+        fields: &[
+            field("operation", FieldKind::OperationId),
+            field("epoch", FieldKind::Epoch),
         ],
     },
     OpSpec {
@@ -433,6 +566,8 @@ pub(crate) const CATALOG: &[OpSpec] = &[
             field("steps", FieldKind::OptionalSteps),
             field("buttons", FieldKind::OptionalButtons),
             field("name", FieldKind::Name { min_bytes: 1 }),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
         ],
     },
     OpSpec {
@@ -444,6 +579,8 @@ pub(crate) const CATALOG: &[OpSpec] = &[
         fields: &[
             field("session_key", FieldKind::Key),
             field("snapshot_key", FieldKind::OptionalKey),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
         ],
     },
     OpSpec {
@@ -456,6 +593,8 @@ pub(crate) const CATALOG: &[OpSpec] = &[
             field("steps", FieldKind::Steps { min: 1 }),
             field("buttons", FieldKind::OptionalButtons),
             field("checkpoints", FieldKind::Checkpoints),
+            field("operation_id", FieldKind::OperationId),
+            field("operation_epoch", FieldKind::Epoch),
         ],
     },
 ];
@@ -607,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_is_exactly_the_sixteen_documented_operations_in_order() {
+    fn the_catalog_is_exactly_the_twenty_documented_operations_in_order() {
         let expected = [
             ("capabilities", false, Scope::Read),
             ("session.create", true, Scope::Write),
@@ -619,7 +758,11 @@ mod tests {
             ("session.restore", true, Scope::Write),
             ("session.compare", false, Scope::Read),
             ("session.close", true, Scope::Write),
+            ("session.reap", true, Scope::Write),
             ("session.read_memory", false, Scope::Read),
+            ("session.cancel", true, Scope::Write),
+            ("session.progress", false, Scope::Read),
+            ("session.operation", false, Scope::Read),
             ("store.list", false, Scope::Read),
             ("store.load", false, Scope::Read),
             ("store.save", true, Scope::Write),
@@ -876,8 +1019,88 @@ mod tests {
             FieldKind::MemoryLength,
             FieldKind::Name { min_bytes: 0 },
             FieldKind::Checkpoints,
+            FieldKind::OperationId,
+            FieldKind::MaxWallMs,
+            FieldKind::ExpectedRevision,
+            FieldKind::ExpectedTick,
         ] {
             assert!(!kind.required());
         }
+        // The control path is the only path served without a session owner
+        // (ADR-0016 §1, K2/F3); the catalog test below pins its field name.
+        assert!(!FieldKind::OperationId.required());
+    }
+
+    #[test]
+    fn reconciliation_and_deadline_fields_are_bounded_before_work_starts() {
+        let limits = ServiceLimits {
+            max_run_wall_ms: 1_000,
+            ..ServiceLimits::default()
+        };
+        let spec = find("session.run").expect("run");
+
+        let value = input("{\"session\":1,\"steps\":1,\"operation_id\":7,\"max_wall_ms\":1000}");
+        let args = validate(spec, &value, &limits).expect("bounded wall budget");
+        assert_eq!(args.operation("operation_id"), Some(7));
+        assert_eq!(
+            args.optional_unsigned("max_wall_ms").expect("wall"),
+            Some(1000)
+        );
+
+        // A caller may lower a limit inside its own scope but never raise it past the
+        // daemon cap, and the rejection happens before any step runs.
+        let over = input("{\"session\":1,\"steps\":1,\"max_wall_ms\":1001}");
+        assert_eq!(
+            validate(spec, &over, &limits).expect_err("over cap").code(),
+            ErrorCode::LimitExceeded
+        );
+        let zero = input("{\"session\":1,\"steps\":1,\"max_wall_ms\":0}");
+        assert_eq!(
+            validate(spec, &zero, &limits).expect_err("zero").code(),
+            ErrorCode::InvalidRequest
+        );
+
+        let revision = input("{\"session\":1,\"steps\":1,\"expected_revision\":0}");
+        let args = validate(spec, &revision, &limits).expect("revision precondition");
+        assert_eq!(
+            args.optional_unsigned("expected_revision").expect("rev"),
+            Some(0)
+        );
+        let negative = input("{\"session\":1,\"steps\":1,\"expected_revision\":-1}");
+        assert_eq!(
+            validate(spec, &negative, &limits)
+                .expect_err("negative")
+                .code(),
+            ErrorCode::InvalidRequest
+        );
+        let absent = input("{\"session\":1,\"steps\":1}");
+        let args = validate(spec, &absent, &limits).expect("defaults");
+        assert_eq!(args.operation("operation_id"), None);
+        assert_eq!(args.optional_unsigned("max_wall_ms").expect("wall"), None);
+        assert_eq!(args.optional_unsigned("expected_tick").expect("tick"), None);
+    }
+
+    #[test]
+    fn the_control_operations_declare_their_operation_key() {
+        for name in ["session.cancel", "session.progress", "session.operation"] {
+            let spec = find(name).expect("control operation");
+            assert!(
+                spec.fields.iter().any(|field| {
+                    field.name == "operation" && matches!(field.kind, FieldKind::OperationId)
+                }),
+                "{name} must address an operation"
+            );
+        }
+        // A read-only control operation must not require the write scope: `progress`
+        // and `operation` are journal reads.
+        assert_eq!(
+            find("session.progress").expect("progress").scope,
+            Scope::Read
+        );
+        assert_eq!(
+            find("session.operation").expect("operation").scope,
+            Scope::Read
+        );
+        assert_eq!(find("session.cancel").expect("cancel").scope, Scope::Write);
     }
 }

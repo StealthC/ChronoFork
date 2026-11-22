@@ -146,8 +146,10 @@ remaining limits documented in
 (level 6) sources are modelled, with level 7 a predicate rule rather than a wired
 source; guest bus-error (2) and trace (9) delivery are absent; no interrupt-timing
 equivalence is claimed; and VDP interrupt-enable/acknowledge logic is absent.
-Differential oracle evidence now exists for eleven synthetic ROMs (projected address
-streams, per-instruction cycle costs, selected final state and negative controls);
+Differential oracle evidence now exists for thirteen synthetic ROMs (projected address
+streams, per-instruction cycle costs, selected final state and negative controls),
+with the two oracle-side `rom_exception` divergences recorded as named scoped
+exceptions;
 see [cycle differential evidence](../research/cpu-cycle-differential-evidence.md). The VDP
 port window and interrupt scheduler are partial slices, not a complete VDP or
 hardware-timed interrupt controller. Capabilities report rendering/audio and the

@@ -1,5 +1,12 @@
 # M3 Rewind — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed; every row M3-A28–M3-A34 is `executed - passed`** (independent
   t5 PASS, 2026-11-15). The increment is complete for the deterministic synthetic backend;
   M3 is **not complete** (rerecord/branch editing and real-hardware input TAS remain

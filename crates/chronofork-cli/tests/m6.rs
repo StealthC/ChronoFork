@@ -15,7 +15,10 @@
 //!
 //! Expected bytes are produced by the direct `AppService` or by the typed transport
 //! client — issued against the same daemon, on the same fresh state — and compared
-//! exactly, with no normalization. Servers use ephemeral loopback ports and stop after
+//! exactly, with one documented exception: the operational `process_epoch` a v2 mutation
+//! result carries necessarily differs between two processes, so `normalized_epoch`
+//! replaces exactly that field before the comparison instead of dropping the equality
+//! requirement (ADR-0016 §2). Servers use ephemeral loopback ports and stop after
 //! a bounded request count; every wait is deadline-polled, never a fixed sleep.
 
 mod common;
@@ -30,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use chronofork_service::json::{JsonValue, parse, to_canonical_bytes};
 use chronofork_service::{
-    AppService, Principal, Scope, ServiceConfig, ServiceError, ServiceLimits,
+    ApiVersion, AppService, Principal, Scope, ServiceConfig, ServiceError, ServiceLimits,
 };
 use chronofork_sessions::SnapshotRepository;
 use chronofork_test_backend::SyntheticBackendFactory;
@@ -104,9 +107,28 @@ fn request(op: &str, input: &JsonValue) -> Vec<u8> {
     to_canonical_bytes(&document, &limits()).expect("canonical request")
 }
 
-fn dispatch(service: &AppService, principal: &Principal, op: &str, input: &JsonValue) -> Vec<u8> {
+/// Dispatches one operation on the **v1** wire.
+///
+/// The local `session save|load|list|delete` commands dispatch in-process without a
+/// version header (`dispatch_local`), and a v1 response is exactly the document the same
+/// request returns from the HTTP surface without a version header. The expectations for
+/// those commands are therefore built on v1; only the `api`/`mcp` surfaces are v2.
+fn dispatch_v1(
+    service: &AppService,
+    principal: &Principal,
+    op: &str,
+    input: &JsonValue,
+) -> Vec<u8> {
     service
         .dispatch(principal, &request(op, input))
+        .expect("the service must accept this request")
+}
+
+fn dispatch(service: &AppService, principal: &Principal, op: &str, input: &JsonValue) -> Vec<u8> {
+    // The CLI's `api`/`mcp` surfaces are v2 consumers (they probe the daemon and declare
+    // v2), so the direct expectation must be built on the same wire version.
+    service
+        .dispatch_versioned(principal, &request(op, input), ApiVersion::V2)
         .expect("the direct service must accept this request")
 }
 
@@ -117,9 +139,30 @@ fn dispatch_error(
     input: &JsonValue,
 ) -> Vec<u8> {
     let error: ServiceError = service
-        .dispatch(principal, &request(op, input))
+        .dispatch_versioned(principal, &request(op, input), ApiVersion::V2)
         .expect_err("dispatch must fail");
-    error.to_canonical_bytes(&limits()).expect("error envelope")
+    error
+        .to_canonical_bytes_versioned(&limits(), ApiVersion::V2)
+        .expect("error envelope")
+}
+
+/// Replaces the operational `process_epoch` value with `0` before a byte comparison.
+///
+/// Two processes always report different epochs, and the epoch is deliberately not
+/// emulated state (ADR-0016 §2), so envelope-parity assertions normalize exactly that
+/// one field instead of dropping the requirement that the rest is identical.
+fn normalized_epoch(bytes: &[u8]) -> Vec<u8> {
+    let limits = limits();
+    let document = parse(bytes, &limits).expect("canonical envelope");
+    let JsonValue::Object(mut root) = document else {
+        return bytes.to_vec();
+    };
+    if let Some(JsonValue::Object(result)) = root.get_mut("result") {
+        if result.contains_key("process_epoch") {
+            result.insert("process_epoch".to_owned(), JsonValue::int(0));
+        }
+    }
+    to_canonical_bytes(&JsonValue::Object(root), &limits).expect("canonical bytes")
 }
 
 fn write_tokens(dir: &Path) -> PathBuf {
@@ -271,7 +314,8 @@ fn serve_records_select_the_configured_backend_and_storage() {
     let artifacts = dir.join("artifacts");
     let tokens = write_tokens(&dir);
 
-    // Two requests: `/health`, then the capabilities operation.
+    // Three requests: `/health`, the v2 capabilities probe, the capabilities operation
+    // (a v2 client probes once before its first call, ADR-0016 §Compatibility).
     let (child, base, records) = spawn_serve(
         &dir,
         &[
@@ -282,7 +326,7 @@ fn serve_records_select_the_configured_backend_and_storage() {
             "--artifacts",
             path_str(&artifacts),
             "--max-requests",
-            "2",
+            "3",
         ],
     );
     assert_eq!(
@@ -390,9 +434,10 @@ fn serve_stops_on_process_termination() {
 fn serve_and_api_process_flow() {
     let dir = temp_dir("m6-serve-api");
     let tokens = write_tokens(&dir);
-    // Eight requests: tools (oracle), health, tools, create, list, other list,
-    // unknown op, capabilities.
-    let (child, base, records) = spawn_serve(&dir, &["--max-requests", "8"]);
+    // Thirteen requests: the v1 tools oracle, health, the tools read, then each v2
+    // `api call` costs its one-time read-only capabilities probe plus the call itself
+    // (create, list, other list, unknown op, capabilities) — ADR-0016 §Compatibility.
+    let (child, base, records) = spawn_serve(&dir, &["--max-requests", "13"]);
     assert_eq!(
         records.get("backend").map(String::as_str),
         Some("synthetic")
@@ -451,9 +496,12 @@ fn serve_and_api_process_flow() {
         "--op",
         "session.create",
     ]));
+    // The mutation result carries the operational `process_epoch`, which necessarily
+    // differs between the daemon and this direct service; the parity helper normalizes
+    // exactly that field (ADR-0016 §2).
     assert_eq!(
-        created.as_bytes(),
-        with_newline(&expected_create).as_slice()
+        normalized_epoch(created.as_bytes()),
+        normalized_epoch(&with_newline(&expected_create))
     );
 
     // Requests 5 and 6: ownership is visible through the same service envelopes.
@@ -524,9 +572,10 @@ fn serve_and_api_process_flow() {
         "--op",
         "capabilities",
     ]));
+    // The epoch differs by process; everything else must match byte for byte.
     assert_eq!(
-        capabilities.as_bytes(),
-        with_newline(&expected_capabilities).as_slice()
+        normalized_epoch(capabilities.as_bytes()),
+        normalized_epoch(&with_newline(&expected_capabilities))
     );
     let report = parse_json(capabilities.trim_end().as_bytes());
     assert_eq!(
@@ -557,8 +606,8 @@ fn serve_and_api_process_flow() {
 fn api_reads_the_input_document_from_stdin() {
     let dir = temp_dir("m6-api-stdin");
     let tokens = write_tokens(&dir);
-    // One request: the capabilities call below.
-    let (child, base, _records) = spawn_serve(&dir, &["--max-requests", "1"]);
+    // Two requests: the v2 capabilities probe and the capabilities call below.
+    let (child, base, _records) = spawn_serve(&dir, &["--max-requests", "2"]);
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_chronofork"));
     command
@@ -589,7 +638,13 @@ fn api_reads_the_input_document_from_stdin() {
 
     let direct = direct_service(None);
     let expected = dispatch(&direct, &operator(), "capabilities", &empty());
-    assert_eq!(stdout.as_bytes(), with_newline(&expected).as_slice());
+    // `process_epoch` is operational metadata, not emulated state: the two documents
+    // come from different processes, so the epoch is normalized before the byte
+    // comparison — the rest of the document must still match byte for byte.
+    assert_eq!(
+        normalized_epoch(stdout.as_bytes()),
+        normalized_epoch(&with_newline(&expected))
+    );
 
     let (status, stderr) = finish_serve(child);
     assert!(
@@ -610,9 +665,10 @@ fn api_reads_the_input_document_from_stdin() {
 fn serve_and_mcp_process_flow() {
     let dir = temp_dir("m6-serve-mcp");
     let tokens = write_tokens(&dir);
-    // Six requests: initialize, tools/list (oracle), `mcp tools`, `mcp call`,
-    // HTTP capabilities (oracle) and the failing `mcp call`.
-    let (child, base, _records) = spawn_serve(&dir, &["--max-requests", "6"]);
+    // Nine requests: initialize and tools/list (v1 oracles), then every v2 CLI call
+    // costs its one-time capabilities probe plus the call (mcp tools, mcp call, the
+    // HTTP capabilities oracle and the failing mcp call) — ADR-0016 §Compatibility.
+    let (child, base, _records) = spawn_serve(&dir, &["--max-requests", "9"]);
 
     // Request 1: protocol negotiation (MCP Streamable HTTP, stateless).
     let mcp = McpClient::new(&base, OPERATOR_TOKEN);
@@ -666,13 +722,15 @@ fn serve_and_mcp_process_flow() {
 
     // Request 5: the same operation through the HTTP surface. The MCP text content and
     // the HTTP envelope compare byte for byte.
-    let http = HttpClient::new(&base, OPERATOR_TOKEN);
+    // The MCP call above is a v2 call, so the HTTP oracle must ask for v2 too; the
+    // epoch is normalized because the two processes report their own.
+    let http = HttpClient::new(&base, OPERATOR_TOKEN).with_version(ApiVersion::V2);
     let expected_envelope = http
         .call("capabilities", &empty())
         .expect("HTTP capabilities");
     assert_eq!(
-        called.as_bytes(),
-        with_newline(&expected_envelope).as_slice()
+        normalized_epoch(called.as_bytes()),
+        normalized_epoch(&with_newline(&expected_envelope))
     );
 
     // Request 6: an operation error is a `tools/call` result with `isError:true`; the
@@ -735,7 +793,7 @@ fn session_json_envelopes_match_the_service_operations() {
         ("buttons", JsonValue::int(1)),
         ("name", JsonValue::string("m6")),
     ]);
-    let expected_save = dispatch(&service, &admin(), "store.save", &save_input);
+    let expected_save = dispatch_v1(&service, &admin(), "store.save", &save_input);
     let saved = expect_success(&cli(&[
         "session",
         "save",
@@ -756,7 +814,7 @@ fn session_json_envelopes_match_the_service_operations() {
         ("session_key", JsonValue::int(1)),
         ("steps", JsonValue::int(2)),
     ]);
-    let expected_load = dispatch(&service, &admin(), "store.load", &load_input);
+    let expected_load = dispatch_v1(&service, &admin(), "store.load", &load_input);
     let loaded = expect_success(&cli(&[
         "session",
         "load",
@@ -771,7 +829,7 @@ fn session_json_envelopes_match_the_service_operations() {
     assert_eq!(loaded.as_bytes(), with_newline(&expected_load).as_slice());
 
     // store.list: every durable session and snapshot.
-    let expected_list = dispatch(&service, &admin(), "store.list", &empty());
+    let expected_list = dispatch_v1(&service, &admin(), "store.list", &empty());
     let listed = expect_success(&cli(&[
         "session",
         "list",
@@ -787,7 +845,7 @@ fn session_json_envelopes_match_the_service_operations() {
         ("snapshot_key", JsonValue::int(1)),
     ]);
     let expected_delete_snapshot =
-        dispatch(&service, &admin(), "store.delete", &delete_snapshot_input);
+        dispatch_v1(&service, &admin(), "store.delete", &delete_snapshot_input);
     let deleted_snapshot = expect_success(&cli(&[
         "session",
         "delete",
@@ -806,7 +864,7 @@ fn session_json_envelopes_match_the_service_operations() {
 
     let delete_session_input = object([("session_key", JsonValue::int(1))]);
     let expected_delete_session =
-        dispatch(&service, &admin(), "store.delete", &delete_session_input);
+        dispatch_v1(&service, &admin(), "store.delete", &delete_session_input);
     let deleted_session = expect_success(&cli(&[
         "session",
         "delete",
@@ -1087,7 +1145,7 @@ fn cli_rejections_keep_stdout_empty_and_exit_one() {
         "0",
     ]));
     assert!(
-        stderr.contains("`--workers` must be at least 1"),
+        stderr.contains("`--workers` must be at least 2"),
         "{stderr}"
     );
     let stderr = expect_failure(&cli(&[

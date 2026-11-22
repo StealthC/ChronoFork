@@ -55,12 +55,23 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     // before it is buffered.
     let tokens = read_token_table(&options.token_file, limits.max_request_bytes)?;
     let factory = backend_factory(options.rom.as_deref())?;
-    let service = Arc::new(AppService::new(ServiceConfig {
-        factory,
-        storage_root: options.store_root.clone(),
-        artifacts_root: options.artifacts.clone(),
-        limits,
-    })?);
+    // The process identity is durable beside the configured root, and only a `serve`
+    // start mints one: the counter is read, incremented and written back here, so a
+    // restarted daemon never reuses an epoch and a request key minted under the previous
+    // one is an `unknown_outcome` instead of a re-execution (ADR-0016 §2).
+    let identity_root = options
+        .store_root
+        .clone()
+        .unwrap_or_else(|| options.token_file.clone());
+    let service = Arc::new(AppService::new_durable(
+        ServiceConfig {
+            factory,
+            storage_root: options.store_root.clone(),
+            artifacts_root: options.artifacts.clone(),
+            limits,
+        },
+        &identity_root,
+    )?);
     let handle = serve_transport(
         ServerConfig {
             bind: options.bind,
@@ -69,6 +80,12 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             io_timeout: IO_TIMEOUT,
             max_request_bytes: limits.max_request_bytes,
             tokens,
+            // The ADR bounds: the pool reserves one worker for the control path, so the
+            // long-run admission is `workers - 1` globally and one per principal by
+            // default. An operator may raise both through the service; the daemon keeps
+            // the conservative defaults.
+            max_long_runs_global: None,
+            max_long_runs_per_principal: None,
         },
         Arc::clone(&service),
     )?;
@@ -148,8 +165,17 @@ fn parse_serve_options(args: &[String]) -> Result<Option<ServeOptions>, Box<dyn 
             )?,
             "--workers" => {
                 let value = parse_usize(option_value(args, &mut index, &flag)?, &flag)?;
-                if value == 0 {
-                    return Err(CliError("`--workers` must be at least 1".to_owned()).into());
+                // ADR-0016 §1/F4: the pool reserves one worker for the control path, so
+                // a single-worker daemon could not serve `cancel`/`list`/`progress` while
+                // a long run is in flight. The CLI refuses it with the same bound the
+                // transport enforces.
+                if value < 2 {
+                    return Err(CliError(
+                        "`--workers` must be at least 2 (one worker is reserved for the \
+                         control path)"
+                            .to_owned(),
+                    )
+                    .into());
                 }
                 set_once(&mut workers, value, &flag)?;
             }
@@ -222,7 +248,7 @@ fn print_serve_help() {
     println!("  --rom <FILE>          Serve the Mega Drive slice instead of the synthetic");
     println!("                        test backend");
     println!(
-        "  --workers <N>         Fixed connection workers (default {DEFAULT_WORKERS}, minimum 1)"
+        "  --workers <N>         Fixed connection workers (default {DEFAULT_WORKERS}, minimum 2)"
     );
     println!("  --max-requests <N>    Stop after N served requests (bounded process tests)");
     println!("  --help                Show this help");

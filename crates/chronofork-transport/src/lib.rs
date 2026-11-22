@@ -7,7 +7,8 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
-pub mod client;
+pub mod admission;
+mod client;
 pub mod error;
 pub mod http;
 pub mod mcp;

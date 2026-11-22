@@ -17,16 +17,29 @@ field. The harness compares that field with the pinned Exodus oracle's accumulat
 next oracle record, while ChronoFork's fourth field is the completed instruction
 cost. Absolute cycle bases and the oracle `time` column are not compared.
 
-The corpus has eleven independently authored synthetic ROMs: the three existing
-ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and eight later additions committed
-under [`scripts/fixtures/`](../../scripts/fixtures/): EA forms (`rom_ea`),
+The corpus has thirteen independently authored synthetic ROMs: the three existing
+ones (`rom_alu`, `rom_mem_vdp`, `rom_masked`) and nine later additions, all
+committed under [`scripts/fixtures/`](../../scripts/fixtures/): EA forms (`rom_ea`),
 shifts/rotates (`rom_shift`), BCD (`rom_bcd`), MOVEM/MOVEP (`rom_movem`),
 multiply/divide (`rom_muldiv`), EXG/TAS/ADDX/SUBX (`rom_exg_tas`), the
-system/status-register forms (`rom_status_reg`) and bit operations/DBcc
-(`rom_bits_dbcc`). `scripts/oracle-diff.py` generates every ROM from
-its own assembler and checks that the committed fixture bytes match. All register
+system/status-register forms (`rom_status_reg`), bit operations/DBcc
+(`rom_bits_dbcc`) and exception entry/return (`rom_exception`, `TRAP #0` + handler +
+`RTE`). `scripts/oracle-diff.py` generates every ROM from
+its own assembler and checks that the committed fixture bytes match;
+`crates/chronofork-megadrive/tests/fixture_integrity.rs` enforces the same equality,
+the documented digests and the markers without the pinned oracle. All register
 setup uses explicit `MOVEA.L #imm,An` and the program clears `X` with `ADD.B
 D0,D0` before the measured section (see the reset-state note under limits).
+
+`rom_exception` is the one corpus member whose comparison is **scoped by named
+exception**: its executed-address projection, A7, return PC and handler view of the
+frame match the oracle exactly, but the oracle's saved-SR frame word carries reserved
+bit 14 (`0x7FE4` where the architectural value is `0x2704`, in both the X-cleared and the
+X-set case) and the oracle charges `TRAP` 38 cycles against ChronoFork's documented
+34. Both are declared as data in the harness (`W4e-F1`, `W4e-F2`) and reported as named
+scoped findings rather than normalised away: the run is green only while each
+observation matches its declaration exactly, and any changed or extra divergence fails
+it with exit 1.
 
 ## Command and pinned inputs
 
@@ -49,15 +62,24 @@ python3 scripts/oracle-diff.py --skip-build \
 
 ## Results
 
-- **Address projections: 11/11 match.** Every projected executed-address sequence
+- **Address projections: 13/13 match.** Every projected executed-address sequence
   agrees with the oracle, every ChronoFork opcode word matches the ROM bytes, and
-  the address negative control passes 11/11.
-- **Per-instruction cycles: 11/11 match.** Every compared instruction's cost agrees
-  with the oracle, with no first mismatch on any ROM. The cycle negative control
-  (first projected cost corrupted by one cycle) is detected 11/11.
-- **Selected final state: 11/11 match.** Registers, effective SR and the compared
-  64 work-RAM bytes agree on every ROM. The final-state negative control passes
-  11/11.
+  the address negative control passes 13/13.
+- **Per-instruction cycles: 12/13 match.** Twelve ROMs agree with the oracle on every
+  compared instruction. `rom_exception` differs on one instruction: the oracle
+  charges `TRAP #0` 38 cycles, ChronoFork the documented 34. The cycle negative
+  control (first projected cost corrupted by one cycle) is detected 13/13.
+- **Selected final state: 12/13 match.** Twelve ROMs agree on registers, effective SR
+  and the compared 64 work-RAM bytes. `rom_exception` differs in two 16-bit words:
+  the oracle's saved-SR exception-frame word carries reserved bit 14 (`0x7FE4` where
+  the architectural value is `0x2704`, and where the oracle's own live SR for the same
+  program is `0x2704`), in the frame at `0x00FF0000` and in the handler's verbatim
+  archive of it at `0x00FF0010`. The final-state negative control passes 13/13.
+- **Scoped, named exceptions: 2/2.** Those two `rom_exception` divergences are declared
+  as data (`W4e-F1`, `W4e-F2`) and excluded from the verdict **only** while the observed
+  ROM, location and value pair match the declaration exactly; a changed or extra
+  divergence fails the run with exit 1, and an absent oracle still exits 3. The run is
+  green with two named exceptions, never green by absence.
 
 | ROM | projected instructions | oracle total records | cycles match | first cycle mismatch | final state |
 |---|---:|---:|---|---|---|
@@ -72,6 +94,7 @@ python3 scripts/oracle-diff.py --skip-build \
 | `rom_exg_tas` | 41 | 2370 | **yes** | none | yes |
 | `rom_status_reg` | 39 | 2360 | **yes** | none | yes |
 | `rom_bits_dbcc` | 42 | 2364 | **yes** | none | yes |
+| `rom_exception` | 31 | 2363 | **no** | `0x00026C` `TRAP` 38 vs 34 (scoped `W4e-F2`) | scoped `W4e-F1` (frame word) |
 
 ### Forms corrected by this repair
 

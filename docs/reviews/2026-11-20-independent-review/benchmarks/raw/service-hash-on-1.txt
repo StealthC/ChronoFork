@@ -1,0 +1,17 @@
+session_create_envelope_bytes=261
+service_dispatch_capabilities_min_seconds=0.000006276
+service_dispatch_capabilities_median_seconds=0.000006501
+service_dispatch_capabilities_max_seconds=0.000133106
+service_run_1000_min_seconds=0.205219722
+service_run_1000_median_seconds=0.208806581
+service_run_1000_max_seconds=0.212377930
+service_run_steps_per_second=4784
+service_inspect_min_seconds=0.000213305
+service_inspect_median_seconds=0.000223664
+service_inspect_max_seconds=0.000320865
+service_snapshot_min_seconds=0.000352800
+service_snapshot_median_seconds=0.000371721
+service_snapshot_max_seconds=0.000489121
+service_fork_min_seconds=0.000775020
+service_fork_median_seconds=0.000877478
+service_fork_max_seconds=0.001003746

@@ -68,7 +68,7 @@ E2-12. The historical E2-12/E2-15 evidence is recorded in
 The historical E2-12/E2-15 post-repair three-ROM run, including its masked-ROM
 default-quantum gating control, is preserved as history in that page and under
 ignored `.research/evidence/before-repair/` and `.research/evidence/before-e2-15/`;
-the current Phase 8.2 evidence is the eleven-ROM master-cycle differential in the
+the current Phase 8.2 evidence is the thirteen-ROM master-cycle differential in the
 [68000 cycle differential evidence](../research/cpu-cycle-differential-evidence.md).
 
 - The oracle is built from a pinned commit in the ignored

@@ -1,5 +1,12 @@
 # M5 Tracing and Scripting — Executable Acceptance Plan
 
+> **Historical record.** This is a dated verification/acceptance or review record. It
+> documents what was executed and observed on its own date and is **not current status**.
+> Milestone status, integration state and follow-ups live once in
+> [Milestones](../roadmap/milestones.md); machine-level Implemented / Not implemented
+> lists live in [Mega Drive slice](../architecture/megadrive-slice.md#implemented).
+> Where this record disagrees with those pages, they win.
+
 - **Status:** **Executed and independently verified.** Every row M5-A1–M5-A39 is
   `executed - passed`. The final independent verdict is **T12 PASS (2026-11-16)** after
   the T11 repair round. The original T7 verification returned `needs_revision` and is
