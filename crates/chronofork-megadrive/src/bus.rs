@@ -215,8 +215,10 @@ pub const PSG_Z80_ALIAS: u16 = 0x7F11;
 /// no wildcard arms: each variant is classified deliberately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GuestAccessClass {
-    /// A documented operation this slice does not implement: the `0b1100` 8-bit VRAM
-    /// read. A capability gap is not a hardware discard.
+    /// A documented operation this slice does not implement. The class is kept for a
+    /// future one: no current operation produces it (the `0b1100` 8-bit VRAM read is
+    /// implemented from W1Z), so it is exercised through the refused-DMA sub-bucket.
+    /// A capability gap is not a hardware discard.
     MissingCapability,
     /// The device refused a DMA transfer: a 68000-memory source, an unsupported DMA form,
     /// or a copy-engine range/overlap rejection. Nothing was transferred.
@@ -238,7 +240,7 @@ pub enum GuestAccessClass {
 /// (W1Y).
 pub const fn classify_vdp_error(error: &VdpError) -> GuestAccessClass {
     match error {
-        VdpError::UnsupportedBitRead { .. } => GuestAccessClass::MissingCapability,
+        VdpError::MissingCapability { .. } => GuestAccessClass::MissingCapability,
         VdpError::DmaUnsupported { .. }
         | VdpError::DmaMemorySourceUnavailable { .. }
         | VdpError::DmaSourceOutOfRange { .. }
@@ -252,7 +254,6 @@ pub const fn classify_vdp_error(error: &VdpError) -> GuestAccessClass {
         VdpError::SnapshotLengthMismatch { .. }
         | VdpError::SnapshotMagicMismatch
         | VdpError::SnapshotVersionUnsupported { .. }
-        | VdpError::SnapshotFlagsInvalid { .. }
         | VdpError::SnapshotCodeInvalid { .. }
         | VdpError::SnapshotFifoCountInvalid { .. }
         | VdpError::SnapshotDmaModeInvalid { .. }
@@ -1970,7 +1971,13 @@ impl Z80Bus for MegadriveBus {
                     // and never turned into a fake read. The Z80 core has no
                     // exception channel, so the typed rejection surfaces as the
                     // bus error for this access (W1X / W1U-F2).
-                    Err(VdpError::UnsupportedBitRead { .. }) => {
+                    // No current operation produces the capability-gap error
+                    // (the `0b1100` 8-bit VRAM read is implemented from W1Z on),
+                    // so a `0x0C` read reaches the value branch above. The arm
+                    // stays so a future documented-but-unimplemented operation
+                    // keeps its own class instead of collapsing into an
+                    // invalid-target discard (W1Y).
+                    Err(VdpError::MissingCapability { .. }) => {
                         self.vdp.count_capability_gap();
                         Err(Z80Error::Memory { address })
                     }
@@ -2144,6 +2151,48 @@ mod tests {
             .expect("control first word");
         bus.write16(0x00C0_0004, (address >> 14) & 0x0003)
             .expect("control second word");
+    }
+
+    #[test]
+    fn the_eight_bit_vram_read_decodes_both_faces_of_the_data_port() {
+        // `0b1100` (W1Z) through the composition the 68000 uses: a word read is
+        // one data-port operation (`M68000.cpp:2010-2025`), a byte read is one
+        // data-port operation whose returned half is chosen by the address parity
+        // (`:1986-2007`), and a long read is two word operations (`:2026-2055`).
+        let mut bus = bus();
+        // VRAM word 0x0000 = 0x1234 through the data port. Auto-increment is
+        // pinned to 0 so the command address never moves. The command words are
+        // the encoding the Z80 portal test uses: word 1 `CD1:CD0 = 00` plus the
+        // low address bits, word 2 `CD5:CD2 = 0b0011` plus the high address bits.
+        set_vram_address(&mut bus, 0x0000, 0x4000);
+        bus.write16(0x00C0_0000, 0x1234).expect("word write");
+        bus.write16(0x00C0_0004, 0x8F00).expect("auto-increment 0");
+        bus.write16(0x00C0_0004, 0x0000).expect("command word 1");
+        bus.write16(0x00C0_0004, 0x0030)
+            .expect("command word 2 (code 0x0C)");
+        // The owner advances between the write and the reads: the cache step only
+        // runs while the write FIFO is empty (`General.cpp:1748`, `:1850-1856`),
+        // and the backend drains the window at this step boundary. The
+        // pending-write behaviour itself (a read neither refreshes nor drains) is
+        // pinned at the device layer in `tests/vdp_ports.rs` (t4 vector 11).
+        bus.vdp_mut().drain_fifo();
+
+        // With the window empty, each `0x0C` read seeds the buffer from the zeroed
+        // next-read slot and replaces only the low byte with VRAM[0 ^ 1] = 0x34,
+        // so every operation returns 0x0034.
+        assert_eq!(bus.read16(0x00C0_0000).expect("word read"), 0x0034);
+        assert_eq!(bus.read16(0x00C0_0000).expect("second word read"), 0x0034);
+
+        // A long read is two word operations at `address` and `address + 2`; the
+        // data-port mirror keeps both on the data port, so both lanes come from
+        // consecutive `0x0C` reads.
+        let long = bus.read32(0x00C0_0000).expect("long read");
+        assert_eq!(long, 0x0034_0034);
+
+        // One byte operation per lane: the buffer's upper byte for an even address
+        // and its lower byte for an odd one.
+        assert_eq!(bus.read8(0x00C0_0000).expect("even lane"), 0x00);
+        assert_eq!(bus.read8(0x00C0_0001).expect("odd lane"), 0x34);
     }
 
     #[test]
@@ -2638,6 +2687,10 @@ mod tests {
         set_vram_address(&mut bus, 0x0010, 0x4000);
         bus.write16(0x00C0_0000, 0xABCD).expect("vram write");
         assert_eq!(&bus.vdp().vram()[0x10..0x12], &[0xAB, 0xCD]);
+        // The owner advances: the cache step only refreshes while the write FIFO
+        // is empty (`General.cpp:1748`, `:1850-1856`), and the backend drains the
+        // window at the step boundary.
+        bus.vdp_mut().drain_fifo();
 
         set_vram_address(&mut bus, 0x0010, 0x0000);
         assert_eq!(bus.read16(0x00C0_0000).expect("vram read"), 0xABCD);

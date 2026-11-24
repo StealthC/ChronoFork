@@ -171,21 +171,23 @@ pub const AUDIO_CHUNK_FRAMES: usize = 64;
 /// master-cycle carry, the nine-bit Z80 bank register, the complete YM2612 and
 /// PSG state and the 48 kHz mixer frame phase and device resamplers; version 7
 /// adds the eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`,
-/// which are canonical state because they affect later reads. Version 7 is the
-/// only accepted version; payloads v1-v6 are rejected with a typed error instead
-/// of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 7;
+/// which are canonical state because they affect later reads; version 8 adds the
+/// VDP read buffer through the embedded VDP snapshot (`CFVDP003`), which is
+/// canonical state because it is the value the next data-port read returns.
+/// Version 8 is the only accepted version; payloads v1-v7 are rejected with a
+/// typed error instead of being reinterpreted.
+pub const PAYLOAD_VERSION: u16 = 8;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 7.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K7";
-/// State-hash magic for state hash version 7.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE7";
-/// Configuration-hash magic for configuration hash version 7.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF7";
+/// Snapshot payload magic for payload version 8.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K8";
+/// State-hash magic for state hash version 8.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE8";
+/// Configuration-hash magic for configuration hash version 8.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF8";
 
 /// Fixed byte length of the Z80, arbitration, I/O and audio state tail.
 ///
@@ -3394,7 +3396,7 @@ mod tests {
         assert_eq!(snapshot.payload()[8..10], PAYLOAD_VERSION.to_le_bytes());
 
         // Every earlier version is rejected with a typed error, never
-        // reinterpreted as v7 bytes.
+        // reinterpreted as v8 bytes.
         for (index, magic, version) in [
             (1_u16, *b"CFMD68K1", 1_u16),
             (2, *b"CFMD68K2", 2),
@@ -3402,6 +3404,7 @@ mod tests {
             (4, *b"CFMD68K4", 4),
             (5, *b"CFMD68K5", 5),
             (6, *b"CFMD68K6", 6),
+            (7, *b"CFMD68K7", 7),
         ] {
             let mut old_payload = snapshot.payload().to_vec();
             old_payload[0..8].copy_from_slice(&magic);
@@ -4090,40 +4093,44 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v7 / state hash v7 / configuration hash v7
+        // Golden values for payload v8 / state hash v8 / configuration hash v8
         // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
         // moved the outer identity from v4 to v5; phase 8.4 task 14 moved it to
-        // v6; the W1 bus phase moved it to v7 and the body now also embeds the
-        // eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`
-        // (payload length 206 251 -> 206 259). The VDP advances on the
+        // v6; the W1 bus phase moved it to v7 and the body gained the eight port
+        // 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F` (payload
+        // length 206 251 -> 206 259); the W1Z read-cache phase moved it to v8 and
+        // the body gained the VDP read buffer appended after VRAM
+        // (`CFVDP003`, +2 bytes, 206 259 -> 206 261). The VDP advances on the
         // master-cycle timeline, so the six-step state includes a non-zero
         // line/dot position. The length and all three hashes below are the
-        // current v7 golden; v1-v6 payloads are rejected before any body byte is
+        // current v8 golden; v1-v7 payloads are rejected before any body byte is
         // reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        assert_eq!(snapshot.payload().len(), 206_259);
-        // Re-pinned once more by this phase: the body gained the eight control
-        // register bytes, so the payload hash and the state hash moved by
-        // construction. The configuration hash moved with the `CFMDCONF7` magic
+        assert_eq!(snapshot.payload().len(), 206_261);
+        // Re-pinned by the W1Z read-cache phase, with the cause of each moved
+        // value recorded: the VDP snapshot grew by the read buffer
+        // (`CFVDP003`, +2 bytes) so the payload length moved 206 259 -> 206 261 and
+        // the payload hash moved by construction; the state hash moved because
+        // `CFMDSTATE8` replaced `CFMDSTATE7` *and* the hashed body grew by those
+        // two bytes; the configuration hash moved only with the `CFMDCONF8` magic
         // (the cartridge/ROM/video configuration itself is unchanged). The prior
-        // v6 values were re-pinned by the 8.4 repair round (R1-F2/R1-F3): the PSG
-        // noise periods moved from 512/1024/2048 to 32/64/128 internal ticks and
-        // the 0xA11100 bus request now follows the hardware ZBR polarity.
+        // v7 values were re-pinned by the W1 bus phase; the v6 values by the 8.4
+        // repair round (R1-F2/R1-F3).
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "e89067cc8e46902a6424655957db9917af9cdb3d3773d655cbe724c81d29a252"
+            "32f4a4bbd4e637b63ed5fd9872e1c566e21300480d527b6e5164993240b73cf5"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "61c93ed39ef1ad05e0451912330399f4d6eb14946544dba4f7a3c9bb4479d720"
+            "acbe068c368be56579845bea5a18e6bc76ccb4b42703b30474bcd6eb38bf6456"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "c7731b6c81d4618023524d78431aa359e7a81643f6bfd5b30233cb07b14d3fd6"
+            "f454b76b7dec1181fd9645a5351c99a33e4f21b636ea3ba2c40fb0406f7d5c16"
         );
     }
 

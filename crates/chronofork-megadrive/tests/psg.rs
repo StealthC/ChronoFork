@@ -251,12 +251,21 @@ fn bus_window_reaches_the_psg_and_reads_open_bus() -> Result<(), Box<dyn Error>>
     assert_eq!(bus.vdp().vram()[0..2], [0x12, 0x34]);
     bus.write16(0x00C0_0004, 0x0000)?; // command word 1: VRAM read at 0
     bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    // The write is still pending, so the cache step does not run
+    // (`Devices/315-5313/S315-5313_General.cpp:1748`, `:1850-1856`) and the data
+    // port returns its buffer's current value. That is still the VDP and not the
+    // PSG, which is what this test proves.
     assert_eq!(
         Z80Bus::read8(&mut bus, 0x7F00)?,
-        0x12,
+        0x00,
         "high lane of the VDP data port through the Z80 window"
     );
-    assert_eq!(Z80Bus::read8(&mut bus, 0x7F01)?, 0x34, "low lane");
+    assert_eq!(
+        Z80Bus::read8(&mut bus, 0x7F01)?,
+        0x00,
+        "low lane of the same buffer"
+    );
+    assert_eq!(bus.vdp().fifo_len(), 1, "the read drained nothing");
     assert_eq!(
         bus.psg().snapshot_bytes(),
         psg_before,

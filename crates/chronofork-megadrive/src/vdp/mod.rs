@@ -79,9 +79,10 @@
 //!   the DMA state, VINT from the owning machine's pending request and FIFO
 //!   empty/full from the write queue.
 //! - Versioned, fixed-length snapshots through [`Vdp::snapshot_bytes`] and
-//!   [`Vdp::restore_bytes`]. Format v2 (`CFVDP002`) covers the complete device
-//!   state, including the PAL flag and the line/dot position (validated
-//!   against the stored standard); `CFVDP001`/v1 payloads are rejected, never
+//!   [`Vdp::restore_bytes`]. Format v3 (`CFVDP003`) covers the complete device
+//!   state, including the PAL flag, the line/dot position (validated against the
+//!   stored standard) and the canonical read buffer with its two read-cache
+//!   flags; `CFVDP001`/v1 and `CFVDP002`/v2 payloads are rejected, never
 //!   reinterpreted.
 //!
 //! # VINT-pending is derived state
@@ -154,16 +155,16 @@ pub use render::{
 pub use timing::VdpTick;
 
 /// Magic prefix of a serialized VDP snapshot.
-pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFVDP002";
+pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFVDP003";
 /// Version of the serialized VDP snapshot format.
-pub const SNAPSHOT_VERSION: u16 = 2;
+pub const SNAPSHOT_VERSION: u16 = 3;
 
 // Snapshot layout, in bytes. All multi-byte integers are little-endian:
 //
-//   0..8    magic "CFVDP002"
-//   8..10   format version (2)
+//   0..8    magic "CFVDP003"
+//   8..10   format version (3)
 //   10      flags: vblank, half-latched command, odd frame, collision,
-//           overflow, PAL
+//           overflow, PAL, read-data-available, read-data-half-cached
 //   11      command code (six bits)
 //   12..14  address
 //   14..38  registers (24)
@@ -179,6 +180,7 @@ pub const SNAPSHOT_VERSION: u16 = 2;
 //   271..273 line
 //   273..275 dot
 //   275..   VRAM (64 KiB)
+//   ...     read buffer (u16) — appended so every earlier offset is unchanged
 const SNAPSHOT_FLAGS_OFFSET: usize = SNAPSHOT_MAGIC.len() + 2;
 const SNAPSHOT_CODE_OFFSET: usize = SNAPSHOT_FLAGS_OFFSET + 1;
 const SNAPSHOT_ADDRESS_OFFSET: usize = SNAPSHOT_CODE_OFFSET + 1;
@@ -195,8 +197,11 @@ const SNAPSHOT_FRAME_INDEX_OFFSET: usize = SNAPSHOT_DMA_MODE_OFFSET + 1;
 const SNAPSHOT_LINE_OFFSET: usize = SNAPSHOT_FRAME_INDEX_OFFSET + 8;
 const SNAPSHOT_DOT_OFFSET: usize = SNAPSHOT_LINE_OFFSET + 2;
 const SNAPSHOT_VRAM_OFFSET: usize = SNAPSHOT_DOT_OFFSET + 2;
+/// Offset of the read buffer appended after VRAM; every earlier offset is
+/// unchanged from `CFVDP002`.
+const SNAPSHOT_READ_BUFFER_OFFSET: usize = SNAPSHOT_VRAM_OFFSET + VRAM_SIZE;
 /// Exact byte length of a serialized VDP snapshot.
-pub const SNAPSHOT_LEN: usize = SNAPSHOT_VRAM_OFFSET + VRAM_SIZE;
+pub const SNAPSHOT_LEN: usize = SNAPSHOT_READ_BUFFER_OFFSET + 2;
 
 /// Master-cycle cost of one word in the eager DMA model.
 pub const DMA_MASTER_CYCLES_PER_WORD: u32 = 2;
@@ -210,12 +215,13 @@ const SNAPSHOT_FLAG_SPRITE_OVERFLOW: u8 = 1 << 4;
 /// reserved before timing existed; no earlier valid v2 payload used it, so
 /// accepting it now reinterprets no accepted state.
 const SNAPSHOT_FLAG_PAL: u8 = 1 << 5;
-const SNAPSHOT_FLAG_MASK: u8 = SNAPSHOT_FLAG_VBLANK
-    | SNAPSHOT_FLAG_COMMAND_PENDING
-    | SNAPSHOT_FLAG_ODD_FRAME
-    | SNAPSHOT_FLAG_SPRITE_COLLISION
-    | SNAPSHOT_FLAG_SPRITE_OVERFLOW
-    | SNAPSHOT_FLAG_PAL;
+/// A value is latched in the read buffer for the latched command.
+const SNAPSHOT_FLAG_READ_DATA_AVAILABLE: u8 = 1 << 6;
+/// Only the first half of a 16-bit VRAM read has been latched.
+const SNAPSHOT_FLAG_READ_DATA_HALF_CACHED: u8 = 1 << 7;
+// Every bit of the flag byte is assigned in `CFVDP003` (the two read-cache bits
+// took the former reserved ones), so there is no mask constant and no
+// reserved-bit rejection left: an unassigned bit would be a new format version.
 
 /// A VDP port access or snapshot that this slice cannot satisfy.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -250,11 +256,16 @@ pub enum VdpError {
     /// A data-port access whose command code names a **documented** operation this
     /// slice does not implement.
     ///
-    /// The only case today is the `0b1100` 8-bit VRAM read
-    /// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`). This is a capability
-    /// gap, deliberately tracked apart from [`Self::UnsupportedTarget`]: an
-    /// invalid target is a hardware discard, a missing capability is not.
-    UnsupportedBitRead {
+    /// No operation currently reaches this variant: the `0b1100` 8-bit VRAM read
+    /// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`) used to be its only
+    /// producer and is implemented from W1Z on. It is kept as the named
+    /// capability-gap class so a future documented-but-unimplemented operation has
+    /// a home that is deliberately *not* [`Self::UnsupportedTarget`] — an invalid
+    /// target is a hardware discard, a missing capability is not. The Z80
+    /// classifier (`crates/chronofork-megadrive/src/bus.rs`) still exercises the
+    /// class through the refused-DMA sub-bucket, so the variant is not dead
+    /// weight.
+    MissingCapability {
         /// Current six-bit command code.
         code: u8,
     },
@@ -281,11 +292,6 @@ pub enum VdpError {
     SnapshotVersionUnsupported {
         /// Version found in the snapshot header.
         found: u16,
-    },
-    /// A snapshot whose flag byte has reserved bits set.
-    SnapshotFlagsInvalid {
-        /// Flag byte found in the snapshot header.
-        flags: u8,
     },
     /// A snapshot whose command code exceeds six bits.
     SnapshotCodeInvalid {
@@ -386,10 +392,10 @@ impl fmt::Display for VdpError {
                 f,
                 "VDP data-port access with unsupported command code 0x{code:02X}"
             ),
-            Self::UnsupportedBitRead { code } => write!(
+            Self::MissingCapability { code } => write!(
                 f,
-                "VDP 8-bit VRAM read (command code 0x{code:02X}) is not implemented \
-                 in this slice (capability gap, not an invalid target)"
+                "VDP command code 0x{code:02X} names a documented operation this slice \
+                 does not implement (capability gap, not an invalid target)"
             ),
             Self::DmaUnsupported { code } => write!(
                 f,
@@ -401,12 +407,6 @@ impl fmt::Display for VdpError {
             Self::SnapshotMagicMismatch => f.write_str("VDP snapshot magic mismatch"),
             Self::SnapshotVersionUnsupported { found } => {
                 write!(f, "VDP snapshot version {found} is not supported")
-            }
-            Self::SnapshotFlagsInvalid { flags } => {
-                write!(
-                    f,
-                    "VDP snapshot flag byte 0x{flags:02X} has reserved bits set"
-                )
             }
             Self::SnapshotCodeInvalid { code } => {
                 write!(f, "VDP snapshot command code 0x{code:02X} exceeds six bits")
@@ -521,6 +521,18 @@ pub struct Vdp {
     code: u8,
     address: u16,
     command_pending: bool,
+    /// The 16-bit value the data port returns for the latched command
+    /// (`_readBuffer` in the reference core). It is canonical state: a completed
+    /// read seeds it, and a read with a pending write returns it unchanged, so a
+    /// checkpoint must carry it.
+    read_buffer: u16,
+    /// A value is latched for the current command (`_readDataAvailable`). The
+    /// data-port read and every successful control write clear it.
+    read_data_available: bool,
+    /// Only the high byte of a 16-bit VRAM read has been latched so far
+    /// (`_readDataHalfCached`). The `0x0C` 8-bit read never sets it, and the
+    /// data-port read and every successful control write clear it.
+    read_data_half_cached: bool,
     frame_index: u64,
     line: u16,
     dot: u16,
@@ -578,6 +590,9 @@ impl Vdp {
             code: 0,
             address: 0,
             command_pending: false,
+            read_buffer: 0,
+            read_data_available: false,
+            read_data_half_cached: false,
             frame_index: 0,
             line: 0,
             dot: 0,
@@ -1238,6 +1253,12 @@ impl Vdp {
         if self.video == VideoStandard::Pal {
             flags |= SNAPSHOT_FLAG_PAL;
         }
+        if self.read_data_available {
+            flags |= SNAPSHOT_FLAG_READ_DATA_AVAILABLE;
+        }
+        if self.read_data_half_cached {
+            flags |= SNAPSHOT_FLAG_READ_DATA_HALF_CACHED;
+        }
         bytes.write_u8(flags);
         bytes.write_u8(self.code);
         bytes.write_u16_le(self.address);
@@ -1261,16 +1282,20 @@ impl Vdp {
         bytes.write_u16_le(self.line);
         bytes.write_u16_le(self.dot);
         bytes.write_bytes(&self.vram);
+        // Appended after VRAM so every `CFVDP002` offset keeps its meaning; the
+        // read buffer is canonical state (the previous read value or the FIFO
+        // seed), not a derived view.
+        bytes.write_u16_le(self.read_buffer);
         bytes.into_bytes()
     }
 
     /// Restores state from a [`Vdp::snapshot_bytes`] payload.
     ///
-    /// Length, magic, version, reserved flag bits, the command-code width, the
-    /// FIFO occupancy, the DMA mode code, the DMA active byte and the line/dot
-    /// position (against the stored video standard) are validated before any
-    /// field is mutated, so a rejected snapshot leaves the VDP exactly as it
-    /// was.
+    /// Length, magic, version, the command-code width, the FIFO occupancy, the
+    /// DMA mode code, the DMA active byte and the line/dot position (against the
+    /// stored video standard) are validated before any field is mutated, so a
+    /// rejected snapshot leaves the VDP exactly as it was. `CFVDP003` assigns all
+    /// eight flag bits, so every flag byte value is a defined state.
     ///
     /// The write path uses the shared [`chronofork_core::codec::Writer`]. The
     /// read path stays index-based because this format has a compile-time fixed
@@ -1298,10 +1323,9 @@ impl Vdp {
         if version != SNAPSHOT_VERSION {
             return Err(VdpError::SnapshotVersionUnsupported { found: version });
         }
+        // `CFVDP003` assigns all eight flag bits, so the byte needs no
+        // reserved-bit check; a future unassigned bit would move the version.
         let flags = bytes[SNAPSHOT_FLAGS_OFFSET];
-        if flags & !SNAPSHOT_FLAG_MASK != 0 {
-            return Err(VdpError::SnapshotFlagsInvalid { flags });
-        }
         let code = bytes[SNAPSHOT_CODE_OFFSET];
         if code & !0x3F != 0 {
             return Err(VdpError::SnapshotCodeInvalid { code });
@@ -1374,6 +1398,8 @@ impl Vdp {
             sprite_overflow: flags & SNAPSHOT_FLAG_SPRITE_OVERFLOW != 0,
         };
         self.command_pending = flags & SNAPSHOT_FLAG_COMMAND_PENDING != 0;
+        self.read_data_available = flags & SNAPSHOT_FLAG_READ_DATA_AVAILABLE != 0;
+        self.read_data_half_cached = flags & SNAPSHOT_FLAG_READ_DATA_HALF_CACHED != 0;
         self.code = code;
         self.address = address;
         self.registers = registers;
@@ -1395,7 +1421,9 @@ impl Vdp {
         self.capability_gap_accesses = 0;
         self.vblank_pending = false;
         self.hblank_pending = false;
-        self.vram.copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..]);
+        self.vram
+            .copy_from_slice(&bytes[SNAPSHOT_VRAM_OFFSET..SNAPSHOT_READ_BUFFER_OFFSET]);
+        self.read_buffer = read_u16_le(bytes, SNAPSHOT_READ_BUFFER_OFFSET);
         Ok(())
     }
 
@@ -1414,30 +1442,120 @@ impl Vdp {
         if self.code & CODE_READ_INHIBIT != 0 {
             return Err(VdpError::UnsupportedTarget { code: self.code });
         }
-        // The mirror image of the write decode: VRAM (0b0000), VSRAM (0b0100)
-        // and CRAM (0b1000) reads are the decoded directions. `0b1100` is the
-        // oracle's undocumented 8-bit VRAM read (`:2447`): a capability this
-        // slice does not model, so it stays a typed rejection and is **not**
-        // counted as a discard. Every other code hits the oracle's read
-        // `default:` (`:2458`), where no fetch happens and the oracle reports
-        // the error to the caller instead of leaving the port hanging; this
-        // slice reports the same way with a typed error and, unlike the write
-        // path, commits no state, so the access stays atomic.
+        // The mirror image of the write decode: VRAM (0b0000), VSRAM (0b0100),
+        // CRAM (0b1000) and the undocumented 8-bit VRAM read (0b1100, W1Z). The
+        // four decoded targets all fill the shared read buffer through
+        // `read_cache_operation`, so the buffer's "previous value" history is the
+        // same whichever target produced it. Every other code hits the oracle's
+        // read `default:` (`:2458`), where no fetch happens and the oracle reports
+        // the error to the caller instead of leaving the port hanging; this slice
+        // reports the same way with a typed error and, unlike the write path,
+        // commits no state, so the access stays atomic.
         let target = match self.code & 0x0F {
             CODE_VRAM_READ => VramTarget::Vram,
+            CODE_VRAM_READ_8BIT => VramTarget::Vram,
             CODE_VSRAM_READ => VramTarget::Vsram,
             CODE_CRAM_READ => VramTarget::Cram,
-            // A documented operation this slice does not model is a capability
-            // gap, not an invalid target (W1X / W1U-F2).
-            CODE_VRAM_READ_8BIT => {
-                return Err(VdpError::UnsupportedBitRead { code: self.code });
-            }
             _ => return Err(VdpError::UnsupportedTarget { code: self.code }),
         };
-        let address = Self::word_address(target, self.address);
-        let word = self.read_word(target, address)?;
-        self.increment_address();
+        let read8 = self.code & 0x0F == CODE_VRAM_READ_8BIT;
+        let increment_first = self.read_cache_operation(target, read8)?;
+        // The port read returns the read buffer with no mask and clears both read
+        // flags (`Devices/315-5313/S315-5313_Ports.cpp:1078-1084`).
+        let word = self.read_buffer;
+        self.read_data_available = false;
+        self.read_data_half_cached = false;
+        // The command address advances once per data-port operation. The single
+        // exception is the first half of a 16-bit VRAM read: that access latches
+        // only the high byte and is not a completed read
+        // (`Devices/315-5313/S315-5313_General.cpp:2473-2477`).
+        if !increment_first {
+            self.increment_address();
+        }
         Ok(word)
+    }
+
+    /// Refreshes the read buffer for the latched command, mirroring the pinned
+    /// core's `PerformReadCacheOperation`.
+    ///
+    /// The cache step runs **only while the write FIFO is empty**
+    /// (`Devices/315-5313/S315-5313_General.cpp:1748`, `:1850-1856`). With a
+    /// pending write the core declines the refresh, so the data port returns the
+    /// read buffer's current value: a read never consumes, retires or drains a
+    /// FIFO entry, and the pending write's data is never substituted for the
+    /// buffer. With an empty window the buffer is seeded from the FIFO's
+    /// next-read entry — the zeroed slot while the window is empty — only when
+    /// the previous 16-bit read did not leave a half-cached value
+    /// (`:2395-2398`).
+    ///
+    /// The `0x0C` 8-bit VRAM read writes only the low byte at the bit-inverted
+    /// command address and leaves the upper byte untouched (`:2447-2452`,
+    /// `:3011-3027`); it never sets the half-cached flag. The 16-bit VRAM read
+    /// latches its high byte first and completes on the next data-port read
+    /// (`:2406-2437`).
+    ///
+    /// Returns whether the command address must advance *before* this access: only
+    /// the completing half of a 16-bit VRAM read does that.
+    fn read_cache_operation(&mut self, target: VramTarget, read8: bool) -> Result<bool, VdpError> {
+        let increment_first = false;
+        if self.read_data_available {
+            // A value is already latched for this command, so the port read
+            // returns it (`General.cpp:1748`, `:1850-1856`); the caller clears the
+            // flag.
+            return Ok(increment_first);
+        }
+        // The cache step only runs while the write FIFO is empty. With a pending
+        // write the reference core declines the refresh and the data port returns
+        // the buffer's current value (`General.cpp:1748`, `:1850-1856`); nothing
+        // is fabricated and the FIFO is not consumed by the read. This slice
+        // completes writes eagerly, so its FIFO is a retention window, but the
+        // gate is the same one the core uses.
+        if !self.fifo.is_empty() {
+            return Ok(increment_first);
+        }
+        // A completed read refreshes the buffer. The seed is the FIFO's next-read
+        // entry — the zeroed slot while the window is empty — and it is applied
+        // only when the previous 16-bit read left no half-cached value
+        // (`General.cpp:2395-2398`).
+        if !self.read_data_half_cached {
+            self.read_buffer = self.fifo.words()[0];
+        }
+        let address = Self::word_address(target, self.address);
+        if read8 {
+            // Bit 0 of the literal command address is *inverted*, which is what
+            // makes an even address read the low byte of the word and an odd
+            // address its high byte (the reference core stores VRAM byteswapped,
+            // `General.cpp:3011-3027`). Unlike the `0x00` word read, the address
+            // is not aligned first. Only the low byte is replaced; the upper byte
+            // keeps whatever the buffer already held, and the half-cached flag
+            // stays clear.
+            let byte = match target {
+                VramTarget::Vram | VramTarget::VramCopy => {
+                    let index = usize::from(address ^ 1);
+                    self.vram[index]
+                }
+                // CRAM and VSRAM address a word index; the low byte of the
+                // result is the low byte of that word.
+                VramTarget::Cram | VramTarget::Vsram => {
+                    (self.read_word(target, address)? & 0x00FF) as u8
+                }
+            };
+            self.read_buffer = (self.read_buffer & 0xFF00) | u16::from(byte);
+            self.read_data_available = true;
+            self.read_data_half_cached = false;
+        } else {
+            // One atomic word-wide fetch: VRAM (big-endian), VSRAM or CRAM. The
+            // buffer holds the whole word afterwards, so the half-cached flag is
+            // set to mark that the *next* operation may keep its upper byte
+            // (which is what the pinned core's completed 16-bit read leaves
+            // behind). This slice has no mid-access half state to expose, so the
+            // data-port read stays atomic and its callers keep the existing
+            // contract.
+            self.read_buffer = self.read_word(target, address)?;
+            self.read_data_available = true;
+            self.read_data_half_cached = target == VramTarget::Vram;
+        }
+        Ok(increment_first)
     }
 
     fn write_data_port(&mut self, value: u16) -> Result<(), VdpError> {
@@ -1509,6 +1627,7 @@ impl Vdp {
             self.code = (self.code & 0x03) | (((word >> 4) as u8 & 0x0F) << 2);
             self.address |= (word & 0x0003) << 14;
             self.command_pending = false;
+            self.invalidate_read_cache();
             return Ok(());
         }
 
@@ -1529,13 +1648,28 @@ impl Vdp {
             self.address = word & 0x3FFF;
             self.registers[index] = (word & 0xFF) as u8;
             self.command_pending = false;
+            self.invalidate_read_cache();
             return Ok(());
         }
 
         self.code = low_code | CODE_READ_INHIBIT;
         self.address = word & 0x3FFF;
         self.command_pending = true;
+        self.invalidate_read_cache();
         Ok(())
+    }
+
+    /// Invalidates the cached read value after a successful control write.
+    ///
+    /// `Devices/315-5313/S315-5313_Ports.cpp:1613-1617` clears both read flags at
+    /// the end of every control-port write, so a new command cannot return a
+    /// value fetched for the previous one or keep suppressing the seed through a
+    /// stale half-cached flag. Only the successful branches call this; a rejected
+    /// write (an out-of-range register) leaves the cached value and the flags
+    /// exactly as they were.
+    fn invalidate_read_cache(&mut self) {
+        self.read_data_available = false;
+        self.read_data_half_cached = false;
     }
 
     /// Drains the write FIFO after the owner advanced the device timeline.
@@ -1715,6 +1849,10 @@ mod tests {
         set_vram_write_address(&mut vdp, 0x0200).expect("vram write address");
         vdp.write16(DATA_PORT_OFFSET, 0x1111).expect("first word");
         vdp.write16(DATA_PORT_OFFSET, 0x2222).expect("second word");
+        // The owner advances between the writes and the reads: the cache step only
+        // runs while the write FIFO is empty (`General.cpp:1748`, `:1850-1856`),
+        // and the backend drains the window at this step boundary.
+        vdp.drain_fifo();
 
         set_vram_read_address(&mut vdp, 0x0200).expect("vram read address");
         assert_eq!(vdp.read16(DATA_PORT_OFFSET).expect("word read"), 0x1111);
@@ -2196,11 +2334,36 @@ mod tests {
             })
         );
 
-        let mut bad_flags = good.clone();
-        bad_flags[SNAPSHOT_FLAGS_OFFSET] = 0x80;
+        // The flag byte has no unassigned bit left in `CFVDP003`: all eight bits
+        // are defined (the two new read-cache bits took the former reserved bits
+        // 6 and 7), so there is no "reserved bit" negative left to assert. What
+        // must hold instead is that the two new bits and the read buffer are real
+        // canonical state: a snapshot taken after a read reproduces the same next
+        // read, and the former reserved bits survive the round trip.
+        let mut source = Vdp::new();
+        source.set_vblank(true);
+        source
+            .write16(CONTROL_PORT_OFFSET, 0x8F00)
+            .expect("auto-increment 0");
+        source
+            .write16(CONTROL_PORT_OFFSET, 0x0C00)
+            .expect("8-bit read command, word 1");
+        source
+            .write16(CONTROL_PORT_OFFSET, 0x0030)
+            .expect("8-bit read command, word 2");
+        let first = source.read16(DATA_PORT_OFFSET).expect("first read");
+        let snapshot = source.snapshot_bytes();
+        let mut restored = Vdp::new();
+        restored.restore_bytes(&snapshot).expect("restore");
         assert_eq!(
-            vdp.restore_bytes(&bad_flags),
-            Err(VdpError::SnapshotFlagsInvalid { flags: 0x80 })
+            restored.snapshot_bytes(),
+            snapshot,
+            "the read buffer and its flags round-trip byte for byte"
+        );
+        assert_eq!(
+            restored.read16(DATA_PORT_OFFSET).expect("restored read"),
+            first,
+            "the restored buffer produces the same next read"
         );
 
         let mut bad_code = good.clone();
