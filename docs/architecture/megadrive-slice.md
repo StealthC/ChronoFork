@@ -340,6 +340,40 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   hash, payload magic/version/length, the VDP and scheduler snapshots, and the
   recomputed state hash. The replacement bus and scheduler are built before they
   are committed, so a rejected restore leaves the machine untouched.
+- **Declared checkpoint payload bound (W1.8, owner decision O-5).** The backend
+  implements `Backend::snapshot_payload_bound()` and returns
+  `SNAPSHOT_PAYLOAD_BOUND`, an exact upper bound derived from the format constants
+  (`PAYLOAD_MAGIC` plus the version word plus the fixed state-body component sum
+  plus two scheduler pending slots), never a free-standing literal. The scheduler
+  snapshot is the only component whose length varies — it is the fixed header plus
+  one tick per retained pending request, and the scheduler retains at most one
+  request per level — so a state with HBlank and VBlank both pending reaches the
+  bound exactly and no supported payload can exceed it. The bound is validated
+  against every payload shape the format supports: the serialization tests pin the
+  0/1/2-pending variation to exactly 0, 8 and 16 bytes and prove structurally that
+  the scheduler snapshot accounts for the whole difference, so every other component
+  (the fixed 68000 block, RAM, VDP, cartridge/SRAM, arbitration, bank, I/O and audio
+  tail) is fixed-length by construction; the machine-level tests cover NTSC, PAL, an
+  imported 64 KiB battery-SRAM image and a restore of the widest state. The
+  service+Mega Drive regression runs in the CLI composition root under a finite
+  `max_bytes_per_session`
+  (`create → snapshot → run(1) → snapshot`, fork and restore). The refusal half of
+  the regression is pinned twice: the CLI tests prove with a counting `Backend`
+  wrapper that a capture which cannot fit the quota is refused with `limit_exceeded`
+  **before** `Backend::snapshot()` is called, and the session-layer tests on the
+  **same** session object compare the checkpoint count, the retained bytes and the
+  serialized bytes of every retained record before and after the refusal, then take
+  an accepted capture on that object and assert it reuses the identifier the
+  refusal would have taken. Both quota classes are covered, and the byte-quota
+  guard also covers the state transition W1.8 exists for: after an accepted capture
+  the test advances the machine, so the observation is invalid and the refused
+  capture is decided from the declared bound instead of from an observed size. That
+  last identifier assertion is what fails when the refusal path spends an identifier
+  only in the declared-bound branch; the CLI manifest carries the mutant
+  demonstration in `.research/w18/repair/` and
+  `.research/w18/repair-r3/`. The bound adds no canonical
+  state: the v7 payload, the state hash, the configuration hash and every golden are
+  unchanged.
 - At most one interrupt is delivered at each instruction boundary, before the next
   instruction executes, and only when `next_deliverable(cpu.sr())` admits it: level 7
   is always taken and every other level must be strictly above the IPM. A request
@@ -523,18 +557,6 @@ comparison; the arbitration-polarity divergence its recorded run documents is
 superseded by the phase-8.4 repair, which implements the hardware `ZBR` polarity.
 
 ### Known limitations of the integration
-
-- **No declared checkpoint payload bound (temporary, tracked).** The service layer decides
-  `max_bytes_per_session` before it captures a checkpoint and needs a payload size it can
-  bound; after `run`/trace/debug write that bound must come from
-  `Backend::snapshot_payload_bound()`, which this backend does not declare yet. Under a
-  **finite** byte quota a post-run `session.snapshot`/`session.fork` over the service is
-  therefore refused with `limit_exceeded` **before allocating** (the unbounded in-process
-  movie/player/rewind paths are unaffected). This is **not** intended behavior: owner
-  decision O-5 defers the fix to W1.8 in the
-  [consolidation plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md),
-  which declares the bound here (validated against every supported payload) and adds the
-  service+Mega Drive regression.
 
 - **Privilege is enforced for the implemented system instructions.** `MOVE` to
   `SR`, `STOP`, `RESET`, `RTE` and `MOVE` to/from `USP` raise vector 8 in user mode;
