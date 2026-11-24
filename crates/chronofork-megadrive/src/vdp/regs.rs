@@ -94,9 +94,9 @@ pub(crate) const CODE_VSRAM_WRITE: u8 = 0x05;
 pub(crate) const CODE_CRAM_READ: u8 = 0x08;
 /// `0b001100` 8-bit VRAM read.
 ///
-/// A documented hardware operation this slice does **not** implement
-/// (`Devices/315-5313/S315-5313_General.cpp:2447-2451`). It is tracked apart from
-/// an invalid target: a capability gap is not a hardware discard (W1X).
+/// Implemented from W1Z (`Devices/315-5313/S315-5313_General.cpp:2447-2452`): one
+/// VRAM byte at the bit-inverted command address replaces the low half of the
+/// canonical read buffer and the upper half is retained.
 pub(crate) const CODE_VRAM_READ_8BIT: u8 = 0x0C;
 
 /// A memory space the VDP data port can address.

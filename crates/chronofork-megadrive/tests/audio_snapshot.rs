@@ -112,11 +112,11 @@ fn tampered(snapshot: &BackendSnapshot, magic: &[u8; 8], version: u16) -> Backen
 }
 
 #[test]
-fn version_seven_identity_is_published_and_the_media_seam_is_advertised() {
-    assert_eq!(PAYLOAD_VERSION, 7);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K7");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE7");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF7");
+fn version_eight_identity_is_published_and_the_media_seam_is_advertised() {
+    assert_eq!(PAYLOAD_VERSION, 8);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K8");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE8");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF8");
     let factory = MegadriveFactory::new(demo_rom()).expect("factory");
     let capabilities = factory.descriptor().capabilities();
     assert!(capabilities.rendering, "frame production is implemented");
@@ -225,7 +225,7 @@ fn v1_to_v6_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Erro
     let snapshot = machine.snapshot()?;
     let before = machine.snapshot()?.payload().to_vec();
     // The version word alone selects the layout; a v1-v6 version word is
-    // rejected by version even when the surrounding bytes are v7.
+    // rejected by version even when the surrounding bytes are v8.
     for version in 1..=6_u16 {
         let candidate = tampered(&snapshot, &PAYLOAD_MAGIC, version);
         let error = machine

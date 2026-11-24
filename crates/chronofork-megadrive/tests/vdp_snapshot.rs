@@ -1,10 +1,12 @@
 #![allow(clippy::expect_used)]
 
-//! VDP device snapshot v2 (`CFVDP002`) coverage.
+//! VDP device snapshot v3 (`CFVDP003`) coverage.
 //!
-//! Version 2 replaces the v1 leaky abstraction with the full device state:
+//! Version 2 replaced the v1 leaky abstraction with the full device state:
 //! CRAM, VSRAM, the write FIFO, DMA state, the frame index and the line/dot
 //! position, alongside the registers, VRAM and the existing command latches.
+//! Version 3 appends the canonical read buffer (`CFVDP003`, +2 bytes) and
+//! assigns the two former reserved flag bits to the read-cache flags.
 //!
 //! The crafted payload below is an independent encoder for the documented
 //! layout. It must agree with [`Vdp::snapshot_bytes`] byte for byte, so a field
@@ -21,7 +23,7 @@ const V1_SNAPSHOT_LEN: usize = 8 + 2 + 1 + 1 + 2 + 0x18 + VRAM_SIZE;
 /// Magic of the rejected v1 snapshot format.
 const V1_SNAPSHOT_MAGIC: &[u8; 8] = b"CFVDP001";
 
-// v2 layout offsets. Keep in sync with `Vdp::snapshot_bytes` documentation;
+// v3 layout offsets. Keep in sync with `Vdp::snapshot_bytes` documentation;
 // this is the independent decoder that pins the format.
 const OFFSET_FLAGS: usize = 10;
 const OFFSET_CODE: usize = 11;
@@ -39,6 +41,7 @@ const OFFSET_FRAME_INDEX: usize = OFFSET_DMA_MODE + 1;
 const OFFSET_LINE: usize = OFFSET_FRAME_INDEX + 8;
 const OFFSET_DOT: usize = OFFSET_LINE + 2;
 const OFFSET_VRAM: usize = OFFSET_DOT + 2;
+const OFFSET_READ_BUFFER: usize = OFFSET_VRAM + VRAM_SIZE;
 
 // Flag bits: vblank, half-latched command, odd frame, sprite collision and
 // sprite overflow.
@@ -96,17 +99,19 @@ fn crafted_state() -> (Vec<u8>, [u16; CRAM_WORDS], [u16; VSRAM_WORDS], Vec<u8>) 
         .copy_from_slice(&0x0102_0304_0506_0708_u64.to_le_bytes());
     write_word(&mut bytes, OFFSET_LINE, 0x00E7);
     write_word(&mut bytes, OFFSET_DOT, 0x00AB);
-    bytes[OFFSET_VRAM..].copy_from_slice(&vram);
+    bytes[OFFSET_VRAM..OFFSET_READ_BUFFER].copy_from_slice(&vram);
+    write_word(&mut bytes, OFFSET_READ_BUFFER, 0xABCD);
 
     (bytes, cram, vsram, vram)
 }
 
 #[test]
-fn snapshot_format_is_the_documented_v2() {
-    assert_eq!(&SNAPSHOT_MAGIC, b"CFVDP002");
-    assert_eq!(SNAPSHOT_VERSION, 2);
-    assert_eq!(SNAPSHOT_LEN, 65_811);
-    assert_eq!(OFFSET_VRAM + VRAM_SIZE, SNAPSHOT_LEN);
+fn snapshot_format_is_the_documented_v3() {
+    assert_eq!(&SNAPSHOT_MAGIC, b"CFVDP003");
+    assert_eq!(SNAPSHOT_VERSION, 3);
+    assert_eq!(SNAPSHOT_LEN, 65_813);
+    assert_eq!(OFFSET_READ_BUFFER + 2, SNAPSHOT_LEN);
+    assert_eq!(OFFSET_VRAM + VRAM_SIZE, OFFSET_READ_BUFFER);
 }
 
 #[test]
@@ -127,10 +132,10 @@ fn vdp_snapshot_round_trips_new_state() {
 }
 
 #[test]
-fn v2_round_trips_every_new_field() {
+fn v3_round_trips_every_new_field() {
     let (crafted, cram, vsram, vram) = crafted_state();
     let mut vdp = Vdp::new();
-    vdp.restore_bytes(&crafted).expect("restore crafted v2");
+    vdp.restore_bytes(&crafted).expect("restore crafted v3");
 
     assert_eq!(vdp.registers().len(), REGISTER_COUNT);
     for (index, register) in vdp.registers().iter().enumerate() {
@@ -190,7 +195,7 @@ fn v1_snapshots_are_rejected_with_typed_errors() {
         })
     );
 
-    // A v2-length payload that still declares the v1 magic is rejected as a
+    // A v3-length payload that still declares the v1 magic is rejected as a
     // magic mismatch.
     let mut v1_magic = before.clone();
     v1_magic[..8].copy_from_slice(V1_SNAPSHOT_MAGIC.as_slice());
@@ -199,7 +204,7 @@ fn v1_snapshots_are_rejected_with_typed_errors() {
         Err(VdpError::SnapshotMagicMismatch)
     );
 
-    // A v2-length `CFVDP002` payload with version 1 is rejected by the version
+    // A v3-length `CFVDP003` payload with version 1 is rejected by the version
     // check, proving the change is versioned rather than silently reinterpreted.
     let mut v1_version = before.clone();
     write_word(&mut v1_version, 8, 1);
@@ -209,10 +214,26 @@ fn v1_snapshots_are_rejected_with_typed_errors() {
     );
 
     assert_eq!(vdp.snapshot_bytes(), before, "rejections never mutate");
+
+    // `CFVDP003` assigns the two former reserved flag bits to the read-cache
+    // flags, so every byte value is a legal flag byte now. This check mutates
+    // the device on purpose, so it runs after the "rejections never mutate"
+    // baseline above. What must hold is that the bits are honoured as a tag: a
+    // crafted flag byte round-trips byte-for-byte instead of being normalized
+    // away.
+    let mut defined_flags = before.clone();
+    defined_flags[OFFSET_FLAGS] = 0x80;
+    vdp.restore_bytes(&defined_flags)
+        .expect("the read-cache flag bit is defined");
+    assert_eq!(
+        vdp.snapshot_bytes(),
+        defined_flags,
+        "the read-cache flag bit is a restored value, not a normalized bit"
+    );
 }
 
 #[test]
-fn invalid_v2_field_values_are_typed_errors() {
+fn invalid_v3_field_values_are_typed_errors() {
     let mut vdp = Vdp::new();
     let before = vdp.snapshot_bytes();
 
@@ -242,13 +263,6 @@ fn invalid_v2_field_values_are_typed_errors() {
         })
     );
 
-    let mut reserved_flags = before.clone();
-    reserved_flags[OFFSET_FLAGS] = 0x80;
-    assert_eq!(
-        vdp.restore_bytes(&reserved_flags),
-        Err(VdpError::SnapshotFlagsInvalid { flags: 0x80 })
-    );
-
     let mut wide_code = before.clone();
     wide_code[OFFSET_CODE] = 0x40;
     assert_eq!(
@@ -265,4 +279,20 @@ fn invalid_v2_field_values_are_typed_errors() {
     );
 
     assert_eq!(vdp.snapshot_bytes(), before, "rejections never mutate");
+
+    // `CFVDP003` assigns the two former reserved flag bits to the read-cache
+    // flags, so every byte value is a legal flag byte now. This check mutates
+    // the device on purpose, so it runs after the "rejections never mutate"
+    // baseline above. What must hold is that the bits are honoured as a tag: a
+    // crafted flag byte round-trips byte-for-byte instead of being normalized
+    // away.
+    let mut defined_flags = before.clone();
+    defined_flags[OFFSET_FLAGS] = 0x80;
+    vdp.restore_bytes(&defined_flags)
+        .expect("the read-cache flag bit is defined");
+    assert_eq!(
+        vdp.snapshot_bytes(),
+        defined_flags,
+        "the read-cache flag bit is a restored value, not a normalized bit"
+    );
 }

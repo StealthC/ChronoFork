@@ -142,17 +142,18 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
 /// measured on the reference host, one debug run costs ~82 s and one release run
 /// ~7 s, while the previous two-debug-run comparison cost ~166 s.
 const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
-    "64a95482e30f84a73175748f0de5c9baedf19da38877752747465b7d472e6f74";
+    "1659642e29ff9b7ab91e8959db4493fed743d0e7a1b50ab8a0108ce3d6e90b39";
 
 /// Bytes of the pinned `chronofork megadrive demo` stdout.
 ///
-/// Re-minted twice while merging `main` into this branch. Phase 8.4 added the Z80
-/// and 48 kHz audio surface to the narration (1833 bytes before it); the W1 boot
-/// work then changed the canonical state the demo prints - the fork/source state
-/// hashes - while leaving the narration byte-identical, so only those hash values
-/// moved. Re-minting is the honest response to a state change: this check exists to
-/// catch drift. The values below were measured from the merged release build and
-/// confirmed byte-identical to the debug build.
+/// Re-minted twice while merging `main` into this branch, and once more by W1Z.
+/// Phase 8.4 added the Z80 and 48 kHz audio surface to the narration (1833 bytes
+/// before it); the W1 boot work then changed the canonical state the demo prints -
+/// the fork/source state hashes - while leaving the narration byte-identical, so
+/// only those hash values moved. W1Z (payload v8, the VDP read cache) moved them
+/// again for the same reason: the payload/state identity is printed by the demo.
+/// Re-minting is the honest response to a state change: this check exists to catch
+/// drift. The value was measured from this tree's build, not copied from a report.
 const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1994;
 
 /// Enables the "release build must exist" half of the check:

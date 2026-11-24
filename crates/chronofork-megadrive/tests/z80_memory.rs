@@ -160,33 +160,34 @@ fn banked_z80_write_to_decoded_work_ram_is_not_silently_dropped() -> Result<(), 
 }
 
 #[test]
-fn z80_byte_read_capacity_is_not_a_hardware_discard() -> Result<(), Box<dyn Error>> {
-    // The `0b1100` 8-bit VRAM read is a documented operation this slice does not
-    // implement. Reading it through the Z80 VDP window must NOT become a fake read
-    // and must NOT be counted as an invalid-target discard: it keeps the typed
-    // rejection and its own capability counter (W1X / W1U-F2).
+fn z80_byte_read_of_the_eight_bit_vram_mode_is_not_a_capability_gap() -> Result<(), Box<dyn Error>>
+{
+    // The `0b1100` 8-bit VRAM read used to be a documented operation this slice did
+    // not implement (W1X / W1U-F2). It is implemented from W1Z on, so reading it
+    // through the Z80 VDP window returns the data-port byte and counts in neither
+    // the capability-gap nor the invalid-target discard bucket.
     let mut bus = bus()?;
     // Command code 0x0C: word 1 CD1:CD0 = 00, word 2 CD5:CD2 = 0b0011.
     bus.write16(0x00C0_0004, 0x0000)?;
     bus.write16(0x00C0_0004, 0x0030)?;
     assert_eq!(bus.vdp().capability_gap_accesses(), 0);
-    assert!(matches!(
-        Z80Bus::read8(&mut bus, 0x7F00),
-        Err(chronofork_megadrive::z80::Z80Error::Memory { address: 0x7F00 })
-    ));
-    assert_eq!(bus.vdp().capability_gap_accesses(), 1);
+    // Zero VRAM and an empty FIFO: the read buffer is 0x0000 and the even portal
+    // byte 0x7F00 selects its high half.
+    assert_eq!(Z80Bus::read8(&mut bus, 0x7F00), Ok(0x00));
+    assert_eq!(
+        bus.vdp().capability_gap_accesses(),
+        0,
+        "an implemented operation is not a capability gap"
+    );
     assert_eq!(
         bus.vdp().discarded_data_port_accesses(),
         0,
-        "a capability gap is not an invalid-target discard"
+        "an implemented operation is not an invalid-target discard"
     );
 
-    // The 68000 path keeps the same typed rejection and counts nothing.
-    assert!(matches!(
-        bus.read8(0x00C0_0000),
-        Err(chronofork_megadrive::BusError::Vdp(_))
-    ));
-    assert_eq!(bus.vdp().capability_gap_accesses(), 1);
+    // The 68000 path returns the same read-buffer half.
+    assert_eq!(bus.read8(0x00C0_0000), Ok(0x00));
+    assert_eq!(bus.vdp().capability_gap_accesses(), 0);
     assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
     Ok(())
 }
@@ -262,18 +263,48 @@ fn z80_banked_window_to_the_vdp_keeps_the_dma_classification() -> Result<(), Box
 }
 
 #[test]
+fn z80_portal_reads_the_eight_bit_vram_mode_without_refreshing_on_a_pending_write()
+-> Result<(), Box<dyn Error>> {
+    // The Z80 VDP window `0x7F00..=0x7F03` maps to the VDP data port lanes
+    // (`Devices/MD1600IO/MDBusArbiter.cpp:347-384`). The cache step only runs while
+    // the write FIFO is empty (`Devices/315-5313/S315-5313_General.cpp:1748`,
+    // `:1850-1856`), so with a pending write each portal byte returns the read
+    // buffer's current value and consumes nothing from the FIFO.
+    let mut bus = bus()?;
+    bus.write16(0x00C0_0004, 0x4000)?; // command word 1: VRAM write at 0
+    bus.write16(0x00C0_0004, 0x0000)?; // command word 2
+    bus.write16(0x00C0_0000, 0x1234)?; // pending data-port write
+    // Command code 0x0C at address 0x0000.
+    bus.write16(0x00C0_0004, 0x0000)?;
+    bus.write16(0x00C0_0004, 0x0030)?;
+
+    assert_eq!(Z80Bus::read8(&mut bus, 0x7F00)?, 0x00);
+    assert_eq!(Z80Bus::read8(&mut bus, 0x7F01)?, 0x00);
+    assert_eq!(
+        bus.vdp().fifo_len(),
+        1,
+        "a portal read neither consumes nor drains the pending write"
+    );
+    assert_eq!(
+        bus.vdp().capability_gap_accesses(),
+        0,
+        "an implemented operation is not a capability gap"
+    );
+    assert_eq!(bus.vdp().discarded_data_port_accesses(), 0);
+    Ok(())
+}
+
+#[test]
 fn the_three_z80_rejection_classes_never_collapse_into_one_bucket() -> Result<(), Box<dyn Error>> {
-    // Capability gap: the 0x0C 8-bit VRAM read, still unimplemented.
-    let mut capability = bus()?;
-    capability.write16(0x00C0_0004, 0x0000)?;
-    capability.write16(0x00C0_0004, 0x0030)?; // code 0x0C
-    assert!(matches!(
-        Z80Bus::read8(&mut capability, 0x7F00),
-        Err(Z80Error::Memory { .. })
-    ));
-    assert_eq!(capability.vdp().capability_gap_accesses(), 1);
-    assert_eq!(capability.vdp().discarded_data_port_accesses(), 0);
-    assert_eq!(capability.z80_dma_unavailable_accesses(), 0);
+    // The `0x0C` 8-bit VRAM read is implemented from W1Z on: a successful read
+    // feeds neither the capability-gap nor the discard bucket.
+    let mut implemented = bus()?;
+    implemented.write16(0x00C0_0004, 0x0000)?;
+    implemented.write16(0x00C0_0004, 0x0030)?; // code 0x0C
+    assert_eq!(Z80Bus::read8(&mut implemented, 0x7F00), Ok(0x00));
+    assert_eq!(implemented.vdp().capability_gap_accesses(), 0);
+    assert_eq!(implemented.vdp().discarded_data_port_accesses(), 0);
+    assert_eq!(implemented.z80_dma_unavailable_accesses(), 0);
 
     // Invalid target: the VSRAM-write code used as a read target.
     let mut invalid = bus()?;

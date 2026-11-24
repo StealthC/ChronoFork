@@ -66,7 +66,7 @@ fixtures are independently authored synthetic data.
 | Work RAM | `0xE00000..0xFFFFFF` | 64 KiB, big-endian, decoded through address bits 15–0: the primary `0xFF0000..0xFFFFFF` window and the `0xE00000..0xFEFFFF` mirror |
 | VDP ports | `0xC00000..0xC0000F` | Data port `0x00..0x03`, control/status port `0x04..0x07`, HV counter `0x08..0x0F` |
 | Controller data registers | `0x00A10003`, `0x00A10005` | Byte reads only, driven by the current step's `InputFrame` ports 0/1; a write is acknowledged and discarded; see below |
-| Controller control registers | `0x00A10008..0x00A1000F` | Port 1/2 control pairs (`08..0B`) are read/write latched bytes in canonical state (payload v7); the port 3/EXT control pairs (`0C..0F`) are the ADR-0014 constant-zero stub — reads return `0x00` and writes are discarded |
+| Controller control registers | `0x00A10008..0x00A1000F` | Port 1/2 control pairs (`08..0B`) are read/write latched bytes in canonical state (payload v7 and later); the port 3/EXT control pairs (`0C..0F`) are the ADR-0014 constant-zero stub — reads return `0x00` and writes are discarded |
 | YM2612 registers | `0x00A04000..0x00A04003` | Two address/data port pairs through the bus arbiter; reads return the YM2612 status byte |
 | Z80 RAM window | `0x00A00000..0x00A01FFF` | 8 KiB Z80 RAM; accesses stall while the Z80 owns the bus |
 | Z80 bank register | `0x00A06000` | Write-only nine-bit bank register; reads return the latched value |
@@ -100,11 +100,12 @@ fixtures are independently authored synthetic data.
   `0x3FFF`, YM2612 at `0x4000`, bank write at `0x6000`, the **VDP port window** at
   `0x7F00..=0x7F03` (the arbiter maps it to `0xC00000 | offset`, so these four bytes
   are the VDP **data port** lanes, never the PSG; the TMSS write lockout applies to this
-  window exactly as it does to the 68000 VDP path, and a VDP rejection on it is either a
-  **capability gap** — the `0b1100` 8-bit VRAM read, counted in
-  `Vdp::capability_gap_accesses` and kept a typed rejection — or an invalid target, which is
-  served with no effect and counted in `Vdp::discarded_data_port_accesses`; the Z80 core has
-  no exception channel and the pinned oracle's executable path logs a diagnostic and
+  window exactly as it does to the 68000 VDP path; the `0b1100` 8-bit VRAM read is
+  **implemented** (W1Z), so the four portal bytes serve the data port and its byte
+  mirrors, an invalid target is served with no effect and counted in
+  `Vdp::discarded_data_port_accesses`, and the capability-gap class remains only as the
+  named home for a future documented-but-unimplemented operation (the Z80 core has no
+  exception channel and the pinned oracle's executable path logs a diagnostic and
   completes the access instead of raising), the PSG at `0x7F11` plus its
   mirror `0x7F10..=0x7F17`, and a 32 KiB banked window at `0x8000`) is reached
   through the Z80 bus view, and a PSG read returns the documented open value
@@ -130,10 +131,11 @@ No **guest** memory access may end the run. Each channel converts deliberately;
 there is no catch-all, and host-level failures keep their typed identity.
 
 **Qualification (review round 4, W1Z).** Mapping holes are served with the model's
-defined read value and an observable count; declared capabilities that are **not**
-implemented (memory-sourced DMA and the VDP `0x0C` 8-bit read) produce an explicit
-diagnostic stop through a typed error, with a separate capability count — never an
-`Ok` that claims a read or a transfer that did not happen. This distinction qualifies
+defined read value and an observable count; a declared capability that is **not**
+implemented (memory-sourced DMA) produces an explicit diagnostic stop through a typed
+error, with a separate capability count — never an `Ok` that claims a transfer that did
+not happen. The VDP `0x0C` 8-bit VRAM read used to be in that class and is implemented
+from W1Z on, so it returns data instead of stopping the guest. This distinction qualifies
 the continuity rule above for unowned accesses; it neither revokes it nor permits
 swallowing host errors. The rule was written for mapping gaps, and applying it
 unqualified to declared capabilities would advance the guest with wrong state instead
@@ -243,9 +245,33 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   (`Vdp::snapshot_bytes`), so it needs no payload-version change; it describes
   execution *since* a valid restore, so `Vdp::restore_bytes` resets it (and a
   rejected restore leaves it untouched). A data-port
-  **read** whose code is not one of the three read codes — including the
-  unmodelled `0b1100` 8-bit VRAM read — stays a typed rejection, matching the
-  oracle's read `default:` that reports the error instead of hanging.
+  **read** whose code is not one of the four read codes stays a typed rejection,
+  matching the oracle's read `default:` that reports the error instead of hanging.
+  The `0b1100` 8-bit VRAM read (W1Z) reads one VRAM byte at the bit-inverted command
+  address into the **low** half of a canonical 16-bit read buffer and keeps the
+  buffer's upper half; the data-port read returns the buffer and clears both
+  `read_data_available` and `read_data_half_cached`, and the command address advances
+  once per completed operation. The refresh follows the pinned cache gate: it runs
+  **only while the write FIFO is empty**, where the buffer is seeded from the FIFO's
+  next-read entry unless a 16-bit read left a half-cached value; with a pending write
+  the data port returns the buffer's current value and a read neither consumes nor
+  drains a FIFO entry, so the pending write's data is never substituted for it
+  (`Devices/315-5313/S315-5313_General.cpp:1748`, `:1850-1856`, `:2395-2398`,
+  `:2447-2452`, `:2473-2477`, `:3011-3027`,
+  `Devices/315-5313/S315-5313_Ports.cpp:1078-1084`). Every successful control write also
+  clears both read flags (`Ports.cpp:1613-1617`), and a rejected write mutates nothing. Two
+  model approximations are disclosed rather than claimed as pin-exact: the seed of an empty
+  window is zero (this FIFO keeps no processed write) and the 16-bit `0x00` read is one atomic
+  word access instead of the pin's two-port half-read. The reconciled requirement
+  (superseding the derived t4 vectors 3/8, `0xEFCD` -> `0x00CD`) is **CONFIRMED BY OWNER —
+  2026-11-24, relayed by captain**: "Sim — superseder 3/8 e manter 0x00CD (Recomendado)"
+  (ADR-0017, "Reconciled contract").
+  That behaviour is derived from the pinned Exodus source and its executed probe
+  runs (`.research/0c/oracle-notes.md`); it is **not** a physical-hardware
+  measurement. The pinned headless build stalls the 68000 on a data-port read that
+  follows a read command and reports a low byte that disagrees with its own `0x00`
+  read, so the tests assert the source-derived semantics and claim no oracle
+  agreement where the oracle is not usable (ADR-0017, "What is NOT proved").
 - Status register fully derived from the dot/line position: PAL, DMA busy, HBlank,
   VBlank, odd frame, sprite collision/overflow latches, VINT pending, FIFO empty and
   FIFO full. A control-port status read reports the current value, cancels only a
@@ -275,8 +301,9 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   are not modelled.
 - FIFO: a bounded four-word write queue with occupancy/backpressure; full-queue
   writes cost a 68000 wait slot that the backend converts to master cycles.
-- Snapshot (`CFVDP002`) carries the registers, CRAM, VSRAM, FIFO, DMA, frame index,
-  line/dot and VRAM with atomic validated restore; `CFVDP001` v1 is rejected.
+- Snapshot (`CFVDP003`) carries the registers, CRAM, VSRAM, FIFO, DMA, frame index,
+  line/dot, VRAM and the canonical read buffer (`u16` plus the two read-cache flags) with
+  atomic validated restore; `CFVDP001` v1 and `CFVDP002` v2 are rejected.
 - Media: `MegadriveBackend` implements `MediaSource` and emits one deterministic
   `VideoFrame` per completed VDP frame (`256x224`/`320x224` in NTSC and `256x240`/
   `320x240` in PAL), converting palette indices through 9-bit CRAM RGB to RGBA8 with
@@ -319,20 +346,20 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF7`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF8`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K7`, payload version **7**, followed by the
+- Snapshot payload magic is `CFMD68K8`, payload version **8**, followed by the
   68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
-  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP002`
-  VDP snapshot (including the frame index), the cartridge state, the complete
-  master-cycle scheduler snapshot and the phase-8.4 block (the Z80 register snapshot
-  and 8 KiB RAM, the Z80 bank register and master-cycle carry, both arbitration
-  latches, the eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`,
-  the complete YM2612 and PSG state and the mixer frame phase plus its three
-  resampler phases/histories). Versions 1-6 are rejected with a typed error
-  rather than reinterpreted.
-- The state hash (`CFMDSTATE7`) covers the extended 68000 state, tick, RAM, VDP
+  `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP003`
+  VDP snapshot (including the frame index and the read buffer), the cartridge state,
+  the complete master-cycle scheduler snapshot and the phase-8.4 block (the Z80
+  register snapshot and 8 KiB RAM, the Z80 bank register and master-cycle carry, both
+  arbitration latches, the eight port 1/2/3/EXT control register bytes at
+  `0xA10008..=0xA1000F`, the complete YM2612 and PSG state and the mixer frame phase
+  plus its three resampler phases/histories). Versions 1-7 are rejected with a typed
+  error rather than reinterpreted.
+- The state hash (`CFMDSTATE8`) covers the extended 68000 state, tick, RAM, VDP
   snapshot, scheduler snapshot and the phase-8.4 Z80/arbitration/YM2612/PSG/mixer
   block, so pending interrupts, stack-pointer mirrors,
   VRAM/CRAM/VSRAM and the frame index are part of checkpoint identity.
@@ -466,13 +493,14 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   sample by at most one device period (≤1008 master cycles), which is documented
   model latency, not host latency. A restore starts the media queues empty, like the
   video frame queue; canonical mixer phase and both device clocks round-trip.
-- **Snapshot:** payload v7 (`CFMD68K7`/`CFMDSTATE7`/`CFMDCONF7`, `PAYLOAD_VERSION = 7`)
+- **Snapshot:** payload v8 (`CFMD68K8`/`CFMDSTATE8`/`CFMDCONF8`, `PAYLOAD_VERSION = 8`)
   embeds the Z80 register snapshot and 8 KiB RAM, the Z80 bank register and
   master-cycle carry, both arbitration latches, the eight port 1/2/3/EXT control
-  register bytes, the complete YM2612 (856 B) and PSG (34 B) state and the mixer frame
-  phase plus its three resampler phases/histories (56 B) in both the payload and the
-  state hash. v1–v6 payloads are rejected with typed errors and a rejected restore
-  leaves the machine byte-identical.
+  register bytes, the complete YM2612 (856 B) and PSG (34 B) state, the mixer frame
+  phase plus its three resampler phases/histories (56 B) and the `CFVDP003` VDP
+  snapshot including the read buffer, in both the payload and the state hash.
+  v1–v7 payloads are rejected with typed errors and a rejected restore leaves the
+  machine byte-identical.
 - **Evidence:** the pinned-oracle device-state differential
   ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md))
   compares 25 Z80/PSG/YM2612-status fields at a shared Z80 HALT boundary and records
@@ -726,16 +754,17 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State (current, after the W1 bus phase).** Payload v7 (`CFMD68K7`, `PAYLOAD_VERSION = 7`),
-  state hash v7 (`CFMDSTATE7`) and configuration hash v7 (`CFMDCONF7`). Phase 8.1 used
-  v3, phase 8.2 v4, phase 8.3 v5 and phase 8.4 v6. The v7 body keeps the seven mapper
+- **State (current, after the W1Z read-cache phase).** Payload v8 (`CFMD68K8`,
+  `PAYLOAD_VERSION = 8`), state hash v8 (`CFMDSTATE8`) and configuration hash v8
+  (`CFMDCONF8`). Phase 8.1 used v3, phase 8.2 v4, phase 8.3 v5, phase 8.4 v6 and the
+  W1 bus phase v7. The v8 body keeps the seven mapper
   banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch, the extended
   68000/scheduler state and the complete VDP state, and adds the eight port 1/2/3/EXT
   control register bytes at `0xA10008..=0xA1000F` on top of the phase-8.4 block (the Z80
   register snapshot and 8 KiB Z80 RAM, the nine-bit Z80 bank register, the Z80
   master-cycle carry, both arbitration latches, the complete YM2612 and PSG state and the
   mixer frame phase plus its three resampler phases/histories). The state hash is derived
-  from the same body; v1-v6 payloads are rejected with typed errors, a payload carrying
+  from the same body; v1-v7 payloads are rejected with typed errors, a payload carrying
   another TMSS model is rejected even when its hash was recomputed, and a rejected
   restore leaves the machine untouched. Queued video frames and audio chunks are derived output: a restore starts
   both media queues empty. The configuration hash covers the ROM SHA-256, video
@@ -756,8 +785,8 @@ window to it.
 ## Not implemented
 
 - VDP interlace, physical byte-swapped VRAM layout, exact H32 window geometry,
-  line-mode vertical scrolling, column-scroll details, dot-exact H/V counters and the
-  command code `0b1100` (8-bit VRAM read). VDP rendering, planes, window, sprites,
+  line-mode vertical scrolling, column-scroll details and dot-exact H/V counters. The
+  `0b1100` 8-bit VRAM read is implemented (W1Z). VDP rendering, planes, window, sprites,
   scrolling, CRAM/VSRAM addressing (read and write), DMA, FIFO/CPU wait cycles and line
   timing are implemented (phase 8.3; the VSRAM read/write codes and the length-minus-one
   DMA length are the W1 phase).

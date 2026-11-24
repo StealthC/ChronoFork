@@ -24,20 +24,24 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
+// The five fixture state hashes are re-pinned by W1Z (payload v8): the state
+// hash is `hash(STATE_MAGIC + body)`, `CFMDSTATE8` replaced `CFMDSTATE7` and the
+// body grew by the VDP read buffer (`CFVDP003`, +2 bytes), so every value moved
+// by construction. No assertion changed.
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "5c3a0dfe169d7e0af865d1efa3f2e815e32bf7be8484153d1a091d2c8fbf558d";
+const RESET_STATE_HASH: &str = "877f564b42d99764df404ff288f7f7a148f0ce3a1232e0f23ae2c00f2dd2d1ab";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "63314b7d9aee9e10bfcb24e834e0c3c8490ef007238560d004aee3fbba74d41d";
+    "210a202da4af772e70a2bde8dc00959bdb2b744dd3db7ca49e0f860c23e8f26e";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "7161d65ef290d6cf997e16034b6b51d3d46fe75088ca6a82db1afe02b6440df2";
+    "358b20b27e073ea4a6a38fa7453a025c830cb94b12de6a8d5b20ff0933e9841a";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "d68284b9b1e05df34c25b49a8845b56b44d273723847d2175aeee326fadda245";
+    "7c6023a7c12304b0a27f8d0857151e5d628f471acebee2e23702514d41cd5258";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "842a5284addc928068d50cc2b78b882718967de477ac9c1246823ef1a2263c93";
+    "078f6f310392bf03d056c6765ca14682bf558b13e32c822429997efd69bc722e";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -246,7 +250,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=63314b7d9aee9e10bfcb24e834e0c3c8490ef007238560d004aee3fbba74d41d\n\
+state_hash=210a202da4af772e70a2bde8dc00959bdb2b744dd3db7ca49e0f860c23e8f26e\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -592,7 +596,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "3444"),
         (
             "state_hash",
-            "e80816e71f8efe5fb9331ae9d072a3d859f2f6d9956f7277c90b1d2492097e0d",
+            "47d20088383d59078ebd22c8dd9e3fbd4bdd6e7164656ae2de35c336cf4c0d64",
         ),
         ("video", "ntsc"),
         ("lines_per_frame", "262"),
