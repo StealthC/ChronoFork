@@ -143,7 +143,8 @@ use crate::cartridge::{Cartridge, CartridgeError, SRAM_SIZE, Tmss, TmssModel};
 use crate::cpu::{CpuError, M68000, interrupt_level_deliverable};
 use crate::cycles::MASTER_CYCLES_PER_68000_CYCLE;
 use crate::interrupts::{
-    InterruptLevel, InterruptScheduler, SchedulerConfig, SchedulerError, VideoStandard,
+    InterruptLevel, InterruptScheduler, SCHEDULER_MAX_SNAPSHOT_LEN, SchedulerConfig,
+    SchedulerError, VideoStandard,
 };
 use crate::trace::{InstructionTrace, TraceError};
 use crate::vdp::{
@@ -200,6 +201,44 @@ const AUDIO_STATE_TAIL_LEN: usize = Z80_SNAPSHOT_LEN
     + YM_SNAPSHOT_LEN
     + PSG_SNAPSHOT_LEN
     + MIXER_SNAPSHOT_LEN;
+
+/// Exact payload bytes of a state whose interrupt scheduler has no pending request.
+///
+/// This is [`state_body`] with the scheduler at its zero-pending length plus the
+/// payload prefix of [`PAYLOAD_MAGIC`] and the version word. Every
+/// component of the body except the scheduler snapshot is fixed-length by
+/// construction (see [`AUDIO_STATE_TAIL_LEN`] and `state_body` itself), so this is
+/// also the 68000/register/RAM/VDP/cartridge/SRAM/TMSS component sum the
+/// serializer's capacity expression is built from.
+const FIXED_STATE_BODY_LEN: usize = 32
+    + 32
+    + 4
+    + 2
+    + 1
+    + 8
+    + 4
+    + 4
+    + 8
+    + 1
+    + RAM_SIZE
+    + VDP_SNAPSHOT_LEN
+    + 14
+    + 1
+    + SRAM_SIZE
+    + 2
+    + AUDIO_STATE_TAIL_LEN;
+
+/// Hard upper bound on the payload of any [`MegadriveBackend::snapshot`].
+///
+/// The v7 payload is `PAYLOAD_MAGIC` (8 bytes) + the `u16` version + the state
+/// body. The scheduler snapshot is the only variable-length component, and the
+/// module that owns its format declares the exact maximum it can serialize
+/// (`SCHEDULER_MAX_SNAPSHOT_LEN`); every other component is fixed, so the bound is
+/// this backend's fixed component sum plus that declared maximum. A state with both
+/// requests pending reaches it **exactly**; the tightness tests in this module cover
+/// NTSC and PAL, imported SRAM and a restored state.
+pub const SNAPSHOT_PAYLOAD_BOUND: usize =
+    PAYLOAD_MAGIC.len() + 2 + FIXED_STATE_BODY_LEN + SCHEDULER_MAX_SNAPSHOT_LEN;
 
 /// Cartridge capability tag folded into the configuration hash.
 ///
@@ -970,6 +1009,17 @@ impl Backend for MegadriveBackend {
 
     fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
         Some(self)
+    }
+
+    /// Declares the exact upper bound of every v7 payload this backend produces.
+    ///
+    /// A quota-checked capture of a state a `step`, a trace or a debug write changed
+    /// cannot use the previously observed size, so the session layer needs the
+    /// declaration before it allocates the record. [`SNAPSHOT_PAYLOAD_BOUND`] is that
+    /// bound: the scheduler is the only variable-length component and it retains at
+    /// most one request per level, so a two-pending state reaches it exactly.
+    fn snapshot_payload_bound(&self) -> Option<usize> {
+        Some(SNAPSHOT_PAYLOAD_BOUND)
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
@@ -2107,9 +2157,10 @@ mod tests {
 
     use super::{
         HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION,
-        VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom, map_scheduler, map_z80,
-        stamp_synthetic_header,
+        SNAPSHOT_PAYLOAD_BOUND, VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
+        map_scheduler, map_z80, stamp_synthetic_header,
     };
+    use crate::cartridge::{Cartridge, SRAM_SIZE, TmssModel};
     /// First index of the port 3/EXT control stub inside the control file.
     const IO_CONTROL_STUB_OFFSET: usize = 4;
     use crate::bus::{
@@ -2119,7 +2170,8 @@ mod tests {
     use crate::cycles::MASTER_CYCLES_PER_LINE;
     use crate::interrupts::{
         InterruptLevel, InterruptScheduler, NTSC_ACTIVE_LINES, NTSC_LINES_PER_FRAME,
-        SchedulerConfig, SchedulerError,
+        SCHEDULER_MAX_SNAPSHOT_LEN, SCHEDULER_PENDING_SLOT_LEN, SchedulerConfig, SchedulerError,
+        VideoStandard,
     };
     use crate::vdp::{
         SNAPSHOT_MAGIC, STATUS_FIFO_EMPTY, STATUS_VBLANK, STATUS_VINT_PENDING, VdpError,
@@ -4072,6 +4124,236 @@ mod tests {
         assert_eq!(
             snapshot.config_hash().to_hex(),
             "c7731b6c81d4618023524d78431aa359e7a81643f6bfd5b30233cb07b14d3fd6"
+        );
+    }
+
+    /// Builds a machine whose battery SRAM starts from a caller-supplied image.
+    ///
+    /// The imported image is the host policy seam of [`Cartridge::import_sram`]; the
+    /// factory is built here through the private [`MegadriveFactory::from_parts`], so
+    /// no production constructor exists only for this fixture.
+    fn imported_sram_machine(image: &[u8]) -> MegadriveBackend {
+        let mut cartridge = Cartridge::parse(demo_rom()).expect("cartridge");
+        cartridge.import_sram(image).expect("SRAM image");
+        let video = cartridge.derived_video_standard();
+        let factory = MegadriveFactory::from_parts(
+            cartridge,
+            TmssModel::Disabled,
+            SchedulerConfig::new(video),
+        )
+        .expect("factory");
+        factory.create_machine().expect("machine")
+    }
+
+    /// Advances a machine until both scheduler requests are pending at once.
+    ///
+    /// The scheduler retains at most one request per level, so that state is the
+    /// widest payload the v7 format supports. The work is bounded: the widest state
+    /// arrives within thousands of steps on every supported configuration.
+    fn step_until_two_pending(machine: &mut MegadriveBackend) {
+        for _ in 0..20_000 {
+            if machine.interrupts().pending_len() >= 2 {
+                return;
+            }
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        unreachable!("the demo program must reach a two-pending state within 20 000 steps");
+    }
+
+    /// Swaps the state of two machines with the same configuration.
+    ///
+    /// One machine reaches the widest state and the payload is moved into the other;
+    /// both keep the same configuration, so the restores are accepted.
+    fn swap_states(left: &mut MegadriveBackend, right: &mut MegadriveBackend) {
+        let left_state = left.snapshot().expect("snapshot");
+        let right_state = right.snapshot().expect("snapshot");
+        left.restore(&right_state).expect("restore left");
+        right.restore(&left_state).expect("restore right");
+    }
+
+    #[test]
+    fn the_payload_bound_is_the_two_pending_payload() {
+        // The scheduler declares the exact maximum snapshot it can serialize; the
+        // +0/+8/+16 assertions below prove the backend's bound matches it in bytes.
+        assert_eq!(SCHEDULER_MAX_SNAPSHOT_LEN, 68);
+        assert_eq!(SCHEDULER_PENDING_SLOT_LEN, 8);
+        let mut machine = factory().create_machine().expect("machine");
+        let fresh = machine.snapshot().expect("snapshot").payload().len();
+        assert_eq!(
+            machine.snapshot_payload_bound(),
+            Some(SNAPSHOT_PAYLOAD_BOUND),
+            "the backend declares the format-derived bound"
+        );
+        assert!(
+            fresh < SNAPSHOT_PAYLOAD_BOUND,
+            "the fresh payload is strictly below the bound"
+        );
+
+        // A single pending request adds exactly one tick to the scheduler snapshot
+        // and nothing else: the payload grows by exactly the slot length.
+        while !machine.interrupts().has_pending() {
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        assert_eq!(machine.interrupts().pending_len(), 1);
+        let single = machine.snapshot().expect("snapshot").payload().len();
+        assert_eq!(
+            single,
+            fresh + SCHEDULER_PENDING_SLOT_LEN,
+            "one pending request adds exactly its tick"
+        );
+
+        // The two-pending state is exactly one further slot wide and reaches the
+        // declared bound exactly.
+        let mut both = factory().create_machine().expect("machine");
+        step_until_two_pending(&mut both);
+        let widest = both.snapshot().expect("snapshot").payload().len();
+        assert_eq!(
+            widest - single,
+            SCHEDULER_PENDING_SLOT_LEN,
+            "the second pending request adds exactly another tick"
+        );
+        assert_eq!(
+            widest, SNAPSHOT_PAYLOAD_BOUND,
+            "a two-pending state reaches the declared bound exactly"
+        );
+        // Structural equivalence: for the same machine state the payload differs
+        // from the fresh one only by `8 * pending`, so the scheduler snapshot is the
+        // only component whose length can change.
+        assert_eq!(
+            widest - fresh,
+            SCHEDULER_PENDING_SLOT_LEN * both.interrupts().pending_len()
+        );
+
+        // A restored two-pending state reserializes to the same bounded width and
+        // state hash, so the bound is not an artifact of the live machine.
+        let mut restored = factory().create_machine().expect("machine");
+        let widest_state = both.snapshot().expect("snapshot");
+        swap_states(&mut both, &mut restored);
+        let restored_snapshot = restored.snapshot().expect("snapshot");
+        assert_eq!(
+            restored_snapshot.payload().len(),
+            widest,
+            "a restored two-pending state keeps the widest payload"
+        );
+        assert_eq!(
+            restored_snapshot.state_hash(),
+            widest_state.state_hash(),
+            "the restored state keeps its identity"
+        );
+        assert_eq!(
+            restored.snapshot_payload_bound(),
+            Some(SNAPSHOT_PAYLOAD_BOUND)
+        );
+    }
+
+    /// Result of one bounded payload sweep.
+    struct BoundSweep {
+        /// Widest payload sampled.
+        maximum: usize,
+        /// Whether a two-pending state was reached (and therefore sampled).
+        reached_two: bool,
+    }
+
+    /// Runs one sweep and asserts every sampled payload stays within the bound.
+    ///
+    /// The pending count is read every step, so the two-pending coverage is never
+    /// missed; the full serialization is sampled with `sample_stride` and always on
+    /// the step that reaches the two-pending state. The sweep stops there, because
+    /// every wider sample costs a full 206 KiB serialization and the tightness proof
+    /// is complete once the widest state has been measured.
+    fn sweep_stays_within_payload_bound(
+        label: &str,
+        machine: &mut MegadriveBackend,
+        steps: usize,
+        sample_stride: usize,
+    ) -> BoundSweep {
+        let mut maximum = 0usize;
+        let mut reached_two = false;
+        for step in 0..steps {
+            let two = machine.interrupts().pending_len() >= 2;
+            if two {
+                reached_two = true;
+            }
+            if two || step % sample_stride == 0 {
+                let length = machine.snapshot().expect("snapshot").payload().len();
+                assert!(
+                    length <= SNAPSHOT_PAYLOAD_BOUND,
+                    "{label}: a payload above the declared bound at step {step}: {length}"
+                );
+                maximum = maximum.max(length);
+            }
+            if reached_two {
+                break;
+            }
+            machine.step(InputFrame::NEUTRAL).expect("step");
+        }
+        assert_eq!(
+            machine.snapshot_payload_bound(),
+            Some(SNAPSHOT_PAYLOAD_BOUND),
+            "{label}: the declaration must not depend on the state"
+        );
+        BoundSweep {
+            maximum,
+            reached_two,
+        }
+    }
+
+    #[test]
+    fn the_payload_bound_holds_for_ntsc_pal_and_imported_sram() {
+        let ntsc = factory();
+        let mut ntsc_machine = ntsc.create_machine().expect("machine");
+        let ntsc_sweep = sweep_stays_within_payload_bound("ntsc", &mut ntsc_machine, 12_000, 100);
+        assert!(
+            ntsc_sweep.reached_two,
+            "ntsc: the run must reach a two-pending state"
+        );
+        assert_eq!(
+            ntsc_sweep.maximum, SNAPSHOT_PAYLOAD_BOUND,
+            "ntsc: the declared bound must be reached exactly"
+        );
+
+        let pal = MegadriveFactory::with_scheduler_config(demo_rom(), SchedulerConfig::pal())
+            .expect("pal");
+        assert_eq!(pal.video_standard(), VideoStandard::Pal);
+        let mut pal_machine = pal.create_machine().expect("machine");
+        let pal_sweep = sweep_stays_within_payload_bound("pal", &mut pal_machine, 12_000, 100);
+        assert!(
+            pal_sweep.reached_two,
+            "pal: the run must reach a two-pending state"
+        );
+        assert_eq!(
+            pal_sweep.maximum, SNAPSHOT_PAYLOAD_BOUND,
+            "pal: the declared bound must be reached exactly"
+        );
+
+        // The imported 64 KiB battery SRAM is a fixed-length component: importing an
+        // image changes the canonical bytes but not one payload length.
+        let image: Vec<u8> = (0..SRAM_SIZE).map(|index| (index * 7) as u8).collect();
+        let mut imported_machine = imported_sram_machine(&image);
+        let empty_machine = ntsc.create_machine().expect("machine");
+        assert_eq!(
+            imported_machine
+                .snapshot()
+                .expect("snapshot")
+                .payload()
+                .len(),
+            empty_machine.snapshot().expect("snapshot").payload().len(),
+            "imported SRAM does not change the payload length"
+        );
+        assert_ne!(
+            imported_machine.snapshot().expect("snapshot").payload(),
+            empty_machine.snapshot().expect("snapshot").payload(),
+            "the image really is canonical state"
+        );
+        let imported_sweep =
+            sweep_stays_within_payload_bound("imported-sram", &mut imported_machine, 12_000, 100);
+        assert!(
+            imported_sweep.reached_two,
+            "imported-sram: the run must reach a two-pending state"
+        );
+        assert_eq!(
+            imported_sweep.maximum, SNAPSHOT_PAYLOAD_BOUND,
+            "imported-sram: the declared bound must be reached exactly"
         );
     }
 

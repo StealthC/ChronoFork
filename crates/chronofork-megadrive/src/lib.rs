@@ -66,8 +66,8 @@ pub mod z80;
 pub use audio::{AudioMixer, Psg, RationalResampler, ResampleError, Ym2612, YmBank, YmIrq, YmPort};
 pub use backend::{
     BACKEND_ID, BOOT_MARKER, BOOT_ROM_SIZE, CONFIG_MAGIC, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
-    MegadriveConfig, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, STATE_MAGIC,
-    VBLANK_VECTOR_ADDRESS, boot_marker, cartridge_boot_rom, controller_rom, demo_rom,
+    MegadriveConfig, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, SNAPSHOT_PAYLOAD_BOUND,
+    STATE_MAGIC, VBLANK_VECTOR_ADDRESS, boot_marker, cartridge_boot_rom, controller_rom, demo_rom,
     interrupt_rom,
 };
 pub use bus::{

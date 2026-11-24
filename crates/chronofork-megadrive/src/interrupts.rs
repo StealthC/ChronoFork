@@ -43,6 +43,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::mem::size_of;
 
 use chronofork_core::codec::{CodecError, Reader, Writer};
 
@@ -68,8 +69,45 @@ pub const PAL_FRAME_RATE_MILLIHERTZ: u32 = 49_701;
 
 const SNAPSHOT_MAGIC: [u8; 8] = *b"CFINTSCH";
 const SNAPSHOT_VERSION: u16 = 2;
-const SNAPSHOT_HEADER_LEN: usize = 52;
+
+/// The `u8` pending mask: bit 0 HBlank, bit 1 VBlank.
 const PENDING_MASK_ALL: u8 = 0b0000_0011;
+
+/// One retained pending request per interrupt level (HBlank and VBlank).
+///
+/// This is the width of the scheduler's `pending` slot array, so it is also the
+/// largest number of ticks one snapshot can carry.
+const SCHEDULER_LEVELS: usize = 2;
+
+/// Fixed bytes of the snapshot that precede the per-pending ticks.
+///
+/// The documented `CFINTSCH` layout is the magic, the `u16` version, the
+/// video-standard byte, the `u64` master-cycle clock, one `u64` issued counter per
+/// level, one `u64` coalesced counter per level and the `u8` pending mask. This
+/// module owns that layout: the serializer below sizes its buffer from these
+/// constants and a consumer that needs an upper bound uses
+/// [`SCHEDULER_MAX_SNAPSHOT_LEN`] instead of restating the format.
+pub(crate) const SCHEDULER_SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_MAGIC.len()
+    + size_of::<u16>()
+    + size_of::<u8>()
+    + size_of::<u64>()
+    + SCHEDULER_LEVELS * size_of::<u64>()
+    + SCHEDULER_LEVELS * size_of::<u64>()
+    + size_of::<u8>();
+
+/// Bytes one set pending bit adds to the snapshot: its little-endian `u64` tick.
+pub(crate) const SCHEDULER_PENDING_SLOT_LEN: usize = size_of::<u64>();
+
+/// The largest snapshot this scheduler can serialize.
+///
+/// The scheduler retains at most one request per level and every other field has a
+/// fixed width, so this is an exact bound, not an estimate. The backend adds it to
+/// its own fixed component sum to declare its payload bound.
+pub(crate) const SCHEDULER_MAX_SNAPSHOT_LEN: usize =
+    SCHEDULER_SNAPSHOT_HEADER_LEN + SCHEDULER_LEVELS * SCHEDULER_PENDING_SLOT_LEN;
+
+/// The level count and the pending mask must describe the same levels.
+const _: () = assert!(SCHEDULER_LEVELS == PENDING_MASK_ALL.count_ones() as usize);
 
 /// Nominal video timing family used by the scheduler.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -406,9 +444,9 @@ impl Error for SchedulerError {}
 pub struct InterruptScheduler {
     config: SchedulerConfig,
     ticks: u64,
-    pending: [Option<PendingInterrupt>; 2],
-    issued: [u64; 2],
-    coalesced: [u64; 2],
+    pending: [Option<PendingInterrupt>; SCHEDULER_LEVELS],
+    issued: [u64; SCHEDULER_LEVELS],
+    coalesced: [u64; SCHEDULER_LEVELS],
 }
 
 impl InterruptScheduler {
@@ -560,7 +598,9 @@ impl InterruptScheduler {
     #[must_use]
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let pending_len = self.pending_len();
-        let mut bytes = Writer::with_capacity(SNAPSHOT_HEADER_LEN + 8 * pending_len);
+        let mut bytes = Writer::with_capacity(
+            SCHEDULER_SNAPSHOT_HEADER_LEN + SCHEDULER_PENDING_SLOT_LEN * pending_len,
+        );
         bytes.write_bytes(&SNAPSHOT_MAGIC);
         bytes.write_u16_le(SNAPSHOT_VERSION);
         bytes.write_u8(self.config.standard.code());
@@ -671,9 +711,9 @@ fn first_event_line(level: InterruptLevel, first: u64, limit: u64, lines: u64, a
 #[derive(Debug)]
 struct SnapshotState {
     ticks: u64,
-    issued: [u64; 2],
-    coalesced: [u64; 2],
-    pending: [Option<PendingInterrupt>; 2],
+    issued: [u64; SCHEDULER_LEVELS],
+    coalesced: [u64; SCHEDULER_LEVELS],
+    pending: [Option<PendingInterrupt>; SCHEDULER_LEVELS],
 }
 
 fn parse_snapshot(config: SchedulerConfig, bytes: &[u8]) -> Result<SnapshotState, SchedulerError> {
