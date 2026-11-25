@@ -32,6 +32,7 @@ documentation, not meeting notes.
 | [0015](0015-verification-contract.md) | Execution and verification are separate responsibilities | **Accepted** (owner direction recorded 2026-11-20; R1 C1–C10 and R4 N1–N11/G1–G6 corrections applied; independent review V4 passed 2026-11-20). Acceptance is the decision, not implementation or benchmark verification |
 | [0016](0016-session-service-and-agent-api.md) | Session service — per-session execution and an agent-usable API | **Accepted** (owner direction recorded 2026-11-20; R2 F1–F10, R5 K1–K16 corrections applied; independent review V5 passed 2026-11-20). Acceptance is the service/API decision, not implementation or security verification |
 | [0017](0017-vdp-read-cache-and-payload-v8.md) | VDP read cache (`0x0C` 8-bit VRAM read) and payload v8 | **Accepted** (owner direction recorded 2026-11-24: "autorizo você a seguir com o plano recomendado", authorising Option B — the faithful read cache with `CFVDP003` and payload v8). Implemented and verified in the `agent/0c-vram-read-v8` worktree; acceptance is the design decision, not a physical-hardware certification |
+| [0018](0018-ym2612-global-selector-and-payload-v9.md) | YM2612 global bank+register selector and payload v9 | **Accepted** (owner acceptance recorded verbatim 2026-11-25: "Aceito o ADR-0018 como está (Recomendado)"). Acceptance and implementation authorisation, not merge authorisation. Implementation status is recorded in the ADR |
 
 ## Template
 

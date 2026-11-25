@@ -346,10 +346,10 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
 ### Backend integration
 
 - `MegadriveFactory` validates ROM size (8 bytes .. 4 MiB), hashes the immutable
-  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF8`).
+  ROM, video standard and scheduler configuration into `config_hash` (`CFMDCONF9`).
 - `MegadriveBackend` implements the existing `Backend` contract: execution,
   snapshots, restore, inspection, memory reads/writes.
-- Snapshot payload magic is `CFMD68K8`, payload version **8**, followed by the
+- Snapshot payload magic is `CFMD68K9`, payload version **9**, followed by the
   68000 register file (including `USP`, `SSP`, the 68000 cycle counter and the
   `STOP` latch), `PC`, `SR`, halted flag, tick, 64 KiB RAM, the complete `CFVDP003`
   VDP snapshot (including the frame index and the read buffer), the cartridge state,
@@ -357,9 +357,9 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   register snapshot and 8 KiB RAM, the Z80 bank register and master-cycle carry, both
   arbitration latches, the eight port 1/2/3/EXT control register bytes at
   `0xA10008..=0xA1000F`, the complete YM2612 and PSG state and the mixer frame phase
-  plus its three resampler phases/histories). Versions 1-7 are rejected with a typed
+  plus its three resampler phases/histories). Versions 1-8 are rejected with a typed
   error rather than reinterpreted.
-- The state hash (`CFMDSTATE8`) covers the extended 68000 state, tick, RAM, VDP
+- The state hash (`CFMDSTATE9`) covers the extended 68000 state, tick, RAM, VDP
   snapshot, scheduler snapshot and the phase-8.4 Z80/arbitration/YM2612/PSG/mixer
   block, so pending interrupts, stack-pointer mirrors,
   VRAM/CRAM/VSRAM and the frame index are part of checkpoint identity.
@@ -424,7 +424,7 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   request is admitted by the current SR mask and 0 while it is masked. Phase 8.4
   extends the same open map with `z80.af/bc/de/hl/ix/iy/sp/pc/i/r/im/iff1/iff2/
   halted/ei_delay/credit/bank`, `arbitration.requested/reset_asserted/z80_runs`,
-  `ym.status/lfo_phase/address_latch0/address_latch1`, `psg.latch/tone0-2/
+  `ym.status/lfo_phase/selector`, `psg.latch/tone0-2/
   attenuation0-3/noise_control/noise_lfsr` and `audio.pending_frames/
   dropped_frames/frame_accumulator`. The schema has no dedicated device-inspection
   section; this keeps the generic backend API unchanged.
@@ -473,6 +473,19 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   to the Z80 is phase 8.5. `SSG-EG`, channel-3 special mode, CSM and the `0x21`/
   `0x2B` test bits are stored but not applied; the status busy bit is absent; the
   envelope/amplitude curves and LFO are deterministic integer approximations.
+- **YM2612 destination selection (ADR-0018, payload v9).** The device keeps **one**
+  global nine-bit bank+register `selector` (`0x000..=0x1FF`): writing an address port
+  replaces it whole — the first pair selects bank 1 with the written register and the
+  second selects bank 2 with `0x100 + register` — and either data port then commits to
+  the register the selector names. A data port therefore carries no bank, which is why
+  `Ym2612::write_address(bank, register)` and `Ym2612::write_port(YmPort::Data, value)`
+  are separate entry points and the old bank-tagged `write_bank`/`read_bank` are gone.
+  Both buses decode into one access type, so `0xA04000..=0xA04003`, `0x4000..=0x4003` and
+  the `0x5F8B` mirror (`0x5F8B & 3 = 3`, the second pair's data port) all reach the same
+  selector. Both register read ports return the status byte, as the pinned source does.
+  There is **no register locking or latched-write model**: the slice models the pinned
+  selector and the equivalence of the two data ports, not the pin's `_rawRegisterLocking`
+  / `CheckForLatchedWrite` guards or its out-of-order access rollback.
 - **PSG:** three square-wave tone channels with ten-bit dividers, a 15-bit maximal
   white-noise LFSR (period 32767 from the `0x4000` reset value) with periodic mode, the
   documented noise shift periods — the chip-clock divisions `N/512`, `N/1024` and
@@ -493,13 +506,14 @@ vector, and bus-error (2) and trace (9) exception delivery are not implemented.
   sample by at most one device period (≤1008 master cycles), which is documented
   model latency, not host latency. A restore starts the media queues empty, like the
   video frame queue; canonical mixer phase and both device clocks round-trip.
-- **Snapshot:** payload v8 (`CFMD68K8`/`CFMDSTATE8`/`CFMDCONF8`, `PAYLOAD_VERSION = 8`)
+- **Snapshot:** payload v9 (`CFMD68K9`/`CFMDSTATE9`/`CFMDCONF9`, `PAYLOAD_VERSION = 9`)
   embeds the Z80 register snapshot and 8 KiB RAM, the Z80 bank register and
   master-cycle carry, both arbitration latches, the eight port 1/2/3/EXT control
-  register bytes, the complete YM2612 (856 B) and PSG (34 B) state, the mixer frame
+  register bytes, the complete YM2612 (856 B, `CFYM2612` version 2) and PSG (34 B) state,
+  the mixer frame
   phase plus its three resampler phases/histories (56 B) and the `CFVDP003` VDP
   snapshot including the read buffer, in both the payload and the state hash.
-  v1–v7 payloads are rejected with typed errors and a rejected restore leaves the
+  v1–v8 payloads are rejected with typed errors and a rejected restore leaves the
   machine byte-identical.
 - **Evidence:** the pinned-oracle device-state differential
   ([audio-state-differential-evidence.md](../research/audio-state-differential-evidence.md))
@@ -754,17 +768,17 @@ window to it.
 - **Video standard.** Derived from the header (PAL only for an `E`-only region) with an
   explicit `MegadriveConfig { video, tmss }` override for tests and region-mismatched
   dumps. Both are configuration, never mutable state.
-- **State (current, after the W1Z read-cache phase).** Payload v8 (`CFMD68K8`,
-  `PAYLOAD_VERSION = 8`), state hash v8 (`CFMDSTATE8`) and configuration hash v8
-  (`CFMDCONF8`). Phase 8.1 used v3, phase 8.2 v4, phase 8.3 v5, phase 8.4 v6 and the
-  W1 bus phase v7. The v8 body keeps the seven mapper
+- **State (current, after the YM2612 global-selector phase).** Payload v9 (`CFMD68K9`,
+  `PAYLOAD_VERSION = 9`), state hash v9 (`CFMDSTATE9`) and configuration hash v9
+  (`CFMDCONF9`). Phase 8.1 used v3, phase 8.2 v4, phase 8.3 v5, phase 8.4 v6, the
+  W1 bus phase v7 and the W1Z read-cache phase v8. The v9 body keeps the seven mapper
   banks, the SRAM control byte, 64 KiB SRAM, the TMSS model/lock latch, the extended
   68000/scheduler state and the complete VDP state, and adds the eight port 1/2/3/EXT
   control register bytes at `0xA10008..=0xA1000F` on top of the phase-8.4 block (the Z80
   register snapshot and 8 KiB Z80 RAM, the nine-bit Z80 bank register, the Z80
   master-cycle carry, both arbitration latches, the complete YM2612 and PSG state and the
   mixer frame phase plus its three resampler phases/histories). The state hash is derived
-  from the same body; v1-v7 payloads are rejected with typed errors, a payload carrying
+  from the same body; v1-v8 payloads are rejected with typed errors, a payload carrying
   another TMSS model is rejected even when its hash was recomputed, and a rejected
   restore leaves the machine untouched. Queued video frames and audio chunks are derived output: a restore starts
   both media queues empty. The configuration hash covers the ROM SHA-256, video
