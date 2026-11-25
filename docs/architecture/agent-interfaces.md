@@ -545,11 +545,11 @@ write the bound comes from `Backend::snapshot_payload_bound()`, the backend's de
 guaranteed payload upper bound. A backend that declares none cannot be preflighted: under a
 finite quota the capture is refused with `limit_exceeded` **before** allocating, and the
 unbounded in-process path (movie/player/rewind) is unaffected. The synthetic backend declares
-its exact payload size; **the Mega Drive backend does not declare one yet**, so a post-`run`
-`snapshot`/`fork` there is refused under a finite quota. That is a temporary, tracked
-limitation, not the intended behavior: W1.8 in the
+its exact payload size, and the Mega Drive backend declares the format-derived payload bound
+(`SNAPSHOT_PAYLOAD_BOUND`, merged at `e6138b6` as W1.8), so a post-`run` `snapshot`/`fork` is
+decided from that declaration under a finite quota instead of being refused. W1.8 in the
 [consolidation plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md) declares
-the bound in the backend and adds the service+Mega Drive regression (owner decision O-5).
+the bound in the backend and adds the CLI service+Mega Drive regression (owner decision O-5).
 
 **Durable process identity.** A `serve` start mints the process epoch from an identity file
 beside the configured token/store root, so a restarted process never reuses an epoch; a keyed

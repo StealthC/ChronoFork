@@ -205,6 +205,28 @@ reads or compares audio samples. What it proves and what it does **not** claim:
 
 See [audio state differential evidence](../research/audio-state-differential-evidence.md).
 
+## W1 Step 0 gate (2026-11-20; recovered historical record)
+
+Historical record recovered during the t23 hygiene task and moved here (the authorized dated
+evidence owner for this run). It is a **stored log, not a new gate run**, and it records the
+W1 Step 0 gate executed on base `dc5b319` before any W1 edit, by the
+`consolidation-adrs-2026-11-20` worktree:
+
+| Property | Value |
+|---|---|
+| Source path (named worktree, ignored tree) | `.agents/worktrees/consolidation-adrs-2026-11-20/.research/implementation-2026-11-20/step0-main-gate.log` |
+| SHA-256 | `859e1ccf0da577be25dc224d5867587a3c576dd5427af0df95f4900a8b803398` |
+| Size / `test result` lines | 131057 bytes / 122 |
+| Passed / failed / ignored | 1454 / 0 / 0 |
+| Closing marker | `==> all quality gates passed` |
+| Preserved review copy | `.research/hygiene/review/attempt-2/recovered-step0-main-gate.log` (same SHA-256) |
+
+The path above is worktree-relative: it does not resolve through the hygiene worktree's
+`.research` link (which points at the primary checkout's ignored `.research/`) nor in that
+checkout, because the gate ran and stored its log inside the `consolidation-adrs-2026-11-20`
+worktree's own ignored evidence tree. The record is preserved here because a worktree's
+ignored evidence does not travel with a commit. No current total is substituted for it.
+
 ## Historical bootstrap results (2026-11-13; superseded, not a current claim)
 
 | Gate | Command | Result |

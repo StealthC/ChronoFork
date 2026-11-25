@@ -23,7 +23,11 @@
   the Z80, arbitration, YM, PSG and mixer state with typed rejection of v1–v5; and
   `z80.*`/`arbitration.*`/`ym.*`/`psg.*`/`audio.*` inspection pseudo-registers.
 - **Verification and review:** independent verification (`t11`) **PASS** at `8500a4b`
-  (`./scripts/check.sh` exit 0, 1454 passed / 0 failed / 122 targets, CPU 11/11, VDP and
+  (`./scripts/check.sh` exit 0 with every quality gate green; the pass/target totals were
+  removed here and are **not** re-homed — this run's own record is the 8.4 branch's
+  `VERIFICATION-T11.md`/`check-sh-t11.log` under the ignored `.research/8.4-r3-v2/`, named in
+  the hygiene provenance note; the separate recovered W1 Step 0 log is linked from the Step 0
+  entry below — CPU 11/11, VDP and
   audio-state oracle green, demos byte-identical, payload v1–v5 rejected, no weakened tests);
   independent review round 4 (`t13`) **PASS** at `68d367b` (`crates/` byte-identical to
   `06f5e95`, harness PASS 25/25 with the request-asserted probe agreeing, R3-F1/F2/F3
@@ -95,8 +99,11 @@
   done yet**. **Snapshot payload/state/config
   moved v6 → v7** (`CFMD68K7`/`CFMDSTATE7`/`CFMDCONF7`) because the control file
   is canonical state; v1–v6 are rejected with typed errors. Gate on this base:
-  `./scripts/check.sh` exit 0, **1460 passed / 0 failed / 122 targets** (six more
-  tests than the 1454-test baseline, no target lost). Demos three runs each,
+  `./scripts/check.sh` exit 0 with every quality gate green and no target lost against
+  the preceding baseline. The removed inline pass/target counts were **not** re-homed; their
+  raw logs live only in ignored worktree evidence and are not reachable from this checkout, so
+  the totals are recorded as unavailable in the hygiene provenance note rather than restated
+  (anti-slop policy §7.2). Demos three runs each,
   byte-identical:
   `demo` 986 B / `9b4dd564…`, `gui run` 2842 B / `d3abf57a…` (both unchanged),
   `megadrive demo` 1994 B / `64a95482…` (was `e5b9ecff…`: its fork-isolation line
@@ -104,9 +111,12 @@
   unchanged).
 - **Step 0 of W1 (gate on the base) — executed.** The full gate was re-executed on base
   `dc5b319` before any W1 edit; the raw log
-  `.research/implementation-2026-11-20/step0-main-gate.log` (worktree
-  `consolidation-adrs-2026-11-20`) records `./scripts/check.sh` passing with **1454 passed /
-  0 failed / 0 ignored across 122 targets** (`==> all quality gates passed`). This restates the
+  `.research/implementation-2026-11-20/step0-main-gate.log` lives in the named worktree
+  `consolidation-adrs-2026-11-20`, had been missing through this checkout's `.research` root,
+  and was recovered from that worktree. Its dated record — totals, SHA-256 and the preserved
+  copy — is the
+  [W1 Step 0 gate record](../quality/quality-gates.md#w1-step-0-gate-2026-11-20-recovered-historical-record)
+  in `quality-gates.md`. This restates the
   recorded t11 PASS (`8500a4b`) as an execution on the W1 base, so W1 does not claim evidence it
   did not run.
 
