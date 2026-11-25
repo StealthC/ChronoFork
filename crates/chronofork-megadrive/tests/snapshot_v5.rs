@@ -31,10 +31,10 @@ fn tampered(snapshot: &BackendSnapshot, magic: &[u8; 8], version: u16) -> Backen
 
 #[test]
 fn version_eight_identity_is_published() {
-    assert_eq!(PAYLOAD_VERSION, 8);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K8");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE8");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF8");
+    assert_eq!(PAYLOAD_VERSION, 9);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K9");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE9");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF9");
 }
 
 #[test]
@@ -66,12 +66,12 @@ fn v6_round_trips_and_embeds_the_vdp_snapshot_with_its_frame_index() {
 }
 
 #[test]
-fn v1_to_v6_payloads_are_rejected_with_typed_errors() {
+fn v1_to_v8_payloads_are_rejected_with_typed_errors() {
     let mut machine = machine();
     machine.step(InputFrame::NEUTRAL).expect("step");
     let snapshot = machine.snapshot().expect("snapshot");
 
-    for version in 1..=6_u16 {
+    for version in 1..=8_u16 {
         let candidate = tampered(&snapshot, &PAYLOAD_MAGIC, version);
         let error = machine
             .restore(&candidate)
@@ -87,7 +87,7 @@ fn v1_to_v6_payloads_are_rejected_with_typed_errors() {
     }
 
     // Old magics are rejected before any field is reinterpreted, even when the
-    // version word claims v8.
+    // version word claims v9.
     for magic in [
         *b"CFMD68K1",
         *b"CFMD68K2",
@@ -95,6 +95,8 @@ fn v1_to_v6_payloads_are_rejected_with_typed_errors() {
         *b"CFMD68K4",
         *b"CFMD68K5",
         *b"CFMD68K6",
+        *b"CFMD68K7",
+        *b"CFMD68K8",
     ] {
         let candidate = tampered(&snapshot, &magic, PAYLOAD_VERSION);
         assert!(matches!(

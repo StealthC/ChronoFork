@@ -3,14 +3,26 @@
 use std::error::Error;
 
 use chronofork_megadrive::MegadriveBus;
-use chronofork_megadrive::audio::{EgState, Ym2612, YmBank, YmIrq, YmPort};
-use chronofork_megadrive::bus::{YM2612_BASE, Z80_STALL_MASTER_CYCLES};
+use chronofork_megadrive::audio::ym2612::{
+    SELECTOR_MAX, SNAPSHOT_LEN, SNAPSHOT_MAGIC, SNAPSHOT_SELECTOR_OFFSET, SNAPSHOT_VERSION,
+};
+use chronofork_megadrive::audio::{AudioSnapshotError, EgState, Ym2612, YmBank, YmIrq, YmPort};
+use chronofork_megadrive::bus::{
+    YM2612_BASE, YM2612_Z80_BASE, YM2612_Z80_SOUND_END, Z80_STALL_MASTER_CYCLES,
+};
 use chronofork_megadrive::cartridge::Cartridge;
 use chronofork_megadrive::z80::Z80Bus;
 
+/// Selects `bank`/`address` through that bank's address port, then writes
+/// `value` through the first data port.
+///
+/// The data port carries no bank: it commits to whatever the global selector
+/// names, which the preceding address write just set. That is the point of the
+/// model, so the helper makes the two steps explicit instead of hiding the bank
+/// inside a data write.
 fn write_register(ym: &mut Ym2612, bank: YmBank, address: u8, value: u8) {
-    ym.write_bank(bank, YmPort::Address, address);
-    ym.write_bank(bank, YmPort::Data, value);
+    ym.write_address(bank, address);
+    ym.write_port(YmPort::Data, value);
 }
 
 /// Reads operator 1's envelope state for all six channels.
@@ -51,15 +63,33 @@ fn single_port_write_and_read_use_bank_zero() {
 }
 
 #[test]
-fn address_latches_are_separate_per_bank() {
+fn one_global_selector_names_the_destination_of_both_data_ports() {
+    // The last address write wins, and it carries the bank: selecting bank 0
+    // register 0x40 and then bank 1 register 0x50 leaves the selector on
+    // bank 1/0x50, so a data write through the FIRST port reaches bank 1/0x50.
+    // A per-bank latch model would have written bank 0/0x40 instead.
     let mut ym = Ym2612::new();
-    ym.write_bank(YmBank::One, YmPort::Address, 0x40);
-    ym.write_bank(YmBank::Two, YmPort::Address, 0x50);
-    ym.write_bank(YmBank::One, YmPort::Data, 0x01);
-    ym.write_bank(YmBank::Two, YmPort::Data, 0x02);
-    assert_eq!(ym.register(YmBank::One, 0x40), 0x01);
-    assert_eq!(ym.register(YmBank::Two, 0x50), 0x02);
-    assert_eq!(ym.register(YmBank::One, 0x50), 0x00);
+    ym.write_address(YmBank::One, 0x40);
+    ym.write_address(YmBank::Two, 0x50);
+    assert_eq!(ym.selector(), 0x150);
+    assert_eq!(ym.selector_bank(), YmBank::Two);
+    assert_eq!(ym.selector_register(), 0x50);
+    ym.write_port(YmPort::Data, 0x01);
+    assert_eq!(ym.register(YmBank::Two, 0x50), 0x01);
+    assert_eq!(
+        ym.register(YmBank::One, 0x40),
+        0x00,
+        "the superseded bank 0 register must not change"
+    );
+
+    // Both data ports are equivalent: the second one commits to the same
+    // selector the first one did.
+    let mut second = Ym2612::new();
+    second.write_address(YmBank::One, 0x40);
+    second.write_address(YmBank::Two, 0x50);
+    second.write_port(YmPort::Data, 0x02);
+    assert_eq!(second.register(YmBank::Two, 0x50), 0x02);
+    assert_eq!(second.register(YmBank::One, 0x40), 0x00);
 }
 
 #[test]
@@ -185,7 +215,7 @@ fn status_read_returns_the_latched_flags() {
     ym.timers_elapsed(1_000_000);
     assert_eq!(ym.read(YmPort::Address), ym.status());
     assert_eq!(ym.read(YmPort::Data), ym.status());
-    assert_eq!(ym.read_bank(YmBank::Two, YmPort::Data), ym.status());
+    assert_eq!(ym.read_port(YmPort::Data), ym.status());
 }
 
 #[test]
@@ -268,4 +298,486 @@ fn samples_are_deterministic_for_identical_register_writes() {
     for _ in 0..64 {
         assert_eq!(first.sample(), second.sample());
     }
+}
+
+// ---------------------------------------------------------------------------
+// The global bank+register selector (ADR-0018)
+// ---------------------------------------------------------------------------
+
+/// The bank/register split of the selector, and the selector's reset value.
+#[test]
+fn selector_is_one_global_bank_and_register() {
+    let mut ym = Ym2612::new();
+    assert_eq!(ym.selector(), 0, "the selector resets to bank 1/register 0");
+    assert_eq!(ym.selector_bank(), YmBank::One);
+    assert_eq!(ym.selector_register(), 0x00);
+
+    ym.write_address(YmBank::One, 0xFF);
+    assert_eq!(ym.selector(), 0x0FF);
+    assert_eq!(ym.selector_bank(), YmBank::One);
+    assert_eq!(ym.selector_register(), 0xFF);
+
+    ym.write_address(YmBank::Two, 0x00);
+    assert_eq!(ym.selector(), 0x100, "bank 2 starts one part up");
+    assert_eq!(ym.selector_bank(), YmBank::Two);
+    assert_eq!(ym.selector_register(), 0x00);
+
+    ym.write_address(YmBank::Two, 0xFF);
+    assert_eq!(ym.selector(), SELECTOR_MAX);
+    assert_eq!(ym.selector_bank(), YmBank::Two);
+    assert_eq!(ym.selector_register(), 0xFF);
+}
+
+/// `A0(30); A1(40); D0(11)` writes bank 1/0x40 and leaves bank 0/0x30 alone.
+#[test]
+fn forward_crossed_write_targets_the_last_selected_register() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::One, 0x30);
+    ym.write_address(YmBank::Two, 0x40);
+    ym.write_port(YmPort::Data, 0x11);
+    assert_eq!(ym.register(YmBank::Two, 0x40), 0x11);
+    assert_eq!(ym.register(YmBank::One, 0x30), 0x00);
+    assert_eq!(ym.register(YmBank::Two, 0x30), 0x00);
+    assert_eq!(ym.register(YmBank::One, 0x40), 0x00);
+}
+
+/// `A1(40); A0(30); D1(22)` writes bank 0/0x30 through the **second** data port.
+#[test]
+fn reverse_crossed_write_targets_the_last_selected_register() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::Two, 0x40);
+    ym.write_address(YmBank::One, 0x30);
+    ym.write_port(YmPort::Data, 0x22);
+    assert_eq!(ym.register(YmBank::One, 0x30), 0x22);
+    assert_eq!(ym.register(YmBank::Two, 0x40), 0x00);
+    assert_eq!(ym.register(YmBank::One, 0x40), 0x00);
+    assert_eq!(ym.register(YmBank::Two, 0x30), 0x00);
+}
+
+/// `A0(30); A1(30); D0(11)` must change **bank 1**/0x30: the bank comes from the
+/// last address write, not from the data port. This is the vector that rules out
+/// a "shared 8-bit address, bank from the data port" model.
+#[test]
+fn same_register_number_across_banks_still_selects_the_last_bank() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::One, 0x30);
+    ym.write_address(YmBank::Two, 0x30);
+    assert_eq!(ym.selector(), 0x130);
+    ym.write_port(YmPort::Data, 0x11);
+    assert_eq!(ym.register(YmBank::Two, 0x30), 0x11);
+    assert_eq!(ym.register(YmBank::One, 0x30), 0x00);
+}
+
+/// Paired same-port writes keep their meaning: the destination is unchanged from
+/// the per-bank model for every non-interleaved sequence.
+#[test]
+fn paired_writes_still_target_their_own_port_pair() {
+    let mut ym = Ym2612::new();
+    write_register(&mut ym, YmBank::One, 0x30, 0x11);
+    write_register(&mut ym, YmBank::Two, 0x40, 0x22);
+    assert_eq!(ym.register(YmBank::One, 0x30), 0x11);
+    assert_eq!(ym.register(YmBank::Two, 0x40), 0x22);
+    assert_eq!(ym.register(YmBank::One, 0x40), 0x00);
+    assert_eq!(ym.register(YmBank::Two, 0x30), 0x00);
+}
+
+/// Crossed writes reach the audio model, not only the shadow: key-on through one
+/// port pair after selecting through the other keys the selected bank's channel.
+#[test]
+fn crossed_key_on_reaches_the_selected_banks_channel() {
+    let mut ym = Ym2612::new();
+    // Select bank 2/0x28 and write key-on through the FIRST data port.
+    ym.write_address(YmBank::Two, 0x28);
+    ym.write_port(YmPort::Data, 0xF4);
+    assert_eq!(
+        key_states(&ym),
+        [
+            EgState::Off,
+            EgState::Off,
+            EgState::Off,
+            EgState::Attack,
+            EgState::Off,
+            EgState::Off
+        ],
+        "0xF4 keys channel 4 whatever port carried it"
+    );
+}
+
+/// The 68000 window, the Z80 window and the `0x5F8B` mirror share one selector.
+#[test]
+fn all_buses_and_the_mirror_share_one_global_selector() -> Result<(), Box<dyn Error>> {
+    // 68000: A0(30); A1(40); D0(11).
+    let mut m68k = bus()?;
+    m68k.write8(YM2612_BASE, 0x30)?;
+    m68k.write8(YM2612_BASE + 2, 0x40)?;
+    m68k.write8(YM2612_BASE + 1, 0x11)?;
+    assert_eq!(m68k.ym().selector(), 0x140);
+    assert_eq!(m68k.ym().register(YmBank::Two, 0x40), 0x11);
+    assert_eq!(m68k.ym().register(YmBank::One, 0x30), 0x00);
+
+    // The same sequence on the Z80 side.
+    let mut z80 = bus()?;
+    Z80Bus::write8(&mut z80, YM2612_Z80_BASE, 0x30)?;
+    Z80Bus::write8(&mut z80, YM2612_Z80_BASE + 2, 0x40)?;
+    Z80Bus::write8(&mut z80, YM2612_Z80_BASE + 1, 0x11)?;
+    assert_eq!(z80.ym().selector(), 0x140);
+    assert_eq!(z80.ym().register(YmBank::Two, 0x40), 0x11);
+    assert_eq!(z80.ym().register(YmBank::One, 0x30), 0x00);
+
+    // The mirror 0x5F8B is the same bank-2 data port as 0x4003.
+    let mut mirror = bus()?;
+    Z80Bus::write8(&mut mirror, 0x4000, 0x30)?;
+    Z80Bus::write8(&mut mirror, 0x4002, 0x40)?;
+    Z80Bus::write8(&mut mirror, 0x5F8B, 0x11)?;
+    assert_eq!(mirror.ym().selector(), 0x140);
+    assert_eq!(mirror.ym().register(YmBank::Two, 0x40), 0x11);
+    assert_eq!(mirror.ym().register(YmBank::One, 0x30), 0x00);
+    Ok(())
+}
+
+/// The four logical ports repeat across the whole `SOUND` region with period 4.
+#[test]
+fn z80_sound_region_repeats_the_four_logical_ports() -> Result<(), Box<dyn Error>> {
+    for base in (YM2612_Z80_BASE..=YM2612_Z80_SOUND_END).step_by(4) {
+        let mut bus = bus()?;
+        Z80Bus::write8(&mut bus, base, 0x30)?;
+        Z80Bus::write8(&mut bus, base + 2, 0x40)?;
+        Z80Bus::write8(&mut bus, base + 1, 0x11)?;
+        assert_eq!(
+            bus.ym().selector(),
+            0x140,
+            "address ports at 0x{base:04X} and +2 select bank 1/0x40"
+        );
+        assert_eq!(
+            bus.ym().register(YmBank::Two, 0x40),
+            0x11,
+            "the data port at 0x{:04X} commits to the selector",
+            base + 1
+        );
+        assert_eq!(bus.ym().register(YmBank::One, 0x30), 0x00);
+    }
+    Ok(())
+}
+
+/// Status reads are unchanged: every one of the four ports and the mirror
+/// returns the status byte on both buses.
+#[test]
+fn status_reads_are_unchanged_on_every_port() -> Result<(), Box<dyn Error>> {
+    let mut bus = bus()?;
+    let (ym, _) = bus.audio_mut();
+    write_register(ym, YmBank::One, 0x27, 0x05);
+    ym.timers_elapsed(1_000_000);
+    let status = bus.ym().status();
+    assert_eq!(status & 0x01, 0x01, "timer A has overflowed");
+    for offset in 0..4 {
+        assert_eq!(bus.read8(YM2612_BASE + offset)?, status);
+    }
+    for offset in 0..4 {
+        assert_eq!(Z80Bus::read8(&mut bus, 0x4000 + offset as u16)?, status);
+    }
+    assert_eq!(Z80Bus::read8(&mut bus, 0x5F8B)?, status);
+    Ok(())
+}
+
+/// `A0(27); D1(05)` starts timer A across the port pairs and raises status bit 0
+/// after enough emulated time; the same-pair control reads 1 and a no-start
+/// negative control reads 0.
+#[test]
+fn crossed_timer_write_starts_timer_a() {
+    fn configure(ym: &mut Ym2612) {
+        write_register(ym, YmBank::One, 0x24, 0xFF);
+        write_register(ym, YmBank::One, 0x25, 0x03);
+    }
+
+    // Positive control: the same pair starts the timer.
+    let mut same = Ym2612::new();
+    configure(&mut same);
+    write_register(&mut same, YmBank::One, 0x27, 0x05);
+    same.timers_elapsed(1_000_000);
+    assert_eq!(same.status() & 0x01, 0x01, "same-pair control overflows");
+
+    // Discriminator: the crossed port starts the timer, because the data port
+    // commits to the register the last address write selected.
+    let mut crossed = Ym2612::new();
+    configure(&mut crossed);
+    crossed.write_address(YmBank::One, 0x27);
+    crossed.write_port(YmPort::Data, 0x05);
+    crossed.timers_elapsed(1_000_000);
+    assert_eq!(
+        crossed.status() & 0x01,
+        0x01,
+        "the crossed data port starts it"
+    );
+
+    // Negative control: no start bit, so the flag stays clear.
+    let mut negative = Ym2612::new();
+    configure(&mut negative);
+    write_register(&mut negative, YmBank::One, 0x27, 0x00);
+    negative.timers_elapsed(1_000_000);
+    assert_eq!(negative.status() & 0x01, 0x00, "no start, no overflow");
+}
+
+/// A snapshot taken after both address writes and before the data write restores
+/// the exact global selector, and continuing produces bytes identical to the
+/// path that never snapshotted.
+#[test]
+fn selector_survives_a_snapshot_between_the_address_and_data_writes() {
+    // Path with a checkpoint between address and data.
+    let mut snapshotted = Ym2612::new();
+    snapshotted.write_address(YmBank::One, 0x30);
+    snapshotted.write_address(YmBank::Two, 0x40);
+    let pending = snapshotted.snapshot_bytes();
+    assert_eq!(
+        u16::from_le_bytes([
+            pending[SNAPSHOT_SELECTOR_OFFSET],
+            pending[SNAPSHOT_SELECTOR_OFFSET + 1]
+        ]),
+        0x140,
+        "the pending snapshot carries the bank-2/0x40 selector"
+    );
+    let mut restored = Ym2612::new();
+    // The restore must succeed: a self-produced v2 snapshot is by construction
+    // valid, so a rejection here is the test failing. The assertion reports the
+    // typed error it received, which is the same failure visibility the previous
+    // `expect` form gave.
+    assert_eq!(
+        restored.restore_bytes(&pending),
+        Ok(()),
+        "a self-produced v2 snapshot must restore"
+    );
+    assert_eq!(restored.selector(), 0x140);
+    restored.write_port(YmPort::Data, 0x11);
+
+    // Reference path without the checkpoint.
+    let mut direct = Ym2612::new();
+    direct.write_address(YmBank::One, 0x30);
+    direct.write_address(YmBank::Two, 0x40);
+    direct.write_port(YmPort::Data, 0x11);
+
+    assert_eq!(restored.register(YmBank::Two, 0x40), 0x11);
+    assert_eq!(restored.register(YmBank::One, 0x30), 0x00);
+    assert_eq!(
+        restored.snapshot_bytes(),
+        direct.snapshot_bytes(),
+        "the restored path continues byte-identically"
+    );
+}
+
+/// The v2 layout is `CFYM2612` version 2 and still exactly 856 bytes.
+#[test]
+fn snapshot_is_cfym2612_version_two_at_the_same_length() {
+    assert_eq!(SNAPSHOT_MAGIC, *b"CFYM2612");
+    assert_eq!(SNAPSHOT_VERSION, 2);
+    assert_eq!(SNAPSHOT_LEN, 856);
+    assert_eq!(SNAPSHOT_SELECTOR_OFFSET, 521);
+    let bytes = Ym2612::new().snapshot_bytes();
+    assert_eq!(bytes.len(), SNAPSHOT_LEN);
+    assert_eq!(bytes[..8], SNAPSHOT_MAGIC);
+    assert_eq!(bytes[8], SNAPSHOT_VERSION);
+}
+
+/// A version-1 payload is rejected by **version** and its two per-bank latch
+/// bytes are never reinterpreted as a selector; the device is untouched.
+#[test]
+fn version_one_snapshot_is_rejected_without_mutation() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::Two, 0x40);
+    ym.write_port(YmPort::Data, 0x11);
+    let before = ym.snapshot_bytes();
+
+    let mut tampered = ym.snapshot_bytes();
+    tampered[8] = 1;
+    assert_eq!(
+        ym.restore_bytes(&tampered),
+        Err(AudioSnapshotError::Version { found: 1 })
+    );
+    assert_eq!(
+        ym.snapshot_bytes(),
+        before,
+        "a rejected restore mutates nothing"
+    );
+
+    // An old magic is rejected by magic, before the version byte is trusted.
+    let mut bad_magic = ym.snapshot_bytes();
+    bad_magic[0] = b'X';
+    assert_eq!(ym.restore_bytes(&bad_magic), Err(AudioSnapshotError::Magic));
+    assert_eq!(ym.snapshot_bytes(), before);
+}
+
+/// Out-of-range selectors and wrong lengths are typed rejections, and no
+/// padding or truncation leniency exists.
+#[test]
+fn invalid_selector_and_length_are_typed_rejections() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::One, 0x30);
+    let before = ym.snapshot_bytes();
+
+    for selector in [SELECTOR_MAX + 1, 0xFFFF] {
+        let mut tampered = ym.snapshot_bytes();
+        tampered[SNAPSHOT_SELECTOR_OFFSET..SNAPSHOT_SELECTOR_OFFSET + 2]
+            .copy_from_slice(&selector.to_le_bytes());
+        assert_eq!(
+            ym.restore_bytes(&tampered),
+            Err(AudioSnapshotError::Value {
+                field: "ym selector"
+            }),
+            "selector {selector:#06X} must be rejected by value"
+        );
+        assert_eq!(ym.snapshot_bytes(), before);
+    }
+
+    assert_eq!(
+        ym.restore_bytes(&before[..SNAPSHOT_LEN - 1]),
+        Err(AudioSnapshotError::Truncated)
+    );
+    let mut long = before.clone();
+    long.push(0);
+    assert_eq!(
+        ym.restore_bytes(&long),
+        Err(AudioSnapshotError::TrailingBytes)
+    );
+    assert_eq!(ym.snapshot_bytes(), before);
+}
+
+/// The expected rejection for one snapshot input, derived from the documented
+/// **length-first** rule rather than from a recorded run.
+///
+/// `restore_bytes` compares the exact length before it reads anything, then
+/// checks the magic, then the version, then the field values. This helper is the
+/// executable statement of that precedence for a combined-defect input.
+fn expected_rejection(bytes: &[u8]) -> AudioSnapshotError {
+    if bytes.len() < SNAPSHOT_LEN {
+        return AudioSnapshotError::Truncated;
+    }
+    if bytes.len() > SNAPSHOT_LEN {
+        return AudioSnapshotError::TrailingBytes;
+    }
+    if bytes[..SNAPSHOT_MAGIC.len()] != SNAPSHOT_MAGIC {
+        return AudioSnapshotError::Magic;
+    }
+    let version = bytes[SNAPSHOT_MAGIC.len()];
+    if version != SNAPSHOT_VERSION {
+        return AudioSnapshotError::Version { found: version };
+    }
+    let selector = u16::from_le_bytes([
+        bytes[SNAPSHOT_SELECTOR_OFFSET],
+        bytes[SNAPSHOT_SELECTOR_OFFSET + 1],
+    ]);
+    if selector > SELECTOR_MAX {
+        return AudioSnapshotError::Value {
+            field: "ym selector",
+        };
+    }
+    // Unreachable for the inputs this test builds: a full-length, correct-magic,
+    // correct-version, in-range-selector snapshot restores.
+    AudioSnapshotError::Value {
+        field: "envelope attenuation",
+    }
+}
+
+/// Combined-defect inputs are reported by the **length** check first, and by the
+/// later checks only when the length is exact.
+///
+/// The claim this pins: a wrong-length input is reported as `Truncated` or
+/// `TrailingBytes` **regardless** of any bad magic, bad version or out-of-range
+/// selector it also carries, because the exact length is compared before
+/// anything is read. Only a byte-exact-length input reaches the magic, version
+/// and value checks, in that order.
+#[test]
+fn combined_defects_are_reported_length_first() {
+    let mut ym = Ym2612::new();
+    ym.write_address(YmBank::One, 0x30);
+    let valid = ym.snapshot_bytes();
+    assert_eq!(valid.len(), SNAPSHOT_LEN);
+    let untouched = ym.snapshot_bytes();
+
+    // (1) valid v2 plus one extra byte: too long, so `TrailingBytes`, even though
+    // every other byte of the input is a perfectly valid snapshot.
+    let mut valid_plus_extra = valid.clone();
+    valid_plus_extra.push(0);
+
+    // (2) a v1-versioned snapshot plus one extra byte: too long, so
+    // `TrailingBytes` wins over the version mismatch.
+    let mut v1_plus_extra = valid.clone();
+    v1_plus_extra[SNAPSHOT_MAGIC.len()] = 1;
+    v1_plus_extra.push(0);
+
+    // (3) a short input that also claims version 1: `Truncated` wins, and the
+    // version byte is never consulted.
+    let mut short_v1 = valid[..300].to_vec();
+    short_v1[SNAPSHOT_MAGIC.len()] = 1;
+
+    // (4) bad magic plus one extra byte: too long, so `TrailingBytes` wins over
+    // the magic mismatch.
+    let mut bad_magic_plus_extra = valid.clone();
+    bad_magic_plus_extra[0] = b'X';
+    bad_magic_plus_extra.push(0);
+
+    // (5) bad magic plus an out-of-range selector, both at exact length: the
+    // magic check is the first one after the length, so `Magic` wins over the
+    // selector value.
+    let mut bad_magic_and_selector = valid.clone();
+    bad_magic_and_selector[0] = b'X';
+    bad_magic_and_selector[SNAPSHOT_SELECTOR_OFFSET..SNAPSHOT_SELECTOR_OFFSET + 2]
+        .copy_from_slice(&(SELECTOR_MAX + 1).to_le_bytes());
+
+    // (6) a v1-versioned snapshot at exact length with an out-of-range selector:
+    // `Version` wins over the selector value.
+    let mut bad_version_and_selector = valid.clone();
+    bad_version_and_selector[SNAPSHOT_MAGIC.len()] = 1;
+    bad_version_and_selector[SNAPSHOT_SELECTOR_OFFSET..SNAPSHOT_SELECTOR_OFFSET + 2]
+        .copy_from_slice(&(SELECTOR_MAX + 1).to_le_bytes());
+
+    for (label, bytes) in [
+        (
+            "(1) valid v2 with an extra byte",
+            valid_plus_extra.as_slice(),
+        ),
+        (
+            "(2) v1 version with an extra byte",
+            v1_plus_extra.as_slice(),
+        ),
+        ("(3) short input claiming version 1", short_v1.as_slice()),
+        (
+            "(4) bad magic with an extra byte",
+            bad_magic_plus_extra.as_slice(),
+        ),
+        (
+            "(5) bad magic and out-of-range selector",
+            bad_magic_and_selector.as_slice(),
+        ),
+        (
+            "(6) v1 version and out-of-range selector",
+            bad_version_and_selector.as_slice(),
+        ),
+    ] {
+        let expected = expected_rejection(bytes);
+        assert_eq!(
+            ym.restore_bytes(bytes),
+            Err(expected),
+            "{label} must be rejected by the documented length-first precedence"
+        );
+        assert_eq!(
+            ym.snapshot_bytes(),
+            untouched,
+            "{label}: a rejected restore must not mutate the device"
+        );
+    }
+
+    // The winner is genuinely the length, then the earlier check in order, and
+    // not one fixed global preference: (2) is reported as `TrailingBytes` even
+    // though its version byte is wrong, while (6) is reported as `Version` even
+    // though its selector is out of range.
+    assert_eq!(
+        ym.restore_bytes(&v1_plus_extra),
+        Err(AudioSnapshotError::TrailingBytes)
+    );
+    assert_eq!(
+        ym.restore_bytes(&bad_version_and_selector),
+        Err(AudioSnapshotError::Version { found: 1 })
+    );
+
+    // The reference helper agrees with the device on a clean snapshot too.
+    assert_eq!(ym.restore_bytes(&valid), Ok(()));
+    assert_eq!(ym.snapshot_bytes(), valid);
 }

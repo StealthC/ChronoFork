@@ -142,7 +142,7 @@ fn megadrive_demo_runs_the_minimal_68000_slice() {
 /// measured on the reference host, one debug run costs ~82 s and one release run
 /// ~7 s, while the previous two-debug-run comparison cost ~166 s.
 const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
-    "1659642e29ff9b7ab91e8959db4493fed743d0e7a1b50ab8a0108ce3d6e90b39";
+    "e3098538739226c5e7fac414b857a49192b1cdb745a61780908efd20dd192b44";
 
 /// Bytes of the pinned `chronofork megadrive demo` stdout.
 ///
@@ -152,6 +152,11 @@ const MEGADRIVE_DEMO_STDOUT_SHA256: &str =
 /// the fork/source state hashes - while leaving the narration byte-identical, so
 /// only those hash values moved. W1Z (payload v8, the VDP read cache) moved them
 /// again for the same reason: the payload/state identity is printed by the demo.
+/// The YM2612 global-selector phase (payload v9, `CFYM2612` version 2) moved the
+/// `state_hash` and `config_hash` values once more, for the same reason and not
+/// because the demo's own port writes changed: the demo performs only paired YM
+/// writes through the same port pair, so its canonical state is unchanged and the
+/// narration is still byte-identical. The length is still 1994 bytes.
 /// Re-minting is the honest response to a state change: this check exists to catch
 /// drift. The value was measured from this tree's build, not copied from a report.
 const MEGADRIVE_DEMO_STDOUT_LEN: usize = 1994;

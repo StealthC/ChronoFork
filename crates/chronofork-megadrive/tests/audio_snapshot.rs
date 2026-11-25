@@ -112,11 +112,11 @@ fn tampered(snapshot: &BackendSnapshot, magic: &[u8; 8], version: u16) -> Backen
 }
 
 #[test]
-fn version_eight_identity_is_published_and_the_media_seam_is_advertised() {
-    assert_eq!(PAYLOAD_VERSION, 8);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K8");
-    assert_eq!(STATE_MAGIC, b"CFMDSTATE8");
-    assert_eq!(CONFIG_MAGIC, b"CFMDCONF8");
+fn version_nine_identity_is_published_and_the_media_seam_is_advertised() {
+    assert_eq!(PAYLOAD_VERSION, 9);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K9");
+    assert_eq!(STATE_MAGIC, b"CFMDSTATE9");
+    assert_eq!(CONFIG_MAGIC, b"CFMDCONF9");
     let factory = MegadriveFactory::new(demo_rom()).expect("factory");
     let capabilities = factory.descriptor().capabilities();
     assert!(capabilities.rendering, "frame production is implemented");
@@ -217,16 +217,16 @@ fn two_runs_produce_the_same_state_and_pcm() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn v1_to_v6_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Error>> {
+fn v1_to_v8_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Error>> {
     let mut machine = z80_machine();
     for _ in 0..800 {
         machine.step(InputFrame::NEUTRAL)?;
     }
     let snapshot = machine.snapshot()?;
     let before = machine.snapshot()?.payload().to_vec();
-    // The version word alone selects the layout; a v1-v6 version word is
-    // rejected by version even when the surrounding bytes are v8.
-    for version in 1..=6_u16 {
+    // The version word alone selects the layout; a v1-v8 version word is
+    // rejected by version even when the surrounding bytes are v9.
+    for version in 1..=8_u16 {
         let candidate = tampered(&snapshot, &PAYLOAD_MAGIC, version);
         let error = machine
             .restore(&candidate)
@@ -253,6 +253,8 @@ fn v1_to_v6_payloads_are_rejected_with_typed_errors() -> Result<(), Box<dyn Erro
         *b"CFMD68K4",
         *b"CFMD68K5",
         *b"CFMD68K6",
+        *b"CFMD68K7",
+        *b"CFMD68K8",
     ] {
         let candidate = tampered(&snapshot, &magic, PAYLOAD_VERSION);
         let error = machine
@@ -369,8 +371,7 @@ fn inspect_exposes_z80_arbitration_and_audio_pseudo_registers() -> Result<(), Bo
         "arbitration.z80_runs",
         "ym.status",
         "ym.lfo_phase",
-        "ym.address_latch0",
-        "ym.address_latch1",
+        "ym.selector",
         "psg.latch",
         "psg.tone0",
         "psg.tone1",

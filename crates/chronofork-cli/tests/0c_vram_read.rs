@@ -159,8 +159,8 @@ fn a_v8_payload_is_the_identity_and_length_with_the_read_buffer() {
     let factory = require_ok!(MegadriveFactory::new(demo_rom()), "factory");
     let machine = require_ok!(factory.create_machine(), "machine");
     let snapshot = require_ok!(machine.snapshot(), "snapshot");
-    assert_eq!(PAYLOAD_VERSION, 8);
-    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K8");
+    assert_eq!(PAYLOAD_VERSION, 9);
+    assert_eq!(&PAYLOAD_MAGIC, b"CFMD68K9");
     assert_eq!(
         snapshot.payload().len(),
         PAYLOAD_V8_LEN,

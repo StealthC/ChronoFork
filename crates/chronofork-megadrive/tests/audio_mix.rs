@@ -15,9 +15,12 @@ fn write_ym(ym: &mut Ym2612, address: u8, value: u8) {
 }
 
 /// Writes one YM2612 register through the selected port pair.
+///
+/// The address write sets the global selector, including the bank; the data
+/// write then commits to it, and the data port itself carries no bank.
 fn write_ym_bank(ym: &mut Ym2612, bank: YmBank, address: u8, value: u8) {
-    ym.write_bank(bank, YmPort::Address, address);
-    ym.write_bank(bank, YmPort::Data, value);
+    ym.write_address(bank, address);
+    ym.write_port(YmPort::Data, value);
 }
 
 /// Programs channel 1 with a simple four-operator FM voice.

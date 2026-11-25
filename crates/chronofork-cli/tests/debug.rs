@@ -24,24 +24,28 @@ use chronofork_megadrive::{RAM_SIZE, VRAM_SIZE, controller_rom, demo_rom, interr
 
 use common::{path_str, run, synthetic_rom, temp_dir, write_rom};
 
-// The five fixture state hashes are re-pinned by W1Z (payload v8): the state
-// hash is `hash(STATE_MAGIC + body)`, `CFMDSTATE8` replaced `CFMDSTATE7` and the
-// body grew by the VDP read buffer (`CFVDP003`, +2 bytes), so every value moved
-// by construction. No assertion changed.
+// The six fixture state hashes are re-pinned by the YM2612 global-selector
+// phase (payload v9): the state hash is `hash(STATE_MAGIC + body)`,
+// `CFMDSTATE9` replaced `CFMDSTATE8` and the embedded YM snapshot moved to
+// `CFYM2612` version 2, so every value moved by construction. These fixtures
+// perform only paired YM writes through the same port pair, so no canonical
+// value changed: the moves are versioning, not behaviour. No assertion changed.
+// The previous values were re-pinned by W1Z (payload v8), where the body grew by
+// the VDP read buffer (`CFVDP003`, +2 bytes).
 /// State hash of the shared synthetic fixture at tick 0.
-const RESET_STATE_HASH: &str = "877f564b42d99764df404ff288f7f7a148f0ce3a1232e0f23ae2c00f2dd2d1ab";
+const RESET_STATE_HASH: &str = "5b27375060d24c71b71f1920ba75a4aa3d488a50524a9f88ad53b5bab94623be";
 /// State hash of the shared synthetic fixture after five instructions.
 const FIVE_STEP_STATE_HASH: &str =
-    "210a202da4af772e70a2bde8dc00959bdb2b744dd3db7ca49e0f860c23e8f26e";
+    "3ad6766d78aea41b66e15881835db66ba2b5813efc7625be15b0a95c3a6c46c6";
 /// State hash after the fixture's `MOVEQ #1/D0`, `MOVEQ #2/D1` and `ADD`.
 const THREE_STEP_STATE_HASH: &str =
-    "358b20b27e073ea4a6a38fa7453a025c830cb94b12de6a8d5b20ff0933e9841a";
+    "c56a14225d8d4bb6795449fb33f9270610dcf41c42d1946376703c3a6f69775d";
 /// State hash after the fixture's `MOVE.W D0,(0x00FF0000).L` write.
 const RAM_WRITE_STATE_HASH: &str =
-    "7c6023a7c12304b0a27f8d0857151e5d628f471acebee2e23702514d41cd5258";
+    "d867f6581088c4ef233d507cdd9e62243ee5356858e2ae07835751add1b0f6d2";
 /// State hash after the fixture's first two instructions.
 const TWO_STEP_STATE_HASH: &str =
-    "078f6f310392bf03d056c6765ca14682bf558b13e32c822429997efd69bc722e";
+    "f63f266596c55badd90c6570c36616ae9c9a7dc95c36f84ccc62314455b95c75";
 /// SHA-256 of an all-zero 64 KiB image: work RAM and VRAM at reset.
 const ZERO_64K_SHA256: &str = "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31";
 
@@ -250,7 +254,7 @@ fn debug_memory_dump_is_exact_and_bounded() {
 record=debug-memory\n\
 address=0x00FF0000\n\
 length=32\n\
-state_hash=210a202da4af772e70a2bde8dc00959bdb2b744dd3db7ca49e0f860c23e8f26e\n\
+state_hash=3ad6766d78aea41b66e15881835db66ba2b5813efc7625be15b0a95c3a6c46c6\n\
 rows=2\n\
 00FF0000  00 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n\
 00FF0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 |................|\n";
@@ -596,7 +600,7 @@ fn debug_interrupts_prints_pending_issue_tick_and_counters() {
         ("tick", "3444"),
         (
             "state_hash",
-            "47d20088383d59078ebd22c8dd9e3fbd4bdd6e7164656ae2de35c336cf4c0d64",
+            "e50707695c410e8a3a62800845abb2f9cb3fbb6d03bc260f32d0b795e267fcaa",
         ),
         ("video", "ntsc"),
         ("lines_per_frame", "262"),

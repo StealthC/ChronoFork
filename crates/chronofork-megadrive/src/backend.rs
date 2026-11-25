@@ -131,10 +131,10 @@ use chronofork_backend_api::{
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
+use crate::audio::AudioMixer;
 use crate::audio::mixer::SNAPSHOT_LEN as MIXER_SNAPSHOT_LEN;
 use crate::audio::psg::SNAPSHOT_LEN as PSG_SNAPSHOT_LEN;
 use crate::audio::ym2612::SNAPSHOT_LEN as YM_SNAPSHOT_LEN;
-use crate::audio::{AudioMixer, YmBank};
 use crate::bus::{
     BusArbitration, BusError, IO_CONTROL_BASE, IO_CONTROL_LEN, MegadriveBus, RAM_BASE, RAM_END,
     RAM_MIRROR_BASE, RAM_SIZE, ROM_BASE, ROM_END, Z80_RAM_SIZE, bus_address, io_control_offset,
@@ -173,21 +173,25 @@ pub const AUDIO_CHUNK_FRAMES: usize = 64;
 /// adds the eight port 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F`,
 /// which are canonical state because they affect later reads; version 8 adds the
 /// VDP read buffer through the embedded VDP snapshot (`CFVDP003`), which is
-/// canonical state because it is the value the next data-port read returns.
-/// Version 8 is the only accepted version; payloads v1-v7 are rejected with a
+/// canonical state because it is the value the next data-port read returns;
+/// version 9 replaces the YM2612's two per-bank address latches with one global
+/// bank+register selector through the embedded YM snapshot (`CFYM2612` version 2),
+/// which is canonical state because it decides the destination of the next data
+/// write.
+/// Version 9 is the only accepted version; payloads v1-v8 are rejected with a
 /// typed error instead of being reinterpreted.
-pub const PAYLOAD_VERSION: u16 = 8;
+pub const PAYLOAD_VERSION: u16 = 9;
 /// 68000 autovector address used for a level-4 HBlank request.
 pub const HBLANK_VECTOR_ADDRESS: u32 = 0x70;
 /// 68000 autovector address used for a level-6 VBlank request.
 pub const VBLANK_VECTOR_ADDRESS: u32 = 0x78;
 
-/// Snapshot payload magic for payload version 8.
-pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K8";
-/// State-hash magic for state hash version 8.
-pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE8";
-/// Configuration-hash magic for configuration hash version 8.
-pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF8";
+/// Snapshot payload magic for payload version 9.
+pub const PAYLOAD_MAGIC: [u8; 8] = *b"CFMD68K9";
+/// State-hash magic for state hash version 9.
+pub const STATE_MAGIC: &[u8; 10] = b"CFMDSTATE9";
+/// Configuration-hash magic for configuration hash version 9.
+pub const CONFIG_MAGIC: &[u8; 9] = b"CFMDCONF9";
 
 /// Fixed byte length of the Z80, arbitration, I/O and audio state tail.
 ///
@@ -1272,12 +1276,8 @@ impl Backend for MegadriveBackend {
             u64::from(self.bus.ym().lfo_phase()),
         );
         registers.insert(
-            "ym.address_latch0".to_owned(),
-            u64::from(self.bus.ym().address_latch(YmBank::One)),
-        );
-        registers.insert(
-            "ym.address_latch1".to_owned(),
-            u64::from(self.bus.ym().address_latch(YmBank::Two)),
+            "ym.selector".to_owned(),
+            u64::from(self.bus.ym().selector()),
         );
         let psg = self.bus.psg();
         registers.insert("psg.latch".to_owned(), u64::from(psg.latched_register()));
@@ -2158,9 +2158,13 @@ mod tests {
     use chronofork_sessions::SessionManager;
 
     use super::{
-        HBLANK_VECTOR_ADDRESS, MegadriveBackend, MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION,
-        SNAPSHOT_PAYLOAD_BOUND, VBLANK_VECTOR_ADDRESS, controller_rom, demo_rom, interrupt_rom,
+        AUDIO_STATE_TAIL_LEN, FIXED_STATE_BODY_LEN, HBLANK_VECTOR_ADDRESS, MegadriveBackend,
+        MegadriveFactory, PAYLOAD_MAGIC, PAYLOAD_VERSION, SNAPSHOT_PAYLOAD_BOUND,
+        VBLANK_VECTOR_ADDRESS, YM_SNAPSHOT_LEN, controller_rom, demo_rom, interrupt_rom,
         map_scheduler, map_z80, stamp_synthetic_header,
+    };
+    use crate::audio::ym2612::{
+        SNAPSHOT_SELECTOR_LEN as YM_SELECTOR_LEN, SNAPSHOT_SELECTOR_OFFSET as YM_SELECTOR_OFFSET,
     };
     use crate::cartridge::{Cartridge, SRAM_SIZE, TmssModel};
     /// First index of the port 3/EXT control stub inside the control file.
@@ -3396,7 +3400,7 @@ mod tests {
         assert_eq!(snapshot.payload()[8..10], PAYLOAD_VERSION.to_le_bytes());
 
         // Every earlier version is rejected with a typed error, never
-        // reinterpreted as v8 bytes.
+        // reinterpreted as v9 bytes.
         for (index, magic, version) in [
             (1_u16, *b"CFMD68K1", 1_u16),
             (2, *b"CFMD68K2", 2),
@@ -3405,6 +3409,7 @@ mod tests {
             (5, *b"CFMD68K5", 5),
             (6, *b"CFMD68K6", 6),
             (7, *b"CFMD68K7", 7),
+            (8, *b"CFMD68K8", 8),
         ] {
             let mut old_payload = snapshot.payload().to_vec();
             old_payload[0..8].copy_from_slice(&magic);
@@ -4093,44 +4098,53 @@ mod tests {
 
     #[test]
     fn snapshot_payload_and_hashes_are_golden() {
-        // Golden values for payload v8 / state hash v8 / configuration hash v8
+        // Golden values for payload v9 / state hash v9 / configuration hash v9
         // (six steps of the demo ROM on the master-cycle timeline). Phase 8.3
         // moved the outer identity from v4 to v5; phase 8.4 task 14 moved it to
         // v6; the W1 bus phase moved it to v7 and the body gained the eight port
         // 1/2/3/EXT control register bytes at `0xA10008..=0xA1000F` (payload
         // length 206 251 -> 206 259); the W1Z read-cache phase moved it to v8 and
         // the body gained the VDP read buffer appended after VRAM
-        // (`CFVDP003`, +2 bytes, 206 259 -> 206 261). The VDP advances on the
-        // master-cycle timeline, so the six-step state includes a non-zero
-        // line/dot position. The length and all three hashes below are the
-        // current v8 golden; v1-v7 payloads are rejected before any body byte is
-        // reinterpreted.
+        // (`CFVDP003`, +2 bytes, 206 259 -> 206 261); the YM2612 global-selector
+        // phase moved it to v9 and replaced the two per-bank address latches in
+        // the embedded YM snapshot (`CFYM2612` version 2) with one global
+        // bank+register selector, which occupies the same two bytes, so the
+        // payload length is unchanged. The VDP advances on the master-cycle
+        // timeline, so the six-step state includes a non-zero line/dot position.
+        // The length and all three hashes below are the current v9 golden;
+        // v1-v8 payloads are rejected before any body byte is reinterpreted.
         let mut machine = factory().create_machine().expect("machine");
         for _ in 0..6 {
             machine.step(InputFrame::NEUTRAL).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
         assert_eq!(snapshot.payload().len(), 206_261);
-        // Re-pinned by the W1Z read-cache phase, with the cause of each moved
-        // value recorded: the VDP snapshot grew by the read buffer
-        // (`CFVDP003`, +2 bytes) so the payload length moved 206 259 -> 206 261 and
-        // the payload hash moved by construction; the state hash moved because
-        // `CFMDSTATE8` replaced `CFMDSTATE7` *and* the hashed body grew by those
-        // two bytes; the configuration hash moved only with the `CFMDCONF8` magic
-        // (the cartridge/ROM/video configuration itself is unchanged). The prior
-        // v7 values were re-pinned by the W1 bus phase; the v6 values by the 8.4
-        // repair round (R1-F2/R1-F3).
+        // Re-pinned by the YM2612 global-selector phase, with the cause of each
+        // moved value recorded. The six-step demo performs only paired writes
+        // through the same port pair, so no canonical value changed: every move
+        // below is **versioning**, not behaviour.
+        //   * payload hash: moved because the `CFMD68K8` magic and the version
+        //     word became `CFMD68K9`/9, and because the embedded YM snapshot's
+        //     version byte became 2 (the selector bytes are the same length).
+        //   * state hash: moved because `CFMDSTATE9` replaced `CFMDSTATE8`.
+        //   * configuration hash: moved because the configuration hash is
+        //     `hash(CONFIG_MAGIC + configuration)` (`backend.rs:1567-1568`) and the
+        //     magic became `CFMDCONF9`. The configuration itself -- ROM identity,
+        //     video standard, TMSS model, feature tag and SRAM -- is unchanged.
+        // The prior v8 values were re-pinned by the W1Z read-cache phase, the v7
+        // values by the W1 bus phase and the v6 values by the 8.4 repair round
+        // (R1-F2/R1-F3).
         assert_eq!(
             chronofork_core::hash_bytes(snapshot.payload()).to_hex(),
-            "32f4a4bbd4e637b63ed5fd9872e1c566e21300480d527b6e5164993240b73cf5"
+            "4984f60e1eaaccd4263024eb803560f0989d0fe0a366f112b2a53bd6aa3edab9"
         );
         assert_eq!(
             snapshot.state_hash().to_hex(),
-            "acbe068c368be56579845bea5a18e6bc76ccb4b42703b30474bcd6eb38bf6456"
+            "6a8a8aa7d97745de27b35393c8388a57b4208f0e95d6845e369a026d57844133"
         );
         assert_eq!(
             snapshot.config_hash().to_hex(),
-            "f454b76b7dec1181fd9645a5351c99a33e4f21b636ea3ba2c40fb0406f7d5c16"
+            "0b8501eaa88a7b8868c78eac2763391b024a59c484b8e311bd4bc29543b7f88c"
         );
     }
 
@@ -4184,6 +4198,22 @@ mod tests {
         // +0/+8/+16 assertions below prove the backend's bound matches it in bytes.
         assert_eq!(SCHEDULER_MAX_SNAPSHOT_LEN, 68);
         assert_eq!(SCHEDULER_PENDING_SLOT_LEN, 8);
+        // The YM2612 global-selector phase (payload v9) replaced the two per-bank
+        // address latches with one `u16` selector in the same two bytes, so the
+        // YM snapshot length is unchanged and the bound deliberately stayed at
+        // 206_277. Assert the arithmetic explicitly so a silent format growth
+        // fails here instead of moving the number.
+        assert_eq!(YM_SNAPSHOT_LEN, 856);
+        assert_eq!(YM_SELECTOR_OFFSET, 521);
+        assert_eq!(YM_SELECTOR_LEN, 2);
+        assert_eq!(FIXED_STATE_BODY_LEN, 206_199);
+        assert_eq!(AUDIO_STATE_TAIL_LEN, 9_201);
+        assert_eq!(SNAPSHOT_PAYLOAD_BOUND, 8 + 2 + 206_199 + 68);
+        assert_eq!(SNAPSHOT_PAYLOAD_BOUND, 206_277);
+        assert_eq!(
+            SNAPSHOT_PAYLOAD_BOUND,
+            PAYLOAD_MAGIC.len() + 2 + FIXED_STATE_BODY_LEN + SCHEDULER_MAX_SNAPSHOT_LEN
+        );
         let mut machine = factory().create_machine().expect("machine");
         let fresh = machine.snapshot().expect("snapshot").payload().len();
         assert_eq!(

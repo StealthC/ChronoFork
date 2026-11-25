@@ -5,9 +5,12 @@ use std::error::Error;
 
 use chronofork_megadrive::audio::{EgState, EnvelopeView, Ym2612, YmBank, YmPort};
 
+/// Selects `bank`/`address` through that bank's address port, then writes
+/// `value` through a data port. The data port carries no bank: it commits to
+/// the register the global selector names.
 fn write_register(ym: &mut Ym2612, bank: YmBank, address: u8, value: u8) {
-    ym.write_bank(bank, YmPort::Address, address);
-    ym.write_bank(bank, YmPort::Data, value);
+    ym.write_address(bank, address);
+    ym.write_port(YmPort::Data, value);
 }
 
 #[derive(Clone, Copy)]
