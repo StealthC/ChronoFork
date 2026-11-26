@@ -1134,8 +1134,8 @@ impl MegadriveBus {
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
         }
-        if let Some((bank, port)) = ym_port(address) {
-            self.ym.write_bank(bank, port, value);
+        if let Some(access) = ym_access(address) {
+            apply_ym_access(&mut self.ym, access, value);
             self.debug
                 .observe_watchpoints(WatchpointAccess::Write, address, u32::from(value), 1);
             return Ok(());
@@ -1787,6 +1787,82 @@ fn ym_port(address: u32) -> Option<(YmBank, YmPort)> {
     }
 }
 
+/// One YM2612 access as the device models it.
+///
+/// The four logical ports are two **address** ports and two **data** ports. An
+/// address port carries the bank as well as the register, because writing it
+/// replaces the whole global bank+register selector; a data port carries
+/// neither, because it commits to whatever register the selector already names.
+/// Keeping the two apart in one type stops the data path from ever being handed
+/// a bank (`Devices/YM2612/YM2612.cpp:2339-2356`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum YmAccess {
+    /// An address port: `value` becomes the whole selector.
+    Address {
+        /// Bank the port selects.
+        bank: YmBank,
+        /// Which port pair, for a distinct access description.
+        port: YmPort,
+    },
+    /// A data port: `value` goes to the selected register.
+    Data {
+        /// Which port pair, for a distinct access description.
+        port: YmPort,
+    },
+}
+
+impl YmAccess {
+    /// The logical port this access used, for reads and diagnostics.
+    const fn port(self) -> YmPort {
+        match self {
+            Self::Address { port, .. } | Self::Data { port } => port,
+        }
+    }
+}
+
+/// Applies one decoded YM2612 access to the device.
+fn apply_ym_access(ym: &mut Ym2612, access: YmAccess, value: u8) {
+    match access {
+        YmAccess::Address { bank, .. } => ym.write_address(bank, value),
+        YmAccess::Data { port } => ym.write_port(port, value),
+    }
+}
+
+/// Decodes a 68000 window byte into the YM2612 access it performs.
+fn ym_access(address: u32) -> Option<YmAccess> {
+    ym_port(address).map(|(bank, port)| match port {
+        YmPort::Address => YmAccess::Address { bank, port },
+        YmPort::Data => YmAccess::Data { port },
+    })
+}
+
+/// Decodes an address inside the Z80 `SOUND` region into the YM2612 access it
+/// performs.
+///
+/// Every caller reaches this only inside `YM2612_Z80_BASE..=YM2612_Z80_SOUND_END`,
+/// the region the pinned module maps to the YM2612 with `AddressMask=0x0003`
+/// (`Data/Modules/Sega Mega Drive 1600.xml:340`), so the decode is total and the
+/// bounds check lives in the caller's match arm. The region is decoded by the low
+/// address bits, so the port order repeats across the whole region and
+/// `0x5F8B & 3 = 3` reaches the same bank-2 data port as `0x4003`. The access
+/// kinds mirror the pinned write decode: offsets `0` and `2` replace the whole
+/// global selector (`Devices/YM2612/YM2612.cpp:2339-2348`) and offsets `1` and `3`
+/// commit to the currently selected register (`:2349-2356`).
+const fn z80_ym_access(address: u16) -> YmAccess {
+    match address & 0x0003 {
+        0 => YmAccess::Address {
+            bank: YmBank::One,
+            port: YmPort::Address,
+        },
+        1 => YmAccess::Data { port: YmPort::Data },
+        2 => YmAccess::Address {
+            bank: YmBank::Two,
+            port: YmPort::Address,
+        },
+        _ => YmAccess::Data { port: YmPort::Data },
+    }
+}
+
 /// Returns whether every byte of `address..address + length` is a YM2612 byte.
 fn ym_window_covers(address: u32, length: u32) -> bool {
     let mut offset = 0;
@@ -1807,15 +1883,6 @@ fn ym_window_covers(address: u32, length: u32) -> bool {
 /// that order in `Devices/YM2612/YM2612.cpp:2339-2350` (`location == 0` latches
 /// part 1, `location == 2` latches part 2, `location == 1 || location == 3`
 /// commits the currently latched register).
-const fn z80_ym_port(address: u16) -> (YmBank, YmPort) {
-    match address & 0x0003 {
-        0 => (YmBank::One, YmPort::Address),
-        1 => (YmBank::One, YmPort::Data),
-        2 => (YmBank::Two, YmPort::Address),
-        _ => (YmBank::Two, YmPort::Data),
-    }
-}
-
 /// Returns whether `address` is inside the 68000-visible Z80 RAM window.
 fn is_z80_ram_window(address: u32) -> bool {
     (Z80_RAM_BASE..Z80_RAM_END).contains(&address)
@@ -1956,8 +2023,10 @@ impl Z80Bus for MegadriveBus {
             // 8 KiB of RAM mirrored through the first 16 KiB of the Z80 map.
             0x0000..=0x3FFF => Ok(self.z80_ram[usize::from(address & Z80_RAM_MASK)]),
             YM2612_Z80_BASE..=YM2612_Z80_SOUND_END => {
-                let (bank, port) = z80_ym_port(address);
-                Ok(self.ym.read_bank(bank, port))
+                // The arm already established that the address is inside the
+                // SOUND region, which is exactly where the decode is defined.
+                let access = z80_ym_access(address);
+                Ok(self.ym.read_port(access.port()))
             }
             Z80_BANK_REGISTER_ADDRESS => Ok((self.z80_bank >> 8) as u8),
             // `0x7F00..=0x7F03` is the VDP's port window on the Z80 side, not the
@@ -2016,8 +2085,10 @@ impl Z80Bus for MegadriveBus {
                 Ok(())
             }
             YM2612_Z80_BASE..=YM2612_Z80_SOUND_END => {
-                let (bank, port) = z80_ym_port(address);
-                self.ym.write_bank(bank, port, value);
+                // The arm already established that the address is inside the
+                // SOUND region, which is exactly where the decode is defined.
+                let access = z80_ym_access(address);
+                apply_ym_access(&mut self.ym, access, value);
                 Ok(())
             }
             VDP_Z80_BASE..=VDP_Z80_END => {

@@ -8,18 +8,24 @@
 //!
 //! # Register interface
 //!
-//! The chip has two port pairs. Bank 0 (`0x4000`/`0x4001` on the Z80,
-//! `0x00A04000`/`0x00A04001` on the 68000) holds channels 1-3 and the global
-//! registers; bank 1 (`0x4002`/`0x4003`, `0x00A04002`/`0x00A04003`) holds
-//! channels 4-6. Each pair has its own address latch. The same register address
-//! selects channels 1-3 through bank 0 and channels 4-6 through bank 1; that is
-//! the "bank" of the register file. [`Ym2612::write`] and [`Ym2612::read`]
-//! address bank 0 (the plan's single-port convenience form); [`Ym2612::write_bank`]
-//! and [`Ym2612::read_bank`] expose both hardware port pairs.
+//! The chip has two port pairs. The first (`0x4000`/`0x4001` on the Z80,
+//! `0x00A04000`/`0x00A04001` on the 68000) addresses bank 0, which holds
+//! channels 1-3 and the global registers; the second (`0x4002`/`0x4003`,
+//! `0x00A04002`/`0x00A04003`) addresses bank 1, which holds channels 4-6. The
+//! same register number selects channels 1-3 through bank 0 and channels 4-6
+//! through bank 1; that is the "bank" of the register file.
 //!
-//! Hardware register reads return the status byte (the data ports do not read
-//! registers back). [`Ym2612::register`] exposes the modelled write-only shadow
-//! for tests and inspection; it is not a guest-visible read.
+//! There is **one** global bank+register selector, not one address latch per
+//! pair. Writing any address port replaces it whole — bank 0 stores the written
+//! register and bank 1 stores `0x100 + register` — and either data port then
+//! commits to the register the selector names. [`Ym2612::write_address`] sets the
+//! selector, [`Ym2612::write_port`] writes through a data port that carries no
+//! bank, and [`Ym2612::selector`] exposes the current bank+register value.
+//! [`Ym2612::write`] and [`Ym2612::read`] are the first-pair convenience forms.
+//!
+//! Hardware register reads return the status byte from every port (the data
+//! ports do not read registers back). [`Ym2612::register`] exposes the modelled
+//! write-only shadow for tests and inspection; it is not a guest-visible read.
 //!
 //! # Honest limits
 //!
@@ -66,9 +72,38 @@ pub const PHASE_BITS: u32 = 20;
 /// Magic and version of [`Ym2612::snapshot_bytes`].
 pub const SNAPSHOT_MAGIC: [u8; 8] = *b"CFYM2612";
 /// Version of the fixed YM2612 snapshot layout.
-pub const SNAPSHOT_VERSION: u8 = 1;
+///
+/// Version 1 stored two independent per-bank address latches at
+/// [`SNAPSHOT_SELECTOR_OFFSET`] and `+ 1`. Version 2 stores one global
+/// `u16` bank+register selector in those same two bytes, so the length is
+/// unchanged and version 1 is rejected rather than reinterpreted.
+pub const SNAPSHOT_VERSION: u8 = 2;
+/// First byte of the global bank+register selector inside the snapshot.
+pub const SNAPSHOT_SELECTOR_OFFSET: usize = 8 + 1 + 256 + 256;
+/// Bytes the selector occupies.
+pub const SNAPSHOT_SELECTOR_LEN: usize = 2;
+/// Bytes of the version-2 snapshot after the selector.
+const SNAPSHOT_TAIL_LEN: usize = 72 + 96 + 48 + 96 + 2 + 1 + 1 + 1 + 8 + 8;
 /// Fixed byte length of [`Ym2612::snapshot_bytes`].
-pub const SNAPSHOT_LEN: usize = 856;
+pub const SNAPSHOT_LEN: usize =
+    SNAPSHOT_SELECTOR_OFFSET + SNAPSHOT_SELECTOR_LEN + SNAPSHOT_TAIL_LEN;
+/// First selector value that names bank 2.
+///
+/// The pinned oracle adds `RegisterCountPerPart` (`Devices/YM2612/IYM2612.h:24`)
+/// when the second address port is written, so the bank is part of the one
+/// global selector rather than of a data port.
+pub const SELECTOR_BANK_TWO_BASE: u16 = 0x100;
+/// The selector's highest representable value.
+pub const SELECTOR_MAX: u16 = SELECTOR_BANK_TWO_BASE * 2 - 1;
+
+// The snapshot length is a function of the layout constants above and must not
+// drift: version 2 keeps version 1's 856 bytes with the two latch bytes replaced
+// by the selector.
+const _: () = assert!(SNAPSHOT_SELECTOR_OFFSET == 521);
+const _: () = assert!(SNAPSHOT_TAIL_LEN == 333);
+const _: () = assert!(SNAPSHOT_LEN == 856);
+const _: () = assert!(SELECTOR_BANK_TWO_BASE == 0x100);
+const _: () = assert!(SELECTOR_MAX == 0x1FF);
 /// Detune table in 1/512 units of the base increment.
 const DETUNE: [i32; 8] = [0, 16, 32, 48, 0, -16, -32, -48];
 /// LFO rate table: phase units added to the 16-bit LFO phase per sample.
@@ -179,7 +214,12 @@ impl Default for Envelope {
 pub struct Ym2612 {
     /// Write-only register shadow, indexed by bank then address.
     registers: [[u8; 256]; 2],
-    address_latch: [u8; 2],
+    /// The one global bank+register selector (`0x000..=0x1FF`).
+    ///
+    /// Either address port replaces it whole: the low bank stores the written
+    /// value and the high bank stores `0x100 + value`. Both data ports then
+    /// commit to the register this selector names.
+    selector: u16,
     envelopes: [[Envelope; OPERATORS_PER_CHANNEL]; CHANNELS],
     phases: [[u32; OPERATORS_PER_CHANNEL]; CHANNELS],
     feedback_history: [[i32; 2]; CHANNELS],
@@ -205,7 +245,7 @@ impl Ym2612 {
     pub fn new() -> Self {
         Self {
             registers: [[0; 256]; 2],
-            address_latch: [0; 2],
+            selector: 0,
             envelopes: [[Envelope::default(); OPERATORS_PER_CHANNEL]; CHANNELS],
             phases: [[0; OPERATORS_PER_CHANNEL]; CHANNELS],
             feedback_history: [[0; 2]; CHANNELS],
@@ -220,33 +260,68 @@ impl Ym2612 {
         }
     }
 
-    /// Writes one byte through bank 0's address/data latch.
+    /// Writes one byte through the first hardware port pair.
     ///
-    /// This is the plan's convenience form; use [`Ym2612::write_bank`] for the
-    /// second hardware port pair.
+    /// Equivalent to [`Ym2612::write_port`] with `port`, and to
+    /// [`Ym2612::write_address`] with [`YmBank::One`] for an address port.
     pub fn write(&mut self, port: YmPort, value: u8) {
-        self.write_bank(YmBank::One, port, value);
-    }
-
-    /// Reads the status byte through bank 0's address/data latch.
-    ///
-    /// Hardware returns the status byte for both register reads; the latched
-    /// register value is available through [`Ym2612::register`].
-    pub fn read(&mut self, _port: YmPort) -> u8 {
-        self.status
-    }
-
-    /// Writes one byte through a hardware port pair.
-    pub fn write_bank(&mut self, bank: YmBank, port: YmPort, value: u8) {
-        let index = bank.index();
         match port {
-            YmPort::Address => self.address_latch[index] = value,
-            YmPort::Data => self.write_register(bank, self.address_latch[index], value),
+            YmPort::Address => self.write_address(YmBank::One, value),
+            YmPort::Data => self.write_port(port, value),
         }
     }
 
-    /// Reads the status byte through the selected port pair.
-    pub fn read_bank(&mut self, _bank: YmBank, _port: YmPort) -> u8 {
+    /// Reads the status byte through the first hardware port pair.
+    ///
+    /// Hardware returns the status byte for both register reads; the latched
+    /// register value is available through [`Ym2612::register`].
+    pub fn read(&mut self, port: YmPort) -> u8 {
+        self.read_port(port)
+    }
+
+    /// Writes one byte through the **data** port.
+    ///
+    /// The two data ports are equivalent: every data write commits to the
+    /// register the global [`Ym2612::selector`] names, whatever port it arrived
+    /// on, so this entry point never takes a bank. Use
+    /// [`Ym2612::write_address`] to select the destination.
+    ///
+    /// An address port is not a data port: it carries the **bank** as well as
+    /// the register, so [`YmPort::Address`] is a caller error here and is
+    /// ignored rather than silently treated as a data write.
+    pub fn write_port(&mut self, port: YmPort, value: u8) {
+        match port {
+            YmPort::Data => {
+                let bank = self.selector_bank();
+                let address = self.selector_register();
+                self.write_register(bank, address, value);
+            }
+            // No selector state is touched, so a mistaken call cannot corrupt
+            // the destination of the next real data write.
+            YmPort::Address => {
+                debug_assert!(false, "an address port carries a bank; use write_address");
+            }
+        }
+    }
+
+    /// Selects the global bank+register destination from an address port.
+    ///
+    /// Bank 1 replaces the whole selector with `register`; bank 2 replaces it
+    /// with `SELECTOR_BANK_TWO_BASE + register`. The pinned oracle writes both
+    /// cases into one field (`Devices/YM2612/YM2612.cpp:2339-2348`), so the
+    /// bank is part of the selector and never of a data port.
+    pub fn write_address(&mut self, bank: YmBank, register: u8) {
+        self.selector = match bank {
+            YmBank::One => u16::from(register),
+            YmBank::Two => SELECTOR_BANK_TWO_BASE + u16::from(register),
+        };
+    }
+
+    /// Reads the status byte through any port.
+    ///
+    /// Both the address and the data ports of both pairs return the status
+    /// byte; the call is side-effect free and never exposes the selector.
+    pub fn read_port(&mut self, _port: YmPort) -> u8 {
         self.status
     }
 
@@ -262,10 +337,31 @@ impl Ym2612 {
         self.lfo_phase
     }
 
-    /// Returns the latched register address of a port pair.
+    /// Returns the one global bank+register selector (`0x000..=0x1FF`).
+    ///
+    /// The bank is the value's high bit and the register its low byte. This
+    /// replaces the version-1 per-bank `address_latch(bank)` accessor: a `u8`
+    /// cannot carry a nine-bit selector, and two independent latches cannot
+    /// express which bank the last address write selected.
     #[must_use]
-    pub const fn address_latch(&self, bank: YmBank) -> u8 {
-        self.address_latch[bank.index()]
+    pub const fn selector(&self) -> u16 {
+        self.selector
+    }
+
+    /// Returns the bank the selector currently names.
+    #[must_use]
+    pub const fn selector_bank(&self) -> YmBank {
+        if self.selector < SELECTOR_BANK_TWO_BASE {
+            YmBank::One
+        } else {
+            YmBank::Two
+        }
+    }
+
+    /// Returns the register number the selector currently names.
+    #[must_use]
+    pub const fn selector_register(&self) -> u8 {
+        (self.selector & 0xFF) as u8
     }
 
     /// Takes a latched timer interrupt request, if any.
@@ -732,9 +828,7 @@ impl Ym2612 {
         for bank in &self.registers {
             writer.write_bytes(bank);
         }
-        for latch in self.address_latch {
-            writer.write_u8(latch);
-        }
+        writer.write_u16_le(self.selector);
         for channel in &self.envelopes {
             for envelope in channel {
                 writer.write_u8(eg_state_code(envelope.state));
@@ -771,11 +865,33 @@ impl Ym2612 {
     /// rejected input leaves the device untouched. The generated sine table is
     /// not part of the payload and is left as constructed.
     ///
+    /// Rejection order is fixed and is **length first**: the input's exact length
+    /// is checked before the magic, version or any field value is examined, so a
+    /// combined-defect input is reported by its length alone. After that come the
+    /// magic, the version and the field values. A version-1 snapshot passes the
+    /// length check, is a valid `CFYM2612` with version byte 1, and is therefore
+    /// rejected by the version check: its two per-bank latch bytes are never
+    /// reinterpreted as a selector.
+    ///
     /// # Errors
     ///
-    /// Returns [`AudioSnapshotError`] for a wrong length, magic or version, or a
-    /// non-canonical envelope state or attenuation value.
+    /// Returns [`AudioSnapshotError`] for a wrong length (short input is
+    /// [`AudioSnapshotError::Truncated`], long input is
+    /// [`AudioSnapshotError::TrailingBytes`]), a wrong magic or version, a
+    /// selector above [`SELECTOR_MAX`], a non-canonical envelope state or
+    /// attenuation value, or a trailing-byte payload.
     pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), AudioSnapshotError> {
+        // Exact length first: a truncated or padded payload is rejected on its
+        // length alone, before the magic, the version or any field value is
+        // examined. This makes the precedence deterministic for an input with
+        // several defects at once instead of letting it depend on which read
+        // happens to run past the end first.
+        if bytes.len() < SNAPSHOT_LEN {
+            return Err(AudioSnapshotError::Truncated);
+        }
+        if bytes.len() > SNAPSHOT_LEN {
+            return Err(AudioSnapshotError::TrailingBytes);
+        }
         let mut reader = Reader::new(bytes);
         if reader.read_array::<8>().map_err(snapshot_error)? != SNAPSHOT_MAGIC {
             return Err(AudioSnapshotError::Magic);
@@ -788,9 +904,11 @@ impl Ym2612 {
         for bank in &mut registers {
             *bank = reader.read_array::<256>().map_err(snapshot_error)?;
         }
-        let mut address_latch = [0_u8; 2];
-        for latch in &mut address_latch {
-            *latch = reader.read_u8().map_err(snapshot_error)?;
+        let selector = reader.read_u16_le().map_err(snapshot_error)?;
+        if selector > SELECTOR_MAX {
+            return Err(AudioSnapshotError::Value {
+                field: "ym selector",
+            });
         }
         let mut envelopes = [[Envelope::default(); OPERATORS_PER_CHANNEL]; CHANNELS];
         for channel in &mut envelopes {
@@ -837,7 +955,7 @@ impl Ym2612 {
         let timer_b_accumulator = reader.read_u64_le().map_err(snapshot_error)?;
         reader.finish().map_err(snapshot_error)?;
         self.registers = registers;
-        self.address_latch = address_latch;
+        self.selector = selector;
         self.envelopes = envelopes;
         self.phases = phases;
         self.feedback_history = feedback_history;
