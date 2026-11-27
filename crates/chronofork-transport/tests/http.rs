@@ -7,14 +7,14 @@
 //! bounds) are exercised as a peer would see them, not through the typed client.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::io::{ErrorKind, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chronofork_service::json::{JsonValue, parse, to_canonical_bytes};
 use chronofork_service::{
@@ -1387,4 +1387,363 @@ fn the_effective_address_is_reported_and_reachable() {
     assert_eq!(addr.ip().to_string(), "127.0.0.1");
     assert_ne!(addr.port(), 0, "an ephemeral port is resolved on bind");
     assert!(base(&server).starts_with("http://127.0.0.1:"));
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0014 §1.5/§1.6: Origin policy and the absolute pre-auth deadline
+// ---------------------------------------------------------------------------
+
+/// Builds one request that carries an `Origin` header.
+///
+/// The server treats any `Origin`-bearing request as browser-originated and refuses it
+/// (v1 has no browser-facing surface), so the body and token are deliberately valid
+/// where present: only the `Origin` header decides the outcome.
+fn request_with_origin(
+    method: &str,
+    target: &str,
+    token: Option<&str>,
+    content_type: Option<&str>,
+    body: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut head =
+        format!("{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://evil.example\r\n");
+    if let Some(token) = token {
+        head.push_str("Authorization: Bearer ");
+        head.push_str(token);
+        head.push_str("\r\n");
+    }
+    if let Some(content_type) = content_type {
+        head.push_str("Content-Type: ");
+        head.push_str(content_type);
+        head.push_str("\r\n");
+    }
+    if let Some(body) = body {
+        head.push_str("Content-Length: ");
+        head.push_str(&body.len().to_string());
+        head.push_str("\r\n");
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    let mut bytes = head.into_bytes();
+    if let Some(body) = body {
+        bytes.extend_from_slice(body);
+    }
+    bytes
+}
+
+#[test]
+fn an_origin_bearing_request_is_refused_before_authentication() {
+    let server = start(service_with(
+        SyntheticBackendFactory::default(),
+        None,
+        limits(),
+    ));
+    let addr = server.local_addr();
+    let body = ops_body("capabilities", &empty_input());
+    let mcp_body = br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "health",
+            request_with_origin("GET", "/health", None, None, None),
+        ),
+        (
+            "tools",
+            request_with_origin("GET", "/v1/tools", Some(OPERATOR_TOKEN), None, None),
+        ),
+        (
+            "ops with a valid token",
+            request_with_origin(
+                "POST",
+                "/v1/ops",
+                Some(OPERATOR_TOKEN),
+                Some("application/json"),
+                Some(&body),
+            ),
+        ),
+        (
+            "ops with an invalid token",
+            request_with_origin(
+                "POST",
+                "/v1/ops",
+                Some("not-a-known-token"),
+                Some("application/json"),
+                Some(&body),
+            ),
+        ),
+        (
+            "mcp",
+            request_with_origin(
+                "POST",
+                "/mcp",
+                Some(OPERATOR_TOKEN),
+                Some("application/json"),
+                Some(mcp_body),
+            ),
+        ),
+    ];
+    for (name, request) in cases {
+        let response = send_raw(addr, &request);
+        assert_eq!(response.status, 403, "{name}");
+        assert_eq!(response.error_code(), "forbidden", "{name}");
+        // The refusal is the Origin rule itself, not a 401/200 that happens to look
+        // like a rejection: it is emitted before the route and the bearer token.
+        assert!(
+            response
+                .json()
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(JsonValue::as_str)
+                .is_some_and(|message| message.contains("Origin")),
+            "{name} names the Origin policy"
+        );
+    }
+
+    // A request without `Origin` is unaffected: the ordinary surfaces stay reachable.
+    let health = send_raw(addr, &request("GET", "/health", None, None, None));
+    assert_eq!(health.status, 200);
+    let capabilities = call(addr, "capabilities", "{}");
+    assert_eq!(capabilities.status, 200);
+}
+
+#[test]
+fn a_trickled_request_head_cannot_hold_a_worker_past_the_pre_auth_deadline() {
+    let server = start_with(
+        service_with(SyntheticBackendFactory::default(), None, limits()),
+        ServerConfig {
+            io_timeout: Duration::from_secs(5),
+            pre_auth_timeout: Duration::from_millis(300),
+            ..ServerConfig::default()
+        },
+    );
+    let addr = server.local_addr();
+
+    // More partial connections than workers (the default is four), so the workers would
+    // stay occupied for the socket timeout without the absolute pre-auth deadline.
+    let mut slow = Vec::new();
+    for _ in 0..8 {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+            .expect("connect a slow client");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("slow-client write timeout");
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            .expect("write a partial head");
+        stream.flush().expect("flush the partial head");
+        slow.push(stream);
+    }
+
+    // Every trickled connection is closed once its accept-relative budget expires, which
+    // releases the workers. A later request that queued past its own budget is refused by
+    // the same rule, so recovery is checked after the release rather than concurrently.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for stream in &mut slow {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("slow-client read timeout");
+        let mut byte = [0_u8; 1];
+        loop {
+            match stream.read(&mut byte) {
+                Ok(0) => break,
+                // A rejection response would also end the connection; either way the
+                // worker is released.
+                Ok(_) => break,
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock
+                        || error.kind() == ErrorKind::TimedOut =>
+                {
+                    assert!(
+                        Instant::now() < deadline,
+                        "a trickled connection is still open past the pre-auth deadline"
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    // The pool recovered: a fresh legitimate request is served in the documented bound.
+    let health = send_raw(addr, &request("GET", "/health", None, None, None));
+    assert_eq!(health.status, 200);
+}
+
+#[test]
+fn serve_refuses_a_non_loopback_bind_before_binding() {
+    // Reserve an ephemeral port and release it, so the same address can be probed after
+    // the refused start.
+    let probe = TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+    let port = probe.local_addr().expect("reserved address").port();
+    drop(probe);
+
+    let config = ServerConfig {
+        bind: SocketAddr::from(([0, 0, 0, 0], port)),
+        tokens: tokens(),
+        ..ServerConfig::default()
+    };
+    let service = Arc::new(service_with(
+        SyntheticBackendFactory::default(),
+        None,
+        limits(),
+    ));
+    let refused = serve(config, service);
+    assert!(refused.is_err(), "a non-loopback bind must be refused");
+    let message = match refused {
+        Ok(_) => String::new(),
+        Err(TransportError::Protocol(message)) => message,
+        Err(other) => format!("unexpected error variant: {other:?}"),
+    };
+    assert!(
+        message.contains("non-loopback") && message.contains("ADR-0014"),
+        "the refusal is typed and names the policy: {message}"
+    );
+
+    // Nothing was left listening: the address is free to bind now.
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .expect("the refused server never bound the non-loopback address");
+    drop(listener);
+}
+
+#[test]
+fn the_pre_auth_deadline_must_be_positive() {
+    let config = ServerConfig {
+        pre_auth_timeout: Duration::ZERO,
+        tokens: tokens(),
+        ..ServerConfig::default()
+    };
+    let service = Arc::new(service_with(
+        SyntheticBackendFactory::default(),
+        None,
+        limits(),
+    ));
+    let refused = serve(config, service);
+    assert!(refused.is_err(), "a zero pre-auth deadline must be refused");
+    let message = match refused {
+        Ok(_) => String::new(),
+        Err(TransportError::Protocol(message)) => message,
+        Err(other) => format!("unexpected error variant: {other:?}"),
+    };
+    assert!(message.contains("pre-auth deadline"), "{message}");
+}
+
+#[test]
+fn queued_connections_expire_against_the_accept_deadline() {
+    // The advertised contract is one absolute pre-auth budget measured from `accept`,
+    // including queue residence. A per-dispatch deadline would add one full budget per
+    // wave (12 accepted sockets / 4 workers = 3 waves), which is far outside the
+    // documented scheduling tolerance below.
+    const PRE_AUTH: Duration = Duration::from_millis(400);
+    /// Scheduling and thread-start tolerance around the configured budget. It is larger
+    /// than the observed jitter (well under 100 ms) and far smaller than the ~800 ms a
+    /// per-dispatch reset would add for the queued waves.
+    const TOLERANCE: Duration = Duration::from_millis(500);
+    /// Hard ceiling for one closure poll, so a regression fails instead of hanging.
+    const CLOSE_DEADLINE: Duration = Duration::from_secs(5);
+
+    let server = start_with(
+        service_with(SyntheticBackendFactory::default(), None, limits()),
+        ServerConfig {
+            io_timeout: Duration::from_secs(5),
+            pre_auth_timeout: PRE_AUTH,
+            ..ServerConfig::default()
+        },
+    );
+    let addr = server.local_addr();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let mut readers = Vec::new();
+    let mut tricklers = Vec::new();
+    // More accepted connections than workers: the first four are dispatched, the rest
+    // wait in the bounded userspace queue and must still expire against their accept
+    // instant.
+    for _ in 0..12 {
+        let stream = TcpStream::connect_timeout(&addr, CLOSE_DEADLINE).expect("connect");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .expect("write timeout");
+        let mut partial = stream.try_clone().expect("clone partial writer");
+        partial
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            .expect("write a partial head");
+        partial.flush().expect("flush the partial head");
+
+        // Keep trickling one byte for longer than the budget: a per-read timeout or a
+        // dispatch-relative budget would keep the connection alive.
+        let mut trickle = stream.try_clone().expect("clone trickle writer");
+        let stop = Arc::clone(&stop);
+        tricklers.push(thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                if trickle.write_all(b"X").is_err() || trickle.flush().is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        }));
+        readers.push(stream);
+    }
+
+    let hard_deadline = started + PRE_AUTH + TOLERANCE + Duration::from_secs(1);
+    let mut closed = 0;
+    for stream in &mut readers {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("read timeout");
+        let mut byte = [0_u8; 1];
+        loop {
+            match stream.read(&mut byte) {
+                // EOF: the deadline closed the connection without a response.
+                Ok(0) => {
+                    closed += 1;
+                    break;
+                }
+                // A rejection response also ends the connection and releases the worker.
+                Ok(_) => {
+                    closed += 1;
+                    break;
+                }
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock
+                        || error.kind() == ErrorKind::TimedOut =>
+                {
+                    assert!(
+                        Instant::now() < hard_deadline,
+                        "a queued trickling connection stayed open past \
+                         {PRE_AUTH:?} + {TOLERANCE:?} tolerance"
+                    );
+                }
+                Err(_) => {
+                    closed += 1;
+                    break;
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    stop.store(true, Ordering::SeqCst);
+    for trickler in tricklers {
+        let _ = trickler.join();
+    }
+
+    assert_eq!(closed, 12, "every queued connection must be closed");
+    assert!(
+        elapsed >= PRE_AUTH / 2,
+        "connections closed before the configured budget could have elapsed: {elapsed:?}"
+    );
+    assert!(
+        elapsed <= PRE_AUTH + TOLERANCE,
+        "queued sockets must share the accept-relative {PRE_AUTH:?} budget; they closed \
+         after {elapsed:?} (tolerance {TOLERANCE:?})"
+    );
+
+    // The pool recovers: /health is served after the pre-auth release, within the same
+    // configured budget plus the documented tolerance.
+    let health = send_raw(addr, &request("GET", "/health", None, None, None));
+    assert_eq!(
+        health.status, 200,
+        "/health must be served once the pre-auth budget releases the workers"
+    );
+    assert!(
+        started.elapsed() <= PRE_AUTH + TOLERANCE + Duration::from_secs(1),
+        "/health was not served within the documented recovery bound"
+    );
 }

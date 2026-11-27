@@ -415,6 +415,28 @@ fixed worker threads with a bounded accept queue (16 connections) so the daemon 
 spawns an unbounded number of threads; `max_requests` shuts the server down after N
 requests for bounded process tests.
 
+Security boundary (ADR-0014 §1.5, implemented):
+
+- **Loopback only.** `chronofork serve` refuses a non-loopback `--bind` (one stable
+  `chronofork: ` stderr line, exit 1, empty stdout) before the token file is read, the
+  service is composed, a socket is bound or `record=serve` is printed. The transport
+  enforces the same rule on `ServerConfig::bind` before `TcpListener::bind`, so composing
+  the server directly cannot bypass the CLI check.
+- **Every `Origin`-bearing request is refused** with `403 forbidden` before the route,
+  authentication or body work. v1 has no browser-facing surface, so the ADR permits "no
+  `Origin`-bearing request accepted at all" instead of an allowlist; requests without
+  `Origin` are unaffected.
+- **Absolute pre-auth deadline.** `pre_auth_timeout` (default 5 s) runs from `accept` to a
+  complete request head; each head read is limited to the remaining budget, so a peer that
+  trickles the head cannot extend it. The deadline is stamped when `accept` returns, before
+  the connection enters the bounded queue, so queue residence consumes the same budget
+  instead of resetting it at worker dispatch. With the fixed worker pool and the bounded
+  accept queue this bounds pre-authentication slowloris (the socket `io_timeout` alone
+  bounds one read, not the whole head).
+- **No TLS and static bearer tokens only.** The v1 boundary is a local, single-user,
+  cooperative one; a non-loopback deployment, TLS, durable principals or a per-peer
+  connection cap are not implemented (see §12).
+
 `GET /health` is the only unauthenticated response and contains no backend, path or token
 information.
 
@@ -494,6 +516,9 @@ gap is recorded as **M6-FU2**.
 [--rom FILE] [--workers N] [--max-requests N]` composes the backend factory, prints the
 effective `bind=` address (and `backend=`, `store=`, `artifacts=` state) as `key=value`
 records, then serves until the process is stopped or `--max-requests` is reached.
+`--bind` accepts a loopback address only; a non-loopback value (for example `0.0.0.0:0`)
+is refused before serving with one stable `chronofork: ` stderr line and exit 1
+(ADR-0014 §1).
 
 `chronofork api health|tools|call` and `chronofork mcp tools|call` are clients of that
 daemon. They read a token file, select a principal (`--principal`, default the first) and
@@ -586,3 +611,12 @@ unknown tool, batch request) compare their typed code and message too.
 - Per-request backend selection, cartridge upload, external SDKs (Stage 9).
 - Closed in-memory sessions are retained for the process lifetime; `max_sessions` bounds
   registered sessions and there is no reclamation API yet.
+- **Per-peer pre-auth connection cap (ADR-0014 §1.5): deferred.** The implemented bound is
+  the fixed worker pool + the 16-connection accept queue + the absolute pre-auth deadline
+  above; a per-peer cap needs a peer-keyed admission map and its own measured acceptance
+  test, so it is recorded here rather than half-implemented. The current v1 boundary is
+  loopback + static Bearer tokens, no TLS.
+- **`Host`/loopback request-header validation (ADR-0014 §1.5): deferred.** A
+  browser-originated cross-origin request carries `Origin` and is already refused; `Host`
+  validation is defence in depth that would change the documented check order, so it stays
+  a tracked hardening item instead of an unreviewed ordering change.

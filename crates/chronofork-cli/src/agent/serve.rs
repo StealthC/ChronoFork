@@ -78,6 +78,10 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             workers: options.workers,
             max_requests: options.max_requests,
             io_timeout: IO_TIMEOUT,
+            // The transport enforces this as an absolute bound from `accept` to a complete
+            // request head, so a pre-auth slowloris cannot hold a worker past it
+            // (ADR-0014 §5). The same 5 s value as the socket timeout is the v1 policy.
+            pre_auth_timeout: IO_TIMEOUT,
             max_request_bytes: limits.max_request_bytes,
             tokens,
             // The ADR bounds: the pool reserves one worker for the control path, so the
@@ -104,11 +108,6 @@ pub(crate) fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     println!("store={}", enabled(options.store_root.is_some()));
     println!("artifacts={}", enabled(options.artifacts.is_some()));
     io::stdout().flush()?;
-    if !local_addr.ip().is_loopback() {
-        eprintln!(
-            "chronofork: warning: `{local_addr}` is not a loopback address; the daemon has no TLS and uses coarse static tokens"
-        );
-    }
 
     // Serving ends when `--max-requests` is reached or the process is terminated.
     // `wait` joins without requesting shutdown, so the daemon actually serves first.
@@ -141,11 +140,22 @@ fn parse_serve_options(args: &[String]) -> Result<Option<ServeOptions>, Box<dyn 
             )?,
             "--bind" => {
                 let value = option_value(args, &mut index, &flag)?;
-                let address = value.parse().map_err(|_| {
+                let address: SocketAddr = value.parse().map_err(|_| {
                     CliError(format!(
                         "`{flag}` expects an address such as {DEFAULT_BIND}, got `{value}`"
                     ))
                 })?;
+                // ADR-0014 §1: v1 is loopback-only. The refusal happens here, before the
+                // token file is read, the service is composed, a socket is bound or the
+                // `record=serve` line is printed, so a misconfigured daemon never reaches
+                // the point of serving a non-loopback address.
+                if !address.ip().is_loopback() {
+                    return Err(CliError(format!(
+                        "`--bind` refuses the non-loopback address `{address}`; v1 serves \
+                         loopback only (ADR-0014)"
+                    ))
+                    .into());
+                }
                 set_once(&mut bind, address, &flag)?;
             }
             "--store-root" => set_once(
@@ -241,8 +251,9 @@ fn print_serve_help() {
     println!();
     println!("Options:");
     println!("  --token-file <FILE>   Required `chronofork.tokens.v1` bearer-token file");
-    println!("  --bind <ADDR>         Listen address (default {DEFAULT_BIND}); the effective");
-    println!("                        address is printed as `bind=`");
+    println!("  --bind <ADDR>         Loopback listen address (default {DEFAULT_BIND}); a");
+    println!("                        non-loopback address is refused before serving");
+    println!("                        (ADR-0014). The effective address is printed as `bind=`");
     println!("  --store-root <DIR>    Enable the durable store operations on this root");
     println!("  --artifacts <DIR>     Persist experiment artifacts under this directory");
     println!("  --rom <FILE>          Serve the Mega Drive slice instead of the synthetic");
@@ -258,7 +269,8 @@ fn print_serve_help() {
     println!("  The token file is read with the same byte bound as the request limit; an");
     println!("  oversized file is rejected with one clear stderr diagnostic.");
     println!("  An invalid or empty token file refuses to start (exit 1, empty stdout).");
-    println!("  A non-loopback bind additionally prints a warning to stderr.");
+    println!("  A non-loopback `--bind` refuses to start with one stable stderr diagnostic");
+    println!("  and empty stdout, before the token file is read or a socket is bound.");
     println!();
     println!("The daemon serves until it is terminated or `--max-requests` is reached.");
 }
