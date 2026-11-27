@@ -13,7 +13,7 @@ use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendFactory, BackendId, BackendSnapshot,
     Capabilities, DebugAccess, MachineInspection, StepOutcome,
 };
-use chronofork_core::{InputFrame, Tick};
+use chronofork_core::{InputFrame, StateHash, Tick};
 use chronofork_megadrive::{
     MegadriveFactory, SchedulerConfig, controller_rom, demo_rom, interrupt_rom,
 };
@@ -686,6 +686,10 @@ impl Backend for CountedBackend {
         self.inner.descriptor()
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        self.inner.state_hash()
+    }
+
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
         self.inner.step(input)
     }
@@ -845,6 +849,10 @@ impl ProbeBackend {
 impl Backend for ProbeBackend {
     fn descriptor(&self) -> &BackendDescriptor {
         &self.descriptor
+    }
+
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        self.inner.state_hash()
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {

@@ -5,13 +5,17 @@
 //! bodies, a strict request line and bounded headers. A fixed worker pool is fed by a
 //! bounded accept queue, so an idle but slow client cannot make the daemon spawn threads
 //! without limit; the queue is bounded by leaving excess connections in the operating
-//! system backlog instead of buffering them.
+//! system backlog instead of buffering them. Each queued connection carries the instant
+//! it was accepted, and its absolute pre-auth deadline is measured from there, so queue
+//! residence consumes the same budget.
 //!
 //! The server owns no session state and reimplements no service rule: `POST /v1/ops`
 //! hands the body to [`AppService::dispatch`] and returns the service envelope bytes
-//! unchanged. Order of checks, from cheapest to most expensive, is: query string, route,
-//! method, framing (`Content-Length`, `Content-Type`, body bound), bearer token, body
-//! read, dispatch. That order is observable and therefore documented here.
+//! unchanged. Order of checks, from cheapest to most expensive, is: query string,
+//! `Origin` (v1 has no browser-facing surface, so any `Origin`-bearing request is
+//! refused), route, method, framing (`Content-Length`, `Content-Type`, body bound),
+//! bearer token, body read, dispatch. That order is observable and therefore documented
+//! here.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -56,6 +60,8 @@ const DRAIN_BYTES: usize = 64 * 1024;
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(5);
 /// Wall-clock bound on the discard phase, so a trickling peer cannot hold a worker.
 const DRAIN_DEADLINE: Duration = Duration::from_millis(100);
+/// Default absolute bound from `accept` to a complete request head (ADR-0014 §5).
+const DEFAULT_PRE_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wire-level server configuration.
 ///
@@ -71,6 +77,16 @@ pub struct ServerConfig {
     pub max_requests: Option<u64>,
     /// Per-connection read and write timeout.
     pub io_timeout: Duration,
+    /// Absolute bound on the time from `accept` to a complete request head.
+    ///
+    /// Distinct from [`Self::io_timeout`], which bounds one read: a peer that trickles
+    /// the head more slowly than `io_timeout` per byte would otherwise hold a worker
+    /// indefinitely. The deadline is enforced in `read_head`, so pre-authentication
+    /// slowloris cannot exhaust the fixed worker pool (ADR-0014 §5). It is stamped when
+    /// `accept` returns and before the connection enters the bounded queue, so queue
+    /// residence consumes the same budget instead of resetting it at dispatch. It ends
+    /// once the head is complete; body reads are authenticated and use `io_timeout`.
+    pub pre_auth_timeout: Duration,
     /// Maximum accepted request body size (`413` above it).
     ///
     /// This is the wire bound; the service codec independently enforces its own
@@ -116,6 +132,7 @@ impl fmt::Debug for ServerConfig {
             .field("workers", &self.workers)
             .field("max_requests", &self.max_requests)
             .field("io_timeout", &self.io_timeout)
+            .field("pre_auth_timeout", &self.pre_auth_timeout)
             .field("max_request_bytes", &self.max_request_bytes)
             .field("max_long_runs_global", &self.max_long_runs_global)
             .field(
@@ -138,6 +155,7 @@ impl Default for ServerConfig {
             // run mid-flight and turn a bounded operation into a dropped connection.
             // The service deadline, not this socket timeout, bounds the operation.
             io_timeout: Duration::from_secs(45),
+            pre_auth_timeout: DEFAULT_PRE_AUTH_TIMEOUT,
             max_request_bytes: 1024 * 1024,
             tokens: TokenTable::default(),
             max_long_runs_global: None,
@@ -205,8 +223,19 @@ enum HeadOutcome {
 /// Connections waiting for a worker.
 #[derive(Debug, Default)]
 struct Queue {
-    pending: VecDeque<TcpStream>,
+    pending: VecDeque<QueuedConnection>,
     closed: bool,
+}
+
+/// A connection accepted from the listener, with the instant its pre-auth budget started.
+///
+/// The instant is recorded when `accept` returns, **before** the connection is queued, so
+/// time spent waiting for a worker consumes the same absolute budget. A fresh deadline at
+/// dispatch would let a queued peer wait one full budget per wave.
+#[derive(Debug)]
+struct QueuedConnection {
+    stream: TcpStream,
+    accepted_at: Instant,
 }
 
 /// State shared by the accept loop and the worker pool.
@@ -318,11 +347,29 @@ impl Drop for ServerHandle {
 /// # Errors
 ///
 /// Returns [`TransportError::Io`] when the address cannot be bound or a thread cannot be
-/// started, and [`TransportError::Protocol`] when the configuration asks for zero workers.
+/// started, and [`TransportError::Protocol`] when the address is not a loopback address,
+/// the configuration asks for fewer than two workers, or the pre-auth deadline is zero.
 pub fn serve(
     config: ServerConfig,
     service: Arc<AppService>,
 ) -> Result<ServerHandle, TransportError> {
+    // ADR-0014 §1: v1 serves loopback only. Refusing here means a non-loopback address
+    // never reaches `TcpListener::bind`, including when the transport is composed
+    // directly rather than through `chronofork serve` (which refuses even earlier, at
+    // argument parsing).
+    if !config.bind.ip().is_loopback() {
+        return Err(TransportError::Protocol(format!(
+            "refusing the non-loopback bind address `{}`; v1 serves loopback only (ADR-0014)",
+            config.bind
+        )));
+    }
+    // A zero pre-auth budget would close every connection before its head could be
+    // read, so it is a configuration error rather than a "disable the bound" switch.
+    if config.pre_auth_timeout.is_zero() {
+        return Err(TransportError::Protocol(
+            "the pre-auth deadline must be greater than zero".to_owned(),
+        ));
+    }
     // ADR-0016 §1/F4: the bounded pool reserves at least one worker for the control
     // path, so a single-worker configuration cannot keep `cancel`/`list`/`progress`
     // executable while a long run is in flight. It is refused unless the operator
@@ -399,22 +446,41 @@ fn accept_loop(listener: TcpListener, state: Arc<State>) {
         if state.shutdown.load(Ordering::SeqCst) {
             break;
         }
+        // Expire queued connections against their accept-relative budget before a
+        // worker ever receives them. The queue is ordered by accept time, so only the
+        // front can be expired; dropping it here releases the slot without spending a
+        // worker's remaining budget on a peer that already ran out.
+        let mut queue = state.lock_queue();
+        let now = Instant::now();
+        while let Some(front) = queue.pending.front() {
+            if front.accepted_at + state.config.pre_auth_timeout > now {
+                break;
+            }
+            queue.pending.pop_front();
+        }
         // Backpressure: accept only when a worker could pick the connection up. Excess
         // clients wait in the operating system backlog, so the queue stays bounded.
-        let has_room = state.lock_queue().pending.len() < ACCEPT_QUEUE_DEPTH;
+        let has_room = queue.pending.len() < ACCEPT_QUEUE_DEPTH;
+        drop(queue);
         if !has_room {
             thread::sleep(ACCEPT_POLL);
             continue;
         }
         match listener.accept() {
             Ok((stream, _peer)) => {
+                // The absolute pre-auth budget starts at accept, not when a worker is
+                // free: a queued connection must not receive a fresh budget.
+                let accepted_at = Instant::now();
                 let _ = stream.set_nodelay(true);
                 let mut queue = state.lock_queue();
                 if queue.closed {
                     drop(queue);
                     break;
                 }
-                queue.pending.push_back(stream);
+                queue.pending.push_back(QueuedConnection {
+                    stream,
+                    accepted_at,
+                });
                 drop(queue);
                 state.ready.notify_one();
             }
@@ -428,14 +494,14 @@ fn accept_loop(listener: TcpListener, state: Arc<State>) {
 
 fn worker_loop(state: Arc<State>) {
     loop {
-        let stream = {
+        let queued = {
             let mut queue = state.lock_queue();
             loop {
                 if queue.closed {
                     return;
                 }
-                if let Some(stream) = queue.pending.pop_front() {
-                    break stream;
+                if let Some(queued) = queue.pending.pop_front() {
+                    break queued;
                 }
                 let (guard, _timeout) = state
                     .ready
@@ -444,7 +510,10 @@ fn worker_loop(state: Arc<State>) {
                 queue = guard;
             }
         };
-        handle_connection(stream, &state);
+        // Carry the accept instant through dispatch: a queued connection whose budget
+        // already expired is closed by `read_head` before it can read or answer.
+        let deadline = queued.accepted_at + state.config.pre_auth_timeout;
+        handle_connection(queued.stream, deadline, &state);
         let served = state.served.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(max_requests) = state.config.max_requests {
             if served >= max_requests {
@@ -454,13 +523,19 @@ fn worker_loop(state: Arc<State>) {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, state: &Arc<State>) {
-    let _ = stream.set_read_timeout(Some(state.config.io_timeout));
+fn handle_connection(mut stream: TcpStream, deadline: Instant, state: &Arc<State>) {
     let _ = stream.set_write_timeout(Some(state.config.io_timeout));
-    let response = match read_head(&mut stream) {
+    // `deadline` is the accept-relative absolute pre-auth budget; it ends when the head
+    // is complete, and `read_head` recomputes the remaining budget before every read so
+    // a trickling peer cannot extend it.
+    let response = match read_head(&mut stream, deadline, state.config.io_timeout) {
         HeadOutcome::Closed => return,
         HeadOutcome::Rejected(response) => response,
-        HeadOutcome::Head(head) => respond(&mut stream, state, &head),
+        HeadOutcome::Head(head) => {
+            // Authenticated body reads use the ordinary per-operation socket timeout.
+            let _ = stream.set_read_timeout(Some(state.config.io_timeout));
+            respond(&mut stream, state, &head)
+        }
     };
     finish(&mut stream, &response);
 }
@@ -490,7 +565,12 @@ fn finish(stream: &mut TcpStream, response: &Response) {
 }
 
 /// Reads and parses one request head, leaving body bytes in `Head::leftover`.
-fn read_head(stream: &mut TcpStream) -> HeadOutcome {
+///
+/// Every read is bounded by what is left of the absolute `deadline` (and by
+/// `io_timeout`), so a peer that trickles the head cannot hold the worker past the
+/// pre-auth budget. A read that times out is reported like a closed peer: nothing is
+/// answered before a complete head exists.
+fn read_head(stream: &mut TcpStream, deadline: Instant, io_timeout: Duration) -> HeadOutcome {
     let mut buffer: Vec<u8> = Vec::with_capacity(CHUNK_BYTES);
     let mut chunk = [0u8; CHUNK_BYTES];
     let mut scanned = 0;
@@ -509,6 +589,12 @@ fn read_head(stream: &mut TcpStream) -> HeadOutcome {
                 "request head exceeds the wire limits",
             ));
         }
+        let now = Instant::now();
+        if now >= deadline {
+            return HeadOutcome::Closed;
+        }
+        let remaining = deadline.saturating_duration_since(now).min(io_timeout);
+        let _ = stream.set_read_timeout(Some(remaining));
         match stream.read(&mut chunk) {
             Ok(0) => {
                 if buffer.is_empty() {
@@ -641,6 +727,17 @@ fn is_token_byte(byte: u8) -> bool {
 fn respond(stream: &mut TcpStream, state: &Arc<State>, head: &Head) -> Response {
     if head.target.contains('?') {
         return wire::service_failure(ErrorCode::InvalidRequest, "query strings are not supported");
+    }
+    // ADR-0014 §1.5: v1 has no browser-facing surface, so the permitted policy is that
+    // no `Origin`-bearing request is accepted at all. This is checked before the route,
+    // authentication or any body work, so the refusal is deterministic and cannot be
+    // turned into a state mutation by a page in a local browser.
+    if head.header("origin").is_some() {
+        return wire::service_failure(
+            ErrorCode::Forbidden,
+            "an `Origin`-bearing request is refused: v1 has no browser-facing surface \
+             (ADR-0014)",
+        );
     }
     let Some(route) = Route::parse(&head.target) else {
         return wire::service_failure(ErrorCode::NotFound, "unknown route");

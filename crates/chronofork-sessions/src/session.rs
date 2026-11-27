@@ -5,6 +5,7 @@ use std::fmt;
 
 use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendSnapshot, MachineInspection, StepOutcome,
+    VerifiedStepOutcome,
 };
 use chronofork_core::{InputFrame, SessionId, SnapshotId};
 use chronofork_trace::{Trace, TraceConfig, capture};
@@ -244,6 +245,31 @@ impl Session {
         // bound: the byte preflight must fall back to the documented capture bound.
         self.state_observed = false;
         match self.backend.step(input) {
+            Ok(outcome) => Ok(outcome),
+            Err(BackendError::Halted) => Err(SessionError::Halted(self.id)),
+            Err(error) => Err(SessionError::Backend(error)),
+        }
+    }
+
+    /// Advances one quantum through the backend's verified path.
+    ///
+    /// A consumer that needs a per-step digest (movie recording, replay comparison,
+    /// experiment capture) uses this instead of reading the ordinary outcome's
+    /// migration-only digest field, so the guarantee comes from the backend contract
+    /// and not from a stale assumption.
+    pub fn step_verified(
+        &mut self,
+        input: InputFrame,
+    ) -> Result<VerifiedStepOutcome, SessionError> {
+        self.ensure_open()?;
+        if self.state != SessionState::Ready {
+            return Err(SessionError::NotRunning {
+                session: self.id,
+                state: self.state,
+            });
+        }
+        self.state_observed = false;
+        match self.backend.step_verified(input) {
             Ok(outcome) => Ok(outcome),
             Err(BackendError::Halted) => Err(SessionError::Halted(self.id)),
             Err(error) => Err(SessionError::Backend(error)),
@@ -737,6 +763,9 @@ mod tests {
     impl chronofork_backend_api::Backend for UnboundedBackend {
         fn descriptor(&self) -> &chronofork_backend_api::BackendDescriptor {
             self.inner.descriptor()
+        }
+        fn state_hash(&self) -> Result<StateHash, chronofork_backend_api::BackendError> {
+            self.inner.state_hash()
         }
         fn step(
             &mut self,

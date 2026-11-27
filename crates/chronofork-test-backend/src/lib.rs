@@ -303,6 +303,13 @@ impl Backend for SyntheticBackend {
         &self.descriptor
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        // The private inherent method is the single canonical digest: it hashes the
+        // one `state_body` that also feeds the snapshot payload. This impl exists only
+        // to expose it through the trait (inherent method resolution picks it here).
+        Ok(SyntheticBackend::state_hash(self))
+    }
+
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
         if self.halted {
             return Err(BackendError::Halted);
@@ -353,8 +360,12 @@ impl Backend for SyntheticBackend {
             .ok_or(BackendError::TickOverflow)?;
         Ok(StepOutcome {
             tick: self.tick,
-            state_hash: self.state_hash(),
+            // W2-2: ordinary execution is digest-free. The verified path computes the
+            // canonical digest once through `state_hash()`; `step` must not build the
+            // full state body or call the serializer at all.
+            state_hash: None,
             halted: self.halted,
+            verified: false,
         })
     }
 
@@ -579,7 +590,9 @@ mod tests {
             .step(InputFrame::with_devices([2, 0, 0, 0], [0; 4], 0))
             .expect("schema2 step");
         assert_eq!(v1_outcome, schema2_outcome);
-        assert_eq!(v1_outcome.state_hash.to_hex(), GOLDEN);
+        // W2-2: the ordinary outcome carries no digest, so the golden asks the
+        // canonical source explicitly; the value must not change.
+        assert_eq!(v1.state_hash().expect("canonical digest").to_hex(), GOLDEN);
         assert_eq!(
             v1.snapshot().expect("v1 snapshot").payload(),
             schema2.snapshot().expect("schema2 snapshot").payload()

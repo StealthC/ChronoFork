@@ -235,8 +235,11 @@ encryption, authentication and format migration are not implemented. No commerci
 BIOS or firmware are included or required.
 
 The agent interfaces are deliberately narrow too. The HTTP server is HTTP/1.1 with one
-request per connection and **no TLS, keep-alive, chunked bodies or SSE**, so it suits
-loopback or sidecar use and needs a reverse proxy for anything else. `POST /mcp` is
+request per connection and **no TLS, keep-alive, chunked bodies or SSE**. It is
+loopback-only: `chronofork serve` refuses a non-loopback `--bind` before it starts
+(ADR-0014), and a request carrying a browser `Origin` header is refused with `403`
+because v1 has no browser-facing surface. A reverse proxy or any exposed deployment is
+outside v1 and needs its own ADR covering TLS and authorization. `POST /mcp` is
 stateless: no `Mcp-Session-Id`, no server-initiated messages, no resources/prompts/logging.
 Tokens are coarse and static with no rotation, expiry or audit log. Session ownership and
 live sessions are process-local and lost on daemon restart, while durable store objects

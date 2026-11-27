@@ -854,8 +854,12 @@ impl MegadriveBackend {
         self.advance_audio(master_cycles);
         Ok(StepOutcome {
             tick: self.tick,
-            state_hash: self.state_hash(),
+            // W2-2: ordinary execution is digest-free. The verified path computes the
+            // canonical digest once through `state_hash()`; `step` must not build the
+            // full state body or call the serializer at all.
+            state_hash: None,
             halted: self.cpu.halted(),
+            verified: false,
         })
     }
 }
@@ -1011,6 +1015,13 @@ impl MediaSource for MegadriveBackend {
 impl Backend for MegadriveBackend {
     fn descriptor(&self) -> &BackendDescriptor {
         &self.descriptor
+    }
+
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        // The private inherent method is the single canonical digest and keeps the
+        // codegen-motivated view construction (see its doc comment). This impl only
+        // exposes it through the trait; it must never grow a second serializer.
+        Ok(MegadriveBackend::state_hash(self))
     }
 
     fn media_mut(&mut self) -> Option<&mut dyn MediaSource> {
@@ -2547,10 +2558,13 @@ mod tests {
         let mut button_only = controller_factory().create_machine().expect("machine");
         let frame = InputFrame::new(0x01);
         for step in 1..=8 {
-            let pressed_outcome = pressed.step(frame).expect("pressed step");
-            let neutral_outcome = neutral.step(InputFrame::NEUTRAL).expect("neutral step");
+            // The comparison needs the per-step digest, so it uses the verified path.
+            let pressed_outcome = pressed.step_verified(frame).expect("pressed step");
+            let neutral_outcome = neutral
+                .step_verified(InputFrame::NEUTRAL)
+                .expect("neutral step");
             let button_outcome = button_only
-                .step(InputFrame::new(0x40)) // A is not in the TH-high subset
+                .step_verified(InputFrame::new(0x40)) // A is not in the TH-high subset
                 .expect("button-only step");
 
             // The transient input never survives the step, even on success.
@@ -2652,7 +2666,8 @@ mod tests {
 
         let mut expected = Vec::new();
         for _ in 0..10 {
-            let outcome = uninterrupted.step(frame).expect("step");
+            // The per-step digest is recorded through the verified path (W2-2).
+            let outcome = uninterrupted.step_verified(frame).expect("step");
             expected.push((outcome.tick, outcome.state_hash));
         }
         assert_eq!(
@@ -2672,7 +2687,7 @@ mod tests {
             Ok(CONTROLLER_NEUTRAL)
         );
         for (index, (tick, state_hash)) in expected.iter().enumerate() {
-            let outcome = restored.step(frame).expect("restored step");
+            let outcome = restored.step_verified(frame).expect("restored step");
             assert_eq!(outcome.tick, *tick, "tick at step {index}");
             assert_eq!(outcome.state_hash, *state_hash, "hash at step {index}");
         }
@@ -2690,7 +2705,10 @@ mod tests {
         }
         neutral.restore(&checkpoint).expect("restore");
         assert_ne!(
-            neutral.step(InputFrame::NEUTRAL).expect("step").state_hash,
+            neutral
+                .step_verified(InputFrame::NEUTRAL)
+                .expect("step")
+                .state_hash,
             expected[0].1
         );
     }
@@ -4651,7 +4669,11 @@ mod tests {
         fill_vdp_fifo(&mut stalled);
 
         let plain_outcome = plain.step(InputFrame::NEUTRAL).expect("plain step");
-        let stalled_outcome = stalled.step(InputFrame::NEUTRAL).expect("stalled step");
+        // W2-2: ordinary steps carry no digest, so the digest comparison below uses the
+        // verified path for both outcomes; the tick comparison keeps its ordinary step.
+        let stalled_outcome = stalled
+            .step_verified(InputFrame::NEUTRAL)
+            .expect("stalled step");
         assert_eq!(
             stalled_outcome.tick.raw(),
             plain_outcome.tick.raw() + 7,
@@ -4661,7 +4683,9 @@ mod tests {
         // The same setup is deterministic: identical tick and state hash.
         let mut again = factory.create_machine().expect("machine");
         fill_vdp_fifo(&mut again);
-        let again_outcome = again.step(InputFrame::NEUTRAL).expect("repeat step");
+        let again_outcome = again
+            .step_verified(InputFrame::NEUTRAL)
+            .expect("repeat step");
         assert_eq!(again_outcome.tick, stalled_outcome.tick);
         assert_eq!(again_outcome.state_hash, stalled_outcome.state_hash);
     }

@@ -58,10 +58,15 @@ security or concurrency guarantees it does not provide?
    same host, using the CLI, the process-local service or a loopback HTTP/MCP endpoint.
    Loopback is the only supported bind address for v1.
    **Owner decision (2026-11-20): a non-loopback bind refuses to start**, with a typed
-   error and a test. Today `chronofork serve --bind` accepts any address and only warns on
-   stderr (`crates/chronofork-cli/src/agent/serve.rs:90-94`); that behavior is not the
-   contract. A future `--unsafe-bind` (or any exposed deployment) requires its own ADR with
-   TLS and an authorization model.
+   error and a test. Implemented 2026-11-27: `chronofork serve --bind` refuses a
+   non-loopback address before the token file is read, the service is composed or a socket
+   is bound (`crates/chronofork-cli/src/agent/serve.rs`), and
+   `chronofork_transport::serve` refuses a non-loopback `ServerConfig::bind` before
+   `TcpListener::bind`; the stable diagnostic, empty stdout and exit status are proven by
+   `crates/chronofork-cli/tests/serve_bind.rs` and
+   `crates/chronofork-transport/tests/http.rs`. The earlier accept-and-warn behaviour is
+   superseded, not a fallback. A future `--unsafe-bind` (or any exposed deployment)
+   requires its own ADR with TLS and an authorization model.
 2. **One writer per session; no multi-user ownership promise.** Tokens remain static and
    process-local. Durable objects have no per-principal owner. The documentation must say so
    in the capability/limitations home rather than implying enterprise-grade isolation.
@@ -83,9 +88,21 @@ security or concurrency guarantees it does not provide?
    surface does not need a browser), plus `Host`/loopback checks and tests — **not** "accept
    any `localhost:<port>`", which authenticates nothing. A pre-auth connection deadline and a
    per-peer pre-auth connection cap are required: pre-auth slowloris is a demonstrated
-   availability defect (review A6-F4), not a theoretical hardening item. The MCP protocol
-   version upgrade is scheduled after M8 because it changes the wire contract and must not
-   block the emulator.
+   availability defect (review A6-F4), not a theoretical hardening item.
+
+   **Implementation status (2026-11-27):** the Origin policy and the absolute pre-auth
+   deadline are implemented — any `Origin`-bearing request is refused with `403 forbidden`
+   (v1 has no browser-facing surface, so "no `Origin`-bearing request" replaces the
+   allowlist) and `pre_auth_timeout` bounds `accept` → complete request head, including
+   time queued for a worker (the deadline is stamped before enqueue), verified in
+   `crates/chronofork-transport/tests/http.rs`. The **per-peer pre-auth connection cap**
+   and **`Host`/loopback header validation** remain deliberately deferred, with the
+   rationale and the current v1 boundary (loopback + static Bearer tokens, no TLS)
+   recorded in
+   [`docs/architecture/agent-interfaces.md`](../architecture/agent-interfaces.md#12-not-implemented-in-m6).
+
+   The MCP protocol version upgrade is scheduled after M8 because it changes the wire
+   contract and must not block the emulator.
 6. **The v1 security statement is a cooperative boundary, not a hostile-code sandbox.**
    Scripting remains a deterministic capability boundary; it is not OS/process isolation.
    This is existing policy and is restated here so that "agent-native" is not misread as a
@@ -152,7 +169,11 @@ One list, and the canonical home for status/follow-ups stays
 ## Verification
 
 - Non-loopback bind is **refused with a typed error before serving**, and a test asserts the
-  refusal (not a warning, not "documented as unsupported").
+  refusal (not a warning, not "documented as unsupported"). Implemented 2026-11-27:
+  `crates/chronofork-cli/tests/serve_bind.rs` proves the process-level refusal (nonzero
+  exit, one stable diagnostic, empty stdout, before the token read) and
+  `crates/chronofork-transport/tests/http.rs` proves the transport refuses before binding
+  and that the address is still free afterwards.
 - File security: a world/group-readable token file is refused (or a typed warning is emitted
   before serving) and the store/artifact roots are `0700`/`0600`, with a test.
 - The capability/limitations documentation states: no TLS, no multi-user ownership, no

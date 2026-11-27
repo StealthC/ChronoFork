@@ -257,8 +257,9 @@ fn cpu_window_access_while_z80_owns_the_bus_stalls() -> Result<(), Box<dyn Error
 
     let before_z80 = with_z80.tick().raw();
     let before_control = control.tick().raw();
-    let z80_outcome = with_z80.step(InputFrame::NEUTRAL)?;
-    let control_outcome = control.step(InputFrame::NEUTRAL)?;
+    // The assertion compares digests, so it uses the verified path (W2-2).
+    let z80_outcome = with_z80.step_verified(InputFrame::NEUTRAL)?;
+    let control_outcome = control.step_verified(InputFrame::NEUTRAL)?;
     let z80_delta = with_z80.tick().raw() - before_z80;
     let control_delta = control.tick().raw() - before_control;
     assert_eq!(
@@ -279,8 +280,10 @@ fn arbitration_is_deterministic_across_identical_runs() -> Result<(), Box<dyn Er
     let mut first = machine(&program)?;
     let mut second = machine(&program)?;
     for _ in 0..3 {
-        let a = first.step(InputFrame::NEUTRAL)?;
-        let b = second.step(InputFrame::NEUTRAL)?;
+        // W2-2: ordinary outcomes carry no digest, so determinism is compared through
+        // the verified path; comparing two `None`s would pass trivially.
+        let a = first.step_verified(InputFrame::NEUTRAL)?;
+        let b = second.step_verified(InputFrame::NEUTRAL)?;
         assert_eq!(a.tick, b.tick);
         assert_eq!(a.state_hash, b.state_hash);
     }

@@ -77,9 +77,14 @@ M3-A45–A53 `executed - passed`, ignored `.research/m3-hardware/verification/` 
 
 ## State hashing
 
-Every step returns a `StateHash` (SHA-256) over the backend's canonical mutable
-state. The synthetic backend hashes PC, accumulator, RAM, tick, step count and halt
-flag. Hashing is used for:
+A `StateHash` (SHA-256) is computed over the backend's canonical mutable state by
+`Backend::state_hash()`, the single canonical digest source; the synthetic backend
+hashes PC, accumulator, RAM, tick, step count and halt flag. Since W2-2 the ordinary
+`Backend::step` is digest-free: its `StepOutcome` carries `state_hash: None` and
+`verified: false`. A caller that needs a per-step digest uses `Backend::step_verified`,
+which calls `step` and then exactly one `state_hash()`, or calls `state_hash()` itself.
+Snapshots still derive the envelope digest from the same serializer, and hashing is used
+for:
 
 - replay verification;
 - fork equivalence at the checkpoint;

@@ -45,6 +45,10 @@ impl Backend for NullBackend {
         &self.descriptor
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        Err(BackendError::Halted)
+    }
+
     fn step(&mut self, _input: InputFrame) -> Result<StepOutcome, BackendError> {
         Err(BackendError::Halted)
     }

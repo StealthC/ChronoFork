@@ -478,6 +478,17 @@ impl<'a> Debugger<'a> {
             let events = self.collect_events();
             let matched_events = self.matching_events(&events);
             let watchpoint_ids = self.watchpoint_hits(&events);
+            if watchpoint_ids.is_empty() && self.first_matching_event_breakpoint(&events).is_none()
+            {
+                continue;
+            }
+            // A stop report needs a digest. During the W2-1 landing the ordinary step
+            // still carries one; from W2-2 it will not, so the debugger asks the
+            // canonical source explicitly instead of assuming a stale field.
+            let state_hash = match outcome.state_hash {
+                Some(hash) => hash,
+                None => self.backend.state_hash().map_err(DebugError::Backend)?,
+            };
             if !watchpoint_ids.is_empty() {
                 return Ok(self.stop_report(
                     StopReason::Watchpoint {
@@ -485,7 +496,7 @@ impl<'a> Debugger<'a> {
                     },
                     steps,
                     outcome.tick,
-                    outcome.state_hash,
+                    state_hash,
                     outcome.halted,
                     matched_events,
                 ));
@@ -495,7 +506,7 @@ impl<'a> Debugger<'a> {
                     StopReason::Event { id },
                     steps,
                     outcome.tick,
-                    outcome.state_hash,
+                    state_hash,
                     outcome.halted,
                     matched_events,
                 ));

@@ -571,7 +571,7 @@ impl Player {
             if input_index >= target_position {
                 break;
             }
-            let outcome = match manager.step(*session, step.input()) {
+            let outcome = match manager.step_verified(*session, step.input()) {
                 Ok(outcome) => outcome,
                 Err(source) => {
                     return Err(PlayerError::Movie {
