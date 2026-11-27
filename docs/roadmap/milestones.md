@@ -48,7 +48,7 @@ state, evidence and follow-ups; [Roadmap](roadmap.md) records stage intent.
 | M5 | [Stage 5 — Tracing and scripting](roadmap.md#stage-5--tracing-and-scripting) | `Complete` | merged to `main` at `0c4e9f0` (PR #4); verified on `agent/m5-tracing-scripting` at base `84f1476` |
 | M6 | [Stage 6 — Agent-native interfaces](roadmap.md#stage-6--agent-native-interfaces) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m6-agent-interfaces` at base `93d47ed` |
 | M7 | [Stage 7 — Human-facing GUI](roadmap.md#stage-7--human-facing-gui) | `Complete` | merged to `main` at `cb05836` (PR #6); verified on `agent/m7-gui` at base `93d47ed` |
-| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented, verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the phase-8.3 PR (issue #16); phase 8.4 implemented and gate-executed on `agent/8.4-z80-audio`, with verification, review and integration pending; phases 8.5–8.8 planned |
+| M8 | [Stage 8 — Functional Mega Drive](roadmap.md#stage-8--functional-mega-drive) | `In progress` | phase 8.1 merged to `main` at `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented, verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the phase-8.3 PR (issue #16); phase 8.4 (Z80, bus arbitration and audio) verified, reviewed and merged to `main` at `dc5b319` (PR #31); phases 8.5–8.8 planned |
 | M9 | [Stage 9 — Multi-backend expansion](roadmap.md#stage-9--multi-backend-expansion) | `Planned` | not started |
 
 Hardware-depth track (parallel, not a stage):
@@ -81,10 +81,9 @@ independently reviewed and merged to `main` at `f024b7b` (PR #25); phase 8.2 is 
 verified (round 12) and independently reviewed (round 11), and merged to `main` through the
 phase-8.2 PR (issue #15); phase 8.3 (complete VDP) is implemented, verified (rounds 1–3) and
 independently reviewed (rounds 2–3), and merged to `main` through the phase-8.3 PR (issue
-#16); phase 8.4 (Z80, bus arbitration and audio) is implemented and gate-executed on
-`agent/8.4-z80-audio` with verification, review and integration pending; phases 8.5–8.8 are
-planned. M8 depends on the M1–M7 layers and consumes the H1–H5
-checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
+#16); phase 8.4 (Z80, bus arbitration and audio) is verified, reviewed and merged to `main`
+at `dc5b319` (PR #31); phases 8.5–8.8 are planned. M8 depends on the M1–M7 layers and
+consumes the H1–H5 checkpoints. M9 — Multi-backend is `Planned` after M8. M0–M7 are merged to
 `main`; M4 was merged at `4c595a2` (PR #2) after its verification on
 `agent/m4-debugging-depth` at `6d30243`. H1–H5 proceed in parallel and are decomposed by M8's
 phases.
@@ -713,9 +712,8 @@ and do not reopen it.
   `f024b7b` (PR #25); phase 8.2 implemented, verified (round 12) and independently reviewed
   (round 11), merged to `main` through the phase-8.2 PR (issue #15); phase 8.3 implemented,
   verified (rounds 1–3) and independently reviewed (rounds 2–3), merged to `main` through the
-  phase-8.3 PR (issue #16); phase 8.4 (Z80, bus arbitration and audio) implemented and
-  gate-executed on `agent/8.4-z80-audio`, with verification, review and integration pending;
-  phases 8.5–8.8 planned
+  phase-8.3 PR (issue #16); phase 8.4 (Z80, bus arbitration and audio) verified, reviewed
+  and merged to `main` at `dc5b319` (PR #31); phases 8.5–8.8 planned
 - **Objective:** complete the Mega Drive backend — full 68000 and Z80, complete VDP with
   rendering/DMA/timing, YM2612/PSG audio, cartridge/TMSS/mapper/SRAM, timers and controllers —
   so a curated commercial ROM set plays with video, audio and input, with deterministic

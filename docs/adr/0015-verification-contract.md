@@ -5,6 +5,24 @@
   boundary — was selected; R1 C1–C10, R4 N1–N11/G1–G6 and critique C1 corrections applied
   2026-11-20; independent review V4 passed 2026-11-20). This accepts the execution/verification
   decision; it does not certify implementation or benchmark results.
+- **Implementation status (2026-11-27):** plan **W2.1/W2.2** / design **W2-1/W2-2**
+  landed. `Backend::state_hash()` is a required method with no default body,
+  `VerifiedStepOutcome` and the default `Backend::step_verified()` compose `step` plus
+  exactly one `state_hash()`, and `StepOutcome` is
+  `{ tick, state_hash: Option<StateHash>, halted, verified }`. The ordinary `step` no
+  longer computes a digest (`None`, `verified = false`); `step_verified` is the only
+  per-step digest path and uses the same single canonical source, so snapshot bytes,
+  state hashes, TAS/replay and demo goldens are unchanged. A before/after benchmark of the
+  same fixed `interrupt_rom(3)` workload through
+  `cargo run -p chronofork-megadrive --example bench_step --release` is recorded under
+  the ignored `.research/consolidation-w2-2026-11-27/bench/` evidence (command, p50/p95,
+  instructions/s and checkpoint bytes; no FPS or game-performance claim). **W2-3** (remove
+  the `Option`, add the batch primitive) is not implemented. Evidence:
+  `crates/chronofork-backend-api/tests/w2_verified.rs` (`verified_step_hashes_exactly_once_per_step`),
+  `crates/chronofork-megadrive/tests/w2_state_hash.rs`,
+  `crates/chronofork-megadrive/tests/w2_twin_machines.rs`
+  (`twin_machines_normal_vs_verified`),
+  `crates/chronofork-test-backend/tests/w2_state_hash.rs`.
 - **Date:** 2026-11-20.
 - **Milestone:** M8 (functional Mega Drive emulator) and the product-consolidation phase.
 - **Related:** [ADR-0014](0014-v1-scope-single-user-loopback.md) (v1 scope),
@@ -18,7 +36,7 @@
 
 ## Context
 
-`Backend::step(&mut self, InputFrame) -> StepOutcome` currently returns
+Before W2-1, `Backend::step(&mut self, InputFrame) -> StepOutcome` returned
 `StepOutcome { tick, state_hash, halted }` on every instruction
 (`crates/chronofork-backend-api/src/traits.rs:12-33`). The Mega Drive implementation closes
 each step with `state_hash()` (`crates/chronofork-megadrive/src/backend.rs:632-685`), which

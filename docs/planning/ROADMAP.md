@@ -17,9 +17,9 @@
 > are one-line records; their Definition of Done, work items and evidence stay on the
 > canonical milestone page. Hardware depth H1–H5 is a parallel track, never a milestone, but
 > M8 is the product milestone that sequences those tracks to completion. M8 is marked active
-> because it is the current milestone: phase 8.3 is complete and merged, phase 8.4 is complete
-> on `agent/8.4-z80-audio` with verification/review/integration pending, and phases 8.5–8.8 are
-> pending, so `active` does not mean every phase is implemented. The canonical milestone page
+> because it is the current milestone: phases 8.1–8.4 are complete and merged, phases 8.5–8.8
+> are pending, and the consolidation track inside M8 is in progress, so `active` does not mean
+> every phase is implemented. The canonical milestone page
 > records M8 as `In progress` and M9 as `Planned`; this file's `active` and `**Started:**` date
 > record when the lifecycle layer took M8 as the current milestone.
 >
@@ -186,6 +186,33 @@ supersedes ADR-0013's no-toolkit constraint.
 **HelpWanted:** no
 **Issue:** #21
 **Plan:** [plan](../superpowers/plans/2026-11-17-8.8-native-frontend.md)
+
+## Consolidation track (inside the open M8)
+
+**Owner decision (2026-11-20, O-2):** M8 stays open; consolidation is a phase of the open M8,
+the M8 Definition of Done is not amended, and 8.7/8.8 are executed afterwards. The task
+breakdown, gates and the dated execution ledger live in the
+[consolidation and agent API plan](../superpowers/plans/2026-11-20-consolidation-and-agent-api.md#12-execution-ledger-2026-11-27);
+the governing decisions are [ADR-0014](../adr/0014-v1-scope-single-user-loopback.md) (v1 scope,
+loopback-only, non-loopback bind refused), [ADR-0015](../adr/0015-verification-contract.md)
+(execution/verification contract) and
+[ADR-0016](../adr/0016-session-service-and-agent-api.md) (session service and agent API).
+Capability scope, integration state and evidence stay in the
+[canonical milestone page](../roadmap/milestones.md); this section records only execution
+status and does not restate capability prose.
+
+| Workstream | Status | Where it stands |
+|---|---|---|
+| W0 — ADRs and governance | done | ADRs 0014–0016 accepted; the independent review is durable in `docs/reviews/2026-11-20-independent-review/` |
+| W1 — boot/bus/DMA hardening | done | PR #33 (bus/boot/DMA, G-BOOT-0/1 PASS at the W1 freeze); #38 payload bound; #39 VDP `0x0C`/payload v8; #40 hygiene; #41 YM2612 selector/payload v9 |
+| W2 — execution/verification contract | **in progress — W2.1/W2.2 implemented, awaiting external evaluation** | W2.1/W2.2 implemented and verified (report in ignored `.research/.../CHECKPOINT.md`); W2.3+ and W2-4a not started and waiting for the owner's evaluation |
+| W3 — service/concurrency/agent API | partial | W3.1–W3.3 landed (PR #35); the W3.1 p95 latency evidence is still open; W3.4/W3.4a/W3.5 pending |
+| W4 — quality and reproducible evidence | partial | W4.1–W4.3/W4.5/W4.7 landed (PR #35); W4.8 partial (#40); W4.4/W4.6 pending |
+| W5 — backend and product consolidation | pending | W5.1 satisfied by the 8.4 merge; W5.2–W5.6 pending |
+
+**Deferred and unchanged:** 8.7 (execution modes and headless capture), 8.8 (native window)
+and M9 stay deferred until the consolidation gates pass; M8 remains open. Phases 8.5–8.8 keep
+the scope and status recorded above — they are not duplicated here.
 
 ## Milestone 9: Multi-backend expansion [status: pending]
 

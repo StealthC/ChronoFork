@@ -315,3 +315,60 @@ decided):
 7. ~~Client timeout: raise or poll?~~ **Decided (V3-1):** the v1 client timeout is fixed above
    the 30 s server deadline plus an explicit margin for the final response/hash; asynchronous
    poll delivery is out of scope for v1 (if ever chosen, it replaces this rule).
+
+## 12. Execution ledger (2026-11-27)
+
+**Scope of this section.** Execution status only, as of **2026-11-27** on the consolidation
+branch `agent/consolidation-2026-11-27` (base `1390841`). It records where each workstream
+stands and what comes next; it does **not** rewrite the tasks, acceptance criteria or gates in
+§4–§6, and it is not a second source of truth for capability scope (that stays in
+[`docs/roadmap/milestones.md`](../../roadmap/milestones.md)). Raw gate logs and per-revision
+measurements stay in ignored `.research/` evidence, as the evidence rules require.
+
+| Workstream | Status | PR / commit / evidence | Next step |
+|---|---|---|---|
+| **W0 — ADRs and governance** | **done** | ADR-0014/0015/0016 [Accepted](../../adr/README.md) after the independent review; review report durable at [`docs/reviews/2026-11-20-independent-review/REVIEW.md`](../../reviews/2026-11-20-independent-review/REVIEW.md); W0.3 source-of-truth cleanup and W0.5 handoff landed through PR #35 (`a295834`) | — |
+| **W1 — boot/bus/DMA hardening** | **done** | W1.1–W1.7 in PR #33 (`994c3f2`, including the committed boot harness `crates/chronofork-megadrive/tests/boot_gate.rs`); **G-BOOT-0/G-BOOT-1 PASS at the W1 freeze** (both commercial fixtures complete the full step budget and every marker holds; the harness header records the result, the measured profile stays in ignored `.research/w1-2026-11-21/`); W1.8 payload bound #38 (`e6138b6`); VDP `0x0C`/payload v8 #39 (`a9fe4ae`, [ADR-0017](../../adr/0017-vdp-read-cache-and-payload-v8.md)); hygiene #40 (`4993328`); one global YM2612 selector/payload v9 #41 (`1390841`, [ADR-0018](../../adr/0018-ym2612-global-selector-and-payload-v9.md)) | — |
+| **W2 — execution/verification contract** | **W2.1/W2.2 implemented; awaiting external checkpoint evaluation (W2.3+ NOT started)** | Design decided in [`2026-11-20-w2-verification-migration-design.md`](../specs/2026-11-20-w2-verification-migration-design.md) (D1–D10); ADR-0015 accepted; implementation on `agent/consolidation-2026-11-27` (base `1390841`); independent verification `t9` and adversarial review `t11` PASS; checkpoint report `.research/consolidation-w2-2026-11-27/CHECKPOINT.md` | Owner evaluates the W2.1/W2.2 checkpoint; **W2.3+ and W2-4a must not start before that evaluation**, and W2 is not complete |
+| **W3 — service/concurrency/agent API** | **partial: W3.1–W3.3 implemented** | PR #35 (`a295834`): registry/owner and phased lock protocol, lock-free cancel/deadline, expected revision and bounded journal, quotas plus `close`/`reap`/closed-entry bounds; evidence `crates/chronofork-service/tests/w3_{concurrency,control,lifecycle}.rs` and `w3e/w3f/w3g` contract tests | Close the **W3.1 latency gap** (below), then W3.4 → W3.4a/W3.5 |
+| **W4 — quality and reproducible evidence** | **partial** | PR #35 (`a295834`): W4.1 committed synthetic fixtures + `fixture_integrity`, W4.2 pinned differential with explicit skip/exit matrix + `oracle_harness`, W4.3 exception/`TRAP`/`RTE` ROM, W4.5 `CHRONOFORK_REQUIRE_ROM_FIXTURES` and the cross-profile demo golden, W4.7 layered CI (`.github/workflows/ci.yml`); W4.8 partial via #40 (`4993328`) | W4.4 mutation control and W4.6 KidEngine script are pending; W4.7 cost/duration measurement still to record |
+| **W5 — backend and product consolidation** | **pending (W5.1 done)** | W5.1 satisfied by the 8.4 merge: PR #31 (`dc5b319`, issue #17); W5.2–W5.6 not started | 8.5 timers/controllers (after the plan's port-3 rule fix), then audio verification, 8.6a/b/c |
+
+### 12.1 W2 landing-order reconciliation (normative for this checkpoint)
+
+The plan's W2 task IDs and the design's landing order were written independently and do not
+pair one-to-one. The mapping used by this checkpoint is:
+
+| Plan task | Design landing | Content in this checkpoint | State |
+|---|---|---|---|
+| **W2.1** | **W2-1** | `Backend::state_hash()` as an explicit required method, `step_verified` calling the single hash source, `StepOutcome` gaining `state_hash: Option<StateHash>` and `verified` | **implemented** (checkpoint) |
+| **W2.2** | **W2-2** | `step` stops hashing (`state_hash = None`, `verified = false`); twin-machine invariant; goldens read through `step_verified` | **implemented** (checkpoint) |
+| W2.2 (target-shape wording) | **W2-3** | removal of the `Option` field, the call-site migration and `run_batch`/`run_until`/`run_cycles` | **not in this checkpoint — pending** |
+| — | **W2-4a** | `MachineStatus`/`status()`, `inspect()` dropping the copy, service JSON wire v2 | **not in this checkpoint — pending** |
+
+The plan's W2.2 row states the *target* shape (`{tick, halted}`); the design deliberately splits
+that target across W2-2 (stop hashing) and W2-3 (remove the field, add batch). This checkpoint
+executes only the design's W2-1 and W2-2, so plan W2.1 and plan W2.2 are **not complete**;
+their remaining W2-3/W2-4a halves stay pending owner evaluation. The MCP protocol version is
+unchanged; only the ChronoFork API wire version would move, and that move is W2-4a.
+
+### 12.2 Non-loopback bind (security fix, t2)
+
+The v1 owner decision O-1 ([ADR-0014](../../adr/0014-v1-scope-single-user-loopback.md) §1 and
+G-SEC) is that a **non-loopback bind refuses to start with a typed error and a test**; an
+exposed/`--unsafe-bind` deployment needs its own ADR. The decision is approved and
+**implemented on 2026-11-27**: the CLI refuses a non-loopback `--bind` at argument parsing,
+before the token file is read, the service is composed or a socket is bound, and
+`chronofork_transport::serve` refuses a non-loopback `ServerConfig::bind` before
+`TcpListener::bind`. `crates/chronofork-cli/tests/serve_bind.rs` and
+`crates/chronofork-transport/tests/http.rs` prove the refusal. The fix is **outside the
+W2.1/W2.2 checkpoint**.
+
+### 12.3 W3.1 evidence gap (stated honestly)
+
+W3.1's acceptance target includes a **250 ms p95** latency for `list`/`cancel` under load
+"measured by the test, not asserted". PR #35 delivers the barrier-scale, no-deadlock,
+atomic-admission and `list`-non-blocking tests, but **no test measures the p95 latency yet**;
+the target therefore remains unverified and W3.1 is recorded as *implemented with an open
+evidence gap*, not closed. Recording the measurement on a calibrated runner is the next W3
+step.

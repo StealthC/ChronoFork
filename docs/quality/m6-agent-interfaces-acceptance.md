@@ -641,6 +641,10 @@ unchanged, plus the pass-2 change where one exists).
   in tests); the default bind is `127.0.0.1:0` with a warning for a non-loopback address.
 - **Evidence:** `.agents/notes/m6/verify/audit/a31-security.txt`,
   `audit/a26-boundary.txt`.
+- **Superseded (2026-11-27):** this baseline warned on a non-loopback bind; the CLI and
+  transport now refuse it before serving (see the 2026-11-27 implementation status in
+  [ADR-0014](../adr/0014-v1-scope-single-user-loopback.md)). The observation above records
+  the M6 baseline and is not a current claim.
 
 ### M6-A32 — Gate cleanliness and thread safety
 
