@@ -15,7 +15,7 @@ use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendFactory, BackendSnapshot, DebugAddressRange,
     DebugEvent, DebugEventKind, MachineInspection, StepOutcome, WatchpointAccess, WatchpointSpec,
 };
-use chronofork_core::{InputFrame, Tick};
+use chronofork_core::{InputFrame, StateHash, Tick};
 use chronofork_debug::{
     BreakpointId, BreakpointSpec, Condition, ConditionOperand, DEFAULT_LOG_CAPACITY, DebugError,
     DebugRun, Debugger, EventFilter, InterruptPhase, InvalidLogMessage, Location, LogEntry,
@@ -1276,6 +1276,10 @@ struct WithoutProgramCounter {
 impl Backend for WithoutProgramCounter {
     fn descriptor(&self) -> &BackendDescriptor {
         self.inner.descriptor()
+    }
+
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        self.inner.state_hash()
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {

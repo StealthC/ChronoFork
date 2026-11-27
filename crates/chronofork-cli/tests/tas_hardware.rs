@@ -999,7 +999,7 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
     let pressed = InputFrame::new(0x11);
     let mut expected = Vec::new();
     for _ in 0..12 {
-        expected.push(manager.step(source, pressed)?.state_hash);
+        expected.push(manager.step_verified(source, pressed)?.state_hash);
     }
 
     // Restoring the checkpoint and replaying the same frames reproduces every
@@ -1007,7 +1007,10 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
     manager.restore(source, checkpoint)?;
     assert_eq!(manager.inspect(source)?.machine.state_hash, start_hash);
     for expected_hash in &expected {
-        assert_eq!(manager.step(source, pressed)?.state_hash, *expected_hash);
+        assert_eq!(
+            manager.step_verified(source, pressed)?.state_hash,
+            *expected_hash
+        );
     }
 
     // Forks from the same checkpoint diverge at the first controller read when
@@ -1017,11 +1020,13 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
     let fork_neutral = manager.fork_from_snapshot(source, checkpoint)?;
     for expected_hash in &expected {
         assert_eq!(
-            manager.step(fork_pressed, pressed)?.state_hash,
+            manager.step_verified(fork_pressed, pressed)?.state_hash,
             *expected_hash
         );
     }
-    let neutral_first = manager.step(fork_neutral, InputFrame::NEUTRAL)?.state_hash;
+    let neutral_first = manager
+        .step_verified(fork_neutral, InputFrame::NEUTRAL)?
+        .state_hash;
     assert_ne!(neutral_first, expected[0]);
     assert_eq!(manager.inspect(source)?.machine.state_hash, start_hash);
     Ok(())

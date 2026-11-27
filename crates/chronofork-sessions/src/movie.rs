@@ -47,7 +47,7 @@
 use std::error::Error;
 use std::fmt;
 
-use chronofork_backend_api::StepOutcome;
+use chronofork_backend_api::VerifiedStepOutcome;
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick, hash_bytes};
 
@@ -423,13 +423,12 @@ impl Movie {
             .map_err(MovieError::SnapshotImport)?;
         let mut steps = Vec::with_capacity(inputs.len());
         for (input_index, input) in inputs.iter().enumerate() {
-            let outcome =
-                manager
-                    .step(session, *input)
-                    .map_err(|source| MovieError::RecordFailed {
-                        input_index,
-                        source,
-                    })?;
+            let outcome = manager.step_verified(session, *input).map_err(|source| {
+                MovieError::RecordFailed {
+                    input_index,
+                    source,
+                }
+            })?;
             if outcome.halted && input_index + 1 < inputs.len() {
                 return Err(MovieError::RecordFailed {
                     input_index,
@@ -1346,7 +1345,7 @@ pub(crate) fn capture_anchor(
     manager: &mut SessionManager,
     session: SessionId,
     anchor_step: usize,
-    outcome: StepOutcome,
+    outcome: VerifiedStepOutcome,
     identity: AnchorIdentity,
     anchors: &mut Vec<MovieAnchor>,
     anchor_bytes_total: &mut usize,
@@ -1671,13 +1670,12 @@ mod v2 {
             let mut anchors = Vec::new();
             let mut anchor_bytes_total = 0_usize;
             for (input_index, input) in inputs.iter().enumerate() {
-                let outcome =
-                    manager
-                        .step(session, *input)
-                        .map_err(|source| MovieError::RecordFailed {
-                            input_index,
-                            source,
-                        })?;
+                let outcome = manager.step_verified(session, *input).map_err(|source| {
+                    MovieError::RecordFailed {
+                        input_index,
+                        source,
+                    }
+                })?;
                 if outcome.halted && input_index + 1 < inputs.len() {
                     return Err(MovieError::RecordFailed {
                         input_index,

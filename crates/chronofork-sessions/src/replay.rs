@@ -218,13 +218,12 @@ fn replay_validated(
         if start_index.is_some_and(|start| input_index <= start) {
             continue;
         }
-        let outcome =
-            manager
-                .step(session, step.input())
-                .map_err(|source| MovieError::ReplayFailed {
-                    input_index,
-                    source,
-                })?;
+        let outcome = manager
+            .step_verified(session, step.input())
+            .map_err(|source| MovieError::ReplayFailed {
+                input_index,
+                source,
+            })?;
         if outcome.tick != step.outcome_tick() {
             return Err(MovieError::TickMismatch {
                 input_index,

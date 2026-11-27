@@ -14,10 +14,37 @@ use crate::snapshot::BackendSnapshot;
 pub struct StepOutcome {
     /// Tick after the step.
     pub tick: Tick,
-    /// Digest of state after the step.
-    pub state_hash: StateHash,
+    /// Digest of state after the step, when the path produced one.
+    ///
+    /// [`Backend::step`] returns `None` from W2-2 onward (it computed `Some` only
+    /// during the W2-1 migration landing); [`Backend::step_verified`] always
+    /// returns a digest as [`VerifiedStepOutcome::state_hash`]. The field is
+    /// removed entirely at W2-3, so consumers that need a digest must use the
+    /// verified path now rather than treat this field as a guarantee.
+    pub state_hash: Option<StateHash>,
     /// Whether the machine halted during this step.
     pub halted: bool,
+    /// Whether this outcome was produced by a verified path.
+    ///
+    /// `false` for [`Backend::step`] (the ordinary path) and `true` for
+    /// [`Backend::step_verified`]; these are the only two producers of the flag.
+    pub verified: bool,
+}
+
+/// Result of one verified execution step.
+///
+/// A distinct type from [`StepOutcome`], so a harness that needs a per-step
+/// digest cannot mistake an ordinary outcome for a verified one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedStepOutcome {
+    /// Tick after the step.
+    pub tick: Tick,
+    /// Whether the machine halted during this step.
+    pub halted: bool,
+    /// Digest of the state after the step.
+    pub state_hash: StateHash,
+    /// Always `true`; [`Backend::step_verified`] is the only producer.
+    pub verified: bool,
 }
 
 /// A single independent emulated machine.
@@ -31,6 +58,40 @@ pub trait Backend: Send {
 
     /// Advances the machine by one backend-defined quantum.
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError>;
+
+    /// Computes the canonical state digest without changing any state.
+    ///
+    /// There is exactly one canonical computation in the implementation, and the
+    /// verified path calls it. A backend that hashes a coarse view for speed must
+    /// still keep the serialized field layout in one writer; this method must never
+    /// become a second serializer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the implementation cannot produce the digest.
+    fn state_hash(&self) -> Result<StateHash, BackendError>;
+
+    /// Advances the machine by one quantum and produces a per-step digest.
+    ///
+    /// The default is [`Backend::step`] followed by exactly one
+    /// [`Backend::state_hash`] on the resulting state, so the verified digest can
+    /// never drift from the canonical source. A backend override may reorder that
+    /// composition (for example to hash inside one batch loop) but must never
+    /// recompute the serializer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's typed step or digest error.
+    fn step_verified(&mut self, input: InputFrame) -> Result<VerifiedStepOutcome, BackendError> {
+        let outcome = self.step(input)?;
+        let state_hash = self.state_hash()?;
+        Ok(VerifiedStepOutcome {
+            tick: outcome.tick,
+            halted: outcome.halted,
+            state_hash,
+            verified: true,
+        })
+    }
 
     /// Captures complete mutable state.
     fn snapshot(&self) -> Result<BackendSnapshot, BackendError>;

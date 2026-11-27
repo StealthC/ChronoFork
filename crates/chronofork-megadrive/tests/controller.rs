@@ -219,8 +219,9 @@ fn controller_input_is_absent_from_snapshots_and_restore_uses_the_next_frame() -
     );
 
     // Once the loop reads the controller, the same frame changes canonical state.
-    let pressed_outcome = pressed.step(frame)?;
-    let neutral_outcome = neutral.step(InputFrame::NEUTRAL)?;
+    // The comparison needs the per-step digest, so it uses the verified path (W2-2).
+    let pressed_outcome = pressed.step_verified(frame)?;
+    let neutral_outcome = neutral.step_verified(InputFrame::NEUTRAL)?;
     assert_ne!(pressed_outcome.state_hash, neutral_outcome.state_hash);
 
     // Replaying the recorded frames from the checkpoint reproduces every tick and
@@ -228,7 +229,7 @@ fn controller_input_is_absent_from_snapshots_and_restore_uses_the_next_frame() -
     // frame is the controller-reading step above.
     let mut expected = vec![(pressed_outcome.tick, pressed_outcome.state_hash)];
     for _ in 0..8 {
-        let outcome = pressed.step(frame)?;
+        let outcome = pressed.step_verified(frame)?;
         expected.push((outcome.tick, outcome.state_hash));
     }
     let mut restored = controller_machine()?;
@@ -237,7 +238,7 @@ fn controller_input_is_absent_from_snapshots_and_restore_uses_the_next_frame() -
     }
     restored.restore(&pressed_snapshot)?;
     for (tick, state_hash) in &expected {
-        let outcome = restored.step(frame)?;
+        let outcome = restored.step_verified(frame)?;
         assert_eq!(outcome.tick, *tick);
         assert_eq!(outcome.state_hash, *state_hash);
     }
@@ -250,7 +251,9 @@ fn controller_input_is_absent_from_snapshots_and_restore_uses_the_next_frame() -
     }
     restored_neutral.restore(&pressed_snapshot)?;
     assert_ne!(
-        restored_neutral.step(InputFrame::NEUTRAL)?.state_hash,
+        restored_neutral
+            .step_verified(InputFrame::NEUTRAL)?
+            .state_hash,
         expected[0].1
     );
     Ok(())

@@ -25,4 +25,4 @@ pub use error::BackendError;
 pub use inspection::MachineInspection;
 pub use media::{AudioChunk, MediaError, MediaSource, VideoFrame};
 pub use snapshot::{BACKEND_SNAPSHOT_FORMAT_VERSION, BackendSnapshot, validate_envelope};
-pub use traits::{Backend, BackendFactory, StepOutcome};
+pub use traits::{Backend, BackendFactory, StepOutcome, VerifiedStepOutcome};

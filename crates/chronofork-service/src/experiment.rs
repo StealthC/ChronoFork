@@ -81,7 +81,11 @@ pub(crate) fn run(
         if performed == steps || halted {
             break;
         }
-        let outcome = manager.step(session, input).map_err(ServiceError::from)?;
+        // The artifact records a per-step digest, so the verified path supplies it
+        // instead of the ordinary outcome's migration-only field.
+        let outcome = manager
+            .step_verified(session, input)
+            .map_err(ServiceError::from)?;
         performed = performed
             .checked_add(1)
             .ok_or_else(|| ServiceError::internal("step counter overflow"))?;

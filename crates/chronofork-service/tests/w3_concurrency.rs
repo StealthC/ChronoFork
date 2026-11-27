@@ -24,7 +24,7 @@ use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendFactory, BackendSnapshot, DebugAccess,
     MachineInspection, StepOutcome,
 };
-use chronofork_core::InputFrame;
+use chronofork_core::{InputFrame, StateHash};
 use chronofork_service::json::{JsonValue, to_canonical_bytes};
 use chronofork_service::{
     AppService, ErrorCode, Principal, Scope, ServiceConfig, ServiceError, ServiceLimits,
@@ -191,6 +191,10 @@ impl Backend for BarrierBackend {
         self.inner.descriptor()
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        self.inner.state_hash()
+    }
+
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
         let step = self.steps.fetch_add(1, Ordering::SeqCst);
         if step == 0 {
@@ -306,6 +310,10 @@ struct GatedBackend {
 impl Backend for GatedBackend {
     fn descriptor(&self) -> &BackendDescriptor {
         self.inner.descriptor()
+    }
+
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        self.inner.state_hash()
     }
 
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {

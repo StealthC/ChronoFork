@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use chronofork_backend_api::{BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome};
+use chronofork_backend_api::{
+    BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome, VerifiedStepOutcome,
+};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
 use chronofork_trace::{Trace, TraceConfig};
 
@@ -533,6 +535,15 @@ impl SessionManager {
         input: InputFrame,
     ) -> Result<StepOutcome, SessionError> {
         self.session(session)?.lock()?.step(input)
+    }
+
+    /// Advances a session by one quantum through the backend's verified path.
+    pub fn step_verified(
+        &mut self,
+        session: SessionId,
+        input: InputFrame,
+    ) -> Result<VerifiedStepOutcome, SessionError> {
+        self.session(session)?.lock()?.step_verified(input)
     }
 
     /// Pauses a session.

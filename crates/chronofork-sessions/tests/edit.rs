@@ -1110,6 +1110,11 @@ impl Backend for BulkBackend {
         &self.descriptor
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        // The private inherent digest is the single canonical source for this fixture.
+        Ok(BulkBackend::state_hash(self))
+    }
+
     fn step(&mut self, _input: InputFrame) -> Result<StepOutcome, BackendError> {
         self.tick = self.tick.next().map_err(|_| BackendError::TickOverflow)?;
         self.steps = self
@@ -1118,8 +1123,9 @@ impl Backend for BulkBackend {
             .ok_or(BackendError::TickOverflow)?;
         Ok(StepOutcome {
             tick: self.tick,
-            state_hash: self.state_hash(),
+            state_hash: Some(self.state_hash()),
             halted: false,
+            verified: false,
         })
     }
 

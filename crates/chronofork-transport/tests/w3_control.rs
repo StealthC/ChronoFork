@@ -34,7 +34,12 @@ const TOKENS: &str = r#"{"schema":"chronofork.tokens.v1","principals":[
  {"name":"operator","token":"operator-token-0001","scopes":["read","write"]}]}"#;
 
 /// Steps for a run that only ever stops because the control path stops it.
-const LONG_RUN_STEPS: u64 = 40_000;
+///
+/// W2-2 makes an ordinary step digest-free and therefore much cheaper, so the
+/// workload is sized to still exceed the wall deadline and to stay observable by
+/// the cancel/progress calls. The fixture's request cap is raised to match; the
+/// production default cap is unchanged and its enforcement is covered elsewhere.
+const LONG_RUN_STEPS: u64 = 2_000_000;
 
 /// Deadline for one control request over the socket.
 ///
@@ -44,7 +49,10 @@ const LONG_RUN_STEPS: u64 = 40_000;
 const CONTROL_DEADLINE: Duration = Duration::from_secs(60);
 
 fn limits() -> ServiceLimits {
-    ServiceLimits::default()
+    ServiceLimits {
+        max_steps_per_request: LONG_RUN_STEPS,
+        ..ServiceLimits::default()
+    }
 }
 
 fn tokens() -> TokenTable {

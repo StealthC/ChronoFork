@@ -529,7 +529,7 @@ pub fn edit_movie(
             .copied()
             .unwrap_or_else(|| source_step.input());
         let outcome = manager
-            .step(session, input)
+            .step_verified(session, input)
             .map_err(|source| EditError::Step {
                 step_index: index,
                 source,

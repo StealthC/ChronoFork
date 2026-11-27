@@ -29,10 +29,10 @@ use chronofork_sessions::{SessionManager, Snapshot};
 const STEP_TRIALS: usize = 5;
 /// Steps executed per timed trial.
 ///
-/// Each step returns a canonical state hash over the full machine state (64 KiB
-/// work RAM plus the 64 KiB VDP VRAM), so this is deliberately smaller than a
-/// pure CPU microbenchmark budget; the reported throughput is the real full-step
-/// cost.
+/// From W2-2 the ordinary [`Backend::step`] computes no canonical digest, so this
+/// workload measures the digest-free execution path. The verified path's digest
+/// cost is measured by the backend's own tests; the checkpoint below still asks
+/// the canonical source once through `inspect`, so a format change is visible.
 const STEPS_PER_TRIAL: u64 = 10_000;
 /// Warmup steps before timing starts.
 const WARMUP_STEPS: u64 = 1_000;
@@ -43,13 +43,16 @@ const SERIALIZATION_TRIALS: usize = 25;
 /// Timed restore trials.
 const RESTORE_TRIALS: usize = 25;
 
-/// Sorts `samples` in place and returns (min, median, max).
-fn summarize(samples: &mut [Duration]) -> (Duration, Duration, Duration) {
+/// Sorts `samples` in place and returns (min, p50, p95, max).
+fn summarize(samples: &mut [Duration]) -> (Duration, Duration, Duration, Duration) {
     samples.sort_unstable();
     let min = samples.first().copied().unwrap_or_default();
     let median = samples[samples.len() / 2];
+    // Nearest-rank p95 on the sorted samples.
+    let rank = (samples.len() * 95).div_ceil(100).max(1);
+    let p95 = samples[rank - 1];
     let max = samples.last().copied().unwrap_or_default();
-    (min, median, max)
+    (min, median, p95, max)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total_step_time: Duration = step_samples.iter().copied().sum();
     let instruction_count = STEPS_PER_TRIAL * u64::try_from(STEP_TRIALS)?;
     let instructions_per_second = instruction_count as f64 / total_step_time.as_secs_f64();
-    let (step_min, step_median, step_max) = summarize(&mut step_samples);
+    let (step_min, step_median, step_p95, step_max) = summarize(&mut step_samples);
 
     // Snapshot size + serialization/restore cost through the session layer.
     let factory = MegadriveFactory::with_scheduler_config(interrupt_rom(3), config)?;
@@ -92,7 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         black_box(manager.snapshot_bytes(session, snapshot)?);
         serialization_samples.push(started.elapsed());
     }
-    let (serialize_min, serialize_median, serialize_max) = summarize(&mut serialization_samples);
+    let (serialize_min, serialize_median, serialize_p95, serialize_max) =
+        summarize(&mut serialization_samples);
 
     let mut restore_samples = Vec::with_capacity(RESTORE_TRIALS);
     for _ in 0..RESTORE_TRIALS {
@@ -100,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager.restore(session, snapshot)?;
         restore_samples.push(started.elapsed());
     }
-    let (restore_min, restore_median, restore_max) = summarize(&mut restore_samples);
+    let (restore_min, restore_median, restore_p95, restore_max) = summarize(&mut restore_samples);
 
     let payload_bytes = Snapshot::from_bytes(&serialized)?.backend().payload().len();
     let restored_state_hash_matches =
@@ -118,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("total_step_seconds={:.9}", total_step_time.as_secs_f64());
     println!("step_min_seconds={:.9}", step_min.as_secs_f64());
     println!("step_median_seconds={:.9}", step_median.as_secs_f64());
+    println!("step_p95_seconds={:.9}", step_p95.as_secs_f64());
     println!("step_max_seconds={:.9}", step_max.as_secs_f64());
     println!("instructions_per_second={instructions_per_second:.0}");
     println!("session_steps={SESSION_STEPS}");
@@ -135,12 +140,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serialize_median.as_secs_f64()
     );
     println!(
+        "serialization_p95_seconds={:.9}",
+        serialize_p95.as_secs_f64()
+    );
+    println!(
         "serialization_max_seconds={:.9}",
         serialize_max.as_secs_f64()
     );
     println!("restore_trials={RESTORE_TRIALS}");
     println!("restore_min_seconds={:.9}", restore_min.as_secs_f64());
     println!("restore_median_seconds={:.9}", restore_median.as_secs_f64());
+    println!("restore_p95_seconds={:.9}", restore_p95.as_secs_f64());
     println!("restore_max_seconds={:.9}", restore_max.as_secs_f64());
     println!(
         "restore_state_hash_matches={}",

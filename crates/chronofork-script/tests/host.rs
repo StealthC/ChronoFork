@@ -155,6 +155,11 @@ impl Backend for HexMemoryBackend {
         &self.descriptor
     }
 
+    fn state_hash(&self) -> Result<StateHash, BackendError> {
+        // The fixed memory image is this fixture's whole canonical state.
+        Ok(hash_bytes(&self.memory))
+    }
+
     fn step(&mut self, _input: InputFrame) -> Result<StepOutcome, BackendError> {
         Err(BackendError::Execution(
             "hex-memory test backend does not step".to_owned(),

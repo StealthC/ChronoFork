@@ -41,10 +41,21 @@ const CONTROL_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Steps for one long run: far more than a truncated run ever completes, so a
 /// control-path assertion cannot pass because the run happened to finish early.
-const LONG_RUN_STEPS: u64 = 40_000;
+// W2-2: ordinary steps no longer compute a per-step digest, so a step is much
+// cheaper. The workload is sized to still exceed the 120 ms wall budget used by the
+// deadline test; the cancel/progress tests only need a run that is long enough to be
+// observed, and a larger budget keeps that margin. No assertion threshold changed.
+const LONG_RUN_STEPS: u64 = 2_000_000;
 
 fn limits() -> ServiceLimits {
-    ServiceLimits::default()
+    // W2-2 makes a step digest-free and therefore much cheaper, so observing a
+    // 120 ms wall deadline needs a longer workload than the default request cap
+    // allows. Only this file's fixture raises the cap; the request-limit
+    // enforcement itself is covered by the service contract tests.
+    ServiceLimits {
+        max_steps_per_request: LONG_RUN_STEPS,
+        ..ServiceLimits::default()
+    }
 }
 
 fn service(limits: ServiceLimits) -> Arc<AppService> {
