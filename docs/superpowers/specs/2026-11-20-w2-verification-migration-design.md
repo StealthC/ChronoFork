@@ -3,6 +3,16 @@
 - **Status:** Implementation spec and migration plan. **Design only: no production code is
   changed by this document.** It is the design half of plan task `W2.1–W2.8`
   ([consolidation plan](../plans/2026-11-20-consolidation-and-agent-api.md) §4 W2).
+  **Landing status (2026-11-27):** design W2-1/W2-2 merged (PR #42, `cbba190`); the W2-3
+  contract state (field removal, batch/stop core), W2-3c cancellation/deadline, W2-4a
+  cheap status/inspection and W2-4b server-side wire v2 landed (v1 shape preserved; v2
+  served but not promoted until the W3.6 client probe/GUI decoders; MCP protocol version
+  stays `2025-03-26`). Review corrections are folded into the landing: the batch loop takes
+  its initial tick/halt from the hash-free `status()` fallback instead of inventing zero, the
+  input cap bounds stored explicit frames (not `performed`), `StopSet` rejects kind/value
+  mismatches, and the v2 `expected_tick` precondition uses the status tick so a run keeps one
+  digest. Post-step control outcomes preserve the step-derived tick/halt while keeping the
+  cancelled > deadline > halted reason priority. W2-5, W2-6, W2-7 and W2-8 remain pending.
 - **Date:** 2026-11-20.
 - **Baseline of the census:** `origin/main` `b8d63a17349e672ba6945eaba3379cec38cf9d1b`
   (`b8d63a1`). The §1.2/§1.3 counts were measured on a clean extraction of that commit

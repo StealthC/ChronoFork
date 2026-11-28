@@ -522,7 +522,23 @@ rule 1). If a future design needs the dependency table itself to change, that is
     behavior is promised;
   - this is the **API wire version**, distinct from the MCP protocol version (`2025-03-26`
     today), whose `2026-07-28` migration stays deferred.
-- **Changed shapes in v2:** `run` result (adds `performed`, `stop_reason`, request/revision keys
+- **Implementation status (W2.4b, 2026-11-27):** the server side of this matrix is landed:
+  every request is parsed with an explicit `ApiVersion` (absent = v1), v1 keeps the exact
+  v1 shape including `state_hash`, v2 is served only to a `2` request, and an unknown
+  version is refused before dispatch with a typed `unsupported_version` (HTTP header and
+  MCP per-call `_meta`). v2 `session.run` reports `performed`, `cycles` and `stop_reason`
+  from the batch primitive with a single digest per operation; v2 `session.inspect` uses the
+  hash-free status/inspection split. The service deliberately runs **one-step batches** so a
+  failed batch publishes exactly the prefix it applied (the batch primitive does not report an
+  applied count on error); this is a throughput trade-off, not a performance claim. The MCP
+  protocol version remains `2025-03-26`. The strict GUI run decoder was adapted for the new
+  v2 `cycles` field in this landing; the **client-side read-only probe/local refusal and the
+  broader GUI/typed-client v2 promotion remain W3.6**, so v2 is served but not promoted
+  end-to-end. Evidence:
+  `crates/chronofork-transport/tests/w3d_wire_version.rs`,
+  `crates/chronofork-service/tests/w2_wire_v2.rs`,
+  `crates/chronofork-transport/tests/mcp.rs`.
+- **Changed shapes in v2:** `run` result (adds `performed`, `cycles`, `stop_reason`, request/revision keys
   and the process epoch), the `cancelled`/`deadline` error codes, the service JSON's
   `state_hash` presence, and the `close`→`reap` semantics.
 - **Client/decoder matrix (declared, with per-version parity):** old client + v2 server → serves

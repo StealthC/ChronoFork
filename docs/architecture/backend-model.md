@@ -92,9 +92,14 @@ and version and is validated independently.
 
 ## Inspection versus bus access
 
+`status` is the cheap observation path (tick, halted, frame index and separated CPU/device
+register maps, bounded by `MAX_STATUS_REGISTERS`, no digest and no memory copy).
 `inspect`, `read_memory` and `write_memory` are debugger-oriented. They must not
 trigger emulated-bus side effects that would not occur at the current execution
-point. A backend that cannot make this distinction must report the limitation.
+point. `inspect` carries no digest and copies memory only through an explicit
+`MemoryWindow` (`inspect_with_memory`); a caller that needs the canonical digest asks
+`Backend::state_hash()` once. A backend that cannot make this distinction must report the
+limitation.
 
 Not every internal hardware register is readable or writable through an emulated
 bus. The future device-inspection API must expose a separate, typed view rather

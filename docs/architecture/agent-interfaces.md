@@ -105,6 +105,26 @@ executed evidence for this implementation is the W3.2 acceptance suite
 (`crates/chronofork-service/tests/w3_control.rs`,
 `crates/chronofork-transport/tests/w3_control.rs`).
 
+**Declared version matrix (W2.4b).** The server serves the **v1 shape** to an unversioned
+or `X-ChronoFork-API: 1` request and the **v2 shape** only to a `2` request; an unknown
+version is refused before dispatch with a typed `unsupported_version`. W2.4b implements the
+**server half** only: the client-side capability probe/local refusal and the GUI/typed-client
+decoder migration are **W3.6** prerequisites, so v2 is **served but not yet promoted
+end-to-end**. The API wire version is independent of the MCP protocol version (§5), which
+stays `2025-03-26`. Matrix:
+
+| Client | Server | Result |
+|---|---|---|
+| v1 (or unversioned) | this server | v1 shape, `state_hash` present |
+| v2 | this server | v2 shape (`run` adds `performed`, `cycles`, `stop_reason`, revision keys) |
+| unknown | this server | typed `unsupported_version`, no dispatch |
+| v2 | legacy v1 server | client refuses locally after the W3.6 read-only probe |
+
+W2.4b evidence: `crates/chronofork-transport/tests/w3d_wire_version.rs` (v1/v2 run shape,
+pre-dispatch refusal with no partial execution), `crates/chronofork-service/tests/w2_wire_v2.rs`
+(v2 run/inspect shape, one digest per operation), `crates/chronofork-transport/tests/mcp.rs`
+(MCP protocol version unchanged).
+
 Common wire types:
 
 - `session`, `snapshot`, `session_key`, `snapshot_key`, `parent_session`,
@@ -186,7 +206,7 @@ Input: `{"session":1,"steps":10,"buttons":0}`. `steps` is an integer in
 Output:
 
 ```json
-{"session":1,"steps":10,"performed":10,"tick":10,"state_hash":"<64 hex>",
+{"session":1,"steps":10,"performed":10,"cycles":3360,"tick":10,"state_hash":"<64 hex>",
  "halted":false,"stop_reason":"completed","revision":1,"max_wall_ms":30000}
 ```
 
@@ -206,7 +226,8 @@ step runs:
   owner** before the first step, so a stale retry is rejected without applying anything.
 
 **v2 result.** `performed` is the authoritative applied step count, `steps` repeats it,
-`stop_reason` ∈ {`completed`, `halted`, `cancelled`, `deadline`} (`stop_condition` joins
+`cycles` is the master-cycle count the batch primitive consumed, `stop_reason` ∈
+{`completed`, `halted`, `cancelled`, `deadline`} (`stop_condition` joins
 them with the W3.4 stop grammar) and follows the total order
 `cancelled` > `deadline` > `halted` > `completed`, `revision` is the monotonic session
 revision a retry pins, and `max_wall_ms` is the effective budget. A cancelled or
@@ -443,7 +464,9 @@ information.
 ## 5. MCP over Streamable HTTP
 
 `POST /mcp` implements a stateless JSON-RPC 2.0 endpoint with the tools subset at MCP
-protocol version `2025-03-26`:
+protocol version `2025-03-26`. That protocol version is independent of the ChronoFork API
+wire version (v1/v2, §4): the API version travels in the per-call `_meta` slot, and W2.4b
+does not change the MCP protocol version:
 
 - `initialize` → `{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"chronofork","version":"0.1.0"}}`;
 - `notifications/initialized` and any other notification (no `id`) → HTTP 202, empty body;

@@ -79,12 +79,13 @@ M3-A45–A53 `executed - passed`, ignored `.research/m3-hardware/verification/` 
 
 A `StateHash` (SHA-256) is computed over the backend's canonical mutable state by
 `Backend::state_hash()`, the single canonical digest source; the synthetic backend
-hashes PC, accumulator, RAM, tick, step count and halt flag. Since W2-2 the ordinary
-`Backend::step` is digest-free: its `StepOutcome` carries `state_hash: None` and
-`verified: false`. A caller that needs a per-step digest uses `Backend::step_verified`,
-which calls `step` and then exactly one `state_hash()`, or calls `state_hash()` itself.
-Snapshots still derive the envelope digest from the same serializer, and hashing is used
-for:
+hashes PC, accumulator, RAM, tick, step count and halt flag. The ordinary
+`Backend::step` is digest-free in the target shape: `StepOutcome` is
+`{ tick, halted, verified }` with no digest field, and `verified` is always `false`.
+A caller that needs a per-step digest uses `Backend::step_verified`, whose distinct
+`VerifiedStepOutcome` is `{ tick, halted, state_hash }` — the type itself is the
+verification guarantee — or calls `state_hash()` itself. Snapshots still derive the
+envelope digest from the same serializer, and hashing is used for:
 
 - replay verification;
 - fork equivalence at the checkpoint;
@@ -94,6 +95,65 @@ for:
 A hash is only as meaningful as the canonicalization behind it. A real backend
 must document exactly which state is included and must include hidden device state
 that can affect future execution.
+
+## Batch execution and stop conditions
+
+`Backend::run_batch` is the single batch primitive: it advances at most a `StopBudget`
+(`Unbounded`, `Steps` or master `Cycles`), uses a bounded `InputSequence` (neutral
+padding; an over-budget sequence is rejected before any step), and stops on one typed
+`StopSet` of at most four conditions (`Pc`, memory word with mask, debug event, `Tick`,
+`Frame`). `Session::run_until`/`run_cycles` compose that one primitive; there is no second
+execution loop.
+
+The result carries `performed` steps, consumed master cycles, the final tick, `halted`
+and a typed `StopReason` (with the matched condition when it is `StopCondition`). The
+precedence is fixed: `cancelled > deadline > halted > stop_condition > completed`;
+among conditions `pc > memory > event > frame > tick`, then the lowest value, then the
+request position. A `PreStep` condition is tested on the current state and consumes no
+step. Inputs are deterministic, so a run is replayable from its recorded `k` and consumed
+inputs (`RunRecord`). The record retains the full `performed` count and stores only
+`min(performed, explicit_input_len)` explicit frames; neutral padding stays implicit, so a
+long neutral run records without materializing per-step frames. Ordinary batch execution
+computes no per-step digest; a caller that needs one uses `VerificationPolicy`
+(`step_verified`) or asks `state_hash()` after the run.
+
+The loop takes its initial tick and halt from the hash-free `status()` fallback when the
+optional `batch_signals()` hook does not carry them; canonical time is never invented as
+zero. After each step the loop restores the authoritative step-derived tick/halt before
+applying cancel/deadline precedence, so a winning cancel/deadline keeps the true halt
+metadata while the reason priority `cancelled > deadline > halted` stays unchanged. `StopSet::new` rejects a `kind`/`StopValue` mismatch, so the matched predicate, its
+reported kind and its precedence rank cannot disagree.
+
+`RunControl` carries a lock-free `CancelToken` (a shared atomic flag, cloneable across
+threads without a session, manager or channel lock) and an optional **absolute host
+deadline**. The loop reads both only at step boundaries, never inside an emulated
+decision, and host time never enters ticks, state hashes or frames. A cancelled or
+deadline-truncated run reports `performed`, tick and consumed inputs and is the exact
+deterministic prefix of the unbounded run. The service is wired to this control in W2.4b:
+`AppService::run` builds a `RunControl` from its journal `CancelToken` and an absolute
+`Deadline` and calls `Session::run_until`; its v2 `expected_tick` precondition reads the
+hash-free status tick, leaving exactly one response digest. It deliberately uses **one-step batches** so a
+failed batch publishes exactly the prefix the run applied (the batch primitive does not
+report an applied count on error); that is a throughput trade-off, not a performance claim.
+
+## Status and inspection
+
+`Backend::status()` is the cheap observation path: it returns `MachineStatus` (tick,
+halted, frame index and a CPU register map separated from a device pseudo-register map)
+from the backend's own fields. It computes no digest and copies no memory. The two maps
+are bounded together by `MAX_STATUS_REGISTERS = 64`; `registers()` returns the merged view.
+
+`Backend::inspect()` is the detailed on-demand view: it carries the same separated register
+maps and no digest, and `memory` is `None` unless the caller asks through
+`inspect_with_memory(base, length)` (or `read_memory`). A caller that needs the canonical
+digest calls `Backend::state_hash()` explicitly, once. Session `list` uses registry/status
+metadata, and the session layer's own `inspect()` view is the only place that packages a
+digest for the v1 service response. The service wire is versioned (W2.4b): unversioned/v1
+requests keep the v1 shape, v2 is served only on request with `performed`/`cycles`/
+`stop_reason`. The strict GUI run decoder's `cycles` leaf adaptation is part of W2.4b; the
+broader client-side v2 probe/promotion remains W3.6. Debugger and trace
+observation use `status()` for registers and request memory/inspection only when a feature
+needs it.
 
 ## Determinism
 
