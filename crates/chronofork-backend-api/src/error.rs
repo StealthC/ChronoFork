@@ -29,6 +29,15 @@ pub enum BackendError {
     Halted,
     /// The backend failed while executing an instruction or accessing its bus.
     Execution(String),
+    /// A bounded request exceeded a declared backend limit.
+    Limit {
+        /// The limited field, named for diagnostics.
+        field: &'static str,
+        /// The declared limit.
+        limit: u64,
+        /// The value that was requested.
+        requested: u64,
+    },
     /// A memory access falls outside the backend's address space.
     OutOfBounds {
         /// First requested address.
@@ -58,6 +67,14 @@ impl fmt::Display for BackendError {
             } => write!(
                 f,
                 "incompatible snapshot {field}: expected {expected}, found {found}"
+            ),
+            Self::Limit {
+                field,
+                limit,
+                requested,
+            } => write!(
+                f,
+                "backend limit `{field}` is {limit}, requested {requested}"
             ),
             Self::Halted => f.write_str("machine has halted"),
             Self::Execution(message) => write!(f, "backend execution error: {message}"),

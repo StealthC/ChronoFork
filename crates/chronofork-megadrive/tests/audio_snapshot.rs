@@ -205,7 +205,7 @@ fn two_runs_produce_the_same_state_and_pcm() -> Result<(), Box<dyn Error>> {
             }
         }
         let inspection = machine.inspect()?;
-        Ok((inspection.tick.raw(), inspection.state_hash, pcm))
+        Ok((inspection.tick.raw(), machine.state_hash()?, pcm))
     }
     let (tick_a, hash_a, pcm_a) = run()?;
     let (tick_b, hash_b, pcm_b) = run()?;
@@ -317,8 +317,8 @@ fn snapshot_round_trips_z80_ym_psg_and_mixer_phase() -> Result<(), Box<dyn Error
         original.step(InputFrame::NEUTRAL)?;
         restored.step(InputFrame::NEUTRAL)?;
         assert_eq!(
-            original.inspect()?.state_hash,
-            restored.inspect()?.state_hash,
+            original.state_hash()?,
+            restored.state_hash()?,
             "state hash diverged at continuation step {step}"
         );
         assert_eq!(
@@ -387,18 +387,20 @@ fn inspect_exposes_z80_arbitration_and_audio_pseudo_registers() -> Result<(), Bo
         "audio.frame_accumulator",
     ] {
         assert!(
-            inspection.registers.contains_key(name),
+            inspection.registers().contains_key(name),
             "inspection is missing `{name}`"
         );
     }
-    assert_eq!(inspection.registers["z80.iff1"], 0);
-    assert_eq!(inspection.registers["arbitration.z80_runs"], 1);
+    assert_eq!(inspection.registers()["z80.iff1"], 0);
+    assert_eq!(inspection.registers()["arbitration.z80_runs"], 1);
     assert_eq!(
-        inspection.registers["z80.bank"], 0x100,
+        inspection.registers()["z80.bank"],
+        0x100,
         "the 68000 program selects Z80 bank 0x100"
     );
     assert_eq!(
-        inspection.registers["psg.tone0"], 1,
+        inspection.registers()["psg.tone0"],
+        1,
         "the Z80 program sets the PSG divider"
     );
     Ok(())

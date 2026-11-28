@@ -392,11 +392,10 @@ fn run_megadrive_boot(args: &[String]) -> Result<(), Box<dyn Error>> {
         executed += 1;
         reached = machine.cpu().pc() == marker;
     }
-    let inspection = machine.inspect()?;
     println!("reached_marker={reached}");
     println!("pc=0x{:08X}", machine.cpu().pc());
     println!("tick={}", machine.tick().raw());
-    println!("state_hash={}", inspection.state_hash);
+    println!("state_hash={}", machine.state_hash()?);
     println!("frames={}", options.frames);
     println!("instructions={executed}");
     println!(
@@ -1118,7 +1117,7 @@ fn run_demo() -> Result<(), Box<dyn Error>> {
     let checkpoint_view = manager.inspect(source)?;
     println!(
         "checkpoint: {} at tick {} hash {}",
-        checkpoint, checkpoint_view.machine.tick, checkpoint_view.machine.state_hash
+        checkpoint, checkpoint_view.machine.tick, checkpoint_view.state_hash
     );
 
     // The demo exercises the public path as a wiring smoke test. Semantic
@@ -1149,14 +1148,14 @@ fn run_demo() -> Result<(), Box<dyn Error>> {
         let view = manager.inspect(branch)?;
         println!(
             "branch {}: tick {} hash {}",
-            branch, view.machine.tick, view.machine.state_hash
+            branch, view.machine.tick, view.state_hash
         );
     }
 
     let source_view = manager.inspect(source)?;
     println!(
         "source isolation: source remains at tick {} hash {}",
-        source_view.machine.tick, source_view.machine.state_hash
+        source_view.machine.tick, source_view.state_hash
     );
 
     // Divergence, isolation and replay are asserted exactly once, by the
@@ -1211,7 +1210,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         manager.step(source, InputFrame::NEUTRAL)?;
     }
     let vdp_view = manager.inspect(source)?;
-    let registers = &vdp_view.machine.registers;
+    let registers = &vdp_view.machine.registers();
     println!(
         "vdp: register 15 (auto-increment)={} status=0x{:04X} address=0x{:04X}",
         registers["vdp_auto_increment"], registers["vdp_status"], registers["vdp_address"]
@@ -1221,7 +1220,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     // The demo ROM never writes SR, so the reset interrupt-priority mask 7 keeps
     // both VDP levels masked: the first HBlank is retained, never delivered.
     for _ in 0..2_000_000 {
-        if manager.inspect(source)?.machine.registers["irq_pending_level"] == 4_u64 {
+        if manager.inspect(source)?.machine.registers()["irq_pending_level"] == 4_u64 {
             break;
         }
         manager.step(source, InputFrame::NEUTRAL)?;
@@ -1230,17 +1229,17 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     println!(
         "interrupt: masked HBlank pending at tick {} (level {}, vector 0x{:02X}, mask {}, deliverable={})",
         pending.machine.tick.raw(),
-        pending.machine.registers["irq_pending_level"],
-        pending.machine.registers["irq_vector"],
-        pending.machine.registers["irq_mask"],
-        pending.machine.registers["irq_deliverable"],
+        pending.machine.registers()["irq_pending_level"],
+        pending.machine.registers()["irq_vector"],
+        pending.machine.registers()["irq_mask"],
+        pending.machine.registers()["irq_deliverable"],
     );
 
     manager.step(source, InputFrame::NEUTRAL)?;
     let masked_step = manager.inspect(source)?;
     println!(
         "interrupt: mask {} blocked delivery at tick {}; request retained, no handler ran",
-        masked_step.machine.registers["irq_mask"],
+        masked_step.machine.registers()["irq_mask"],
         masked_step.machine.tick.raw(),
     );
 
@@ -1254,7 +1253,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let source_view = manager.inspect(source)?;
     println!(
         "fork isolation: fork={} source={}",
-        fork_view.machine.state_hash, source_view.machine.state_hash
+        fork_view.state_hash, source_view.state_hash
     );
 
     manager.restore(fork, checkpoint)?;
@@ -1268,7 +1267,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
         SessionManager::new(Arc::new(MegadriveFactory::new(interrupt_rom(7))?));
     let vblank = vblank_manager.create_session()?;
     for _ in 0..2_000_000 {
-        if vblank_manager.inspect(vblank)?.machine.registers["irq_pending_level"] == 6_u64 {
+        if vblank_manager.inspect(vblank)?.machine.registers()["irq_pending_level"] == 6_u64 {
             break;
         }
         vblank_manager.step(vblank, InputFrame::NEUTRAL)?;
@@ -1279,10 +1278,10 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let restored_vblank = vblank_manager.inspect(vblank)?;
     println!(
         "interrupt: masked VBlank pending level {} vector 0x{:02X} at tick {} (mask {}); VDP VBlank/VINT bits set and snapshot restored them",
-        restored_vblank.machine.registers["irq_pending_level"],
-        restored_vblank.machine.registers["irq_vector"],
+        restored_vblank.machine.registers()["irq_pending_level"],
+        restored_vblank.machine.registers()["irq_vector"],
         restored_vblank.machine.tick.raw(),
-        restored_vblank.machine.registers["irq_mask"],
+        restored_vblank.machine.registers()["irq_mask"],
     );
 
     // The interrupt ROM delays past two scanlines with the mask still at 7, then
@@ -1292,7 +1291,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let mut gated_manager = SessionManager::new(Arc::new(MegadriveFactory::new(interrupt_rom(3))?));
     let gated = gated_manager.create_session()?;
     for _ in 0..2_000_000 {
-        if gated_manager.inspect(gated)?.machine.registers["irq_pending_level"] == 4_u64 {
+        if gated_manager.inspect(gated)?.machine.registers()["irq_pending_level"] == 4_u64 {
             break;
         }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
@@ -1301,11 +1300,11 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     println!(
         "interrupt: interrupt ROM retained HBlank at tick {} under mask {} (no handler)",
         masked_hblank.machine.tick.raw(),
-        masked_hblank.machine.registers["irq_mask"],
+        masked_hblank.machine.registers()["irq_mask"],
     );
 
     for _ in 0..2_000_000 {
-        if gated_manager.inspect(gated)?.machine.registers["pc"] == 0x218 {
+        if gated_manager.inspect(gated)?.machine.registers()["pc"] == 0x218 {
             break;
         }
         gated_manager.step(gated, InputFrame::NEUTRAL)?;
@@ -1313,7 +1312,7 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     let lowered = gated_manager.inspect(gated)?;
     println!(
         "interrupt: MOVE.W #$2300,SR lowered the mask to {} at tick {}; the retained HBlank became deliverable",
-        lowered.machine.registers["irq_mask"],
+        lowered.machine.registers()["irq_mask"],
         lowered.machine.tick.raw(),
     );
 
@@ -1325,11 +1324,11 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     println!(
         "interrupt: HBlank delivered at tick {} with handler IPM {}; handler ran; RTE at tick {} returned to pc=0x{:X} with SR=0x{:04X} (mask {}, CCR restored)",
         delivered_hblank.machine.tick.raw(),
-        delivered_hblank.machine.registers["irq_mask"],
+        delivered_hblank.machine.registers()["irq_mask"],
         returned_hblank.machine.tick.raw(),
-        returned_hblank.machine.registers["pc"],
-        returned_hblank.machine.registers["sr"],
-        returned_hblank.machine.registers["irq_mask"],
+        returned_hblank.machine.registers()["pc"],
+        returned_hblank.machine.registers()["sr"],
+        returned_hblank.machine.registers()["irq_mask"],
     );
 
     // At vertical blanking the VDP raises VBlank (level 6) first, and VINT sets
@@ -1337,7 +1336,8 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     // cannot preempt; RTE restores the interrupted program's mask. The snapshot
     // preserves the pending VBlank request and VINT state until RTE.
     for _ in 0..2_000_000 {
-        if gated_manager.inspect(gated)?.machine.registers["vdp_status"] & 0x0080_u64 == 0x0080_u64
+        if gated_manager.inspect(gated)?.machine.registers()["vdp_status"] & 0x0080_u64
+            == 0x0080_u64
         {
             break;
         }
@@ -1354,13 +1354,13 @@ fn run_megadrive_demo() -> Result<(), Box<dyn Error>> {
     println!(
         "interrupt: VBlank entered at tick {} with handler IPM {} and blocked the pending HBlank (level {}, no nested handler); RTE at tick {} returned to pc=0x{:X} with SR=0x{:04X} (mask {}); snapshot restored the pending VBlank/VINT state (level {}) at tick {}",
         vblank_entry.machine.tick.raw(),
-        vblank_entry.machine.registers["irq_mask"],
-        vblank_entry.machine.registers["irq_pending_level"],
+        vblank_entry.machine.registers()["irq_mask"],
+        vblank_entry.machine.registers()["irq_pending_level"],
         vblank_rte.machine.tick.raw(),
-        vblank_rte.machine.registers["pc"],
-        vblank_rte.machine.registers["sr"],
-        vblank_rte.machine.registers["irq_mask"],
-        vblank_restored.machine.registers["irq_pending_level"],
+        vblank_rte.machine.registers()["pc"],
+        vblank_rte.machine.registers()["sr"],
+        vblank_rte.machine.registers()["irq_mask"],
+        vblank_restored.machine.registers()["irq_pending_level"],
         vblank_restored.machine.tick.raw(),
     );
 

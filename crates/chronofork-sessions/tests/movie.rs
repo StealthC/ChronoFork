@@ -52,7 +52,8 @@ fn machine(
     session: SessionId,
 ) -> Result<(Tick, StateHash), SessionError> {
     let inspection = manager.inspect(session)?;
-    Ok((inspection.machine.tick, inspection.machine.state_hash))
+    let state_hash = manager.state_hash(session)?;
+    Ok((inspection.machine.tick, state_hash))
 }
 
 fn flip_hash(hash: StateHash) -> StateHash {

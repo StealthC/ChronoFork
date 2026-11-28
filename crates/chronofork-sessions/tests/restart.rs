@@ -103,7 +103,7 @@ fn reopen_after_writer_close_round_trips() {
         .inspect(runtime)
         .expect("inspect rehydrated session");
     assert_eq!(inspection.machine.tick, tick);
-    assert_eq!(inspection.machine.state_hash, state_hash);
+    assert_eq!(inspection.state_hash, state_hash);
     assert_eq!(manager.durable_session_key(runtime), Some(session_key));
 }
 

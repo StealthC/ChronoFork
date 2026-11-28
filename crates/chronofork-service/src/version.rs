@@ -115,7 +115,13 @@ pub fn v1_result_fields(op: &str) -> &'static [&'static str] {
     match op {
         "capabilities" => &["api_version", "process_epoch"],
         "session.fork" | "session.inspect" | "session.restore" => &["revision"],
-        "session.run" => &["performed", "stop_reason", "revision", "max_wall_ms"],
+        "session.run" => &[
+            "performed",
+            "cycles",
+            "stop_reason",
+            "revision",
+            "max_wall_ms",
+        ],
         "session.snapshot" => &["snapshots", "snapshot_bytes"],
         "session.close" => &["released_checkpoint_bytes"],
         // `session.list` entries gained the `running` marker; the entry projection is

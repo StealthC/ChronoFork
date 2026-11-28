@@ -360,7 +360,7 @@ impl Player {
             .map_err(PlayerError::Session)?;
         let inspection = manager.inspect(session).map_err(PlayerError::Session)?;
         let observed_tick = inspection.machine.tick;
-        let observed_hash = inspection.machine.state_hash;
+        let observed_hash = manager.state_hash(session).map_err(PlayerError::Session)?;
         let expected_tick = movie.start_tick();
         let expected_hash = movie.checkpoint_state_hash();
         if observed_tick != expected_tick || observed_hash != expected_hash {
@@ -506,7 +506,10 @@ impl Player {
                         .inspect(self.session)
                         .map_err(PlayerError::Session)?;
                     let observed_tick = inspection.machine.tick;
-                    let observed_hash = inspection.machine.state_hash;
+                    let observed_hash = self
+                        .manager
+                        .state_hash(self.session)
+                        .map_err(PlayerError::Session)?;
                     if observed_tick != tick || observed_hash != state_hash {
                         return Err(PlayerError::RestoreMismatch {
                             step_index,
@@ -539,7 +542,10 @@ impl Player {
                         .inspect(self.session)
                         .map_err(PlayerError::Session)?;
                     let observed_tick = inspection.machine.tick;
-                    let observed_hash = inspection.machine.state_hash;
+                    let observed_hash = self
+                        .manager
+                        .state_hash(self.session)
+                        .map_err(PlayerError::Session)?;
                     let expected_tick = self.movie.start_tick();
                     let expected_hash = self.movie.checkpoint_state_hash();
                     if observed_tick != expected_tick || observed_hash != expected_hash {
@@ -837,7 +843,10 @@ mod tests {
             .expect("restore cached state");
         let inspection = player.manager.inspect(player.session).expect("inspect");
         assert_eq!(inspection.machine.tick, expected_tick);
-        assert_eq!(inspection.machine.state_hash, expected_hash);
+        assert_eq!(
+            player.manager.state_hash(player.session).expect("digest"),
+            expected_hash
+        );
     }
 
     #[test]

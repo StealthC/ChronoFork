@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = manager.snapshot(session)?;
     let serialized = manager.snapshot_bytes(session, snapshot)?;
     let final_tick = manager.inspect(session)?.machine.tick.raw();
-    let final_state_hash = manager.inspect(session)?.machine.state_hash;
+    let final_state_hash = manager.state_hash(session)?;
 
     let mut serialization_samples = Vec::with_capacity(SERIALIZATION_TRIALS);
     for _ in 0..SERIALIZATION_TRIALS {
@@ -107,8 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (restore_min, restore_median, restore_p95, restore_max) = summarize(&mut restore_samples);
 
     let payload_bytes = Snapshot::from_bytes(&serialized)?.backend().payload().len();
-    let restored_state_hash_matches =
-        manager.inspect(session)?.machine.state_hash == final_state_hash;
+    let restored_state_hash_matches = manager.state_hash(session)? == final_state_hash;
 
     println!("chronofork-bench-step v1");
     println!("program=interrupt_rom(3)");

@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use chronofork_backend_api::{
     BACKEND_SNAPSHOT_FORMAT_VERSION, Backend, BackendDescriptor, BackendError, BackendFactory,
-    BackendId, BackendSnapshot, Capabilities, MachineInspection, StepOutcome, validate_envelope,
+    BackendId, BackendSnapshot, BatchSignals, Capabilities, MachineInspection, MachineStatus,
+    StepOutcome, validate_envelope,
 };
 use chronofork_core::codec::{CodecError, Reader, Writer};
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
@@ -172,6 +173,18 @@ impl SyntheticBackend {
         body.into_bytes()
     }
 
+    /// The one register-map writer for status and inspection.
+    fn register_maps(&self) -> (BTreeMap<String, u64>, BTreeMap<String, u64>) {
+        let mut cpu = BTreeMap::new();
+        cpu.insert("pc".to_owned(), u64::from(self.pc));
+        cpu.insert("acc".to_owned(), u64::from(self.acc));
+        let mut device = BTreeMap::new();
+        device.insert("tick".to_owned(), self.tick.raw());
+        device.insert("steps".to_owned(), self.steps);
+        device.insert("halted".to_owned(), u64::from(self.halted));
+        (cpu, device)
+    }
+
     fn state_hash(&self) -> StateHash {
         hash_state_body(&self.state_body())
     }
@@ -310,6 +323,20 @@ impl Backend for SyntheticBackend {
         Ok(SyntheticBackend::state_hash(self))
     }
 
+    fn inspection_memory_window(&self) -> (u64, usize) {
+        (0, RAM_BYTES)
+    }
+
+    fn batch_signals(&self) -> BatchSignals {
+        // The synthetic machine has a program counter but no frame timeline.
+        BatchSignals {
+            tick: Some(self.tick),
+            pc: Some(u32::from(self.pc)),
+            frame: None,
+            halted: self.halted,
+        }
+    }
+
     fn step(&mut self, input: InputFrame) -> Result<StepOutcome, BackendError> {
         if self.halted {
             return Err(BackendError::Halted);
@@ -360,10 +387,8 @@ impl Backend for SyntheticBackend {
             .ok_or(BackendError::TickOverflow)?;
         Ok(StepOutcome {
             tick: self.tick,
-            // W2-2: ordinary execution is digest-free. The verified path computes the
-            // canonical digest once through `state_hash()`; `step` must not build the
-            // full state body or call the serializer at all.
-            state_hash: None,
+            // W2-3 target shape: ordinary execution carries no digest at all. The
+            // verified path computes the canonical digest once through `state_hash()`.
             halted: self.halted,
             verified: false,
         })
@@ -395,20 +420,26 @@ impl Backend for SyntheticBackend {
         self.apply_snapshot_payload(snapshot.payload(), snapshot.state_hash())
     }
 
+    fn status(&self) -> Result<MachineStatus, BackendError> {
+        let (cpu_registers, device_registers) = self.register_maps();
+        Ok(MachineStatus {
+            tick: self.tick,
+            halted: self.halted,
+            cpu_registers,
+            device_registers,
+            frame_index: 0,
+        })
+    }
+
     fn inspect(&self) -> Result<MachineInspection, BackendError> {
-        let mut registers = BTreeMap::new();
-        registers.insert("pc".to_owned(), u64::from(self.pc));
-        registers.insert("acc".to_owned(), u64::from(self.acc));
-        registers.insert("tick".to_owned(), self.tick.raw());
-        registers.insert("steps".to_owned(), self.steps);
-        registers.insert("halted".to_owned(), u64::from(self.halted));
+        let (cpu_registers, device_registers) = self.register_maps();
         Ok(MachineInspection {
             tick: self.tick,
-            state_hash: self.state_hash(),
             halted: self.halted,
-            registers,
-            memory_base: 0,
-            memory: self.ram.to_vec(),
+            frame_index: 0,
+            cpu_registers,
+            device_registers,
+            memory: None,
         })
     }
 
@@ -536,8 +567,8 @@ mod tests {
             assert_eq!(left_outcome, right_outcome);
         }
         assert_eq!(
-            left.inspect().expect("left inspect").state_hash,
-            right.inspect().expect("right inspect").state_hash
+            left.state_hash().expect("left inspect digest"),
+            right.state_hash().expect("right inspect digest")
         );
     }
 
@@ -554,8 +585,8 @@ mod tests {
         left.step(InputFrame::new(1)).expect("left input step");
         right.step(InputFrame::new(2)).expect("right input step");
         assert_ne!(
-            left.inspect().expect("left inspect").state_hash,
-            right.inspect().expect("right inspect").state_hash
+            left.state_hash().expect("left inspect digest"),
+            right.state_hash().expect("right inspect digest")
         );
     }
 
@@ -571,8 +602,8 @@ mod tests {
         let high_outcome = high.step(InputFrame::new(0x1_0002)).expect("high input");
         assert_eq!(low_outcome, high_outcome);
         assert_eq!(
-            low.inspect().expect("inspect").state_hash,
-            high.inspect().expect("inspect").state_hash
+            low.state_hash().expect("inspect digest"),
+            high.state_hash().expect("inspect digest")
         );
     }
 
@@ -632,7 +663,10 @@ mod tests {
             machine.read_memory(0x10, 0x10).expect("memory"),
             vec![0x12, 0x46, 0x9c, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,]
         );
-        assert_eq!(machine.inspect().expect("inspect").registers["acc"], 0x114);
+        assert_eq!(
+            machine.inspect().expect("inspect").registers()["acc"],
+            0x114
+        );
     }
 
     #[test]
@@ -646,7 +680,7 @@ mod tests {
             vec![1, 0, 0, 0xff]
         );
         assert_eq!(
-            machine.inspect().expect("inspect").registers["acc"],
+            machine.inspect().expect("inspect").registers()["acc"],
             131_071
         );
     }
@@ -663,7 +697,7 @@ mod tests {
             machine.read_memory(0x18, 8).expect("keys"),
             vec![1, 2, 3, 4, 5, 6, 7, 8]
         );
-        assert_eq!(machine.inspect().expect("inspect").registers["acc"], 36);
+        assert_eq!(machine.inspect().expect("inspect").registers()["acc"], 36);
     }
 
     #[test]
@@ -746,14 +780,14 @@ mod tests {
             machine.step(InputFrame::new(3)).expect("step");
         }
         let snapshot = machine.snapshot().expect("snapshot");
-        let expected = machine.inspect().expect("inspect").state_hash;
+        let expected = machine.state_hash().expect("inspect digest");
         for _ in 0..5 {
             machine
                 .step(InputFrame::new(9))
                 .expect("step after snapshot");
         }
         machine.restore(&snapshot).expect("restore");
-        assert_eq!(machine.inspect().expect("inspect").state_hash, expected);
+        assert_eq!(machine.state_hash().expect("inspect digest"), expected);
     }
 
     #[test]

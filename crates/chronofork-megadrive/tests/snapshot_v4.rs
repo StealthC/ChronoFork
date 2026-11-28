@@ -38,14 +38,14 @@ fn v5_snapshot_round_trips_master_cycles_stacks_and_cpu_cycles() -> Result<(), B
         "scheduler_master_cycle_in_line",
     ]
     .iter()
-    .map(|name| (name.to_string(), view.registers[*name]))
+    .map(|name| (name.to_string(), view.registers()[*name]))
     .collect();
 
     let mut restored = new_machine()?;
     restored.restore(&snapshot)?;
     let restored_view = restored.inspect()?;
     for (name, value) in expected {
-        assert_eq!(restored_view.registers[&name], value, "{name} round trip");
+        assert_eq!(restored_view.registers()[&name], value, "{name} round trip");
     }
     assert_eq!(restored.master_cycles(), machine.master_cycles());
     assert_eq!(restored.cpu().cycles(), machine.cpu().cycles());

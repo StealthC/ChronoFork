@@ -12,7 +12,8 @@ use std::error::Error;
 
 use chronofork_backend_api::{
     Backend, BackendDescriptor, BackendError, BackendId, BackendSnapshot, Capabilities,
-    MachineInspection, StepOutcome,
+    InputSequence, MachineInspection, RunControl, StepOutcome, StopBudget, StopSet,
+    VerificationPolicy,
 };
 use chronofork_core::{InputFrame, StateHash, Tick, hash_bytes};
 
@@ -70,8 +71,7 @@ impl Backend for CountingBackend {
         self.tick = self.tick.next()?;
         Ok(StepOutcome {
             tick: self.tick,
-            // W2-2: ordinary execution is digest-free and makes no trait call.
-            state_hash: None,
+            // W2-3: ordinary execution carries no digest and makes no trait call.
             halted: self.halted,
             verified: false,
         })
@@ -88,11 +88,11 @@ impl Backend for CountingBackend {
     fn inspect(&self) -> Result<MachineInspection, BackendError> {
         Ok(MachineInspection {
             tick: self.tick,
-            state_hash: self.digest(),
             halted: self.halted,
-            registers: BTreeMap::new(),
-            memory_base: 0,
-            memory: Vec::new(),
+            frame_index: 0,
+            cpu_registers: BTreeMap::new(),
+            device_registers: BTreeMap::new(),
+            memory: None,
         })
     }
 
@@ -118,7 +118,6 @@ fn verified_step_hashes_exactly_once_per_step() -> TestResult {
         "an ordinary step makes no trait digest call"
     );
     assert!(!ordinary.verified);
-    assert!(ordinary.state_hash.is_none());
 
     // The default composition is `step` + exactly one `state_hash()`, and the result
     // claims verification.
@@ -128,7 +127,6 @@ fn verified_step_hashes_exactly_once_per_step() -> TestResult {
         1,
         "a verified step calls state_hash exactly once"
     );
-    assert!(verified.verified);
     assert_eq!(verified.state_hash, backend.digest());
 
     // An explicit call adds exactly one more; another ordinary step adds none.
@@ -144,5 +142,76 @@ fn verified_step_hashes_exactly_once_per_step() -> TestResult {
     // A second verified step adds exactly one.
     backend.step_verified(InputFrame::NEUTRAL)?;
     assert_eq!(backend.hash_calls(), 3);
+    Ok(())
+}
+
+#[test]
+fn ordinary_batch_computes_no_digest() -> TestResult {
+    let mut backend = CountingBackend::new();
+    let inputs = InputSequence::neutral();
+    let stop = StopSet::default();
+
+    let ordinary = backend.run_batch(
+        &inputs,
+        StopBudget::Steps(3),
+        &stop,
+        VerificationPolicy::None,
+        &RunControl::new(),
+    )?;
+    assert_eq!(ordinary.performed, 3);
+    assert!(
+        ordinary.state_hash.is_none(),
+        "an ordinary batch must not compute a digest"
+    );
+    assert_eq!(
+        backend.hash_calls(),
+        0,
+        "an ordinary batch makes no trait digest call"
+    );
+
+    // The same primitive serves the digest request, exactly once per verified step.
+    let verified = backend.run_batch(
+        &inputs,
+        StopBudget::Steps(2),
+        &stop,
+        VerificationPolicy::EveryStep,
+        &RunControl::new(),
+    )?;
+    assert_eq!(verified.performed, 2);
+    assert_eq!(backend.hash_calls(), 2);
+    assert_eq!(verified.state_hash, Some(backend.digest()));
+    Ok(())
+}
+
+#[test]
+fn over_budget_inputs_are_rejected_before_any_step() -> TestResult {
+    let mut backend = CountingBackend::new();
+    let before = backend.inspect()?.tick;
+    let inputs = InputSequence::new(vec![InputFrame::NEUTRAL; 5])?;
+    let result = backend.run_batch(
+        &inputs,
+        StopBudget::Steps(2),
+        &StopSet::default(),
+        VerificationPolicy::None,
+        &RunControl::new(),
+    );
+    assert!(result.is_err(), "five inputs do not fit a two-step budget");
+    let error = match result {
+        Ok(_) => return Err("the over-budget batch must be rejected".into()),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error,
+            BackendError::Limit {
+                field: "input_frames",
+                limit: 2,
+                requested: 5
+            }
+        ),
+        "typed limit: {error:?}"
+    );
+    assert_eq!(backend.inspect()?.tick, before, "no step ran");
+    assert_eq!(backend.hash_calls(), 0);
     Ok(())
 }

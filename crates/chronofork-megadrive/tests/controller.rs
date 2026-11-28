@@ -97,19 +97,30 @@ fn controller_rom_observes_per_bit_and_neutral_values() -> TestResult {
         for _ in 0..8 {
             machine.step(InputFrame::new(mask))?;
         }
-        let inspection = machine.inspect()?;
+        let inspection =
+            machine.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
         assert_eq!(
-            inspection.memory[0], expected,
+            inspection.memory.as_ref().ok_or("memory window")?.bytes[0],
+            expected,
             "port-1 accumulator for {mask:#06X}"
         );
         assert_eq!(
-            inspection.memory[2], expected,
+            inspection.memory.as_ref().ok_or("memory window")?.bytes[2],
+            expected,
             "port-1 observation for {mask:#06X}"
         );
-        assert_eq!(inspection.memory[1], 0, "port 2 not read yet");
-        assert_eq!(inspection.memory[3], 0, "port 2 not read yet");
-        assert_eq!(inspection.registers["d0"], u64::from(expected));
-        assert_eq!(inspection.registers["d2"], u64::from(expected));
+        assert_eq!(
+            inspection.memory.as_ref().ok_or("memory window")?.bytes[1],
+            0,
+            "port 2 not read yet"
+        );
+        assert_eq!(
+            inspection.memory.as_ref().ok_or("memory window")?.bytes[3],
+            0,
+            "port 2 not read yet"
+        );
+        assert_eq!(inspection.registers()["d0"], u64::from(expected));
+        assert_eq!(inspection.registers()["d2"], u64::from(expected));
     }
     Ok(())
 }
@@ -123,22 +134,30 @@ fn two_controller_ports_are_independent_and_inert_fields_are_ignored() -> TestRe
     for _ in 0..12 {
         machine.step(first)?;
     }
-    let inspection = machine.inspect()?;
+    let inspection = machine.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
     assert_eq!(
-        &inspection.memory[0..4],
+        &inspection.memory.as_ref().ok_or("memory window")?.bytes[0..4],
         &[0x7E, 0x5F, 0x7E, 0x5F],
         "port 1 and port 2 use independent masks"
     );
-    let first_hash = inspection.state_hash;
+    let first_hash = machine.state_hash()?;
 
     // Swapping the masks swaps the observed ports.
     let mut swapped = controller_machine()?;
     for _ in 0..12 {
         swapped.step(InputFrame::with_devices([0x20, 0x01, 0, 0], [0; 4], 0))?;
     }
-    let swapped_inspection = swapped.inspect()?;
-    assert_eq!(&swapped_inspection.memory[0..4], &[0x5F, 0x7E, 0x5F, 0x7E]);
-    assert_ne!(swapped_inspection.state_hash, first_hash);
+    let swapped_inspection =
+        swapped.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
+    assert_eq!(
+        &swapped_inspection
+            .memory
+            .as_ref()
+            .ok_or("memory window")?
+            .bytes[0..4],
+        &[0x5F, 0x7E, 0x5F, 0x7E]
+    );
+    assert_ne!(swapped.state_hash()?, first_hash);
 
     // Ports 2/3, axes and keys are recorded by movies but inert on this backend:
     // they must not be reinterpreted as buttons or hardware.
@@ -150,9 +169,17 @@ fn two_controller_ports_are_independent_and_inert_fields_are_ignored() -> TestRe
             u64::MAX,
         ))?;
     }
-    let inert_inspection = inert.inspect()?;
-    assert_eq!(&inert_inspection.memory[0..4], &[0x7E, 0x5F, 0x7E, 0x5F]);
-    assert_eq!(inert_inspection.state_hash, first_hash);
+    let inert_inspection =
+        inert.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
+    assert_eq!(
+        &inert_inspection
+            .memory
+            .as_ref()
+            .ok_or("memory window")?
+            .bytes[0..4],
+        &[0x7E, 0x5F, 0x7E, 0x5F]
+    );
+    assert_eq!(inert.state_hash()?, first_hash);
     Ok(())
 }
 
@@ -163,9 +190,17 @@ fn controller_step_uses_its_own_frame_without_leaking_the_previous_one() -> Test
     for _ in 0..12 {
         machine.step(pressed)?;
     }
-    let pressed_inspection = machine.inspect()?;
-    assert_eq!(pressed_inspection.memory[2], 0x7E);
-    assert_eq!(pressed_inspection.registers["d2"], u64::from(0x7E_u8));
+    let pressed_inspection =
+        machine.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
+    assert_eq!(
+        pressed_inspection
+            .memory
+            .as_ref()
+            .ok_or("memory window")?
+            .bytes[2],
+        0x7E
+    );
+    assert_eq!(pressed_inspection.registers()["d2"], u64::from(0x7E_u8));
 
     // The next loop iteration branches and reads port 1 again. That read happens
     // in a step whose own frame is neutral, so it must observe 0x7F rather than
@@ -173,19 +208,31 @@ fn controller_step_uses_its_own_frame_without_leaking_the_previous_one() -> Test
     machine.step(InputFrame::NEUTRAL)?; // BRA.S
     machine.step(InputFrame::NEUTRAL)?; // MOVE.B (0xA10003).L,D2
     assert_eq!(
-        machine.inspect()?.registers["d2"],
+        machine
+            .inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?
+            .registers()["d2"],
         u64::from(CONTROLLER_NEUTRAL),
         "the read must use the current step's neutral frame"
     );
     machine.step(InputFrame::NEUTRAL)?; // ADD.B D2,D0
     machine.step(InputFrame::NEUTRAL)?; // store accumulator
     machine.step(InputFrame::NEUTRAL)?; // store observed port-1 byte
-    assert_eq!(machine.inspect()?.memory[2], CONTROLLER_NEUTRAL);
+    assert_eq!(
+        machine
+            .inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?
+            .memory
+            .as_ref()
+            .ok_or("memory window")?
+            .bytes[2],
+        CONTROLLER_NEUTRAL
+    );
 
     // The port-2 observation later in the same iteration is neutral as well.
     machine.step(InputFrame::NEUTRAL)?; // MOVE.B (0xA10005).L,D3
     assert_eq!(
-        machine.inspect()?.registers["d3"],
+        machine
+            .inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?
+            .registers()["d3"],
         u64::from(CONTROLLER_NEUTRAL)
     );
     Ok(())
@@ -272,8 +319,11 @@ fn failed_step_does_not_leak_input_into_the_next_step() -> TestResult {
     // failed step's input leaked, the store would be 0x40 instead of 0x7F.
     machine.step(InputFrame::NEUTRAL)?;
     machine.step(InputFrame::NEUTRAL)?;
-    let inspection = machine.inspect()?;
-    assert_eq!(inspection.memory[0], CONTROLLER_NEUTRAL);
+    let inspection = machine.inspect_with_memory(u64::from(chronofork_megadrive::RAM_BASE), 64)?;
+    assert_eq!(
+        inspection.memory.as_ref().ok_or("memory window")?.bytes[0],
+        CONTROLLER_NEUTRAL
+    );
 
     // The debugger still cannot read the step-scoped controller window.
     assert!(matches!(

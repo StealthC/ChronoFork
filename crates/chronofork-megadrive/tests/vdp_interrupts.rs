@@ -100,7 +100,7 @@ fn enabled_vblank_delivers_level_6_and_rte_restores_the_mask() {
     let mut vblank_ran = false;
     for _ in 0..1_000_000 {
         machine.step(InputFrame::NEUTRAL).expect("step");
-        if machine.inspect().expect("inspect").registers["d6"] >= 1 {
+        if machine.inspect().expect("inspect").registers()["d6"] >= 1 {
             vblank_ran = true;
             break;
         }
@@ -116,14 +116,14 @@ fn enabled_vblank_delivers_level_6_and_rte_restores_the_mask() {
     }
 
     let state = machine.inspect().expect("inspect");
-    assert_eq!(state.registers["d6"], 1, "one VBlank handler entry");
+    assert_eq!(state.registers()["d6"], 1, "one VBlank handler entry");
     assert_eq!(
-        state.registers["vdp_status"] & u64::from(STATUS_VBLANK),
+        state.registers()["vdp_status"] & u64::from(STATUS_VBLANK),
         u64::from(STATUS_VBLANK),
         "the VDP reports vertical blanking"
     );
     assert_eq!(
-        state.registers["vdp_status"] & u64::from(STATUS_VINT_PENDING),
+        state.registers()["vdp_status"] & u64::from(STATUS_VINT_PENDING),
         0,
         "delivery acknowledged the VBlank request"
     );

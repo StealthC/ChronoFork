@@ -128,12 +128,8 @@ pub(crate) fn load(
         .map_err(ServiceError::from)?;
     advance(&mut manager, runtime, steps, buttons)?;
     let view = manager.inspect(runtime).map_err(ServiceError::from)?;
-    report(
-        session_key,
-        &loaded.entry,
-        view.machine.tick,
-        view.machine.state_hash,
-    )
+    let state_hash = manager.state_hash(runtime).map_err(ServiceError::from)?;
+    report(session_key, &loaded.entry, view.machine.tick, state_hash)
 }
 
 /// Creates a durable session, or continues an existing one, and publishes a checkpoint.

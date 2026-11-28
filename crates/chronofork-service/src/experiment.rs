@@ -63,7 +63,7 @@ pub(crate) fn run(
         .to_hex();
     let view = manager.inspect(session).map_err(ServiceError::from)?;
     let mut tick = view.machine.tick.raw();
-    let mut state_hash = view.machine.state_hash;
+    let mut state_hash = manager.state_hash(session).map_err(ServiceError::from)?;
 
     let input = InputFrame::new(buttons);
     let mut captured: Vec<JsonValue> = Vec::new();

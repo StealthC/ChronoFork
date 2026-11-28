@@ -71,14 +71,19 @@ impl Host {
 
     /// Returns the current canonical state hash as lowercase hexadecimal.
     pub(crate) fn state_hash(&self) -> Result<String, EvalErrorKind> {
-        Ok(self.inspection()?.machine.state_hash.to_hex())
+        let manager = self.manager()?;
+        let session = self.current_session()?;
+        manager
+            .state_hash(session)
+            .map(|hash| hash.to_hex())
+            .map_err(map_session_error)
     }
 
     /// Reads one named register from the current session.
     pub(crate) fn register(&self, name: &str) -> Result<u64, EvalErrorKind> {
         self.inspection()?
             .machine
-            .registers
+            .registers()
             .get(name)
             .copied()
             .ok_or_else(|| EvalErrorKind::UnknownRegister(name.to_owned()))

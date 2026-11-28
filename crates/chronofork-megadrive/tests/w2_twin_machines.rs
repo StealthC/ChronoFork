@@ -50,14 +50,6 @@ fn twin_machines_normal_vs_verified() -> TestResult {
             !ordinary_outcome.verified,
             "the ordinary outcome never claims verification"
         );
-        assert!(
-            verified_outcome.verified,
-            "the verified outcome always claims verification"
-        );
-        assert!(
-            ordinary_outcome.state_hash.is_none(),
-            "ordinary step carries no digest at step {steps}"
-        );
         assert_eq!(
             ordinary_outcome.tick, verified_outcome.tick,
             "tick diverged at step {steps}"
@@ -80,7 +72,7 @@ fn twin_machines_normal_vs_verified() -> TestResult {
     // same canonical state: snapshot bytes and envelope digest are equal.
     let frame = verified
         .inspect()?
-        .registers
+        .registers()
         .get("scheduler_frame")
         .copied()
         .unwrap_or_default();

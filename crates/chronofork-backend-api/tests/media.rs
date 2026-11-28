@@ -64,11 +64,11 @@ impl Backend for NullBackend {
     fn inspect(&self) -> Result<MachineInspection, BackendError> {
         Ok(MachineInspection {
             tick: Tick::from_raw(0),
-            state_hash: StateHash::from_bytes([0; 32]),
             halted: true,
-            registers: BTreeMap::new(),
-            memory_base: 0,
-            memory: Vec::new(),
+            frame_index: 0,
+            cpu_registers: BTreeMap::new(),
+            device_registers: BTreeMap::new(),
+            memory: None,
         })
     }
 

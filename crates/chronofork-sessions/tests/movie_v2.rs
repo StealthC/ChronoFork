@@ -333,9 +333,14 @@ fn v2_recording_captures_canonical_anchors_and_leaves_the_source_unchanged() -> 
     let before = manager.inspect(source)?.machine;
     let inputs = device_inputs();
     let movie = Movie::record_v2(&mut manager, source, meta()?, &inputs, 2)?;
+    let before_hash = manager.state_hash(source)?;
     let after = manager.inspect(source)?.machine;
     assert_eq!(after.tick, before.tick);
-    assert_eq!(after.state_hash, before.state_hash);
+    assert_eq!(
+        manager.state_hash(source)?,
+        before_hash,
+        "recording must not change the source"
+    );
     assert_eq!(movie.format_version(), V2_MOVIE_FORMAT_VERSION);
     assert_eq!(movie.input_schema_version(), V2_MOVIE_INPUT_SCHEMA_VERSION);
     assert_eq!(movie.step_count(), inputs.len());

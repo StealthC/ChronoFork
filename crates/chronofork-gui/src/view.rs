@@ -1293,6 +1293,7 @@ pub fn decode_run(bytes: &[u8]) -> Result<RunView, GuiError> {
             "session",
             "steps",
             "performed",
+            "cycles",
             "tick",
             "state_hash",
             "halted",
@@ -1722,6 +1723,7 @@ mod tests {
         fields.insert("session".to_owned(), JsonValue::int(1));
         fields.insert("steps".to_owned(), JsonValue::int(3));
         fields.insert("performed".to_owned(), JsonValue::int(3));
+        fields.insert("cycles".to_owned(), JsonValue::int(3));
         fields.insert("tick".to_owned(), JsonValue::int(3));
         fields.insert("state_hash".to_owned(), JsonValue::string(HASH));
         fields.insert("halted".to_owned(), JsonValue::from_bool(true));

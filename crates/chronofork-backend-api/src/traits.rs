@@ -2,39 +2,50 @@
 
 use chronofork_core::{InputFrame, StateHash, Tick};
 
+use crate::batch::{
+    BatchOutcome, BatchSignals, InputSequence, RunControl, StopBudget, StopSet, VerificationPolicy,
+};
 use crate::debug::DebugAccess;
 use crate::descriptor::{BackendDescriptor, Capabilities};
 use crate::error::BackendError;
-use crate::inspection::MachineInspection;
+use crate::inspection::{MachineInspection, MachineStatus, MemoryWindow};
 use crate::media::MediaSource;
 use crate::snapshot::BackendSnapshot;
 
-/// Result of one execution step.
+/// Result of one **ordinary** execution step.
+///
+/// This is the digest-free target shape from the W2 design (D1/W2-3): the type
+/// carries no state digest, so an ordinary step cannot be mistaken for a verified
+/// one. [`Backend::step`] always returns `verified = false`; a caller that needs a
+/// per-step digest uses [`Backend::step_verified`] (which returns
+/// [`VerifiedStepOutcome`]) or calls [`Backend::state_hash`] explicitly.
+///
+/// ```compile_fail
+/// # use chronofork_backend_api::StepOutcome;
+/// fn digest(outcome: StepOutcome) -> chronofork_core::StateHash {
+///     // `state_hash` was removed from the target shape (W2-3).
+///     outcome.state_hash
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StepOutcome {
     /// Tick after the step.
     pub tick: Tick,
-    /// Digest of state after the step, when the path produced one.
-    ///
-    /// [`Backend::step`] returns `None` from W2-2 onward (it computed `Some` only
-    /// during the W2-1 migration landing); [`Backend::step_verified`] always
-    /// returns a digest as [`VerifiedStepOutcome::state_hash`]. The field is
-    /// removed entirely at W2-3, so consumers that need a digest must use the
-    /// verified path now rather than treat this field as a guarantee.
-    pub state_hash: Option<StateHash>,
     /// Whether the machine halted during this step.
     pub halted: bool,
     /// Whether this outcome was produced by a verified path.
     ///
-    /// `false` for [`Backend::step`] (the ordinary path) and `true` for
-    /// [`Backend::step_verified`]; these are the only two producers of the flag.
+    /// Always `false` for [`Backend::step`]; the flag is retained by the design's
+    /// target shape so a generic replay harness can tell the two producers apart.
     pub verified: bool,
 }
 
 /// Result of one verified execution step.
 ///
 /// A distinct type from [`StepOutcome`], so a harness that needs a per-step
-/// digest cannot mistake an ordinary outcome for a verified one.
+/// digest cannot mistake an ordinary outcome for a verified one. The type itself
+/// is the verification guarantee: [`Backend::step_verified`] is its only producer,
+/// so there is no always-`true` flag to check or to get wrong.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifiedStepOutcome {
     /// Tick after the step.
@@ -43,8 +54,6 @@ pub struct VerifiedStepOutcome {
     pub halted: bool,
     /// Digest of the state after the step.
     pub state_hash: StateHash,
-    /// Always `true`; [`Backend::step_verified`] is the only producer.
-    pub verified: bool,
 }
 
 /// A single independent emulated machine.
@@ -89,8 +98,41 @@ pub trait Backend: Send {
             tick: outcome.tick,
             halted: outcome.halted,
             state_hash,
-            verified: true,
         })
+    }
+
+    /// Advances a bounded batch with the caller's inputs, budget, stop set and policy.
+    ///
+    /// This is the only batch primitive. The default is the reference implementation in
+    /// [`crate::batch`]; it steps, checks the budget, the pre-step conditions, the halt
+    /// signal and the post-step conditions under the documented precedence, and reads
+    /// host time only for the caller's absolute deadline at a step boundary. A backend
+    /// override may only avoid the per-step trait call; it must keep the same grammar,
+    /// precedence and result shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::Limit`] for an input sequence longer than a `Steps` budget
+    /// **before** any step runs, and propagates step/digest errors otherwise.
+    fn run_batch(
+        &mut self,
+        inputs: &InputSequence,
+        budget: StopBudget,
+        stop: &StopSet,
+        policy: VerificationPolicy,
+        control: &RunControl,
+    ) -> Result<BatchOutcome, BackendError> {
+        crate::batch::run_batch_default(self, inputs, budget, stop, policy, control)
+    }
+
+    /// Returns cheap observations for the batch loop without computing a digest.
+    ///
+    /// The default exposes only the halt flag. A backend that can answer the instruction
+    /// pointer or frame index cheaply overrides this so `Pc`/`Frame` stop conditions work
+    /// without an inspection (which may hash).
+    #[must_use]
+    fn batch_signals(&self) -> BatchSignals {
+        BatchSignals::default()
     }
 
     /// Captures complete mutable state.
@@ -100,8 +142,57 @@ pub trait Backend: Send {
     /// backend instance.
     fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError>;
 
-    /// Returns a side-effect-free debugger view.
+    /// Returns a cheap status view: no digest and no memory copy.
+    ///
+    /// The register maps must respect [`crate::MAX_STATUS_REGISTERS`] together and keep the
+    /// CPU/core file separate from device pseudo-registers. A backend implements this
+    /// from its own fields; it must not serialize state or copy RAM.
+    ///
+    /// The provided default projects [`Backend::inspect`], which computes no digest and
+    /// copies no memory; production backends override it with a direct field read.
+    fn status(&self) -> Result<MachineStatus, BackendError> {
+        let inspection = self.inspect()?;
+        Ok(MachineStatus {
+            tick: inspection.tick,
+            halted: inspection.halted,
+            cpu_registers: inspection.cpu_registers,
+            device_registers: inspection.device_registers,
+            frame_index: inspection.frame_index,
+        })
+    }
+
+    /// Returns the on-demand detailed view: registers only, no digest, no memory copy.
+    ///
+    /// A caller that needs a digest calls [`Backend::state_hash`] explicitly. Memory is
+    /// obtained through [`Backend::inspect_with_memory`] or `read_memory`.
     fn inspect(&self) -> Result<MachineInspection, BackendError>;
+
+    /// Returns the backend's default inspection memory window `(base, length)`.
+    ///
+    /// Used by consumers that preserve the detailed view's memory metadata without
+    /// copying it unless they ask for the window. The default is an empty window.
+    #[must_use]
+    fn inspection_memory_window(&self) -> (u64, usize) {
+        (0, 0)
+    }
+
+    /// Returns the detailed view with an opt-in memory window.
+    ///
+    /// The default composes `inspect` and `read_memory`, so a backend that implements
+    /// both gets the window without a second copy path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the inspection or memory-read error.
+    fn inspect_with_memory(
+        &self,
+        base: u64,
+        length: usize,
+    ) -> Result<MachineInspection, BackendError> {
+        let inspection = self.inspect()?;
+        let bytes = self.read_memory(base, length)?;
+        Ok(inspection.with_memory(MemoryWindow { base, bytes }))
+    }
 
     /// Reads emulated memory without side effects.
     fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>, BackendError>;

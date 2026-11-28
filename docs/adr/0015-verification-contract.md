@@ -6,23 +6,82 @@
   2026-11-20; independent review V4 passed 2026-11-20). This accepts the execution/verification
   decision; it does not certify implementation or benchmark results.
 - **Implementation status (2026-11-27):** plan **W2.1/W2.2** / design **W2-1/W2-2**
-  landed. `Backend::state_hash()` is a required method with no default body,
-  `VerifiedStepOutcome` and the default `Backend::step_verified()` compose `step` plus
-  exactly one `state_hash()`, and `StepOutcome` is
-  `{ tick, state_hash: Option<StateHash>, halted, verified }`. The ordinary `step` no
-  longer computes a digest (`None`, `verified = false`); `step_verified` is the only
-  per-step digest path and uses the same single canonical source, so snapshot bytes,
-  state hashes, TAS/replay and demo goldens are unchanged. A before/after benchmark of the
-  same fixed `interrupt_rom(3)` workload through
+  landed and merged (PR #42, `cbba190`), and the **W2.3a contract-finish** landing removed
+  the migration bridge. `Backend::state_hash()` is a required method with no default body;
+  the ordinary `StepOutcome` is the digest-free target shape
+  `{ tick, halted, verified }` (no `state_hash` field and no accessor), with
+  `verified = false`; `VerifiedStepOutcome` is the distinct verified type
+  `{ tick, halted, state_hash }` and its type is the verification guarantee (the redundant
+  always-`true` flag is gone). The default `Backend::step_verified()` composes `step` plus
+  exactly one `state_hash()`, so the verified digest cannot drift from the single canonical
+  source. Snapshot bytes, state hashes, TAS/replay, service artifacts, debugger stop reports
+  and demo goldens are unchanged. A before/after benchmark of the same fixed
+  `interrupt_rom(3)` workload through
   `cargo run -p chronofork-megadrive --example bench_step --release` is recorded under
   the ignored `.research/consolidation-w2-2026-11-27/bench/` evidence (command, p50/p95,
-  instructions/s and checkpoint bytes; no FPS or game-performance claim). **W2-3** (remove
-  the `Option`, add the batch primitive) is not implemented. Evidence:
+  instructions/s and checkpoint bytes; no FPS or game-performance claim). **W2.3b**
+  (batch/`run_until`/`run_cycles`, stop/cancel grammar) landed: one
+  backend primitive `Backend::run_batch` (the default is the reference loop), the typed
+  stop grammar (`StopKind`/`StopPhase`/`StopValue`/`StopCondition`/`StopSet`), the typed
+  `StopReason`/`MatchedStop`/`BatchOutcome` result with `performed` and consumed cycles,
+  bounded `InputSequence`, `VerificationPolicy`, `Session::run_until`/`run_cycles`, and a
+  `RunRecord` (`k` + inputs) for deterministic prefix replay. Precedence is explicit
+  (`pc > memory > event > frame > tick`, then value, then request position; halted
+  outranks a matching condition). Ordinary batches compute no per-step digest. The loop
+  observes the real initial tick and halt through the hash-free `status()` fallback when
+  the optional `batch_signals()` hook does not carry them, so a relative cycle budget is
+  never measured from an invented zero. After each step the loop restores the authoritative
+  step-derived tick/halt before applying cancel/deadline precedence, so a winning control
+  reason never erases a real halt (the reason priority `cancelled > deadline > halted`
+  stays unchanged). `StopSet::new` rejects a condition whose `kind`
+  disagrees with its `StopValue`, so matching, rank and the reported kind cannot diverge.
+  The input cap bounds **explicit frames**, not performed steps: `InputSequence::prefix`
+  and `RunRecord` store `min(performed, explicit_len)` frames and keep neutral padding
+  implicit, so a 5000-step neutral run records without allocating per-step padding.
+  **W2.3c** landed the lock-free control: `CancelToken` (atomic flag, cloneable across
+  threads) and `RunControl` (`token` + optional absolute host deadline), threaded through
+  `Session::run_until`/`run_cycles` and the backend primitive. Cancellation and the
+  deadline are checked only at step boundaries, in the fixed priority `cancelled >
+  deadline > halted > stop_condition > completed`; host time never enters ticks, state or
+  hashes, and a cancelled/deadline result is the exact deterministic prefix of the
+  unbounded run (`performed`, tick and consumed inputs). **W2.4a** landed the cheap
+  status/inspection split: `Backend::status()` (`MachineStatus` with separated CPU/device
+  maps bounded by `MAX_STATUS_REGISTERS = 64`, tick, halt and frame index) computes no
+  digest and copies no RAM; `MachineInspection` carries no `state_hash` and only a
+  `memory: Option<MemoryWindow>` when a caller asks (via `inspect_with_memory`); one
+  register-map builder feeds both views; `session.list` uses registry/status metadata and
+  never inspects per session; the v1 service JSON (including `state_hash`, produced by one
+  explicit `state_hash()` call) is unchanged. **W2.4b** landed the server-side wire v2:
+  the API version is parsed on every request (absent = v1), v1 keeps its exact shape, v2 is
+  served only to a v2 request, an unknown version is refused before dispatch, and v2 `run`
+  reports `performed`/`cycles`/`stop_reason` from the one batch primitive with a single
+  digest per operation; the v2 `expected_tick` precondition reads the hash-free status tick,
+  so a matching precondition still leaves exactly one digest and a rejected one applies no
+  step and computes none. The service deliberately runs **one-step batches** so a failed batch
+  publishes exactly the prefix it applied (the primitive does not report an applied count on
+  error); that is a throughput trade-off, not a performance claim. The strict GUI run decoder
+  accepted the new v2 `cycles` field as part of this landing; the broader **client-side
+  probe/local refusal and GUI v2 promotion are W3.6**, so v2 is served but not promoted
+  end-to-end. The MCP protocol version stays `2025-03-26`.
+  **W2.5–W2.8** are not implemented. Evidence:
+  `crates/chronofork-backend-api/src/traits.rs` (the `StepOutcome` compile-fail doctest
+  pins the absence of the digest field),
   `crates/chronofork-backend-api/tests/w2_verified.rs` (`verified_step_hashes_exactly_once_per_step`),
   `crates/chronofork-megadrive/tests/w2_state_hash.rs`,
   `crates/chronofork-megadrive/tests/w2_twin_machines.rs`
   (`twin_machines_normal_vs_verified`),
-  `crates/chronofork-test-backend/tests/w2_state_hash.rs`.
+  `crates/chronofork-test-backend/tests/w2_state_hash.rs`; batch/stop:
+  `crates/chronofork-sessions/tests/batch.rs`
+  (`stop_condition_precedence`, `batch_prefix_is_deterministic`,
+  `replay_batch_equivalence`), `crates/chronofork-backend-api/tests/w2_verified.rs`
+  (`ordinary_batch_computes_no_digest`, `over_budget_inputs_are_rejected_before_any_step`),
+  `crates/chronofork-megadrive/tests/w2_batch.rs`; cancellation/deadline:
+  `crates/chronofork-backend-api/tests/w2_control.rs`
+  (`cancel_equals_run_of_k`, `deadline_prefix_is_deterministic`,
+  `cancellation_is_observable_without_a_lock`); status/inspection:
+  `crates/chronofork-megadrive/tests/w2_status.rs` (`status_has_no_hash_or_copy`,
+  `status_registers_are_bounded_and_separated`) and
+  `crates/chronofork-service/tests/w2_status.rs` (`list_does_not_inspect`).
 - **Date:** 2026-11-20.
 - **Milestone:** M8 (functional Mega Drive emulator) and the product-consolidation phase.
 - **Related:** [ADR-0014](0014-v1-scope-single-user-loopback.md) (v1 scope),

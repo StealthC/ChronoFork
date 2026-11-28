@@ -76,7 +76,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use chronofork_backend_api::{BackendDescriptor, BackendFactory};
+use chronofork_backend_api::{
+    BackendDescriptor, BackendFactory, InputSequence, RunControl, StopSet, VerificationPolicy,
+};
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick, hash_bytes};
 use chronofork_sessions::{
     Lineage, SessionHandle, SessionInspection, SessionManager, SessionState,
@@ -98,16 +100,6 @@ use crate::version::ApiVersion;
 
 /// Version reported by `capabilities` and MCP `serverInfo`.
 pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Cancellation is observed once per instruction, so the deadline is sampled on a
-/// fixed stride of steps instead of every step.
-///
-/// Reading a monotonic clock per instruction would put host time on the hot path
-/// for no benefit: the contract is that the deadline chooses how many steps are
-/// applied (ADR-0016 §2, K3), and the run reports the exact `performed` count it
-/// reached. A stride of 64 keeps the sampled point within one 64-step batch of the
-/// true deadline while leaving cancellation checked at every boundary.
-const DEADLINE_SAMPLE_STRIDE: u64 = 64;
 
 /// Progress published into the journal on this stride of steps.
 ///
@@ -199,27 +191,6 @@ impl OperationContext<'_> {
         if let Ok(mut journal) = self.journal.lock() {
             journal.publish_progress(key, performed, tick);
         }
-    }
-}
-
-/// A host-clock deadline started when a run is admitted.
-///
-/// The budget is reflected in the result; the elapsed time is deliberately not,
-/// because a host duration is not part of a reproducible document and the applied
-/// prefix is already reported as `performed` — the authority of ADR-0016 §2.
-struct RunDeadline {
-    deadline: Deadline,
-}
-
-impl RunDeadline {
-    fn new(budget_ms: u64) -> Self {
-        Self {
-            deadline: Deadline::after_millis(budget_ms),
-        }
-    }
-
-    fn expired(&self) -> bool {
-        self.deadline.is_expired()
     }
 }
 
@@ -1410,11 +1381,13 @@ impl AppService {
         // layer on **every** early return below, including the `?` of a failed
         // inspection, so a rejected create can never leave an invisible backend alive.
         let pending = PendingSession::new(self, session);
-        let (view, committed) = {
+        let (view, state_hash, committed) = {
             let owner = handle.lock()?;
             let view = owner.inspect().map_err(ServiceError::from)?;
-            let committed = metadata_with_usage(&view, Some(owner.snapshot_bytes_retained()));
-            (view, committed)
+            let state_hash = owner.state_hash().map_err(ServiceError::from)?;
+            let committed =
+                metadata_with_usage(&view, state_hash, Some(owner.snapshot_bytes_retained()));
+            (view, state_hash, committed)
         };
         // The registry insert is the first irreversible effect of this mutation, so the
         // journal entry is retained from here on: a retry replays the admitted session
@@ -1438,10 +1411,7 @@ impl AppService {
             ("session", unsigned(session.raw())?),
             ("state", JsonValue::string(state_name(view.state))),
             ("tick", unsigned(view.machine.tick.raw())?),
-            (
-                "state_hash",
-                JsonValue::string(view.machine.state_hash.to_hex()),
-            ),
+            ("state_hash", JsonValue::string(state_hash.to_hex())),
             ("lineage", lineage_json(&view.lineage)?),
             ("backend_id", JsonValue::string(view.backend.id().as_str())),
         ]))
@@ -1512,23 +1482,21 @@ impl AppService {
         let revision = self.revision(session);
         let owner = handle.lock()?;
         let view = owner.inspect().map_err(ServiceError::from)?;
+        // `Session::inspect` computed the digest it carries; reuse it so one inspect
+        // operation hashes exactly once.
+        let state_hash = view.state_hash;
+        let (memory_base, memory_length) = owner.inspection_memory_window();
         let mut registers = BTreeMap::new();
-        for (name, value) in &view.machine.registers {
-            registers.insert(name.clone(), unsigned(*value)?);
+        for (name, value) in view.machine.registers() {
+            registers.insert(name, unsigned(value)?);
         }
         let machine = JsonValue::object([
             ("tick", unsigned(view.machine.tick.raw())?),
-            (
-                "state_hash",
-                JsonValue::string(view.machine.state_hash.to_hex()),
-            ),
+            ("state_hash", JsonValue::string(state_hash.to_hex())),
             ("halted", JsonValue::from_bool(view.machine.halted)),
             ("registers", JsonValue::Object(registers)),
-            ("memory_base", unsigned(view.machine.memory_base)?),
-            (
-                "memory_length",
-                unsigned(bytes_to_u64(view.machine.memory.len()))?,
-            ),
+            ("memory_base", unsigned(memory_base)?),
+            ("memory_length", unsigned(bytes_to_u64(memory_length))?),
         ]);
         drop(owner);
         Ok(JsonValue::object([
@@ -1593,12 +1561,10 @@ impl AppService {
             }
         }
         if let Some(expected) = expected_tick {
-            let observed = owner
-                .inspect()
-                .map_err(ServiceError::from)?
-                .machine
-                .tick
-                .raw();
+            // The cheap status path answers the precondition without computing a digest:
+            // a rejected precondition applies no step and needs none, and a successful run
+            // keeps exactly the one final response digest.
+            let observed = owner.status().map_err(ServiceError::from)?.tick.raw();
             if observed != expected {
                 return Err(ServiceError::new(
                     ErrorCode::Conflict,
@@ -1609,27 +1575,29 @@ impl AppService {
         // Work begins here: every step below can change canonical state, so the entry
         // must be retained even if the run stops on its first instruction.
         context.begin();
-        let deadline = RunDeadline::new(budget_ms);
-        let input = InputFrame::new(buttons);
+        let deadline = Deadline::after_millis(budget_ms);
+        let control =
+            RunControl::with_token(context.cancel().token()).with_deadline(deadline.instant());
+        let input = InputSequence::new(vec![InputFrame::new(buttons)])
+            .map_err(|error| ServiceError::from(chronofork_sessions::SessionError::from(error)))?;
         let mut performed = 0_u64;
+        let mut cycles = 0_u64;
         let mut halted = false;
         let mut stop = StopReason::Completed;
         let mut step_error: Option<ServiceError> = None;
+        // The batch primitive does not report its applied count when a step fails, and the
+        // service contract publishes exactly what a failed run applied. One-step batches
+        // therefore keep the prefix exact while still using the one batch primitive and its
+        // cancellation/deadline boundaries; a later primitive that reports the applied
+        // count on error can widen this chunk without changing the contract.
         while performed < steps {
-            // Cancellation is checked at **every** instruction boundary, so a
-            // cancelled run is a deterministic prefix whose length depends only on
-            // when the signal arrived, never on a batch size (ADR-0016 §2, V3-2).
-            if context.cancel().is_cancelled() {
-                stop = StopReason::Cancelled;
-                break;
-            }
-            // The deadline is sampled on a stride, so the monotonic clock stays off
-            // the per-instruction path while the applied prefix stays bounded.
-            if performed % DEADLINE_SAMPLE_STRIDE == 0 && deadline.expired() {
-                stop = StopReason::Deadline;
-                break;
-            }
-            let outcome = match owner.step(input) {
+            let outcome = match owner.run_until(
+                &StopSet::default(),
+                1,
+                &input,
+                VerificationPolicy::None,
+                &control,
+            ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     // A backend failure **after** steps were applied still leaves a
@@ -1641,19 +1609,57 @@ impl AppService {
                 }
             };
             performed = performed
-                .checked_add(1)
+                .checked_add(outcome.performed)
                 .ok_or_else(|| ServiceError::internal("step counter overflow"))?;
+            cycles = cycles
+                .checked_add(outcome.cycles)
+                .ok_or_else(|| ServiceError::internal("cycle counter overflow"))?;
             halted = outcome.halted;
-            if halted {
-                stop = StopReason::Halted;
-                break;
+            match outcome.stop_reason {
+                chronofork_backend_api::StopReason::Completed => {}
+                chronofork_backend_api::StopReason::Cancelled => {
+                    stop = StopReason::Cancelled;
+                    break;
+                }
+                chronofork_backend_api::StopReason::Deadline => {
+                    stop = StopReason::Deadline;
+                    break;
+                }
+                chronofork_backend_api::StopReason::Halted => {
+                    // A machine that was already halted when the request started is the
+                    // documented `halted` error, not a successful zero-step run. A run
+                    // that halts during this request reports `halted:true` instead.
+                    if performed == 0 && outcome.performed == 0 {
+                        step_error = Some(ServiceError::from(
+                            chronofork_sessions::SessionError::Halted(session),
+                        ));
+                    } else {
+                        stop = StopReason::Halted;
+                    }
+                    break;
+                }
+                chronofork_backend_api::StopReason::StopCondition => {
+                    return Err(ServiceError::internal(
+                        "a run without stop conditions matched one",
+                    ));
+                }
             }
             if performed % PROGRESS_PUBLISH_STRIDE == 0 {
                 context.publish_progress(performed, None);
             }
         }
-        let view = owner.inspect().map_err(ServiceError::from)?;
-        let committed = metadata_of(&view);
+        // The cheap status path supplies the boundary metadata; the digest is computed
+        // exactly once for the response (inspection is not consulted for either).
+        let status = owner.status().map_err(ServiceError::from)?;
+        let state_hash = owner.state_hash().map_err(ServiceError::from)?;
+        let committed = SessionMetadata {
+            state: owner.state(),
+            tick: status.tick,
+            state_hash,
+            lineage: owner.lineage().clone(),
+            snapshot_bytes: 0,
+        };
+        let final_tick = status.tick;
         drop(owner);
         // Any run that applied at least one step advances the revision once, whatever
         // stopped it (budget, cancel, deadline, halt or a backend failure); the prefix
@@ -1666,7 +1672,7 @@ impl AppService {
         };
         // The run's final boundary is always published, so a `session.progress`
         // issued after the run returns the exact end state instead of a stale stride.
-        context.publish_progress(performed, Some(view.machine.tick));
+        context.publish_progress(performed, Some(final_tick));
         if let Some(error) = step_error {
             return Err(error);
         }
@@ -1674,11 +1680,9 @@ impl AppService {
             ("session", unsigned(session.raw())?),
             ("steps", unsigned(performed)?),
             ("performed", unsigned(performed)?),
-            ("tick", unsigned(view.machine.tick.raw())?),
-            (
-                "state_hash",
-                JsonValue::string(view.machine.state_hash.to_hex()),
-            ),
+            ("cycles", unsigned(cycles)?),
+            ("tick", unsigned(final_tick.raw())?),
+            ("state_hash", JsonValue::string(state_hash.to_hex())),
             ("halted", JsonValue::from_bool(halted)),
             ("stop_reason", JsonValue::string(stop.as_str())),
             ("revision", unsigned(revision)?),
@@ -1718,7 +1722,7 @@ impl AppService {
         // The fork's origin checkpoint goes through the **same quota-aware capture**
         // as `session.snapshot`: forking cannot accumulate checkpoints past the
         // parent's per-session quota (ADR-0016 §3).
-        let (snapshot, parent_usage, parent_view) = {
+        let (snapshot, parent_usage, parent_view, parent_hash) = {
             let mut owner = parent_handle.lock()?;
             let snapshot = owner
                 .snapshot_within(
@@ -1733,19 +1737,21 @@ impl AppService {
             context.begin();
             let usage = owner.snapshot_bytes_retained();
             let view = owner.inspect().map_err(ServiceError::from)?;
-            (snapshot, usage, view)
+            let state_hash = owner.state_hash().map_err(ServiceError::from)?;
+            (snapshot, usage, view, state_hash)
         };
         self.publish(
             parent,
-            metadata_with_usage(&parent_view, Some(parent_usage)),
+            metadata_with_usage(&parent_view, parent_hash, Some(parent_usage)),
         );
         let (child, child_handle) = self.build_forked_session(parent_handle.clone(), snapshot)?;
-        let (view, committed, child_bytes) = {
+        let (view, state_hash, committed, child_bytes) = {
             let owner = child_handle.lock()?;
             let view = owner.inspect().map_err(ServiceError::from)?;
+            let state_hash = owner.state_hash().map_err(ServiceError::from)?;
             let bytes = owner.snapshot_bytes_retained();
-            let committed = metadata_with_usage(&view, Some(bytes));
-            (view, committed, bytes)
+            let committed = metadata_with_usage(&view, state_hash, Some(bytes));
+            (view, state_hash, committed, bytes)
         };
         // The child inherits exactly one checkpoint (its origin). It must fit the
         // child's own byte quota, otherwise the fork is rejected whole (the parent keeps
@@ -1780,10 +1786,7 @@ impl AppService {
             ("session", unsigned(child.raw())?),
             ("parent", unsigned(parent.raw())?),
             ("tick", unsigned(view.machine.tick.raw())?),
-            (
-                "state_hash",
-                JsonValue::string(view.machine.state_hash.to_hex()),
-            ),
+            ("state_hash", JsonValue::string(state_hash.to_hex())),
             ("lineage", lineage_json(&view.lineage)?),
             ("revision", unsigned(self.revision(child))?),
         ]))
@@ -1820,16 +1823,24 @@ impl AppService {
                     // checkpoint on retry.
                     context.begin();
                     let view = owner.inspect().map_err(ServiceError::from)?;
+                    let state_hash = owner.state_hash().map_err(ServiceError::from)?;
                     drop(owner);
-                    self.publish(session, metadata_with_usage(&view, Some(usage.1)));
+                    self.publish(
+                        session,
+                        metadata_with_usage(&view, state_hash, Some(usage.1)),
+                    );
                     self.refresh_store_bytes();
                     (snapshot, usage)
                 }
                 Err(error) => {
                     // Nothing was stored: publish the current usage and apply nothing.
                     let view = owner.inspect().map_err(ServiceError::from)?;
+                    let state_hash = owner.state_hash().map_err(ServiceError::from)?;
                     drop(owner);
-                    self.publish(session, metadata_with_usage(&view, Some(usage.1)));
+                    self.publish(
+                        session,
+                        metadata_with_usage(&view, state_hash, Some(usage.1)),
+                    );
                     self.refresh_store_bytes();
                     return Err(error);
                 }
@@ -1870,7 +1881,7 @@ impl AppService {
         let expected_revision = args.optional_unsigned("expected_revision")?;
         let _lease = self.acquire_lease(session)?;
         let handle = self.session_handle(session)?;
-        let (view, usage) = {
+        let (view, usage, state_hash) = {
             let mut owner = handle.lock()?;
             // The precondition is evaluated under the session owner, so a stale retry
             // cannot slip between the check and the restore (ADR-0016 §2, K3).
@@ -1889,21 +1900,19 @@ impl AppService {
             context.begin();
             let usage = owner.snapshot_bytes_retained();
             let view = owner.inspect().map_err(ServiceError::from)?;
-            (view, usage)
+            let state_hash = owner.state_hash().map_err(ServiceError::from)?;
+            (view, usage, state_hash)
         };
         // A restore moves canonical state, so it advances the monotonic revision: the
         // tick can move backwards (ABA), and only the revision can tell a retry that
         // the state it pinned is gone (ADR-0016 §2, K3/race R6).
-        let committed = metadata_with_usage(&view, Some(usage));
+        let committed = metadata_with_usage(&view, state_hash, Some(usage));
         let revision = self.bump_revision(session, committed);
         Ok(JsonValue::object([
             ("session", unsigned(session.raw())?),
             ("snapshot", unsigned(snapshot.raw())?),
             ("tick", unsigned(view.machine.tick.raw())?),
-            (
-                "state_hash",
-                JsonValue::string(view.machine.state_hash.to_hex()),
-            ),
+            ("state_hash", JsonValue::string(state_hash.to_hex())),
             ("revision", unsigned(revision)?),
         ]))
     }
@@ -1922,12 +1931,8 @@ impl AppService {
         let (left_tick, left_hash, right_tick, right_hash) = if left == right {
             let owner = left_handle.lock()?;
             let view = owner.inspect().map_err(ServiceError::from)?;
-            (
-                view.machine.tick,
-                view.machine.state_hash,
-                view.machine.tick,
-                view.machine.state_hash,
-            )
+            let hash = owner.state_hash().map_err(ServiceError::from)?;
+            (view.machine.tick, hash, view.machine.tick, hash)
         } else {
             let right_handle = self.session_handle(right)?;
             let (first, second) = if left <= right {
@@ -1946,9 +1951,9 @@ impl AppService {
             let right_view = right_owner.inspect().map_err(ServiceError::from)?;
             (
                 left_view.machine.tick,
-                left_view.machine.state_hash,
+                left_owner.state_hash().map_err(ServiceError::from)?,
                 right_view.machine.tick,
-                right_view.machine.state_hash,
+                right_owner.state_hash().map_err(ServiceError::from)?,
             )
         };
         let equivalent = left_tick == right_tick && left_hash == right_hash;
@@ -1991,7 +1996,11 @@ impl AppService {
             // for a session that is open at this instant. The committed copy of an
             // already-closed session was published by the close that closed it.
             let committed = match owner.inspect() {
-                Ok(view) => Some(metadata_with_usage(&view, Some(0))),
+                Ok(view) => Some(metadata_with_usage(
+                    &view,
+                    owner.state_hash().map_err(ServiceError::from)?,
+                    Some(0),
+                )),
                 Err(_) => None,
             };
             owner.close().map_err(ServiceError::from)?;
@@ -2564,20 +2573,20 @@ fn summary_json(
 ///
 /// The checkpoint usage is left at its `None` default: a caller that is committing a
 /// state change (not a checkpoint change) keeps the usage it already published.
-fn metadata_of(view: &SessionInspection) -> SessionMetadata {
-    metadata_with_usage(view, None)
-}
-
 /// Copies the committed metadata of one locked session, including checkpoint bytes.
 ///
 /// The byte count is taken from the session that holds the checkpoints, which is the
 /// accounting source ADR-0016 §3 names, and published with the rest of the commit so
 /// a quota rejection and the account it is checked against cannot disagree.
-fn metadata_with_usage(view: &SessionInspection, snapshot_bytes: Option<usize>) -> SessionMetadata {
+fn metadata_with_usage(
+    view: &SessionInspection,
+    state_hash: StateHash,
+    snapshot_bytes: Option<usize>,
+) -> SessionMetadata {
     SessionMetadata {
         state: view.state,
         tick: view.machine.tick,
-        state_hash: view.machine.state_hash,
+        state_hash,
         lineage: view.lineage.clone(),
         snapshot_bytes: snapshot_bytes.unwrap_or_default(),
     }

@@ -2951,9 +2951,13 @@ mod v2 {
             let inputs = device_inputs();
             let movie = Movie::record_v2(&mut manager, source, meta(), &inputs, 2)
                 .expect("record anchored movie");
+            let before_hash = manager.state_hash(source).expect("source digest");
             let after = manager.inspect(source).expect("inspect source").machine;
             assert_eq!(after.tick, before.tick);
-            assert_eq!(after.state_hash, before.state_hash);
+            assert_eq!(
+                manager.state_hash(source).expect("source digest"),
+                before_hash
+            );
 
             assert_eq!(movie.format_version(), V2_MOVIE_FORMAT_VERSION);
             assert_eq!(movie.input_schema_version(), V2_MOVIE_INPUT_SCHEMA_VERSION);
@@ -3081,9 +3085,13 @@ mod v2 {
                 ),
                 "expected a halted recording"
             );
+            let before_hash = manager.state_hash(source).expect("source digest");
             let after = manager.inspect(source).expect("inspect").machine;
             assert_eq!(after.tick, before.tick);
-            assert_eq!(after.state_hash, before.state_hash);
+            assert_eq!(
+                manager.state_hash(source).expect("source digest"),
+                before_hash
+            );
         }
     }
 }

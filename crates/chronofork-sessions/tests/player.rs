@@ -578,10 +578,7 @@ fn pre_existing_sessions_are_untouched_and_players_are_independent() -> TestResu
 
     let external_after = external.inspect(external_session)?;
     assert_eq!(external_after.machine.tick, external_before.machine.tick);
-    assert_eq!(
-        external_after.machine.state_hash,
-        external_before.machine.state_hash
-    );
+    assert_eq!(external_after.state_hash, external_before.state_hash);
     assert_eq!(external.summaries()?.len(), 1);
     assert!(
         external
@@ -591,10 +588,7 @@ fn pre_existing_sessions_are_untouched_and_players_are_independent() -> TestResu
     external.restore(external_session, external_snapshot)?;
     let restored = external.inspect(external_session)?;
     assert_eq!(restored.machine.tick, external_before.machine.tick);
-    assert_eq!(
-        restored.machine.state_hash,
-        external_before.machine.state_hash
-    );
+    assert_eq!(restored.state_hash, external_before.state_hash);
     Ok(())
 }
 

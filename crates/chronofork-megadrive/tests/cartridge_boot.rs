@@ -66,7 +66,7 @@ fn boot_state_survives_snapshot_and_restore() {
     assert_eq!(restored.cartridge().banks()[0], 2);
     assert!(!restored.tmss().locked());
     assert_eq!(
-        restored.inspect().expect("inspect").state_hash,
+        restored.state_hash().expect("inspect digest"),
         snapshot.state_hash()
     );
 }
