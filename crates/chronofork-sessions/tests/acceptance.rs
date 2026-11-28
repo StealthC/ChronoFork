@@ -55,7 +55,7 @@ fn three_way_fork_is_isolated_and_diverges() {
     for branch in [branch_a, branch_b, branch_c] {
         let view = manager.inspect(branch).expect("fork inspection");
         assert_eq!(view.machine.tick, checkpoint_view.machine.tick);
-        assert_eq!(view.machine.state_hash, checkpoint_view.machine.state_hash);
+        assert_eq!(view.state_hash, checkpoint_view.state_hash);
         assert_eq!(view.lineage.parent_session(), Some(source));
         assert_eq!(view.lineage.origin_snapshot(), Some(checkpoint));
         assert_eq!(view.lineage.depth(), 1);
@@ -66,31 +66,16 @@ fn three_way_fork_is_isolated_and_diverges() {
         step_many(&mut manager, branch, input, 6);
     }
 
-    let hash_a = manager
-        .inspect(branch_a)
-        .expect("A inspection")
-        .machine
-        .state_hash;
-    let hash_b = manager
-        .inspect(branch_b)
-        .expect("B inspection")
-        .machine
-        .state_hash;
-    let hash_c = manager
-        .inspect(branch_c)
-        .expect("C inspection")
-        .machine
-        .state_hash;
+    let hash_a = manager.state_hash(branch_a).expect("A inspection digest");
+    let hash_b = manager.state_hash(branch_b).expect("B inspection digest");
+    let hash_c = manager.state_hash(branch_c).expect("C inspection digest");
     assert_ne!(hash_a, hash_b);
     assert_ne!(hash_b, hash_c);
     assert_ne!(hash_a, hash_c);
 
     let source_after = manager.inspect(source).expect("source inspection");
     assert_eq!(source_after.machine.tick, checkpoint_view.machine.tick);
-    assert_eq!(
-        source_after.machine.state_hash,
-        checkpoint_view.machine.state_hash
-    );
+    assert_eq!(source_after.state_hash, checkpoint_view.state_hash);
 
     let memory_a_before = manager
         .read_memory(branch_a, 0x20, 1)
@@ -121,20 +106,18 @@ fn restore_and_replay_reproduce_the_branch_state() {
     step_many(&mut manager, branch, 7, 9);
     let original = manager.inspect(branch).expect("branch inspection");
     let checkpoint_hash = manager
-        .inspect(source)
-        .expect("source inspection")
-        .machine
-        .state_hash;
+        .state_hash(source)
+        .expect("source inspection digest");
 
     manager.restore(branch, checkpoint).expect("restore branch");
     let restored = manager.inspect(branch).expect("restored inspection");
     assert_eq!(restored.machine.tick.raw(), 12);
-    assert_eq!(restored.machine.state_hash, checkpoint_hash);
+    assert_eq!(restored.state_hash, checkpoint_hash);
 
     step_many(&mut manager, branch, 7, 9);
     let replayed = manager.inspect(branch).expect("replayed inspection");
     assert_eq!(replayed.machine.tick, original.machine.tick);
-    assert_eq!(replayed.machine.state_hash, original.machine.state_hash);
+    assert_eq!(replayed.state_hash, original.state_hash);
 }
 
 #[test]
@@ -150,7 +133,7 @@ fn serialized_checkpoint_can_seed_a_new_manager() {
         .expect("serialize checkpoint");
     let decoded = Snapshot::from_bytes(&bytes).expect("decode checkpoint");
     assert_eq!(decoded.tick(), expected.machine.tick);
-    assert_eq!(decoded.state_hash(), expected.machine.state_hash);
+    assert_eq!(decoded.state_hash(), expected.state_hash);
 
     let mut second = manager();
     let imported = second
@@ -158,10 +141,7 @@ fn serialized_checkpoint_can_seed_a_new_manager() {
         .expect("import checkpoint");
     let imported_view = second.inspect(imported).expect("imported inspection");
     assert_eq!(imported_view.machine.tick, expected.machine.tick);
-    assert_eq!(
-        imported_view.machine.state_hash,
-        expected.machine.state_hash
-    );
+    assert_eq!(imported_view.state_hash, expected.state_hash);
     assert_eq!(imported_view.lineage.origin_snapshot(), Some(checkpoint));
 
     step_many(&mut second, imported, 1, 3);
@@ -177,14 +157,14 @@ fn fork_current_does_not_mutate_the_source() {
     let before = manager.inspect(source).expect("source inspection");
     let fork = manager.fork_current(source).expect("fork current");
     let fork_view = manager.inspect(fork).expect("fork inspection");
-    assert_eq!(fork_view.machine.state_hash, before.machine.state_hash);
+    assert_eq!(fork_view.state_hash, before.state_hash);
     assert_eq!(fork_view.lineage.parent_session(), Some(source));
 
     step_many(&mut manager, fork, 9, 4);
     let source_after = manager
         .inspect(source)
         .expect("source inspection after fork steps");
-    assert_eq!(source_after.machine.state_hash, before.machine.state_hash);
+    assert_eq!(source_after.state_hash, before.state_hash);
 }
 
 #[test]

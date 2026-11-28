@@ -994,7 +994,7 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
         manager.step(source, InputFrame::NEUTRAL)?;
     }
     let checkpoint = manager.snapshot(source)?;
-    let start_hash = manager.inspect(source)?.machine.state_hash;
+    let start_hash = manager.state_hash(source)?;
 
     let pressed = InputFrame::new(0x11);
     let mut expected = Vec::new();
@@ -1005,7 +1005,7 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
     // Restoring the checkpoint and replaying the same frames reproduces every
     // state hash, because no input was serialized in the checkpoint.
     manager.restore(source, checkpoint)?;
-    assert_eq!(manager.inspect(source)?.machine.state_hash, start_hash);
+    assert_eq!(manager.state_hash(source)?, start_hash);
     for expected_hash in &expected {
         assert_eq!(
             manager.step_verified(source, pressed)?.state_hash,
@@ -1028,7 +1028,7 @@ fn session_snapshot_restore_and_fork_use_the_next_input() -> TestResult {
         .step_verified(fork_neutral, InputFrame::NEUTRAL)?
         .state_hash;
     assert_ne!(neutral_first, expected[0]);
-    assert_eq!(manager.inspect(source)?.machine.state_hash, start_hash);
+    assert_eq!(manager.state_hash(source)?, start_hash);
     Ok(())
 }
 

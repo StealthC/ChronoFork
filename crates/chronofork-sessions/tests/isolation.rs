@@ -127,14 +127,8 @@ fn rehydrated_sessions_do_not_share_mutable_state() {
     let first_after = manager.inspect(first_runtime).expect("inspect first");
     let second_after = manager.inspect(second_runtime).expect("inspect second");
     assert_eq!(second_before.machine.tick, second_after.machine.tick);
-    assert_eq!(
-        second_before.machine.state_hash,
-        second_after.machine.state_hash
-    );
-    assert_ne!(
-        first_after.machine.state_hash,
-        second_after.machine.state_hash
-    );
+    assert_eq!(second_before.state_hash, second_after.state_hash);
+    assert_ne!(first_after.state_hash, second_after.state_hash);
     assert_eq!(
         fs::read(checkpoint_path(&root, second_key, second.snapshot_key))
             .expect("read second checkpoint after stepping"),

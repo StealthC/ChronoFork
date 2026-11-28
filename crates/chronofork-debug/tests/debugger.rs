@@ -60,28 +60,31 @@ fn interrupt_machine(mask: u8) -> MegadriveBackend {
         .expect("interrupt machine")
 }
 
-fn synthetic_after(steps: u64) -> MachineInspection {
+fn synthetic_after(steps: u64) -> (MachineInspection, StateHash) {
     let mut machine = synthetic_machine();
     for _ in 0..steps {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    machine.inspect().expect("inspect")
+    let hash = machine.state_hash().expect("digest");
+    (machine.inspect().expect("inspect"), hash)
 }
 
-fn megadrive_after(rom: Vec<u8>, steps: u64) -> MachineInspection {
+fn megadrive_after(rom: Vec<u8>, steps: u64) -> (MachineInspection, StateHash) {
     let mut machine = megadrive_machine(rom);
     for _ in 0..steps {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    machine.inspect().expect("inspect")
+    let hash = machine.state_hash().expect("digest");
+    (machine.inspect().expect("inspect"), hash)
 }
 
-fn interrupt_after(mask: u8, steps: u64) -> MachineInspection {
+fn interrupt_after(mask: u8, steps: u64) -> (MachineInspection, StateHash) {
     let mut machine = interrupt_machine(mask);
     for _ in 0..steps {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    machine.inspect().expect("inspect")
+    let hash = machine.state_hash().expect("digest");
+    (machine.inspect().expect("inspect"), hash)
 }
 
 fn watchpoint_spec(id: u32, start: u32, end: u32, access: WatchpointAccess) -> WatchpointSpec {
@@ -156,28 +159,28 @@ fn pc_breakpoint_stops_before_the_instruction() {
     assert_eq!(run.dropped_events, 0);
     assert_eq!(run.dropped_log_entries, 0);
 
-    let boundary = synthetic_after(3);
+    let (boundary, boundary_hash) = synthetic_after(3);
     assert_eq!(
         run.tick, boundary.tick,
         "the reported tick is the boundary inspection, not the state after the step"
     );
-    assert_eq!(run.state_hash, boundary.state_hash);
+    assert_eq!(run.state_hash, boundary_hash);
     let inspection = debugger.inspect().expect("inspect");
-    assert_eq!(inspection.registers["pc"], u64::from(SYNTHETIC_STORE_PC));
+    assert_eq!(inspection.registers()["pc"], u64::from(SYNTHETIC_STORE_PC));
     assert_eq!(inspection.tick, run.tick);
-    assert_eq!(inspection.state_hash, run.state_hash);
+    assert_eq!(debugger.state_hash().expect("digest"), run.state_hash);
     assert_eq!(
         debugger.read_memory(0x20, 1).expect("read ram"),
         vec![0],
         "the store at pc 4 must not have executed"
     );
 
-    let after_the_instruction = synthetic_after(4);
+    let (after_the_instruction, after_hash) = synthetic_after(4);
     assert_ne!(
-        run.state_hash, after_the_instruction.state_hash,
+        run.state_hash, after_hash,
         "the reported state must not be the state after executing the instruction"
     );
-    assert_eq!(after_the_instruction.registers["pc"], 6);
+    assert_eq!(after_the_instruction.registers()["pc"], 6);
 
     let mut repeated_machine = synthetic_machine();
     let mut repeated_debugger = Debugger::new(&mut *repeated_machine).expect("debugger");
@@ -209,7 +212,7 @@ fn range_breakpoint_matches_inclusive_bounds() {
     let run = debugger.run(10).expect("run");
     assert_eq!(run.reason, StopReason::Breakpoint { id: breakpoint });
     assert_eq!(run.steps, 2);
-    assert_eq!(debugger.inspect().expect("inspect").registers["pc"], 3);
+    assert_eq!(debugger.inspect().expect("inspect").registers()["pc"], 3);
 
     // The upper bound is inclusive: {2, 3} first matches at the end address 3,
     // which an exclusive range would skip.
@@ -224,7 +227,7 @@ fn range_breakpoint_matches_inclusive_bounds() {
     let run = debugger.run(10).expect("run");
     assert_eq!(run.reason, StopReason::Breakpoint { id: breakpoint });
     assert_eq!(run.steps, 2);
-    assert_eq!(debugger.inspect().expect("inspect").registers["pc"], 3);
+    assert_eq!(debugger.inspect().expect("inspect").registers()["pc"], 3);
 
     // A range that contains no instruction boundary misses and reaches the step
     // limit; the PC jumps from 4 to 6, so 5 is never a boundary.
@@ -239,7 +242,7 @@ fn range_breakpoint_matches_inclusive_bounds() {
     let run = debugger.run(3).expect("run");
     assert_eq!(run.reason, StopReason::StepLimit);
     assert_eq!(run.steps, 3);
-    assert_eq!(debugger.inspect().expect("inspect").registers["pc"], 4);
+    assert_eq!(debugger.inspect().expect("inspect").registers()["pc"], 4);
 }
 
 /// M4-A2 — register and bounded big-endian memory conditions, ANDed with the
@@ -637,7 +640,7 @@ fn unknown_register_and_missing_pc_are_typed_errors() {
         !debugger
             .inspect()
             .expect("inspect")
-            .registers
+            .registers()
             .contains_key("pc")
     );
     assert_eq!(
@@ -694,14 +697,14 @@ fn watchpoint_stops_after_the_writing_instruction() {
     assert!(!run.halted);
     assert!(run.matched_events.is_empty());
 
-    let after = megadrive_after(demo_rom(), 4);
+    let (after, after_hash) = megadrive_after(demo_rom(), 4);
     assert_eq!(run.tick, after.tick);
     assert_eq!(
-        run.state_hash, after.state_hash,
+        run.state_hash, after_hash,
         "the stop state equals a fresh inspection after the writing instruction"
     );
     let inspection = debugger.inspect().expect("inspect");
-    assert_eq!(inspection.registers["pc"], u64::from(DEMO_AFTER_STORE_PC));
+    assert_eq!(inspection.registers()["pc"], u64::from(DEMO_AFTER_STORE_PC));
     assert_eq!(
         debugger.read_memory(u64::from(RAM_BASE), 2).expect("read"),
         vec![0x00, 0x03],
@@ -786,7 +789,10 @@ fn watchpoint_stops_after_the_writing_instruction() {
         );
         assert_eq!(run.steps, 6, "the stopping instruction is the word load");
         assert_eq!(run.tick, Tick::from_raw(336));
-        assert_eq!(debugger.inspect().expect("inspect").registers["pc"], 0x214);
+        assert_eq!(
+            debugger.inspect().expect("inspect").registers()["pc"],
+            0x214
+        );
     }
 
     // A disabled watchpoint is not installed in the backend configuration and
@@ -935,7 +941,8 @@ fn event_breakpoint_stops_on_a_matching_event() {
     );
     assert_eq!(run.steps, 106);
     assert_eq!(run.tick, Tick::from_raw(7546), "the stop is after the step");
-    assert_eq!(run.state_hash, interrupt_after(3, 106).state_hash);
+    let (_, interrupt_hash) = interrupt_after(3, 106);
+    assert_eq!(run.state_hash, interrupt_hash);
     assert_eq!(run.matched_events, vec![delivered]);
     assert!(
         debugger
@@ -1296,7 +1303,7 @@ impl Backend for WithoutProgramCounter {
 
     fn inspect(&self) -> Result<MachineInspection, BackendError> {
         let mut inspection = self.inner.inspect()?;
-        inspection.registers.remove("pc");
+        inspection.cpu_registers.remove("pc");
         Ok(inspection)
     }
 

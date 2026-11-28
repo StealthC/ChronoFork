@@ -143,7 +143,7 @@ fn rejected_restore_leaves_the_machine_untouched() {
     machine
         .write_cartridge(0x0020_0000, 0x77)
         .expect("sram byte");
-    let before_hash = machine.inspect().expect("inspect").state_hash;
+    let before_hash = machine.state_hash().expect("inspect digest");
     let before_sram = machine.cartridge().sram()[0];
     let snapshot = machine.snapshot().expect("snapshot");
 
@@ -155,7 +155,7 @@ fn rejected_restore_leaves_the_machine_untouched() {
     assert!(machine.restore(&tampered).is_err());
 
     assert_eq!(
-        machine.inspect().expect("inspect").state_hash,
+        machine.state_hash().expect("inspect digest"),
         before_hash,
         "a rejected restore must not change canonical state"
     );
@@ -173,8 +173,8 @@ fn state_hash_covers_sram_and_the_tmss_latch() {
         .write_cartridge(0x0020_0000, 0x01)
         .expect("sram byte");
     assert_ne!(
-        plain.inspect().expect("inspect").state_hash,
-        with_sram.inspect().expect("inspect").state_hash,
+        plain.state_hash().expect("inspect digest"),
+        with_sram.state_hash().expect("inspect digest"),
         "SRAM bytes are canonical state"
     );
 
@@ -189,8 +189,8 @@ fn state_hash_covers_sram_and_the_tmss_latch() {
     let locked = tmss_factory.create_machine().expect("machine");
     assert!(locked.tmss().locked());
     assert_ne!(
-        plain.inspect().expect("inspect").state_hash,
-        locked.inspect().expect("inspect").state_hash,
+        plain.state_hash().expect("inspect digest"),
+        locked.state_hash().expect("inspect digest"),
         "the TMSS latch is canonical state"
     );
 }
@@ -300,7 +300,7 @@ fn replace_payload(snapshot: &BackendSnapshot, payload: Vec<u8>) -> BackendSnaps
 fn inspection_exposes_bounded_cartridge_pseudo_registers() {
     let machine = factory().create_machine().expect("machine");
     let inspection = machine.inspect().expect("inspect");
-    let registers = &inspection.registers;
+    let registers = inspection.registers();
     assert_eq!(registers["cartridge.system"], 0);
     assert_eq!(registers["cartridge.region"], 0b0111);
     let cartridge = chronofork_megadrive::Cartridge::parse(rom_with_header()).expect("parse");
@@ -398,7 +398,7 @@ fn rehashed_payload_with_an_out_of_range_bank_is_rejected_without_mutation() {
     for _ in 0..3 {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    let before = machine.inspect().expect("inspect");
+    let before_hash = machine.state_hash().expect("digest");
     let before_pc = machine.cpu().pc();
     let snapshot = machine.snapshot().expect("snapshot");
 
@@ -412,10 +412,7 @@ fn rehashed_payload_with_an_out_of_range_bank_is_rejected_without_mutation() {
         matches!(error, BackendError::InvalidSnapshot(_)),
         "invalid bank must be a typed InvalidSnapshot, got {error:?}"
     );
-    assert_eq!(
-        machine.inspect().expect("inspect").state_hash,
-        before.state_hash
-    );
+    assert_eq!(machine.state_hash().expect("inspect digest"), before_hash);
     assert_eq!(machine.cpu().pc(), before_pc);
     assert_eq!(machine.cartridge().sram()[0], 0x77);
 }
@@ -427,7 +424,7 @@ fn rehashed_payload_with_a_disabled_locked_tmss_pair_is_rejected() {
     for _ in 0..2 {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    let before = machine.inspect().expect("inspect");
+    let before_hash = machine.state_hash().expect("digest");
     let snapshot = machine.snapshot().expect("snapshot");
 
     let mut payload = snapshot.payload().to_vec();
@@ -442,10 +439,7 @@ fn rehashed_payload_with_a_disabled_locked_tmss_pair_is_rejected() {
         matches!(error, BackendError::InvalidSnapshot(_)),
         "an impossible TMSS pair must be a typed InvalidSnapshot, got {error:?}"
     );
-    assert_eq!(
-        machine.inspect().expect("inspect").state_hash,
-        before.state_hash
-    );
+    assert_eq!(machine.state_hash().expect("inspect digest"), before_hash);
 }
 
 #[test]
@@ -462,7 +456,7 @@ fn rehashed_payload_with_a_different_tmss_model_is_rejected() {
     for _ in 0..2 {
         machine.step(InputFrame::NEUTRAL).expect("step");
     }
-    let before = machine.inspect().expect("inspect");
+    let before_hash = machine.state_hash().expect("digest");
     let before_pc = machine.cpu().pc();
     let snapshot = machine.snapshot().expect("snapshot");
 
@@ -477,10 +471,7 @@ fn rehashed_payload_with_a_different_tmss_model_is_rejected() {
         matches!(error, BackendError::InvalidSnapshot(_)),
         "a different TMSS model must be a typed InvalidSnapshot, got {error:?}"
     );
-    assert_eq!(
-        machine.inspect().expect("inspect").state_hash,
-        before.state_hash
-    );
+    assert_eq!(machine.state_hash().expect("inspect digest"), before_hash);
     assert_eq!(machine.cpu().pc(), before_pc);
     assert!(machine.tmss().locked());
 }

@@ -37,13 +37,11 @@ fn hash_single_source() -> TestResult {
     let mut verified = machine()?;
     let ordinary_outcome = ordinary.step(InputFrame::NEUTRAL)?;
     let verified_outcome = verified.step_verified(InputFrame::NEUTRAL)?;
-    // W2-2: the ordinary path carries no digest; the verified path is the only
-    // per-step source and it equals the explicit canonical `state_hash()`.
-    assert!(
-        ordinary_outcome.state_hash.is_none(),
-        "the ordinary path carries no digest"
-    );
+    // W2-3: the ordinary type has no digest field at all; the verified path is the
+    // only per-step source and it equals the explicit canonical `state_hash()`.
     assert_eq!(verified_outcome.state_hash, verified.state_hash()?);
+    assert_eq!(ordinary_outcome.tick, verified_outcome.tick);
+    assert_eq!(ordinary_outcome.halted, verified_outcome.halted);
     assert_eq!(
         ordinary.state_hash()?,
         verified.state_hash()?,
@@ -65,7 +63,7 @@ fn state_hash_is_side_effect_free() -> TestResult {
     assert_eq!(first, second);
     let after = backend.inspect()?;
     assert_eq!(after.tick, before.tick);
-    assert_eq!(after.state_hash, before.state_hash);
+    assert_eq!(backend.state_hash()?, first);
 
     backend.step(InputFrame::NEUTRAL)?;
     assert_ne!(first, backend.state_hash()?);
@@ -80,13 +78,8 @@ fn ordinary_step_does_not_claim_verification() -> TestResult {
     let verified_outcome = verified.step_verified(InputFrame::NEUTRAL)?;
 
     assert!(!ordinary_outcome.verified);
-    assert!(verified_outcome.verified);
     assert_eq!(ordinary_outcome.tick, verified_outcome.tick);
     assert_eq!(ordinary_outcome.halted, verified_outcome.halted);
-    assert!(
-        ordinary_outcome.state_hash.is_none(),
-        "the ordinary path computes no digest (W2-2)"
-    );
     assert_eq!(verified_outcome.state_hash, verified.state_hash()?);
     Ok(())
 }

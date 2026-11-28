@@ -187,7 +187,7 @@ pub fn capture(
 
     let initial = backend.inspect().map_err(TraceError::Backend)?;
     let start_tick = initial.tick;
-    let state_hash = initial.state_hash;
+    let state_hash = backend.state_hash().map_err(TraceError::Backend)?;
     if events_observed {
         let event_capacity = config.event_capacity;
         let debug = backend
@@ -342,7 +342,7 @@ fn backend_metadata(backend: &dyn Backend) -> Result<(String, String), TraceErro
 /// Returns the required program counter as a `u32`.
 fn program_counter(inspection: &MachineInspection) -> Result<u32, TraceError> {
     let value = inspection
-        .registers
+        .registers()
         .get(PROGRAM_COUNTER_REGISTER)
         .copied()
         .ok_or(TraceError::ProgramCounterUnavailable)?;

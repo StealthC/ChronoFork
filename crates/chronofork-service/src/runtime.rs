@@ -21,9 +21,10 @@
 //! rejected with a typed `limit` *before* the operation starts instead of
 //! silently dropping a retained result.
 
+use chronofork_backend_api::CancelToken;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 use chronofork_core::{SessionId, StateHash, Tick};
@@ -38,26 +39,34 @@ use crate::error::{ErrorCode, ServiceError};
 /// catalogue (ADR-0016 §2, K2/F3).
 #[derive(Debug, Default)]
 pub(crate) struct CancelFlag {
-    cancelled: AtomicBool,
+    token: CancelToken,
 }
 
 impl CancelFlag {
     /// Creates an unsignalled flag.
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            token: CancelToken::new(),
+        }
     }
 
     /// Requests cancellation; the run observes it at its next instruction boundary.
     pub(crate) fn request(&self) {
-        self.cancelled.store(true, Ordering::Release);
+        self.token.cancel();
+    }
+
+    /// Returns a clone of the shared token for the batch control surface.
+    pub(crate) fn token(&self) -> CancelToken {
+        self.token.clone()
     }
 
     /// Returns whether cancellation was requested.
     ///
-    /// The load is `Acquire` so the reading thread sees everything the requesting
-    /// thread published before the store; the flag carries no payload.
+    /// The load is `SeqCst` in [`CancelToken`], so the reading thread sees everything the
+    /// requesting thread published before the store; the flag carries no payload.
+    #[cfg(test)]
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.token.is_cancelled()
     }
 }
 
@@ -841,9 +850,9 @@ impl Deadline {
         }
     }
 
-    /// Returns whether the deadline has passed.
-    pub(crate) fn is_expired(&self) -> bool {
-        std::time::Instant::now() >= self.instant
+    /// Returns the absolute instant this deadline names.
+    pub(crate) fn instant(&self) -> std::time::Instant {
+        self.instant
     }
 }
 

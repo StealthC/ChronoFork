@@ -143,7 +143,7 @@ fn oracle(steps: u64) -> (u64, String) {
             .expect("oracle step");
     }
     let view = manager.inspect(session).expect("oracle inspect");
-    (view.machine.tick.raw(), view.machine.state_hash.to_hex())
+    (view.machine.tick.raw(), view.state_hash.to_hex())
 }
 
 /// Asserts that a result is the deterministic prefix of exactly `performed` steps.

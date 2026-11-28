@@ -25,7 +25,7 @@ use chronofork_trace::{
 
 fn program_counter(inspection: &MachineInspection) -> Result<u32, Box<dyn Error>> {
     let value = *inspection
-        .registers
+        .registers()
         .get("pc")
         .ok_or("inspection has no pc register")?;
     Ok(u32::try_from(value)?)
@@ -132,12 +132,12 @@ fn captures_instruction_records_on_the_synthetic_backend() -> Result<(), Box<dyn
     let factory = SyntheticBackendFactory::default();
     let mut traced = factory.create()?;
     let mut reference = factory.create()?;
-    let initial = traced.inspect()?;
+    let initial_hash = traced.state_hash()?;
     let config = TraceConfig::new(64)?;
     let trace = capture(traced.as_mut(), &config, 10)?;
 
     assert_eq!(trace.record_count(), 10);
-    assert_eq!(trace.meta().state_hash, initial.state_hash);
+    assert_eq!(trace.meta().state_hash, initial_hash);
     assert_eq!(trace.meta().start_tick, Tick::ZERO);
     assert_eq!(trace.meta().end_tick, Tick::from_raw(10));
     assert_eq!(trace.meta().stop_reason, TraceStopReason::StepLimit);
@@ -727,21 +727,20 @@ fn assert_same_canonical_state(
     plain: &dyn Backend,
     context: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let traced_view = traced.inspect()?;
-    let plain_view = plain.inspect()?;
+    // Memory is opt-in now, so ask for the same window explicitly on both machines.
+    let traced_view = traced.inspect_with_memory(0, 256)?;
+    let plain_view = plain.inspect_with_memory(0, 256)?;
     assert_eq!(traced_view.tick, plain_view.tick, "{context}: tick");
     assert_eq!(
-        traced_view.state_hash, plain_view.state_hash,
+        traced.state_hash()?,
+        plain.state_hash()?,
         "{context}: state hash"
     );
     assert_eq!(traced_view.halted, plain_view.halted, "{context}: halted");
     assert_eq!(
-        traced_view.registers, plain_view.registers,
+        traced_view.registers(),
+        plain_view.registers(),
         "{context}: registers"
-    );
-    assert_eq!(
-        traced_view.memory_base, plain_view.memory_base,
-        "{context}: memory base"
     );
     assert_eq!(traced_view.memory, plain_view.memory, "{context}: memory");
 
@@ -872,11 +871,11 @@ impl Backend for ProbeBackend {
         match self.pc_mode {
             PcMode::Normal => {}
             PcMode::Remove => {
-                inspection.registers.remove("pc");
+                inspection.cpu_registers.remove("pc");
             }
             PcMode::Wide => {
                 inspection
-                    .registers
+                    .cpu_registers
                     .insert("pc".to_owned(), u64::from(u32::MAX) + 1);
             }
         }

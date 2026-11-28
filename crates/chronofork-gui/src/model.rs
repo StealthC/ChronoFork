@@ -963,6 +963,7 @@ mod tests {
             ),
             ("steps", JsonValue::int(4)),
             ("performed", JsonValue::int(4)),
+            ("cycles", JsonValue::int(4)),
             ("tick", JsonValue::int(i64::try_from(tick).expect("tick"))),
             ("state_hash", JsonValue::string(HASH)),
             ("halted", JsonValue::from_bool(false)),

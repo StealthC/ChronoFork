@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use chronofork_backend_api::{
-    Backend, BackendDescriptor, BackendError, BackendSnapshot, MachineInspection, StepOutcome,
-    VerifiedStepOutcome,
+    Backend, BackendDescriptor, BackendError, BackendSnapshot, BatchOutcome, InputSequence,
+    MachineInspection, MachineStatus, RunControl, StepOutcome, StopBudget, StopSet,
+    VerificationPolicy, VerifiedStepOutcome,
 };
-use chronofork_core::{InputFrame, SessionId, SnapshotId};
+use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash};
 use chronofork_trace::{Trace, TraceConfig, capture};
 
 use crate::error::SessionError;
@@ -70,8 +71,10 @@ pub struct SessionInspection {
     pub lineage: Lineage,
     /// Backend descriptor.
     pub backend: BackendDescriptor,
-    /// Machine state.
+    /// Machine state (registers; no digest inside).
     pub machine: MachineInspection,
+    /// Canonical state digest, computed explicitly once for this view.
+    pub state_hash: StateHash,
 }
 
 /// A single independent emulated machine plus its checkpoints and lineage.
@@ -219,16 +222,47 @@ impl Session {
         self.snapshots.get(&id)
     }
 
+    /// Returns the cheap status view (no digest, no memory copy).
+    pub fn status(&self) -> Result<MachineStatus, SessionError> {
+        self.ensure_open()?;
+        self.backend.status().map_err(SessionError::Backend)
+    }
+
+    /// Returns the canonical state digest explicitly.
+    pub fn state_hash(&self) -> Result<StateHash, SessionError> {
+        self.ensure_open()?;
+        self.backend.state_hash().map_err(SessionError::Backend)
+    }
+
+    /// Returns the backend's default inspection memory window metadata.
+    pub fn inspection_memory_window(&self) -> (u64, usize) {
+        self.backend.inspection_memory_window()
+    }
+
+    /// Produces an inspection view with an opt-in memory window.
+    pub fn inspect_with_memory(
+        &self,
+        base: u64,
+        length: usize,
+    ) -> Result<MachineInspection, SessionError> {
+        self.ensure_open()?;
+        self.backend
+            .inspect_with_memory(base, length)
+            .map_err(SessionError::Backend)
+    }
+
     /// Produces an inspection view.
     pub fn inspect(&self) -> Result<SessionInspection, SessionError> {
         self.ensure_open()?;
         let machine = self.backend.inspect()?;
+        let state_hash = self.backend.state_hash()?;
         Ok(SessionInspection {
             id: self.id,
             state: self.state,
             lineage: self.lineage.clone(),
             backend: self.descriptor().clone(),
             machine,
+            state_hash,
         })
     }
 
@@ -251,12 +285,82 @@ impl Session {
         }
     }
 
+    /// Runs one deterministic batch and returns its bounded outcome.
+    ///
+    /// The batch is composed over the single backend primitive (`Backend::run_batch`);
+    /// no host time enters the loop. A caller that needs a digest passes a
+    /// [`VerificationPolicy`] that produces one, or asks for the canonical digest after
+    /// the run.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session's lifecycle rejection or the backend's typed step/limit error.
+    pub fn run_until(
+        &mut self,
+        stop: &StopSet,
+        steps: u64,
+        inputs: &InputSequence,
+        policy: VerificationPolicy,
+        control: &RunControl,
+    ) -> Result<BatchOutcome, SessionError> {
+        self.ensure_open()?;
+        if self.state != SessionState::Ready {
+            return Err(SessionError::NotRunning {
+                session: self.id,
+                state: self.state,
+            });
+        }
+        self.state_observed = false;
+        match self
+            .backend
+            .run_batch(inputs, StopBudget::Steps(steps), stop, policy, control)
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(BackendError::Halted) => Err(SessionError::Halted(self.id)),
+            Err(error) => Err(SessionError::Backend(error)),
+        }
+    }
+
+    /// Runs one deterministic cycle-budgeted batch with neutral input.
+    ///
+    /// This is a thin composition over [`Self::run_until`]'s one backend primitive with
+    /// [`StopBudget::Cycles`]; it is not a second execution loop.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run_until`].
+    pub fn run_cycles(
+        &mut self,
+        cycles: u64,
+        stop: &StopSet,
+        policy: VerificationPolicy,
+        control: &RunControl,
+    ) -> Result<BatchOutcome, SessionError> {
+        self.ensure_open()?;
+        if self.state != SessionState::Ready {
+            return Err(SessionError::NotRunning {
+                session: self.id,
+                state: self.state,
+            });
+        }
+        self.state_observed = false;
+        let inputs = InputSequence::neutral();
+        match self
+            .backend
+            .run_batch(&inputs, StopBudget::Cycles(cycles), stop, policy, control)
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(BackendError::Halted) => Err(SessionError::Halted(self.id)),
+            Err(error) => Err(SessionError::Backend(error)),
+        }
+    }
+
     /// Advances one quantum through the backend's verified path.
     ///
     /// A consumer that needs a per-step digest (movie recording, replay comparison,
-    /// experiment capture) uses this instead of reading the ordinary outcome's
-    /// migration-only digest field, so the guarantee comes from the backend contract
-    /// and not from a stale assumption.
+    /// experiment capture) uses this instead of reading an ordinary-outcome digest,
+    /// so the guarantee comes from the backend contract and not from a stale
+    /// assumption.
     pub fn step_verified(
         &mut self,
         input: InputFrame,
@@ -913,11 +1017,20 @@ mod tests {
         assert_eq!(traced_view.machine.tick, plain_view.machine.tick);
         assert_eq!(traced_view.machine.tick.raw(), 5);
         assert_eq!(
-            traced_view.machine.state_hash,
-            plain_view.machine.state_hash
+            traced.state_hash(traced_session).expect("traced digest"),
+            plain.state_hash(plain_session).expect("plain digest")
         );
-        assert_eq!(traced_view.machine.registers, plain_view.machine.registers);
-        assert_eq!(traced_view.machine.memory, plain_view.machine.memory);
+        assert_eq!(
+            traced_view.machine.registers(),
+            plain_view.machine.registers()
+        );
+        let traced_memory = traced
+            .inspect_with_memory(traced_session, 0, 256)
+            .expect("traced memory");
+        let plain_memory = plain
+            .inspect_with_memory(plain_session, 0, 256)
+            .expect("plain memory");
+        assert_eq!(traced_memory.memory, plain_memory.memory);
 
         let traced_id = traced.snapshot(traced_session).expect("traced snapshot");
         let plain_id = plain.snapshot(plain_session).expect("plain snapshot");

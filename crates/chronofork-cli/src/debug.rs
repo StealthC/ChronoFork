@@ -714,7 +714,7 @@ fn write_run_block(
     inspection: &MachineInspection,
     retained: usize,
 ) -> Result<(), CliError> {
-    let pc = inspection.registers.get("pc").copied().ok_or_else(|| {
+    let pc = inspection.registers().get("pc").copied().ok_or_else(|| {
         CliError("`debug run`: the inspection does not expose the required pc register".to_owned())
     })?;
     let breakpoint_id = match &run.reason {
@@ -964,11 +964,22 @@ fn debug_inspect(args: &[String]) -> Result<(), Box<dyn Error>> {
     run_instructions(&mut machine, steps, "inspect")?;
 
     let inspection = machine.inspect()?;
+    let state_hash = machine
+        .state_hash()
+        .map_err(|error| CliError(format!("`debug inspect`: {error}")))?;
     let cpu = CpuView::new(machine.cpu());
     let vdp = VdpView::new(machine.vdp());
     let interrupts = InterruptView::new(machine.interrupts(), machine.cpu().sr());
     let mut output = String::new();
-    write_inspect_block(&mut output, &inspection, &cpu, &vdp, &interrupts, steps);
+    write_inspect_block(
+        &mut output,
+        &inspection,
+        state_hash,
+        &cpu,
+        &vdp,
+        &interrupts,
+        steps,
+    );
     print!("{output}");
     Ok(())
 }
@@ -977,6 +988,7 @@ fn debug_inspect(args: &[String]) -> Result<(), Box<dyn Error>> {
 fn write_inspect_block(
     output: &mut String,
     inspection: &MachineInspection,
+    state_hash: chronofork_core::StateHash,
     cpu: &CpuView,
     vdp: &VdpView,
     interrupts: &InterruptView,
@@ -984,7 +996,7 @@ fn write_inspect_block(
 ) {
     begin_record(output, "debug-inspect");
     let _ = writeln!(output, "tick={}", inspection.tick.raw());
-    let _ = writeln!(output, "state_hash={}", inspection.state_hash);
+    let _ = writeln!(output, "state_hash={state_hash}");
     let _ = writeln!(output, "halted={}", u8::from(cpu.halted()));
     let _ = writeln!(output, "steps={steps}");
     let _ = writeln!(output, "pc={}", hex32(cpu.pc()));
@@ -1089,7 +1101,6 @@ fn debug_memory(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let mut machine = open_machine(&rom)?;
     run_instructions(&mut machine, steps, "memory")?;
-    let inspection = machine.inspect()?;
     let bytes = if length == 0 {
         Vec::new()
     } else {
@@ -1102,7 +1113,10 @@ fn debug_memory(args: &[String]) -> Result<(), Box<dyn Error>> {
     begin_record(&mut output, "debug-memory");
     let _ = writeln!(output, "address={}", hex32(address));
     let _ = writeln!(output, "length={length}");
-    let _ = writeln!(output, "state_hash={}", inspection.state_hash);
+    let state_hash = machine
+        .state_hash()
+        .map_err(|error| CliError(format!("`debug memory`: {error}")))?;
+    let _ = writeln!(output, "state_hash={state_hash}");
     let _ = writeln!(output, "rows={}", bytes.len().div_ceil(16));
     for (row, chunk) in bytes.chunks(16).enumerate() {
         let row_address = address + u32::try_from(row).unwrap_or(0) * 16;
@@ -1314,7 +1328,10 @@ fn debug_vdp(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut output = String::new();
     begin_record(&mut output, "debug-vdp");
     let _ = writeln!(output, "tick={}", inspection.tick.raw());
-    let _ = writeln!(output, "state_hash={}", inspection.state_hash);
+    let state_hash = machine
+        .state_hash()
+        .map_err(|error| CliError(format!("`debug vdp`: {error}")))?;
+    let _ = writeln!(output, "state_hash={state_hash}");
     let _ = writeln!(output, "vdp_status={}", hex16(vdp.status()));
     let _ = writeln!(output, "vdp_vblank={}", u8::from(vdp.vblank()));
     let _ = writeln!(output, "vdp_vint_pending={}", u8::from(vdp.vint_pending()));
@@ -1370,7 +1387,10 @@ fn debug_interrupts(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut output = String::new();
     begin_record(&mut output, "debug-interrupts");
     let _ = writeln!(output, "tick={}", inspection.tick.raw());
-    let _ = writeln!(output, "state_hash={}", inspection.state_hash);
+    let state_hash = machine
+        .state_hash()
+        .map_err(|error| CliError(format!("`debug vdp`: {error}")))?;
+    let _ = writeln!(output, "state_hash={state_hash}");
     let _ = writeln!(output, "video={}", video_standard_name(view.standard()));
     let _ = writeln!(output, "lines_per_frame={}", view.lines_per_frame());
     let _ = writeln!(output, "active_lines={}", view.active_lines());

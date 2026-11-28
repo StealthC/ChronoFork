@@ -263,6 +263,7 @@ impl OperationChannel for RecordingChannel {
                         ("session", int(session)),
                         ("steps", int(steps)),
                         ("performed", int(steps)),
+                        ("cycles", int(steps)),
                         ("stop_reason", JsonValue::string("completed")),
                         ("revision", int(1)),
                         ("max_wall_ms", int(30_000)),

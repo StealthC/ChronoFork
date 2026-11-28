@@ -90,7 +90,7 @@ fn reopen_report(root: &Path, session_key: u64, snapshot_key: u64) -> Report {
         .expect("inspect rehydrated session");
     Report {
         tick: inspection.machine.tick,
-        state_hash: inspection.machine.state_hash,
+        state_hash: inspection.state_hash,
         checkpoint_sha256: loaded.entry.checkpoint_sha256,
     }
 }
@@ -128,7 +128,7 @@ fn restart_reproduces_tick_and_state_hash() {
         .expect("rehydrate first");
     let first_inspection = first.inspect(first_runtime).expect("inspect first");
     assert_eq!(first_inspection.machine.tick, tick);
-    assert_eq!(first_inspection.machine.state_hash, state_hash);
+    assert_eq!(first_inspection.state_hash, state_hash);
 
     let mut second = new_manager();
     let second_runtime = second
@@ -143,10 +143,7 @@ fn restart_reproduces_tick_and_state_hash() {
         .inspect(second_runtime)
         .expect("inspect second after replay");
     assert_eq!(first_after.machine.tick, second_after.machine.tick);
-    assert_eq!(
-        first_after.machine.state_hash,
-        second_after.machine.state_hash
-    );
+    assert_eq!(first_after.state_hash, second_after.state_hash);
     assert_eq!(
         first_after.machine.tick,
         Tick::from_raw(tick.raw() + 5),

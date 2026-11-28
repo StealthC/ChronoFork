@@ -385,6 +385,15 @@ impl<'a> Debugger<'a> {
     ///
     /// Returns a typed [`DebugError::Backend`] when the backend cannot inspect
     /// its state.
+    /// Returns the canonical state digest explicitly (inspection no longer carries it).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the backend digest error.
+    pub fn state_hash(&self) -> Result<chronofork_core::StateHash, DebugError> {
+        self.backend.state_hash().map_err(DebugError::Backend)
+    }
+
     pub fn inspect(&self) -> Result<MachineInspection, DebugError> {
         self.backend.inspect().map_err(DebugError::Backend)
     }
@@ -443,7 +452,7 @@ impl<'a> Debugger<'a> {
                     StopReason::Breakpoint { id },
                     steps,
                     inspection.tick,
-                    inspection.state_hash,
+                    self.backend.state_hash().map_err(DebugError::Backend)?,
                     inspection.halted,
                     Vec::new(),
                 ));
@@ -454,7 +463,7 @@ impl<'a> Debugger<'a> {
                     StopReason::Halted,
                     steps,
                     inspection.tick,
-                    inspection.state_hash,
+                    self.backend.state_hash().map_err(DebugError::Backend)?,
                     true,
                     Vec::new(),
                 ));
@@ -464,7 +473,7 @@ impl<'a> Debugger<'a> {
                     StopReason::StepLimit,
                     steps,
                     inspection.tick,
-                    inspection.state_hash,
+                    self.backend.state_hash().map_err(DebugError::Backend)?,
                     inspection.halted,
                     Vec::new(),
                 ));
@@ -482,13 +491,9 @@ impl<'a> Debugger<'a> {
             {
                 continue;
             }
-            // A stop report needs a digest. During the W2-1 landing the ordinary step
-            // still carries one; from W2-2 it will not, so the debugger asks the
-            // canonical source explicitly instead of assuming a stale field.
-            let state_hash = match outcome.state_hash {
-                Some(hash) => hash,
-                None => self.backend.state_hash().map_err(DebugError::Backend)?,
-            };
+            // A stop report needs a digest, and the ordinary outcome no longer carries
+            // one, so the debugger asks the canonical source explicitly.
+            let state_hash = self.backend.state_hash().map_err(DebugError::Backend)?;
             if !watchpoint_ids.is_empty() {
                 return Ok(self.stop_report(
                     StopReason::Watchpoint {
@@ -660,7 +665,7 @@ impl<'a> Debugger<'a> {
     ) -> Result<bool, DebugError> {
         let actual = match &condition.operand {
             ConditionOperand::Register(name) => *inspection
-                .registers
+                .registers()
                 .get(name)
                 .ok_or_else(|| DebugError::UnknownRegister(name.clone()))?,
             ConditionOperand::Memory { address, length } => {
@@ -851,7 +856,7 @@ fn validate_condition(
 ) -> Result<(), DebugError> {
     match &condition.operand {
         ConditionOperand::Register(name) => {
-            if inspection.registers.contains_key(name) {
+            if inspection.registers().contains_key(name) {
                 Ok(())
             } else {
                 Err(DebugError::UnknownRegister(name.clone()))
@@ -886,7 +891,7 @@ fn validate_log_message(message: &str) -> Result<(), DebugError> {
 
 fn program_counter(inspection: &MachineInspection) -> Result<u64, DebugError> {
     inspection
-        .registers
+        .registers()
         .get(PROGRAM_COUNTER_REGISTER)
         .copied()
         .ok_or(DebugError::MissingProgramCounter)
@@ -912,7 +917,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use chronofork_backend_api::MachineInspection;
-    use chronofork_core::{StateHash, Tick};
+    use chronofork_core::Tick;
 
     use super::{MAX_MEMORY_CONDITION_BYTES, next_id, validate_location, validate_log_message};
     use crate::error::{DebugError, InvalidLogMessage};
@@ -921,14 +926,14 @@ mod tests {
     fn inspection(registers: &[(&str, u64)]) -> MachineInspection {
         MachineInspection {
             tick: Tick::ZERO,
-            state_hash: StateHash::from_bytes([0; 32]),
             halted: false,
-            registers: registers
+            frame_index: 0,
+            cpu_registers: registers
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), *value))
                 .collect::<BTreeMap<_, _>>(),
-            memory_base: 0,
-            memory: Vec::new(),
+            device_registers: BTreeMap::new(),
+            memory: None,
         }
     }
 
@@ -981,7 +986,7 @@ mod tests {
             ))
         );
         assert_eq!(MAX_MEMORY_CONDITION_BYTES, 8);
-        assert_eq!(inspection(&[("pc", 0x200)]).registers["pc"], 0x200);
+        assert_eq!(inspection(&[("pc", 0x200)]).registers()["pc"], 0x200);
     }
 
     #[test]

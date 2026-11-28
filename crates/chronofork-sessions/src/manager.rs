@@ -5,7 +5,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chronofork_backend_api::{
-    BackendDescriptor, BackendFactory, BackendSnapshot, StepOutcome, VerifiedStepOutcome,
+    BackendDescriptor, BackendFactory, BackendSnapshot, BatchOutcome, InputSequence, RunControl,
+    StepOutcome, StopSet, VerificationPolicy, VerifiedStepOutcome,
 };
 use chronofork_core::{InputFrame, SessionId, SnapshotId, StateHash, Tick};
 use chronofork_trace::{Trace, TraceConfig};
@@ -546,6 +547,35 @@ impl SessionManager {
         self.session(session)?.lock()?.step_verified(input)
     }
 
+    /// Runs one deterministic batch on a session.
+    pub fn run_until(
+        &mut self,
+        session: SessionId,
+        stop: &StopSet,
+        steps: u64,
+        inputs: &InputSequence,
+        policy: VerificationPolicy,
+        control: &RunControl,
+    ) -> Result<BatchOutcome, SessionError> {
+        self.session(session)?
+            .lock()?
+            .run_until(stop, steps, inputs, policy, control)
+    }
+
+    /// Runs one deterministic cycle-budgeted batch on a session.
+    pub fn run_cycles(
+        &mut self,
+        session: SessionId,
+        cycles: u64,
+        stop: &StopSet,
+        policy: VerificationPolicy,
+        control: &RunControl,
+    ) -> Result<BatchOutcome, SessionError> {
+        self.session(session)?
+            .lock()?
+            .run_cycles(cycles, stop, policy, control)
+    }
+
     /// Pauses a session.
     pub fn pause(&mut self, session: SessionId) -> Result<(), SessionError> {
         self.session(session)?.lock()?.pause()
@@ -586,6 +616,31 @@ impl SessionManager {
         self.session(session)?.lock()?.inspect()
     }
 
+    /// Returns the detailed inspection with an opt-in memory window.
+    pub fn inspect_with_memory(
+        &self,
+        session: SessionId,
+        base: u64,
+        length: usize,
+    ) -> Result<chronofork_backend_api::MachineInspection, SessionError> {
+        self.session(session)?
+            .lock()?
+            .inspect_with_memory(base, length)
+    }
+
+    /// Returns the cheap status of one session.
+    pub fn status(
+        &self,
+        session: SessionId,
+    ) -> Result<chronofork_backend_api::MachineStatus, SessionError> {
+        self.session(session)?.lock()?.status()
+    }
+
+    /// Returns the canonical state digest of one session explicitly.
+    pub fn state_hash(&self, session: SessionId) -> Result<StateHash, SessionError> {
+        self.session(session)?.lock()?.state_hash()
+    }
+
     /// Compares two sessions by tick and canonical state digest.
     pub fn compare(
         &self,
@@ -594,15 +649,17 @@ impl SessionManager {
     ) -> Result<SessionComparison, SessionError> {
         let left_view = self.inspect(left)?;
         let right_view = self.inspect(right)?;
-        let equivalent = left_view.machine.tick == right_view.machine.tick
-            && left_view.machine.state_hash == right_view.machine.state_hash;
+        let left_hash = self.state_hash(left)?;
+        let right_hash = self.state_hash(right)?;
+        let equivalent =
+            left_view.machine.tick == right_view.machine.tick && left_hash == right_hash;
         Ok(SessionComparison {
             left,
             right,
             left_tick: left_view.machine.tick,
             right_tick: right_view.machine.tick,
-            left_hash: left_view.machine.state_hash,
-            right_hash: right_view.machine.state_hash,
+            left_hash,
+            right_hash,
             equivalent,
         })
     }
@@ -613,12 +670,13 @@ impl SessionManager {
             .values()
             .map(|handle| {
                 let session = handle.lock()?;
-                let machine = session.inspect()?.machine;
+                let status = session.status()?;
+                let state_hash = session.state_hash()?;
                 Ok(SessionSummary {
                     id: session.id(),
                     state: session.state(),
-                    tick: machine.tick,
-                    state_hash: machine.state_hash,
+                    tick: status.tick,
+                    state_hash,
                     lineage: session.lineage().clone(),
                 })
             })

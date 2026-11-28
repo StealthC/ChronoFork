@@ -7,6 +7,7 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod batch;
 pub mod debug;
 pub mod descriptor;
 pub mod error;
@@ -15,6 +16,11 @@ pub mod media;
 pub mod snapshot;
 pub mod traits;
 
+pub use batch::{
+    BatchOutcome, BatchSignals, CancelToken, InputSequence, MAX_INPUT_FRAMES, MAX_STOP_CONDITIONS,
+    MatchedStop, RunControl, StopBudget, StopCondition, StopKind, StopPhase, StopReason, StopSet,
+    StopValue, VerificationPolicy,
+};
 pub use debug::{
     DEFAULT_DEBUG_EVENT_CAPACITY, DebugAccess, DebugAddressRange, DebugConfig, DebugEvent,
     DebugEventKind, DebugEventLog, MAX_DEBUG_EVENT_CAPACITY, MAX_WATCHPOINTS, WatchpointAccess,
@@ -22,7 +28,7 @@ pub use debug::{
 };
 pub use descriptor::{BackendDescriptor, BackendId, Capabilities};
 pub use error::BackendError;
-pub use inspection::MachineInspection;
+pub use inspection::{MAX_STATUS_REGISTERS, MachineInspection, MachineStatus, MemoryWindow};
 pub use media::{AudioChunk, MediaError, MediaSource, VideoFrame};
 pub use snapshot::{BACKEND_SNAPSHOT_FORMAT_VERSION, BackendSnapshot, validate_envelope};
 pub use traits::{Backend, BackendFactory, StepOutcome, VerifiedStepOutcome};

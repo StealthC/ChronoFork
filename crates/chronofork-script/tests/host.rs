@@ -189,11 +189,11 @@ impl Backend for HexMemoryBackend {
         registers.insert("halted".to_owned(), 0);
         Ok(MachineInspection {
             tick: Tick::ZERO,
-            state_hash: hash_bytes(&self.memory),
             halted: false,
-            registers,
-            memory_base: 0,
-            memory: self.memory.clone(),
+            frame_index: 0,
+            cpu_registers: registers,
+            device_registers: std::collections::BTreeMap::new(),
+            memory: None,
         })
     }
 
@@ -328,16 +328,15 @@ fn session_inspection_builtins_match_the_session() -> Result<(), String> {
     let memory = manager
         .read_memory(session, 0, 4)
         .map_err(|error| format!("read memory: {error}"))?;
-    let pc = inspection
-        .machine
-        .registers
+    let registers = inspection.machine.registers();
+    let pc = registers
         .get("pc")
         .ok_or_else(|| "synthetic backend exposes pc".to_owned())?;
 
     let expected = vec![
         session.raw().to_string(),
         inspection.machine.tick.raw().to_string(),
-        inspection.machine.state_hash.to_hex(),
+        inspection.state_hash.to_hex(),
         pc.to_string(),
         lowercase_hex(&memory),
     ];
@@ -408,7 +407,7 @@ fn session_inspection_builtins_match_the_session() -> Result<(), String> {
         vec![
             "0".to_owned(),
             "0".to_owned(),
-            fresh_view.machine.state_hash.to_hex(),
+            fresh_view.state_hash.to_hex(),
         ]
     );
     assert_failure(&execute("print reset()\n"), "not_open", Some(1))?;
@@ -642,27 +641,27 @@ fn fork_checkpoint_restore_and_select_preserve_isolation() -> Result<(), String>
         root.raw().to_string(),
         child.raw().to_string(),
         root_view.machine.tick.raw().to_string(),
-        root_view.machine.state_hash.to_hex(),
+        root_view.state_hash.to_hex(),
         snapshot.raw().to_string(),
         "0".to_owned(),
         child_view.machine.tick.raw().to_string(),
-        child_view.machine.state_hash.to_hex(),
+        child_view.state_hash.to_hex(),
         "0".to_owned(),
         root_view.machine.tick.raw().to_string(),
-        root_view.machine.state_hash.to_hex(),
+        root_view.state_hash.to_hex(),
         root_after.machine.tick.raw().to_string(),
-        root_after.machine.state_hash.to_hex(),
+        root_after.state_hash.to_hex(),
         "0".to_owned(),
         restored.machine.tick.raw().to_string(),
-        restored.machine.state_hash.to_hex(),
+        restored.state_hash.to_hex(),
     ];
     assert_eq!(first.prints(), expected);
     assert_eq!(
-        child_view.machine.state_hash, restored.machine.state_hash,
+        child_view.state_hash, restored.state_hash,
         "restore must reproduce the recorded child state"
     );
     assert_ne!(
-        root_after.machine.state_hash, child_view.machine.state_hash,
+        root_after.state_hash, child_view.state_hash,
         "source and child must be independent"
     );
 

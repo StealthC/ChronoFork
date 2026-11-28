@@ -194,7 +194,7 @@ fn oracle_plan(plan: &[(u64, u32)]) -> (u64, String) {
         }
     }
     let view = manager.inspect(session).expect("oracle inspect");
-    (view.machine.tick.raw(), view.machine.state_hash.to_hex())
+    (view.machine.tick.raw(), view.state_hash.to_hex())
 }
 
 fn oracle_state(steps: u64, buttons: u32) -> (u64, String) {

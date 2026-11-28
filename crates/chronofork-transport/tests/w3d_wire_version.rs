@@ -135,6 +135,7 @@ fn the_version_header_selects_the_documented_result_shape() {
     assert!(result_field(&v1, "revision").is_none());
     assert!(result_field(&v1, "performed").is_none());
     assert!(result_field(&v1, "stop_reason").is_none());
+    assert!(result_field(&v1, "cycles").is_none());
     assert_eq!(
         result_field(&v1, "steps").and_then(JsonValue::as_u64),
         Some(2)
@@ -151,6 +152,12 @@ fn the_version_header_selects_the_documented_result_shape() {
     assert_eq!(
         result_field(&v2, "stop_reason").and_then(JsonValue::as_str),
         Some("completed")
+    );
+    assert!(
+        result_field(&v2, "cycles")
+            .and_then(JsonValue::as_u64)
+            .is_some_and(|cycles| cycles > 0),
+        "v2 run reports the cycles consumed by the batch"
     );
     assert!(result_field(&v2, "revision").is_some());
     server.shutdown().expect("shutdown");

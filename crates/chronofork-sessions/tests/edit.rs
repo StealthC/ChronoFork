@@ -769,8 +769,13 @@ fn pre_existing_sessions_and_the_source_are_untouched() -> TestResult {
     let outcome =
         chronofork_sessions::edit_movie(&source, &mut manager, &request, &EditMeta::new())?;
     let after = manager.inspect(existing)?;
+    let before_hash = manager.state_hash(existing)?;
     assert_eq!(before.machine.tick, after.machine.tick);
-    assert_eq!(before.machine.state_hash, after.machine.state_hash);
+    assert_eq!(
+        manager.state_hash(existing)?,
+        before_hash,
+        "editing another movie must not change this session"
+    );
     assert_eq!(manager.len(), 2);
     assert_eq!(source.to_bytes()?, source_bytes);
     verify(outcome.movie())?;
@@ -1123,7 +1128,6 @@ impl Backend for BulkBackend {
             .ok_or(BackendError::TickOverflow)?;
         Ok(StepOutcome {
             tick: self.tick,
-            state_hash: Some(self.state_hash()),
             halted: false,
             verified: false,
         })
@@ -1191,11 +1195,11 @@ impl Backend for BulkBackend {
     fn inspect(&self) -> Result<MachineInspection, BackendError> {
         Ok(MachineInspection {
             tick: self.tick,
-            state_hash: self.state_hash(),
             halted: false,
-            registers: BTreeMap::new(),
-            memory_base: 0,
-            memory: Vec::new(),
+            frame_index: 0,
+            cpu_registers: BTreeMap::new(),
+            device_registers: BTreeMap::new(),
+            memory: None,
         })
     }
 

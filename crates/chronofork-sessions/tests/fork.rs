@@ -110,12 +110,9 @@ fn fork_after_reopen_preserves_lineage_tick_and_hash() {
         child_inspection.machine.tick,
         parent_inspection.machine.tick
     );
-    assert_eq!(
-        child_inspection.machine.state_hash,
-        parent_inspection.machine.state_hash
-    );
+    assert_eq!(child_inspection.state_hash, parent_inspection.state_hash);
     assert_eq!(parent_inspection.machine.tick, parent.tick);
-    assert_eq!(parent_inspection.machine.state_hash, parent.state_hash);
+    assert_eq!(parent_inspection.state_hash, parent.state_hash);
 
     let parent_key = manager
         .durable_session_key(parent_runtime)

@@ -6,6 +6,7 @@
 
 #![cfg_attr(test, allow(clippy::expect_used))]
 
+pub mod batch;
 pub mod edit;
 pub mod error;
 pub mod lineage;
@@ -17,6 +18,7 @@ pub mod session;
 pub mod snapshot;
 pub mod storage;
 
+pub use batch::RunRecord;
 pub use edit::{AnchorPolicy, EditError, EditMeta, EditOutcome, EditReport, MovieEdit, edit_movie};
 pub use error::SessionError;
 pub use lineage::Lineage;
